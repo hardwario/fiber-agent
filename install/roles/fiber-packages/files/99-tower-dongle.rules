@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", ATTRS{serial}=="bc-usb-dongle-r1.0-627adf6a6d91", SYMLINK+="hio-twr-dongle", ENV{SYSTEMD_WANTS}="fiber-tower.service"

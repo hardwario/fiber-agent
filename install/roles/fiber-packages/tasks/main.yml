@@ -1,0 +1,94 @@
+---
+
+- name: Copy pip config
+  become: yes
+  ansible.builtin.copy:
+    src: pip.conf
+    dest: /etc/
+
+# - name: Install app-specific packages
+#   become: yes
+#   environment:
+#     CFLAGS: "-fcommon" # gcc version on Ubuntu https://forums.raspberrypi.com/viewtopic.php?t=289084
+#   ansible.builtin.pip:
+#     name: /home/fiber
+#     executable: /home/fiber/.venv/bin/pip3
+#   loop:
+#     - "fiber"
+
+- name: Copy systemd service files
+  become: yes
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/systemd/system/
+  loop:
+    - "fiber-core.service"
+
+- name: Enable and start fiber-core service
+  become: yes
+  ansible.builtin.service:
+    name: fiber-core 
+    enabled: yes
+    state: started
+
+- name: Create /etc/fiber folder
+  become: yes
+  ansible.builtin.file:
+    path: /etc/fiber
+    state: directory
+    owner: fiber
+
+- name: Create /var/fiber folder
+  become: yes
+  ansible.builtin.file:
+    path: /var/fiber
+    state: directory
+    owner: fiber
+
+- name: Copy FIBER config file
+  ansible.builtin.copy:
+    src: "/home/fiber/config/config.yaml"
+    dest: /etc/fiber/config.yaml
+
+- name: Copy COOPER Dongle udev rule
+  become: yes
+  ansible.builtin.copy:
+    src: 99-cooper-dongle.rules
+    dest: /etc/udev/rules.d/
+
+- name: Copy TOWER Dongle udev rule
+  become: yes
+  ansible.builtin.copy:
+    src: 99-tower-dongle.rules
+    dest: /etc/udev/rules.d/
+
+- name: Create /etc/cooper folder
+  become: yes
+  ansible.builtin.file:
+    path: /etc/cooper
+    state: directory
+    owner: fiber
+
+- name: Create /home/fiber/test
+  ansible.builtin.file:
+    path: /home/fiber/tests/
+    state: directory
+
+- name: Copy test script
+  become: yes
+  ansible.builtin.copy:
+    src: test.py
+    dest: /home/fiber/tests/
+    owner: fiber
+
+- name: Copy I2C device table
+  become: yes
+  ansible.builtin.copy:
+    src: i2c.txt
+    dest: /home/fiber/tests/
+    owner: fiber
+
+- name: Append switch_to_setup_mode command to bashrc
+  ansible.builtin.lineinfile:
+      path: /home/fiber/.bashrc
+      line: alias switch_to_setup_mode="sudo sh -c 'systemctl disable fiber-sensor@ && systemctl disable fiber-client.service && systemctl enable fiber-start.service && systemctl enable fiber-setup.service && systemctl enable avahi-daemon.service && reboot'"

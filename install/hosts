@@ -1,0 +1,8 @@
+[all:vars]
+ip_address={{ inventory_hostname.split('@')[1] }}
+timezone=Europe/Prague
+
+[all]
+fiber@10.0.0.185
+#fiber@10.0.0.126
+

@@ -1,0 +1,37 @@
+---
+
+- name: Install pip3
+  become: yes
+  ansible.builtin.apt:
+    name: python3-pip
+
+- name: Install avahi-daemon
+  become: yes
+  ansible.builtin.apt:
+    name: avahi-daemon
+
+- name: Install openvpn
+  become: yes
+  ansible.builtin.apt:
+    name: openvpn
+
+- name: Install net-tools
+  become: yes
+  ansible.builtin.apt:
+    name: net-tools
+
+- name: Install i2c-tools
+  become: yes
+  ansible.builtin.apt:
+    name: i2c-tools
+
+- name: Install mosquitto, mosquitto-clients
+  become: yes
+  ansible.builtin.apt:
+    name: mosquitto, mosquitto-clients
+
+- name: Install rpi.gpio
+  become: yes
+  ansible.builtin.apt:
+    name: python3-rpi.gpio
+
