@@ -1,0 +1,7 @@
+[Match]
+Name={interface}
+
+[Network]
+Address={ip_address}
+Gateway={gateway}
+DNS={dns_primary}

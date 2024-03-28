@@ -1,0 +1,27 @@
+version: 1
+
+system:
+  interface: eth0
+
+sensor:
+  enabled: True
+  report_interval_seconds: 10
+  sampling_interval_seconds: 5
+
+mqtt:
+  enabled: True
+  host: localhost
+  port: 1883
+
+tower:
+  enabled: True
+  dongle: /dev/hio-twr-dongle
+
+cooper:
+  enabled: True
+  dongle: /dev/hio-cooper-dongle
+
+storage:
+  enabled: True
+  name: records.db
+
