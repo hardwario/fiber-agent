@@ -2,6 +2,9 @@
 __pycache__/
 __pypackages__/
 .env
+.gitconfig
+.gitignore
+.lesshst
 
 .ansible/
 .cache/
