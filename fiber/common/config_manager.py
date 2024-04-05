@@ -16,10 +16,6 @@ class MQTTConfig(BaseModel):
     host: str
     port: int
 
-class ModuleConfig(BaseModel):
-    enabled: bool
-    dongle: str
-
 class StorageConfig(BaseModel):
     enabled: bool
     name: str
@@ -29,8 +25,6 @@ class FiberConfig(BaseModel):
     system: SystemConfig
     sensor: SensorConfig
     mqtt: MQTTConfig
-    tower: ModuleConfig
-    cooper: ModuleConfig
     storage: StorageConfig
 
 

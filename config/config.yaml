@@ -13,14 +13,6 @@ mqtt:
   host: localhost
   port: 1883
 
-tower:
-  enabled: True
-  dongle: /dev/hio-twr-dongle
-
-cooper:
-  enabled: True
-  dongle: /dev/hio-cooper-dongle
-
 storage:
   enabled: True
   name: records.db
