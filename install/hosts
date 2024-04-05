@@ -2,7 +2,12 @@
 ip_address={{ inventory_hostname.split('@')[1] }}
 timezone=Europe/Prague
 
-[all]
-fiber@10.0.0.185
-#fiber@10.0.0.126
+
+[servers]
+10.0.0.158 ansible_ssh_user=root ansible_ssh_pass=fiber ansible_python_interpreter=/usr/bin/python3
+
+#[all]
+#root@10.0.0.158
+# fiber@10.0.0.185 -> fiber-v1
+# fiber@10.0.0.126
 

@@ -1,7 +1,29 @@
 ---
 
+- name: Execute a command with an updated PATH
+  command: echo $PATH
+  environment:
+    PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+- name: Install python3-apt using raw module
+  ansible.builtin.raw:
+    apt-get install python3-apt -y
+  become: true
+
+- name: Install python3-apt
+  ansible.builtin.apt:
+    name: python3-apt
+    state: present
+  become: true
+  become_method: su
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
 - name: Install pip3
   become: yes
+  become_method: su
+  become_user: root
+
   ansible.builtin.apt:
     name: python3-pip
 

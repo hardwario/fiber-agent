@@ -1,48 +1,48 @@
----
+# ---
 
-- name: Update packages
-  become: yes
-  ansible.builtin.apt:
-    force_apt_get: yes
-    update_cache: yes
+# - name: Update packages
+#   become: yes
+#   ansible.builtin.apt:
+#     force_apt_get: yes
+#     update_cache: yes
 
-- name: Upgrade packages
-  become: yes
-  ansible.builtin.apt:
-    force_apt_get: yes
-    upgrade: dist
+# - name: Upgrade packages
+#   become: yes
+#   ansible.builtin.apt:
+#     force_apt_get: yes
+#     upgrade: dist
 
-- name: Add hardware peripheral support
-  become: yes
-  ansible.builtin.copy:
-    force: yes
-    src: config.txt
-    dest: /boot/firmware/
+# - name: Add hardware peripheral support
+#   become: yes
+#   ansible.builtin.copy:
+#     force: yes
+#     src: config.txt
+#     dest: /boot/firmware/
 
-- name: Set timezone to {{ timezone }}
-  become: yes
-  community.general.timezone:
-    name: "{{ timezone }}"
+# - name: Set timezone to {{ timezone }}
+#   become: yes
+#   community.general.timezone:
+#     name: "{{ timezone }}"
 
-- name: Set hostname
-  become: yes
-  ansible.builtin.copy:
-    force: yes
-    src: hostname
-    dest: /etc/
+# - name: Set hostname
+#   become: yes
+#   ansible.builtin.copy:
+#     force: yes
+#     src: hostname
+#     dest: /etc/
 
-- name: Update hosts
-  become: yes
-  ansible.builtin.lineinfile:
-    path: /etc/hosts
-    search_string: "127.0.0.1 localhost"
-    line: "127.0.0.1 localhost fiber"
+# - name: Update hosts
+#   become: yes
+#   ansible.builtin.lineinfile:
+#     path: /etc/hosts
+#     search_string: "127.0.0.1 localhost"
+#     line: "127.0.0.1 localhost fiber"
 
-- name: Append /etc/modules
-  become: yes
-  ansible.builtin.lineinfile:
-      path: /etc/modules
-      line: ds2482
+# - name: Append /etc/modules
+#   become: yes
+#   ansible.builtin.lineinfile:
+#       path: /etc/modules
+#       line: ds2482
 
 - name: Register 1-Wire on boot
   become: yes
@@ -59,8 +59,8 @@
     src: journald.conf
     dest: /etc/systemd/
 
-- name: Mount /var/log as tmpfs
-  become: yes
-  ansible.builtin.blockinfile:
-    path: /etc/fstab
-    block: tmpfs   /var/log    tmpfs    defaults,noatime,nosuid,mode=0755,size=512m    0 0
+# - name: Mount /var/log as tmpfs
+#   become: yes
+#   ansible.builtin.blockinfile:
+#     path: /etc/fstab
+    # block: tmpfs   /var/log    tmpfs    defaults,noatime,nosuid,mode=0755,size=512m    0 0
