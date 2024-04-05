@@ -2,21 +2,15 @@ import time
 import netifaces
 from loguru import logger
 from fiber.server.manager import ServerManager
-from fiber.server.serial_number import SerialNumber, SerialNumberReadError
-from fiber.hal.devices.eeprom import EEPROM
-
 
 class NetworkInterfaceHandler:
-    def __init__(self, interface: str, eeprom: EEPROM, server: ServerManager, uuid: str, request: str, body:  dict[str, str | int]) -> None:
+    def __init__(self, interface: str, server: ServerManager, uuid: str, request: str, body:  dict[str, str | int]) -> None:
         self._interface = interface
         self._server = server
         self._uuid = uuid
         self._request = request
         self._body = body
-        try:
-            self.ser_number_obj = SerialNumber(eeprom=eeprom)
-        except SerialNumberReadError as e:
-            raise
+        self.serial_number = 1
 
     def _send_message(self, key: str, value: str | int | float) -> None:
         try:
@@ -32,7 +26,7 @@ class NetworkInterfaceHandler:
         if not isinstance(id, int):
             self._server.send_err(self._request, self._uuid)
         else:
-            self.ser_number_obj.id = id
+            self.serial_number = id
 
     def _get_mac(self) -> None:
         try:
@@ -58,7 +52,7 @@ class NetworkInterfaceHandler:
             self._send_message("uptime", uptime_seconds)
 
     def _get_fiber_id(self) -> None:
-        fiber_id = self.ser_number_obj.id
+        fiber_id = self.serial_number
         self._send_message("Fiber ID", fiber_id)
 
     def _wait_for_ip_network_interface(self) -> str:
