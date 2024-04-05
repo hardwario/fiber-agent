@@ -32,11 +32,11 @@ class System:
             raise
 
     def start(self) -> None:
-        interface_thread = threading.Thread(target=self.interface_main_loop)
-        pool.manage_thread(True, interface_thread, self.stop_event)
-        interface_thread.start()
+        system_thread = threading.Thread(target=self.system_main_loop)
+        pool.manage_thread(True, system_thread, self.stop_event)
+        system_thread.start()
 
-    def interface_main_loop(self) -> None:
+    def system_main_loop(self) -> None:
         self.client_handler.set_indicator(probe=POWER_LED, indicator=INDICATOR_ON_TAG)
         if self.mqtt_bridge_obj:
             schedule.every(1).minute.do(self.mqtt_bridge_obj.send_beacon).run()

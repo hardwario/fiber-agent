@@ -24,7 +24,7 @@ class Sensor:
         self.client_request_queue = client_request_queue
         self.message_for_server_queue = message_for_server_queue
         self.stop_event = threading.Event()
-        self.knownen = {}
+        self.known = {}
         try:
             self.therm_bulk_read = os.path.join(bus_directory, "therm_bulk_read")
         except (OSError, TypeError) as e:
@@ -45,6 +45,7 @@ class Sensor:
                     self.trigger_bulk_read()
 
                 try:
+                    logger.debug(f"Scanning for thermometers on channel {self.channel}")
                     thermometers = os.listdir(self.bus_directory)
                 except OSError:
                     time.sleep(1)
@@ -66,7 +67,7 @@ class Sensor:
             return True
 
         ts = int(time.time())
-        self.knownen[thermometer] = ts
+        self.known[thermometer] = ts
 
         temperature_path = os.path.join(thermometer_path, "temperature")
         try:
@@ -84,12 +85,12 @@ class Sensor:
 
             self.sensor_temperature_queue.send_qmsg(data)
         except (OSError, ValueError):
-            self.knownen.pop(thermometer)
+            self.known.pop(thermometer)
             return False
         return True
 
     def update_indicator(self) -> None:
-        if len(self.knownen) == 0:
+        if len(self.known) == 0:
             self.client.set_indicator(self.channel, INDICATOR_RED)
         else:
             self.client.set_indicator(self.channel, INDICATOR_GREEN)
