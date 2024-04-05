@@ -12,7 +12,7 @@ class SPIDisplay:
         self._stop_event = Event()
         self._lock = Lock()
 
-        self.display = ST7920Display(128, 64)
+        self.display = ST7920Display()
         sensor_widget = FiberSensorWidget(width=self.display.get_width())
 
         self.display.add_widget(DateTimeBanner(128), 0, 0, 0)
@@ -22,7 +22,6 @@ class SPIDisplay:
         if self.display_thread is not None:
             self._stop_event.set()
             self.display_thread.join()
-            
         self._stop_event.clear()
         self.display_thread = Thread(target=self.display_main_loop)
         pool.manage_thread(True, self.display_thread, self._stop_event)

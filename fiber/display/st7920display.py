@@ -11,8 +11,8 @@ class ST7920Display(Display):
     request: gpiod.LineRequest
     _spi: spidev.SpiDev
 
-    def __init__(self, width, height):
-        super().__init__(width, height)
+    def __init__(self):
+        super().__init__(128, 64)
 
         self.chip = gpiod.Chip("/dev/gpiochip0")
         self.request = self.chip.request_lines(
@@ -62,12 +62,13 @@ class ST7920Display(Display):
         return xfer
 
     def send_row(self, row: int, data: bytes):
-        row_buf = data[row * self.get_width() : (row + 1) * self.get_width()]
+        row_buf = data[row * self.get_width(): (row + 1) * self.get_width()]
         bits = [1 if byte != 0 else 0 for byte in row_buf]
 
         compressed_bits = [0] * (len(bits) // 8)
         for i in range(0, len(bits), 8):
-            compressed_bits[i // 8] = sum([bits[i + j] << (7 - j) for j in range(8)])
+            compressed_bits[i // 8] = sum([bits[i + j] << (7 - j)
+                                          for j in range(8)])
 
         # set line address
         self.send([0x80 + row % 32, 0x80 + (8 if row >= 32 else 0)])
@@ -78,7 +79,7 @@ class ST7920Display(Display):
     def draw(self):
         b = self._fb.tobytes()
         rows = [
-            b[i * self.get_width() // 8 : (i + 1) * self.get_width() // 8]
+            b[i * self.get_width() // 8: (i + 1) * self.get_width() // 8]
             for i in range(self.get_height())
         ]
 
