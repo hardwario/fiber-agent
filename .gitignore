@@ -33,3 +33,4 @@ __pypackages__/
 .env.production.local
 
 .DS_Store
+Dockerfile
