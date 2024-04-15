@@ -48,19 +48,24 @@ class LocalStorage:
     def _delete_old_records(self, last_valid_ts: int) -> None:
         with self._connection:
             cursor = self._connection.cursor()
-            cursor.execute(
-                "DELETE FROM records WHERE timestamp < ?;", (last_valid_ts,)
-            )
-            self._connection.commit()
-            logger.debug(f"Removed old records older than {last_valid_ts}")
+            try:
+                cursor.execute("DELETE FROM records WHERE timestamp < ?;", (last_valid_ts,))
+                self._connection.commit()
+                logger.debug(f"Removed old records older than {last_valid_ts}")
+            except sqlite3.OperationalError as exc:
+                logger.error(f"OperationalError: {exc}. Failed to delete old records older than {last_valid_ts}")
 
     def _insert_new_records(self, timestamp: int, report: dict) -> None:
         with self._connection:
             cursor = self._connection.cursor()
-            cursor.execute('INSERT INTO records (timestamp, record) values (?, ?);',
-                           [timestamp, json.dumps(report)])
+            try:
+                cursor.execute('INSERT INTO records (timestamp, record) values (?, ?);',
+                            [timestamp, json.dumps(report)])
 
-            self._connection.commit()
-            logger.info(
-                f"Added {len(report)} sensor record(s) to database with timestamp {timestamp}"
-            )
+                self._connection.commit()
+                logger.debug(
+                    f"Added {len(report)} sensor record(s) to database with timestamp {timestamp}"
+                )
+            except sqlite3.IntegrityError as exc:
+                logger.error(f"IntegrityError: {exc}. Could not insert record with timestamp {timestamp}")
+
