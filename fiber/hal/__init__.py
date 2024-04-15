@@ -1,15 +1,17 @@
 import threading
 from fiber.common.queue_manager import QueueManager
 from fiber.common.thread_manager import pool
-from loguru import logger
 from fiber.hal.spidisplay import SPIDisplay
+from loguru import logger
 from fiber.server.handlers import ServerHandler, NotFoundError
-from fiber.hal.led_controller import Controller
+from fiber.hal.led_controller import LedController
 from fiber.server.manager import (ServerManager, ServerError, ServerStopEventError)
 
+ 
 class FiberHALError(Exception):
     def __init__(self, message: str):
         super().__init__(message)
+
 
 class FiberHAL:
     def __init__(self, interface: str, server_response_queue: QueueManager, client_request_queue: QueueManager, message_for_server_queue: QueueManager) -> None:
@@ -20,7 +22,7 @@ class FiberHAL:
 
         self.stop_event = threading.Event()
         try:
-            self.led_controller = Controller()
+            self.led_controller = LedController()
             self.spi_display = SPIDisplay()
             self.server = ServerManager(self.server_response_queue, self.client_request_queue, self.message_for_server_queue)
             self.handler = ServerHandler(self.server, self.led_controller, self.interface)
@@ -53,4 +55,3 @@ class FiberHAL:
     def die(self, error_msg: str) -> None:
         logger.error(error_msg)
         raise SystemError(error_msg)
-
