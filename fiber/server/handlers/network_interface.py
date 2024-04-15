@@ -5,12 +5,12 @@ from fiber.server.manager import ServerManager
 
 class NetworkInterfaceHandler:
     def __init__(self, interface: str, server: ServerManager, uuid: str, request: str, body:  dict[str, str | int]) -> None:
-        self._interface = interface
         self._server = server
         self._uuid = uuid
         self._request = request
         self._body = body
         self.serial_number = 1
+        self._interface = next((inter for inter in interface.split(",") if inter in netifaces.interfaces()), None)        
 
     def _send_message(self, key: str, value: str | int | float) -> None:
         try:
