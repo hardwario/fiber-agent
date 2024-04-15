@@ -26,20 +26,25 @@ class ClientHandler(ClientManager, ClientDataValidator):
         uptime = self.get_response("get_uptime")
         return uptime
 
-    def set_indicator(self, probe: int, indicator: str) -> None:
+    def set_power_indicator(self, probe: int, state: bool) -> None:
         self.validate_probe(probe)
-        self.validate_indicator(indicator, probe)
-        logger.debug(f"Probe: {probe}, Indicator: {indicator}")
+        logger.debug(f"Probe: {probe}, State: {state}")
 
-        body = {"state": indicator, "output": probe}
-        self.send_request("set_indicator", body)
+        body = {"output": probe, "state": state}
+        self.send_request("set_power_indicator", body)
+
+    def set_probe_indicator(self, probe: int, temperature: float | None) -> None:
+        self.validate_probe(probe)
+        logger.debug(f"Probe: {probe}, Temperature: {temperature}")
+
+        body = {"output": probe, "temperature": temperature}
+        self.send_request("set_probe_indicator", body)
 
     def reboot(self, delay: int = 0) -> None:
         body = {"delay": delay}
         self.send_request("reboot", body)
 
     def set_fiber_id(self, fiber_id: int) -> None:
-        logger.info(type(fiber_id))
         if not isinstance(fiber_id, int) or not (2159017983 >= fiber_id >= 2157969408):
             raise TypeError("Invalid fiber ID")
 
