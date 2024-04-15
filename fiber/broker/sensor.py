@@ -3,13 +3,20 @@ import threading
 from queue import Empty
 
 from loguru import logger
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from fiber.common.thread_manager import pool
 from fiber.mqtt.mqtt_bridge import MQTTBridge
 from fiber.broker.local_storage import LocalStorage
 from fiber.common.queue_manager import QueueManager
-from fiber.broker.consts import SensorOutput
+
+
+class SensorOutput(BaseModel):
+    timestamp: int
+    channel: int
+    thermometer: str
+    temperature: float
+
 
 class SensorBrokerError(Exception):
     pass
