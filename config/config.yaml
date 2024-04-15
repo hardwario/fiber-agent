@@ -1,7 +1,7 @@
 version: 1
 
 system:
-  interface: eth0
+  interface: end0,eth0
 
 sensor:
   enabled: True
