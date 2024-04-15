@@ -14,7 +14,8 @@ class QueueManager:
             if self._q.qsize() >= self.maxsize:
                 logger.warning("Warning: the queue is almost full!")
             try:
-                return self._q.get(block=block, timeout=timeout)
+                receive = self._q.get(block=block, timeout=timeout)
+                return receive
             except Empty:
                 if empty_error:
                     raise Empty
