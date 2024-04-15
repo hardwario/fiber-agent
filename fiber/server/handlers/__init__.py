@@ -1,11 +1,12 @@
 import os
 import time
-from fiber.server.handlers.led_controll import LedControllHandller
+# from fiber.hal.spidisplay import SPIDisplay
+
+from fiber.display.src.display import Display
+from fiber.server.handlers.display_control import DisplayControlHandler
 from fiber.server.handlers.network_interface import NetworkInterfaceHandler
-from fiber.hal.devices.probe_manager import ProbeLEDs
-from fiber.hal.led_controller import Controller
+from fiber.hal.led_controller import LedController
 from fiber.server.manager import ServerManager
-from fiber.hal.devices.eeprom import EEPROM
 from loguru import logger
 
 
@@ -13,23 +14,21 @@ class NotFoundError(Exception):
     pass
 
 
-class ServerHandler(LedControllHandller, NetworkInterfaceHandler):
-    def __init__(self, eeprom: EEPROM, server: ServerManager, led_controller: Controller, led_driver: ProbeLEDs, interface: str) -> None:
+class ServerHandler(DisplayControlHandler, NetworkInterfaceHandler):
+    def __init__(self, server: ServerManager, led_controller: LedController, spi_display: Display, interface: str) -> None:
         self._uuid = None
         self._request = None
         self._body = None
         self._interface = interface
-        logger.info(interface)
 
-        LedControllHandller.__init__(self, led_controller, led_driver,
-            server, self._uuid, self._request, self._body,
-        )
-        NetworkInterfaceHandler.__init__(self, self._interface, eeprom,
-            server, self._uuid, self._request, self._body,
-        )
+        DisplayControlHandler.__init__(self, led_controller, spi_display,
+                                       server, self._uuid, self._request, self._body)
+        NetworkInterfaceHandler.__init__(self, self._interface,
+                                         server, self._uuid, self._request, self._body)
 
         self._message_callbacks = {
-            "set_indicator": super()._set_indicator,
+            "set_power_indicator": super()._set_power_indicator,
+            "set_probe_indicator": super()._set_probe_indicator,
             "get_mac": super()._get_mac,
             "get_ip": super()._get_ip,
             "get_uptime": super()._get_uptime,
@@ -50,5 +49,3 @@ class ServerHandler(LedControllHandller, NetworkInterfaceHandler):
         if self._body is not None:
             time.sleep(self._body["delay"])
         os.system("reboot")
-
-
