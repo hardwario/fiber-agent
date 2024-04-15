@@ -17,10 +17,6 @@ class CallbackError(Exception):
     pass
 
 
-class AlreadyRegisteredTopic(Exception):
-    pass
-
-
 class MQTTBridge:
     def __init__(self, client_handler: ClientHandler, config_path: str) -> None:
         self._topic_callback = {}
@@ -78,7 +74,7 @@ class MQTTBridge:
     def _on_message(self, client, userdata, msg: mqtt.MQTTMessage) -> None:
         try:
             if msg.topic in self._topic_callback:
-                logger.info(f"Topic of the msg: {msg.topic}: {self._topic_callback[msg.topic]}")
+                logger.debug(f"Topic of the msg: {msg.topic}: {self._topic_callback[msg.topic]}")
                 self._topic_callback[msg.topic](
                     msg.topic, json.loads(msg.payload)
                 )
@@ -128,12 +124,55 @@ class MQTTBridge:
         else:
             logger.debug("Can't publish: no MQTT broker defined")   
 
+    def send_config(self) -> None:
+        logger.debug("Send configuration")
+        topic = "/config"
+        config = self._fiber_config.dict()
+        self.send_json(topic, config)
+
+    def send_ip(self) -> None:
+        logger.debug("Send IP address")
+        topic = "/system/ip"
+        ip = self.client_handler.get_ip()
+        self.send_json(topic, ip)
+
+    def send_mac(self) -> None:
+        logger.debug("Send MAC address")
+        topic = "/system/mac"
+        mac = self.client_handler.get_mac()
+        self.send_json(topic, mac)
+
+    def send_uptime(self) -> None:
+        logger.debug("Send uptime")
+        topic = "/system/uptime"
+        uptime = self.client_handler.get_uptime()
+        self.send_json(topic, uptime)
+
+    def send_measurements(self, data: dict) -> None:
+        logger.debug(f"Send measurements: {data}")
+        self.send_json("/measurement", data)
+
+    def send_beacon(self) -> None:
+        try:
+            beacon_data = self._prepare_beacon_data()
+            self.send_json("/beacon", beacon_data)
+        except SystemError:
+            logger.debug("Problem while receiving uptime, ip_address or mac_address")
+
+    def _prepare_beacon_data(self) -> dict:
+        uptime = self.client_handler.get_uptime()
+        ip_address = self.client_handler.get_ip()
+        mac = self.client_handler.get_mac()
+        
+        logger.debug(f'SYSTEM INFO: ip - {ip_address}, mac - {mac}')
+        return {"uptime": uptime, "ip_address": ip_address, "mac_address": mac}
+
     def _callback_reboot(self, topic, payload) -> None:
         logger.debug("Reboot request")
         self.client_handler.reboot()
 
     def _callback_config_set(self, msg: mqtt.MQTTMessage) -> None:
-        logger.debug("Set configuration")
+        logger.info("Set configuration")
         try:
             payload_json = json.loads(msg.payload)
             try:
@@ -171,55 +210,3 @@ class MQTTBridge:
             self.send_ok(topic)
         except SystemError:
             self.send_error(topic)
-
-    def send_config(self) -> None:
-        logger.debug("send configuration")
-        topic = "/config"
-        config = self._fiber_config.dict()
-        self.send_json(topic, config)
-
-    def send_ip(self) -> None:
-        logger.debug("Send IP address")
-        topic = "/system/ip"
-        ip = self.client_handler.get_ip()
-        self.send_json(topic, ip)
-
-    def send_mac(self) -> None:
-        logger.debug("Send MAC address")
-        topic = "/system/mac"
-        mac = self.client_handler.get_mac()
-        self.send_json(topic, mac)
-
-    def send_uptime(self) -> None:
-        logger.debug("Send uptime")
-        topic = "/system/uptime"
-        uptime = self.client_handler.get_uptime()
-        self.send_json(topic, uptime)
-
-    def send_measurements(self, data: dict) -> None:
-        logger.debug(f"Send measurements: {data}")
-        self.send_json("/measurement", data)
-
-    def send_cooper_data(self, data: dict) -> None:
-        logger.debug(f"Send COOPER data: {data}")
-        self.send_json("/cooper/data", data)
-
-    def send_tower_data(self, data: dict | list) -> None:
-        logger.debug(f"Send TOWER data: {data}")
-        self.send_json(f"/tower/{data[0]}", data[1])
-
-    def send_beacon(self) -> None:
-        try:
-            beacon_data = self._prepare_beacon_data()
-            self.send_json("/beacon", beacon_data)
-        except SystemError:
-            logger.debug("Problem while receiving uptime, ip_address or mac_address")
-
-    def _prepare_beacon_data(self) -> dict:
-        uptime = self.client_handler.get_uptime()
-        ip_address = self.client_handler.get_ip()
-        mac = self.client_handler.get_mac()
-        
-        logger.info(f'SYSTEM INFO: ip - {ip_address}, mac - {mac}')
-        return {"uptime": uptime, "ip_address": ip_address, "mac_address": mac}
-
