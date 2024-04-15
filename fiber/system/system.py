@@ -1,7 +1,7 @@
 import threading
 import time
 import schedule
-from fiber.common.consts import INDICATOR_ON_TAG, POWER_LED
+from fiber.common.consts import POWER_LED
 from fiber.common.queue_manager import QueueManager
 from fiber.client.handler import ClientHandler
 from fiber.common.thread_manager import pool
@@ -37,7 +37,7 @@ class System:
         system_thread.start()
 
     def system_main_loop(self) -> None:
-        self.client_handler.set_indicator(probe=POWER_LED, indicator=INDICATOR_ON_TAG)
+        self.client_handler.set_power_indicator(probe=POWER_LED, state=True)
         if self.mqtt_bridge_obj:
             schedule.every(1).minute.do(self.mqtt_bridge_obj.send_beacon).run()
 
@@ -47,19 +47,12 @@ class System:
                 schedule.run_pending()
                 time.sleep(0.1)
             except MQTTError as e:
-                raise SystemError(f"MQTT communication error: {e}")
+                raise SystemError(e)
 
     def initialize_client_handler(self) -> ClientHandler:
-        try:
-            client_handler = ClientHandler(self.server_response_queue, self.client_request_queue, self.message_for_server_queue, self.stop_event)
-            return client_handler
-        except SystemError as e:
-            raise SystemError(f"Problem while connecting to Device Handler: {e}")
+        client_handler = ClientHandler(self.server_response_queue, self.client_request_queue, self.message_for_server_queue, self.stop_event)
+        return client_handler
 
     def initialize_mqtt_bridge(self, config_path: str) -> MQTTBridge:
-        try:
-            mqtt_bridge = MQTTBridge(self.client_handler, config_path)
-            return mqtt_bridge
-        except MQTTError as e:
-             raise SystemError(f"Problem while connecting to MQTT: {e}")
-
+        mqtt_bridge = MQTTBridge(self.client_handler, config_path)
+        return mqtt_bridge
