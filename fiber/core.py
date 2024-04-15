@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import click
 import signal
 import traceback
@@ -9,7 +10,7 @@ from fiber.hal.southbridge import south_bridge
 from fiber.common.thread_manager import pool
 from fiber.mqtt.mqtt_bridge import MQTTBridge
 from fiber.common.queue_manager import QueueManager
-from fiber.sensor.sensor import Sensor, SensorError
+from fiber.sensor.sensor import Sensor
 from fiber.system.system import System, SystemError
 from fiber.broker.sensor import SensorBroker, SensorBrokerError
 from fiber.common.config_manager import ConfigManager, FiberConfig
@@ -24,29 +25,34 @@ def start_hal_manager(system_config_data: dict[str, bool | str], queues: dict[st
         interface = system_config_data.interface
         FiberHAL(interface, *[queues[name] for name in ["server_response", "client_request", "message_for_server"]]).start()
         return pool._check_thread_presence('hal_main_loop')
-    except FiberHALError as e:
-        raise FiberHALError(f"Problem while connection to system: {e}")
+    except FiberHALError as exc:
+        logger.error(f"Problem while connecting to hal: {exc}")
+        raise exc
 
 def start_system_manager(pd_config: ConfigManager, queues: dict[str, QueueManager]) -> tuple[bool, System]:
     try:
         interface_manager = System(pd_config, *[queues[name] for name in ["server_response", "client_request", "message_for_server"]])
         interface_manager.start()
         return pool._check_thread_presence('system_main_loop', 10), interface_manager.mqtt_bridge_obj
-    except SystemError as e:
-        raise SystemError(f"Problem while connection to client: {e}")
+    except SystemError as exc:
+        logger.error(f"Problem while connecting to system: {exc}")
+        raise exc
 
 def start_sensor_broker(pd_config_data: FiberConfig, mqtt_instance: MQTTBridge | None, queues: dict[str, QueueManager]) -> SensorBroker:
     try:
         SensorBroker(mqtt_instance, pd_config_data, queues["sensor"]).start()
         return pool._check_thread_presence('sensor_broker_loop', 15)
-    except SensorBrokerError as e:
-        raise SensorError(f"Problem while connecting to SENSOR MQTT: {e}")
+    except SensorBrokerError as exc:
+        logger.error(f"Problem while connecting to SENSOR BROKER: {exc}")
+        raise exc
 
 def start_sensor_manager(pd_config_data: FiberConfig, queues: dict[str, QueueManager]) -> None:
     bus_directory = "/sys/bus/w1/devices/w1_bus_master"
+    sensor_lock = threading.RLock()
+
     if pd_config_data.sensor.enabled:
         for channel in range(8):
-            sensor_manager = Sensor(channel + 1, f"{bus_directory}{channel + 1}", True, *[queues[n] for n in ["sensor", "server_response", "client_request", "message_for_server"]])
+            sensor_manager = Sensor(channel + 1, f"{bus_directory}{channel + 1}", False, sensor_lock, *[queues[n] for n in ["sensor", "server_response", "client_request", "message_for_server"]])
             sensor_manager.start()
     else:
         logger.info(f"Sensor module is disabled.")
