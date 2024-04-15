@@ -5,7 +5,7 @@ import time
 
 from loguru import logger
 
-from fiber.broker.consts import PATH_FIBER_FILE
+from fiber.common.consts import PATH_FIBER_FILE
 
 
 class LocalStorage:
