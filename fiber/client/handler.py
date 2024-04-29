@@ -1,52 +1,63 @@
-import threading
 from loguru import logger
-
-from fiber.client.validator import ClientDataValidator
 from fiber.client.manager import ClientManager
-from fiber.common.queue_manager import QueueManager
+from fiber.models.indicators import ColorIndicatorBody, StateIndicatorBody
+from fiber.models.system import FiberIdBody, RebootBody
 
 
-class ClientHandler(ClientManager, ClientDataValidator):
-    def __init__(self, server_response_queue: QueueManager, client_request_queue: QueueManager, message_for_server_queue: QueueManager, stop_event: threading.Event) -> None:
-        super().__init__(server_response_queue, client_request_queue, message_for_server_queue, stop_event)
 
+class ClientHandler(ClientManager):
     def get_mac(self) -> str:
-        mac =  self.get_response("get_mac")
+        mac = self.get_response(operation="get_mac")
         return mac
 
     def get_ip(self) -> str:
-        ip = self.get_response("get_ip")
+        ip = self.get_response(operation="get_ip")
         return ip
 
     def get_fiber_id(self) -> int:
-        fiber_id = self.get_response("get_fiber_id")
+        fiber_id = self.get_response(operation="get_fiber_id")
         return fiber_id
 
     def get_uptime(self) -> float:
-        uptime = self.get_response("get_uptime")
+        uptime = self.get_response(operation="get_uptime")
         return uptime
 
-    def set_power_indicator(self, probe: int, state: bool) -> None:
-        self.validate_probe(probe)
+    def set_indicator_state(self, probe: int, state: bool) -> None:
+        """
+        Sets the state of the indicator for a specific probe.
+
+        Args:
+            probe (int): The probe number.
+            state (bool): The state to set for the indicator.
+
+        Returns:
+            None
+        """
         logger.debug(f"Probe: {probe}, State: {state}")
+        state_body = StateIndicatorBody(output=probe, state=state)
+        self.send_request(operation="set_indicator_state", payload=dict(state_body))
 
-        body = {"output": probe, "state": state}
-        self.send_request("set_power_indicator", body)
+    def set_indicator_color(self, probe: int, temperature: int | float | None) -> None:
+        """
+        Sets the color of the indicator based on the temperature value.
+        If temperature is None, the indicator color is set to red.
+        If a float value is provided, the indicator color is set to green.
 
-    def set_probe_indicator(self, probe: int, temperature: float | None) -> None:
-        self.validate_probe(probe)
+        Args:
+            probe (int): The probe number.
+            temperature (float | None): The temperature value to determine the indicator color.
+        Returns:
+            None
+        """
         logger.debug(f"Probe: {probe}, Temperature: {temperature}")
-
-        body = {"output": probe, "temperature": temperature}
-        self.send_request("set_probe_indicator", body)
-
-    def reboot(self, delay: int = 0) -> None:
-        body = {"delay": delay}
-        self.send_request("reboot", body)
+        color_body = ColorIndicatorBody(output=probe, temperature=temperature)
+        self.send_request(operation="set_indicator_color", payload=dict(color_body))
 
     def set_fiber_id(self, fiber_id: int) -> None:
-        if not isinstance(fiber_id, int) or not (2159017983 >= fiber_id >= 2157969408):
-            raise TypeError("Invalid fiber ID")
+        id_body = FiberIdBody(id=fiber_id)
+        self.send_request(operation="set_id", payload=dict(id_body))
+    
+    def reboot(self, delay: int = 0) -> None:
+        reboot_body = RebootBody(delay=delay)
+        self.send_request(operation="reboot", payload=reboot_body.dict())
 
-        body = {"id": fiber_id}
-        self.send_request("set_id", body)
