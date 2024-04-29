@@ -1,4 +1,5 @@
 PATH_FIBER_FILE = "/var/fiber/"
+PATH_W1_DEVICES = "/sys/bus/w1/devices/w1_bus_master"
 
 POWER_LED = 0
 PROBE_1 = 1
@@ -9,6 +10,18 @@ PROBE_5 = 5
 PROBE_6 = 6
 PROBE_7 = 7
 PROBE_8 = 8
+
+VALID_PROBES = (
+    POWER_LED,
+    PROBE_1,
+    PROBE_2,
+    PROBE_3,
+    PROBE_4,
+    PROBE_5,
+    PROBE_6,
+    PROBE_7,
+    PROBE_8,
+)
 
 PROBE_INDEX = {
     POWER_LED: [0, 1],
