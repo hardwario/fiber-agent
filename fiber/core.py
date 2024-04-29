@@ -23,15 +23,17 @@ class SystemManager:
         self._server_manager: ServerManager = None
         self._sensor_broker: SensorBroker = None
         self._sensor_threads: list[Sensor] = []
-        self._queues: dict[str, QueueManager] = {name: QueueManager() for name in ["server_response", "client_request", "sensor"]}
-    
+        self._queues: dict[str, QueueManager] = {name: QueueManager(
+        ) for name in ["server_response", "client_request", "sensor"]}
+
     def _find_valid_interface(self, interfaces: str) -> str:
         available_interfaces = netifaces.interfaces()
-        interface = next((inter for inter in interfaces.split(",") if inter in available_interfaces), None)
+        interface = next((inter for inter in interfaces.split(
+            ",") if inter in available_interfaces), None)
         if not interface:
-            raise RuntimeError("No valid interface found.")  
+            raise RuntimeError("No valid interface found.")
         return interface
-    
+
     def start(self) -> None:
         interface = self._find_valid_interface(self.fiber_config.system.interface)
         self._server_manager = ServerManager(interface, self.core_stop_event, *[self._queues[name] for name in ["server_response", "client_request"]])
@@ -40,13 +42,12 @@ class SystemManager:
         client_handler = ClientHandler(self.core_stop_event, *[self._queues[name] for name in ["server_response", "client_request"]])
         client_handler.set_indicator_state(probe=POWER_LED, state=True)
 
-        sensor_lock = threading.RLock()
-
         self._sensor_broker = SensorBroker(client_handler, self.fiber_config, self._queues["sensor"])
         self._sensor_broker.start()
 
+        sindle_sensor_lock = threading.RLock() 
         for channel in range(8):
-            sensor_manager = Sensor(channel + 1, f"{PATH_W1_DEVICES}{channel + 1}", False, client_handler, self._queues["sensor"], sensor_lock)
+            sensor_manager = Sensor(channel + 1, f"{PATH_W1_DEVICES}{channel + 1}", False, client_handler, self._queues["sensor"], sindle_sensor_lock)
             sensor_manager.start()
             self._sensor_threads.append(sensor_manager)
 
@@ -59,7 +60,6 @@ class SystemManager:
         for sensor_thread in self._sensor_threads:
             sensor_thread.close()
 
-        self.core_stop_event.set()
         logger.success("Successful exit")
 
 
@@ -67,7 +67,8 @@ class SystemManager:
 @click.command()
 @click.option('-c', '--config-path', help='Configuration file path', type=click.Path(exists=True), required=True)
 def run(config_path: str) -> None:
-    signal.signal(signal.SIGTERM, lambda signum, frame: system_manager.graceful_shutdown(signum, frame))
+    signal.signal(signal.SIGTERM, lambda signum,
+                  frame: system_manager.graceful_shutdown(signum, frame))
     if os.getuid() != 0:
         raise SystemError("You must run the process as root")
 
@@ -76,8 +77,10 @@ def run(config_path: str) -> None:
         system_manager = SystemManager(fiber_config)
         system_manager.start()
     except Exception as e:
-        logger.error(f"{e.__class__.__name__}: Critical system error - {traceback.format_exc()}")
+        logger.error(
+            f"{e.__class__.__name__}: Critical system error - {traceback.format_exc()}")
         system_manager.graceful_shutdown(None, None)
+
 
 if __name__ == '__main__':
     sys.exit(run())
