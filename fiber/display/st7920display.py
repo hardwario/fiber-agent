@@ -1,38 +1,81 @@
 import time
+import threading
+
+from loguru import logger
 import spidev
 import gpiod
 
-from fiber.display.const import RESET_GPIO, CHIP_SELECT_GPIO
+from fiber.display.const import BRIGHTNESS_PWM_GPIO, BUZZER_GPIO, RESET_GPIO, PWM_HALF_PERIOD
 from fiber.display.src.display import Display
 
 
 class ST7920Display(Display):
     chip: gpiod.Chip
     request: gpiod.LineRequest
+    _request_lock: threading.Lock
     _spi: spidev.SpiDev
 
-    def __init__(self):
-        super().__init__(128, 64)
+    _bright_thread: threading.Thread | None = None
+    _bright_thread_stop: threading.Event
+    _brightness: int
+
+    _buzzer_thread: threading.Thread | None = None
+    _buzzer_thread_stop: threading.Event
+    _buzzer_on: bool
+
+    def __init__(self, width, height, brightness=0):
+        super().__init__(width, height)
+
+        self._bright_thread = threading.Thread(target=self._loop)
+        self._buzzer_thread_stop = threading.Event()
+        self._bright_thread_stop = threading.Event()
+        self._request_lock = threading.Lock()
 
         self.chip = gpiod.Chip("/dev/gpiochip0")
-        self.request = self.chip.request_lines(
-            consumer="ST7920Display",
-            config={
-                RESET_GPIO: gpiod.LineSettings(
-                    direction=gpiod.line.Direction.OUTPUT,
-                ),
-                CHIP_SELECT_GPIO: gpiod.LineSettings(
-                    direction=gpiod.line.Direction.OUTPUT,
-                ),
-            },
-        )
+        with self._request_lock:
+            self.request = self.chip.request_lines(
+                consumer="ST7920Display",
+                config={
+                    RESET_GPIO: gpiod.LineSettings(
+                        direction=gpiod.line.Direction.OUTPUT,
+                    ),
+                    BUZZER_GPIO: gpiod.LineSettings(
+                        direction=gpiod.line.Direction.OUTPUT,
+                    ),
+                    BRIGHTNESS_PWM_GPIO: gpiod.LineSettings(
+                        direction=gpiod.line.Direction.OUTPUT,
+                    ),
+                },
+            )
+
+            self.request.set_value(BUZZER_GPIO, gpiod.line.Value.ACTIVE)
 
         self.setup_spi()
 
+        self.set_brightness(brightness)
+        self.start_brightness_thread()
+
+    def close(self):
+        self._spi.close()
+        self.request.release()
+        self.chip.close()
+
+        with self._request_lock:
+            self._bright_thread_stop.set()
+            self._buzzer_thread_stop.set()
+            for thread in [self._bright_thread, self._buzzer_thread]:
+                if thread is not None:
+                    thread.join()
+                    if thread.is_alive():
+                        logger.error(f"Thread {thread.name} did not exit in time")
+                    else:
+                        logger.info(f"Thread {thread.name} exited")
+
     def setup_spi(self):
-        self.request.set_value(RESET_GPIO, gpiod.line.Value.INACTIVE)
-        time.sleep(1)
-        self.request.set_value(RESET_GPIO, gpiod.line.Value.ACTIVE)
+        with self._request_lock:
+            self.request.set_value(RESET_GPIO, gpiod.line.Value.INACTIVE)
+            time.sleep(1)
+            self.request.set_value(RESET_GPIO, gpiod.line.Value.ACTIVE)
 
         self._spi = spidev.SpiDev()
         self._spi.open(6, 0)
@@ -42,6 +85,7 @@ class ST7920Display(Display):
         self.send([0x30])  # repeated
         self.send([0x0C])
         self.send([0x01])  # DISPLAY CLEAR
+        self.send([0x02])  # RETURN HOME CURSOR
         self.send([0x07])  # ENTRY MODE SET
 
         self.send([0x34])  # enable RE mode
@@ -55,33 +99,64 @@ class ST7920Display(Display):
             bytes_to_write.append(b & 0xF0)
             bytes_to_write.append((b << 4) & 0xF0)
 
-        self.request.set_value(CHIP_SELECT_GPIO, gpiod.line.Value.ACTIVE)
-        xfer = self._spi.xfer2(bytes_to_write)
-        self.request.set_value(CHIP_SELECT_GPIO, gpiod.line.Value.INACTIVE)
+        with self._request_lock:
+            xfer = self._spi.xfer2(bytes_to_write)
 
         return xfer
 
     def send_row(self, row: int, data: bytes):
-        row_buf = data[row * self.get_width(): (row + 1) * self.get_width()]
-        bits = [1 if byte != 0 else 0 for byte in row_buf]
-
-        compressed_bits = [0] * (len(bits) // 8)
-        for i in range(0, len(bits), 8):
-            compressed_bits[i // 8] = sum([bits[i + j] << (7 - j)
-                                          for j in range(8)])
+        # reverse bits in all bytes
+        data = data[::-1]
+        data = [int(f"{byte:08b}"[::-1], 2) for byte in data]
 
         # set line address
         self.send([0x80 + row % 32, 0x80 + (8 if row >= 32 else 0)])
 
         # send pixel data
-        self.send(compressed_bits, rs=True)
+        self.send(data, rs=True)
 
     def draw(self):
         b = self._fb.tobytes()
         rows = [
-            b[i * self.get_width() // 8: (i + 1) * self.get_width() // 8]
+            b[i * self.get_width() // 8 : (i + 1) * self.get_width() // 8]
             for i in range(self.get_height())
         ]
 
-        for i, row in enumerate(rows):
-            self.send_row(i, row)
+        for row, data in enumerate(rows):
+            self.send_row(63 - row, data)
+
+    def start_brightness_thread(self):
+        self._bright_thread.start()
+    
+    def _loop(self):
+        while not self._bright_thread_stop.is_set():
+            active_time = PWM_HALF_PERIOD * (self._brightness / 100)
+            inactive_time = PWM_HALF_PERIOD - active_time
+            if self._brightness > 0:
+                with self._request_lock:
+                    self.request.set_value(BRIGHTNESS_PWM_GPIO, gpiod.line.Value.ACTIVE)
+            time.sleep(active_time/1000)
+
+            if self._brightness < 100:
+                with self._request_lock:
+                    self.request.set_value(BRIGHTNESS_PWM_GPIO, gpiod.line.Value.INACTIVE)
+            time.sleep(inactive_time/1000)
+
+    def set_brightness(self, brightness: int):
+        if brightness < 0:
+            self._brightness = 0
+        elif brightness > 100:
+            self._brightness = 100
+        else:
+            self._brightness = brightness
+
+    def set_buzzer(self, on: bool):
+        self._buzzer_on = on
+        if self._buzzer_on:
+            with self._request_lock:
+                self.request.set_value(BUZZER_GPIO, gpiod.line.Value.ACTIVE)
+        else:
+            with self._request_lock:
+                self.request.set_value(BUZZER_GPIO, gpiod.line.Value.INACTIVE)
+
+    
