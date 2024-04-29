@@ -4,85 +4,80 @@ import threading
 import click
 import signal
 import traceback
+import netifaces
+from fiber.common.consts import POWER_LED, PATH_W1_DEVICES
 from loguru import logger
-from fiber.hal import FiberHAL, FiberHALError
-from fiber.hal.southbridge import south_bridge
-from fiber.common.thread_manager import pool
-from fiber.mqtt.mqtt_bridge import MQTTBridge
+from fiber.client.handler import ClientHandler
+from fiber.server.manager import ServerManager
 from fiber.common.queue_manager import QueueManager
 from fiber.sensor.sensor import Sensor
-from fiber.system.system import System, SystemError
-from fiber.broker.sensor import SensorBroker, SensorBrokerError
-from fiber.common.config_manager import ConfigManager, FiberConfig
+from fiber.broker.sensor import SensorBroker
+from fiber.common.config_manager import ConfigManager
+from fiber.models.configurations import FiberConfig
 
-def perfom_graceful_shutdown(signum, frame) -> None:
-    south_bridge.reset_leds()
-    pool.exit_all_thread()
-    logger.success("Successful exit")
 
-def start_hal_manager(system_config_data: dict[str, bool | str], queues: dict[str, QueueManager]) -> bool:
-    try:
-        interface = system_config_data.interface
-        FiberHAL(interface, *[queues[name] for name in ["server_response", "client_request", "message_for_server"]]).start()
-        return pool._check_thread_presence('hal_main_loop')
-    except FiberHALError as exc:
-        logger.error(f"Problem while connecting to hal: {exc}")
-        raise exc
+class SystemManager:
+    def __init__(self, fiber_config: FiberConfig) -> None:
+        self.fiber_config = fiber_config
+        self.core_stop_event = threading.Event()
+        self._server_manager: ServerManager = None
+        self._sensor_broker: SensorBroker = None
+        self._sensor_threads: list[Sensor] = []
+        self._queues: dict[str, QueueManager] = {name: QueueManager() for name in ["server_response", "client_request", "sensor"]}
+    
+    def _find_valid_interface(self, interfaces: str) -> str:
+        available_interfaces = netifaces.interfaces()
+        interface = next((inter for inter in interfaces.split(",") if inter in available_interfaces), None)
+        if not interface:
+            raise RuntimeError("No valid interface found.")  
+        return interface
+    
+    def start(self) -> None:
+        interface = self._find_valid_interface(self.fiber_config.system.interface)
+        self._server_manager = ServerManager(interface, self.core_stop_event, *[self._queues[name] for name in ["server_response", "client_request"]])
+        self._server_manager.start()
 
-def start_system_manager(pd_config: ConfigManager, queues: dict[str, QueueManager]) -> tuple[bool, System]:
-    try:
-        interface_manager = System(pd_config, *[queues[name] for name in ["server_response", "client_request", "message_for_server"]])
-        interface_manager.start()
-        return pool._check_thread_presence('system_main_loop', 10), interface_manager.mqtt_bridge_obj
-    except SystemError as exc:
-        logger.error(f"Problem while connecting to system: {exc}")
-        raise exc
+        client_handler = ClientHandler(self.core_stop_event, *[self._queues[name] for name in ["server_response", "client_request"]])
+        client_handler.set_indicator_state(probe=POWER_LED, state=True)
 
-def start_sensor_broker(pd_config_data: FiberConfig, mqtt_instance: MQTTBridge | None, queues: dict[str, QueueManager]) -> SensorBroker:
-    try:
-        SensorBroker(mqtt_instance, pd_config_data, queues["sensor"]).start()
-        return pool._check_thread_presence('sensor_broker_loop', 15)
-    except SensorBrokerError as exc:
-        logger.error(f"Problem while connecting to SENSOR BROKER: {exc}")
-        raise exc
+        sensor_lock = threading.RLock()
 
-def start_sensor_manager(pd_config_data: FiberConfig, queues: dict[str, QueueManager]) -> None:
-    bus_directory = "/sys/bus/w1/devices/w1_bus_master"
-    sensor_lock = threading.RLock()
+        self._sensor_broker = SensorBroker(client_handler, self.fiber_config, self._queues["sensor"])
+        self._sensor_broker.start()
 
-    if pd_config_data.sensor.enabled:
         for channel in range(8):
-            sensor_manager = Sensor(channel + 1, f"{bus_directory}{channel + 1}", False, sensor_lock, *[queues[n] for n in ["sensor", "server_response", "client_request", "message_for_server"]])
+            sensor_manager = Sensor(channel + 1, f"{PATH_W1_DEVICES}{channel + 1}", False, client_handler, self._queues["sensor"], sensor_lock)
             sensor_manager.start()
-    else:
-        logger.info(f"Sensor module is disabled.")
+            self._sensor_threads.append(sensor_manager)
+
+    def graceful_shutdown(self, signum, frame) -> None:
+        logger.success("Performing graceful shutdown")
+        if self._server_manager is not None:
+            self._server_manager.close()
+        if self._sensor_broker is not None:
+            self._sensor_broker.close()
+        for sensor_thread in self._sensor_threads:
+            sensor_thread.close()
+
+        self.core_stop_event.set()
+        logger.success("Successful exit")
+
 
 @logger.catch
 @click.command()
 @click.option('-c', '--config-path', help='Configuration file path', type=click.Path(exists=True), required=True)
 def run(config_path: str) -> None:
-    signal.signal(signal.SIGTERM, perfom_graceful_shutdown)
+    signal.signal(signal.SIGTERM, lambda signum, frame: system_manager.graceful_shutdown(signum, frame))
     if os.getuid() != 0:
         raise SystemError("You must run the process as root")
+
     try:
-        pd_config = ConfigManager(config_path)
-        pd_config_data = pd_config.config_data
-        queue_names = ["server_response", "client_request", "message_for_server", "sensor"]
-        queues = {name: QueueManager() for name in queue_names}
-
-        if start_hal_manager(pd_config_data.system, queues):
-            start_client, mqtt_instance = start_system_manager(pd_config, queues)
-
-            if start_client:
-                if start_sensor_broker(pd_config_data, mqtt_instance, queues):
-                    start_sensor_manager(pd_config_data, queues)
-
+        fiber_config = ConfigManager(config_path, FiberConfig).config_data
+        system_manager = SystemManager(fiber_config)
+        system_manager.start()
     except Exception as e:
-        traceback_str = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
-        logger.error(f"{e.__class__.__name__}: Critical system error - {traceback_str}")
-        perfom_graceful_shutdown(None, None)
-
+        logger.error(f"{e.__class__.__name__}: Critical system error - {traceback.format_exc()}")
+        system_manager.graceful_shutdown(None, None)
 
 if __name__ == '__main__':
     sys.exit(run())
-
