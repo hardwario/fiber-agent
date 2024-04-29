@@ -3,19 +3,14 @@ import threading
 from queue import Empty
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from fiber.common.thread_manager import pool
-from fiber.mqtt.mqtt_bridge import MQTTBridge
+from fiber.client.handler import ClientHandler
+from fiber.models.configurations import FiberConfig
 from fiber.broker.local_storage import LocalStorage
 from fiber.common.queue_manager import QueueManager
-
-
-class SensorOutput(BaseModel):
-    timestamp: int
-    channel: int
-    thermometer: str
-    temperature: float
+from fiber.mqtt.mqtt_handler import MQTTHandler
+from fiber.models.sensor import SensorOutput
 
 
 class SensorBrokerError(Exception):
@@ -35,18 +30,21 @@ class AfterReportInterval(Exception):
 
 
 class SensorBroker:
-    def __init__(
-        self, mqtt: MQTTBridge | None, pd_config, sensor_temperature_queue: QueueManager
-    ) -> None:
-        self._report_interval = None
-        self._sampling_interval = None
-        self._report_schedule = None
-        self._thread = None
-        self.pd_config = pd_config
-        self._mqtt = mqtt
+    def __init__(self, client_handler: ClientHandler, fiber_config: FiberConfig, sensor_temperature_queue: QueueManager) -> None:
+        self._sensor_thread = threading.Thread(target=self._loop)
+        self._stop_event = threading.Event()
+
+        self.fiber_config = fiber_config
+        
+        if fiber_config.mqtt.enabled:
+            self._mqtt = MQTTHandler(self._stop_event, client_handler, fiber_config)
+            self._mqtt.start()
+        else:
+            self._mqtt = None
+ 
         self._storage = (
-            LocalStorage(self.pd_config.storage.name)
-            if self.pd_config.storage.enabled
+            LocalStorage(self.fiber_config.storage.name)
+            if self.fiber_config.storage.enabled
             else None
         )
 
@@ -57,22 +55,25 @@ class SensorBroker:
 
     def load_intervals(self) -> None:
         with self._lock:
-            self._sampling_interval = self.pd_config.sensor.sampling_interval_seconds
-            self._report_interval = self.pd_config.sensor.report_interval_seconds
+            self._sampling_interval = self.fiber_config.sensor.sampling_interval_seconds
+            self._report_interval = self.fiber_config.sensor.report_interval_seconds
+
+    def close(self) -> None:
+        self._stop_event.set()
+
+        if self._sensor_thread is not None:
+            self._sensor_thread.join()
+            if self._sensor_thread.is_alive():
+                logger.error("Thread did not exit in time")
+            else:
+                logger.info(f"Thread {self._sensor_thread.name} exited")
 
     def start(self) -> None:
         self.load_intervals()
-        self._sensor_data.reset(self._sampling_interval, self._report_interval)
+        self._sensor_data.reset()
+        self._sensor_thread.start()
 
-        if self._thread is None:
-            self._stop_event = threading.Event()
-            self._thread = threading.Thread(target=self.sensor_broker_loop)
-            pool.manage_thread(True, self._thread, self._stop_event)
-            self._thread.start()
-        else:
-            raise AlreadyRunningThread
-
-    def sensor_broker_loop(self) -> None:
+    def _loop(self) -> None:
         logger.info("Broker Sensor: OK")
 
         while not self._stop_event.is_set():
@@ -84,7 +85,10 @@ class SensorBroker:
             except Timeout:
                 self._handle_timeout()
 
-    def _recv(self) -> dict:
+        if self._mqtt:
+            self._mqtt.close()
+
+    def _recv(self) -> SensorOutput | None:
         try:
             recv = self.sensor_temperature_queue.recv_qmsg(
                 self._stop_event, timeout=0.1, empty_error=True
@@ -92,18 +96,13 @@ class SensorBroker:
             if recv is not None:
                 validated_recv = SensorOutput(**recv)
 
-                return {
-                    "timestamp": validated_recv.timestamp,
-                    "channel": validated_recv.channel,
-                    "thermometer": validated_recv.thermometer,
-                    "temperature": validated_recv.temperature,
-                }
+                return validated_recv
         except Empty:
             raise Timeout
         except (KeyError, ValidationError) as exc:
             raise SensorBrokerError from exc
 
-    def _handle_received_data(self, recv: dict) -> None:
+    def _handle_received_data(self, recv: SensorOutput) -> None:
         try:
             self._sensor_data.recv(recv)
         except AfterReportInterval:
@@ -127,7 +126,7 @@ class SensorBroker:
 
 class Measurement:
     def __init__(self, timestamp: int) -> None:
-        self._values = []
+        self._values: list[int | float] = []
         self._timestamp = timestamp
 
     def add_sample(self, value: int | float) -> None:
@@ -178,10 +177,8 @@ class Measurement:
 
 class Report:
     def __init__(self, timestamp_start: int, sampling_interval: int) -> None:
-        self._samples = []
-
+        self._samples: list[Measurement] = []
         self._sampling_interval = sampling_interval
-
         self._sample_ts_start = timestamp_start
         self._sample_ts_end = self._sample_ts_start + sampling_interval
 
@@ -224,31 +221,23 @@ class Report:
 
 
 class SensorData:
-    def __init__(
-        self, start: int, sampling_interval: int, report_interval: int
-    ) -> None:
+    def __init__(self, start: int, sampling_interval: int, report_interval: int) -> None:
         self._sampling_interval = sampling_interval
         self._report_interval = report_interval
-
         self._ts_start = start
         self._ts_end = self._ts_start + report_interval
+        self._data: dict[int, dict[int, Report]] = {}
 
-        self._data = {}
+    def recv(self, measurement: SensorOutput) -> None:
+        if measurement.channel not in self._data:
+            self._data[measurement.channel] = {}
 
-    def recv(self, data: dict) -> None:
-        thermometer = data["thermometer"]
-        timestamp = data["timestamp"]
-        channel = data["channel"]
-
-        if channel not in self._data:
-            self._data[channel] = {}
-
-        if timestamp <= self._ts_end:
-            report = self._data[channel].get(thermometer)
+        if measurement.timestamp <= self._ts_end:
+            report = self._data[measurement.channel].get(measurement.thermometer)
             if report is None:
                 report = Report(self._ts_start, self._sampling_interval)
-                self._data[channel][thermometer] = report
-            report.add_measurement(timestamp, data["temperature"])
+                self._data[measurement.channel][measurement.thermometer] = report
+            report.add_measurement(measurement.timestamp, measurement.temperature)
         else:
             raise AfterReportInterval
 
@@ -257,10 +246,7 @@ class SensorData:
         ret = {}
 
         for channel, thermometers in self._data.items():
-            ret[channel] = {}
-
-            for therm, measurements in thermometers.items():
-                ret[channel][therm] = measurements.report
+            ret[channel] = {therm: therm_data.report for therm, therm_data in thermometers.items()}
 
         return ret
 
