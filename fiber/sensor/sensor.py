@@ -5,8 +5,9 @@ import threading
 import time
 from fiber.common.queue_manager import QueueManager
 from fiber.client.handler import ClientHandler
-from fiber.common.thread_manager import pool
 from loguru import logger
+
+from fiber.models.sensor import SensorOutput
 
 
 class SensorError(Exception):
@@ -14,32 +15,41 @@ class SensorError(Exception):
         super().__init__(message)
 
 class Sensor:
-    def __init__(self, channel: int, bus_directory: str, bulk_read: bool, sensor_lock, sensor_temperature_queue: QueueManager, server_response_queue: QueueManager, client_request_queue: QueueManager, message_for_server_queue: QueueManager) -> None:
+    def __init__(self, channel: int, bus_directory: str, bulk_read: bool, client_handler: ClientHandler, sensor_temperature_queue: QueueManager, sensor_lock: threading.RLock) -> None:
+        self.sensor_thread = threading.Thread(target=self._loop)
+        self._stop_event = threading.Event()
+
         self.channel = channel
         self.bus_directory = bus_directory
         self.bulk_read = bulk_read
         self.sensor_temperature_queue = sensor_temperature_queue
-        self.server_response_queue = server_response_queue
-        self.client_request_queue = client_request_queue
-        self.message_for_server_queue = message_for_server_queue
-        self.stop_event = threading.Event()
         self.sensor_lock = sensor_lock
-        self.known = {}
+        self.known: dict[str, float | None] = {}
         try:
             self.therm_bulk_read = os.path.join(bus_directory, "therm_bulk_read")
         except (OSError, TypeError) as e:
             raise SensorError(e)
-        self.client = ClientHandler(server_response_queue, client_request_queue, message_for_server_queue, self.stop_event)
+        self.client = client_handler
+
+    def close(self) -> None:
+        self._stop_event.set()
+
+        if self.sensor_thread is not None:
+            self.sensor_thread.join()
+            if self.sensor_thread.is_alive():
+                logger.error("Thread did not exit in time")
+            else:
+                logger.info(f"Thread {self.sensor_thread.name} exited")
+    
 
     def start(self) -> None:
-        sensor_thread = threading.Thread(target=self.sensor_main_loop)
-        pool.manage_thread(True, sensor_thread, self.stop_event)
-        sensor_thread.start()
+        logger.debug("Starting sensor thread...")
+        self.sensor_thread.start()
 
-    def sensor_main_loop(self) -> None:
+    def _loop(self) -> None:
         logger.info(f"Sensor {self.channel}: OK")
 
-        while not self.stop_event.is_set():
+        while not self._stop_event.is_set():
             try:
                 if self.bulk_read:
                     self.trigger_bulk_read()
@@ -71,32 +81,32 @@ class Sensor:
         try:
             with self.sensor_lock:
                 with open(temperature_path, "r") as f:
-                    temperature = round(int(f.readline().strip()) / 1000, 2)
+                    current_temperature = round(int(f.readline().strip()) / 1000, 2)
                 time.sleep(0.01)
 
-            self.known[thermometer] = temperature
+            self.known[thermometer] = current_temperature
 
-            data = {
-                "timestamp": int(time.time()),
-                "channel": self.channel,
-                "thermometer": thermometer,
-                "temperature": temperature,
-            }
-            if temperature is not None:
-                logger.info(f'CHANNEL {self.channel} to queue - Temperature: ' f"{temperature} C")
+            sensor_data = SensorOutput(
+                timestamp=int(time.time()),
+                channel=self.channel,
+                thermometer=thermometer,
+                temperature=current_temperature
+            )
+            if current_temperature is not None:
+                logger.info(f'CHANNEL {self.channel} to queue - Temperature: ' f"{current_temperature} C")
 
-            self.sensor_temperature_queue.send_qmsg(data)
+            self.sensor_temperature_queue.send_qmsg(sensor_data.dict())
         except (OSError, ValueError):
-            self.known.pop(thermometer) if self.known else ...
+            self.known.pop(thermometer, None)
             return False
         return True
 
     def update_indicator(self) -> None:
         if len(self.known) == 0:
-            self.client.set_probe_indicator(self.channel, None)
+            self.client.set_indicator_color(self.channel, None)
         else:
             temperature = next(iter(self.known.values()))
-            self.client.set_probe_indicator(self.channel, temperature)
+            self.client.set_indicator_color(self.channel, temperature)
 
     def trigger_bulk_read(self) -> None:
         try:
