@@ -90,7 +90,7 @@ class FiberSensorWidget(Widget):
             )
         
         draw.text(
-            (0, 36),
+            (0, 38),
             f"PoE/Bat:",
             font=FONT_SMALL,
             fill=255,
@@ -101,7 +101,7 @@ class FiberSensorWidget(Widget):
         else:
             power_text = "---/--- mV"
         draw.text(
-            (self.get_width() - draw.textlength(power_text), 36),
+            (self.get_width() - draw.textlength(power_text), 38),
             power_text,
             font=FONT_SMALL,
             align="right",
