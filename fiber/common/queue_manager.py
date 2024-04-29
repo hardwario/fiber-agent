@@ -22,7 +22,7 @@ class QueueManager:
                 continue
         return None
 
-    def send_qmsg(self, obj) -> None:
+    def send_qmsg(self, obj: dict) -> None:
         self._q.put(obj)
 
     def qsize(self) -> int:
