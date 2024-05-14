@@ -10,16 +10,16 @@ class DateTimeBanner(Widget):
 
     def __init__(self, width: int):
         super().__init__(width, 9)
-        self._time_text = ""
-        self._date_text = ""
+        self._time_text = ''
+        self._date_text = ''
 
     def update(self):
         now = datetime.now()
-        formatted_time = now.strftime("%H:%M:%S")
+        formatted_time = now.strftime('%H:%M:%S')
 
         if formatted_time != self._time_text:
             self._time_text = formatted_time
-            self._date_text = now.strftime("%d/%m/%Y")
+            self._date_text = now.strftime('%d/%m/%Y')
             self._changed = True
 
     def draw(self):
@@ -40,6 +40,6 @@ class DateTimeBanner(Widget):
             ),
             self._date_text,
             font=FONT_SMALL,
-            align="right",
+            align='right',
             fill=255,
         )

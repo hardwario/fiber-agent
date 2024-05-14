@@ -1,11 +1,12 @@
-import time
 import threading
+import time
 
-from loguru import logger
-import spidev
 import gpiod
+import spidev
+from loguru import logger
 
-from fiber.display.const import BRIGHTNESS_PWM_GPIO, BUZZER_GPIO, RESET_GPIO, PWM_HALF_PERIOD
+from fiber.display.const import (BRIGHTNESS_PWM_GPIO, BUZZER_GPIO,
+                                 PWM_HALF_PERIOD, RESET_GPIO)
 from fiber.display.src.display import Display
 
 
@@ -31,10 +32,10 @@ class ST7920Display(Display):
         self._bright_thread_stop = threading.Event()
         self._request_lock = threading.Lock()
 
-        self.chip = gpiod.Chip("/dev/gpiochip0")
+        self.chip = gpiod.Chip('/dev/gpiochip0')
         with self._request_lock:
             self.request = self.chip.request_lines(
-                consumer="ST7920Display",
+                consumer='ST7920Display',
                 config={
                     RESET_GPIO: gpiod.LineSettings(
                         direction=gpiod.line.Direction.OUTPUT,
@@ -55,7 +56,7 @@ class ST7920Display(Display):
         self.set_brightness(brightness)
         self.start_brightness_thread()
 
-    def close(self):
+    def quit(self):
         self._spi.close()
         self.request.release()
         self.chip.close()
@@ -67,9 +68,10 @@ class ST7920Display(Display):
                 if thread is not None:
                     thread.join()
                     if thread.is_alive():
-                        logger.error(f"Thread {thread.name} did not exit in time")
+                        logger.error(
+                            f'Thread {thread.name} did not exit in time')
                     else:
-                        logger.info(f"Thread {thread.name} exited")
+                        logger.info(f'Thread {thread.name} exited')
 
     def setup_spi(self):
         with self._request_lock:
@@ -107,7 +109,7 @@ class ST7920Display(Display):
     def send_row(self, row: int, data: bytes):
         # reverse bits in all bytes
         data = data[::-1]
-        data = [int(f"{byte:08b}"[::-1], 2) for byte in data]
+        data = [int(f'{byte:08b}'[::-1], 2) for byte in data]
 
         # set line address
         self.send([0x80 + row % 32, 0x80 + (8 if row >= 32 else 0)])
@@ -118,7 +120,7 @@ class ST7920Display(Display):
     def draw(self):
         b = self._fb.tobytes()
         rows = [
-            b[i * self.get_width() // 8 : (i + 1) * self.get_width() // 8]
+            b[i * self.get_width() // 8: (i + 1) * self.get_width() // 8]
             for i in range(self.get_height())
         ]
 
@@ -131,19 +133,21 @@ class ST7920Display(Display):
 
     def start_brightness_thread(self):
         self._bright_thread.start()
-    
+
     def _loop(self):
         while not self._bright_thread_stop.is_set():
             active_time = PWM_HALF_PERIOD * (self._brightness / 100)
             inactive_time = PWM_HALF_PERIOD - active_time
             if self._brightness > 0:
                 with self._request_lock:
-                    self.request.set_value(BRIGHTNESS_PWM_GPIO, gpiod.line.Value.ACTIVE)
+                    self.request.set_value(
+                        BRIGHTNESS_PWM_GPIO, gpiod.line.Value.ACTIVE)
             time.sleep(active_time/1000)
 
             if self._brightness < 100:
                 with self._request_lock:
-                    self.request.set_value(BRIGHTNESS_PWM_GPIO, gpiod.line.Value.INACTIVE)
+                    self.request.set_value(
+                        BRIGHTNESS_PWM_GPIO, gpiod.line.Value.INACTIVE)
             time.sleep(inactive_time/1000)
 
     def set_brightness(self, brightness: int):
@@ -162,5 +166,3 @@ class ST7920Display(Display):
         else:
             with self._request_lock:
                 self.request.set_value(BUZZER_GPIO, gpiod.line.Value.INACTIVE)
-
-    

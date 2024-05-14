@@ -1,16 +1,16 @@
-import time
 import threading
+import time
 from queue import Empty
 
 from loguru import logger
 from pydantic import ValidationError
 
-from fiber.client.handler import ClientHandler
-from fiber.models.configurations import FiberConfig
 from fiber.broker.local_storage import LocalStorage
+from fiber.client.handler import ClientHandler
 from fiber.common.queue_manager import QueueManager
-from fiber.mqtt.mqtt_handler import MQTTHandler
+from fiber.models.configurations import FiberConfig
 from fiber.models.sensor import SensorOutput
+from fiber.mqtt.mqtt_handler import MQTTHandler
 
 
 class SensorBrokerError(Exception):
@@ -30,43 +30,45 @@ class AfterReportInterval(Exception):
 
 
 class SensorBroker:
-    def __init__(self, client_handler: ClientHandler, fiber_config: FiberConfig, sensor_temperature_queue: QueueManager) -> None:
+    def __init__(self, client_handler: ClientHandler, fiber_config: FiberConfig, sensor_broker_queue: QueueManager) -> None:
         self._sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
 
         self.fiber_config = fiber_config
-        
+
         if fiber_config.mqtt.enabled:
             self._mqtt = MQTTHandler(self._stop_event, client_handler, fiber_config)
             self._mqtt.start()
         else:
+            logger.info('MQTT disabled. Continued without MQTT')
             self._mqtt = None
- 
+
         self._storage = (
             LocalStorage(self.fiber_config.storage.name)
             if self.fiber_config.storage.enabled
-            else None
+            else logger.info('Storage disabled. Continued without storage')
         )
 
-        self.sensor_temperature_queue = sensor_temperature_queue
+        self.sensor_broker_queue = sensor_broker_queue
         self._lock = threading.RLock()
         self.load_intervals()
-        self._sensor_data = SensorData(int(time.time()), self._sampling_interval, self._report_interval)
+        self._sensor_data = SensorData(
+            int(time.time()), self._sampling_interval, self._report_interval)
 
     def load_intervals(self) -> None:
         with self._lock:
             self._sampling_interval = self.fiber_config.sensor.sampling_interval_seconds
             self._report_interval = self.fiber_config.sensor.report_interval_seconds
 
-    def close(self) -> None:
+    def quit(self) -> None:
         self._stop_event.set()
 
         if self._sensor_thread is not None:
             self._sensor_thread.join()
             if self._sensor_thread.is_alive():
-                logger.error("Thread did not exit in time")
+                logger.error('Thread did not exit in time')
             else:
-                logger.info(f"Thread {self._sensor_thread.name} exited")
+                logger.info(f'Thread {self._sensor_thread.name} exited')
 
     def start(self) -> None:
         self.load_intervals()
@@ -74,7 +76,7 @@ class SensorBroker:
         self._sensor_thread.start()
 
     def _loop(self) -> None:
-        logger.info("Broker Sensor: OK")
+        logger.info('Broker Sensor: OK')
 
         while not self._stop_event.is_set():
             try:
@@ -86,11 +88,11 @@ class SensorBroker:
                 self._handle_timeout()
 
         if self._mqtt:
-            self._mqtt.close()
+            self._mqtt.quit()
 
     def _recv(self) -> SensorOutput | None:
         try:
-            recv = self.sensor_temperature_queue.recv_qmsg(
+            recv = self.sensor_broker_queue.recv_qmsg(
                 self._stop_event, timeout=0.1, empty_error=True
             )
             if recv is not None:
@@ -104,6 +106,7 @@ class SensorBroker:
 
     def _handle_received_data(self, recv: SensorOutput) -> None:
         try:
+
             self._sensor_data.recv(recv)
         except AfterReportInterval:
             self.send_report()
@@ -121,7 +124,8 @@ class SensorBroker:
                 if self._mqtt:
                     self._mqtt.send_measurements(self._sensor_data.report)
                 if self._storage:
-                    self._storage.add_report(int(time.time()), self._sensor_data.report)
+                    self._storage.add_report(
+                        int(time.time()), self._sensor_data.report)
 
 
 class Measurement:
@@ -156,7 +160,7 @@ class Measurement:
     def median(self) -> int | float | None:
         if not self._values:
             return None
-        
+
         n = len(self._values)
         self._values.sort()
         if n % 2 == 0:
@@ -207,14 +211,14 @@ class Report:
     def report(self) -> list[dict[str, int | float]]:
         return [
             {
-                "timestamp": sample.timestamp,
-                "value": {
-                    "average": sample.average,
-                    "median": sample.median,
-                    "minimum": sample.min,
-                    "maximum": sample.max,
+                'timestamp': sample.timestamp,
+                'value': {
+                    'average': sample.average,
+                    'median': sample.median,
+                    'minimum': sample.min,
+                    'maximum': sample.max,
                 },
-                "count": sample.samples,
+                'count': sample.samples,
             }
             for sample in self._samples
         ]
@@ -233,11 +237,13 @@ class SensorData:
             self._data[measurement.channel] = {}
 
         if measurement.timestamp <= self._ts_end:
-            report = self._data[measurement.channel].get(measurement.thermometer)
+            report = self._data[measurement.channel].get(
+                measurement.thermometer)
             if report is None:
                 report = Report(self._ts_start, self._sampling_interval)
                 self._data[measurement.channel][measurement.thermometer] = report
-            report.add_measurement(measurement.timestamp, measurement.temperature)
+            report.add_measurement(measurement.timestamp,
+                                   measurement.temperature)
         else:
             raise AfterReportInterval
 
@@ -246,7 +252,8 @@ class SensorData:
         ret = {}
 
         for channel, thermometers in self._data.items():
-            ret[channel] = {therm: therm_data.report for therm, therm_data in thermometers.items()}
+            ret[channel] = {therm: therm_data.report for therm,
+                            therm_data in thermometers.items()}
 
         return ret
 

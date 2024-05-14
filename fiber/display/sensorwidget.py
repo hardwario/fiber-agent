@@ -71,39 +71,39 @@ class FiberSensorWidget(Widget):
 
             draw.text(
                 (0, i * 9),
-                f"Temp {sensor.channel}:",
+                f'Temp {sensor.channel}:',
                 font=FONT_SMALL,
                 fill=255,
             )
 
             if sensor.value is not None:
-                sensor_text = f"{sensor.value:.2f} ºC"
+                sensor_text = f'{sensor.value:.2f} ºC'
             else:
-                sensor_text = "--- ºC"
+                sensor_text = '--- ºC'
 
             draw.text(
                 (self.get_width() - draw.textlength(sensor_text), i * 9),
                 sensor_text,
                 font=FONT_SMALL,
-                align="right",
+                align='right',
                 fill=255,
             )
         
         draw.text(
             (0, 38),
-            f"PoE/Bat:",
+            f'PoE/Bat:',
             font=FONT_SMALL,
             fill=255,
         )
 
         if self._eth_power is not None and self._bat_power is not None:
-            power_text = f"{self._eth_power:.2f}/{self._bat_power:.2f}mV"
+            power_text = f'{self._eth_power:.2f}/{self._bat_power:.2f}mV'
         else:
-            power_text = "---/--- mV"
+            power_text = '---/--- mV'
         draw.text(
             (self.get_width() - draw.textlength(power_text), 38),
             power_text,
             font=FONT_SMALL,
-            align="right",
+            align='right',
             fill=255,
         )

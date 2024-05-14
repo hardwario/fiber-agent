@@ -12,7 +12,7 @@ class QueueManager:
     def recv_qmsg(self, stop_event: threading.Event, block: bool=True, timeout: float | int | None = None, empty_error: bool=False) -> dict | None:
         while not stop_event.is_set():
             if self._q.qsize() >= self.maxsize:
-                logger.warning("Warning: the queue is almost full!")
+                logger.warning('Warning: the queue is almost full!')
             try:
                 receive = self._q.get(block=block, timeout=timeout)
                 return receive

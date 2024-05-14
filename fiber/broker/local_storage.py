@@ -17,21 +17,21 @@ class LocalStorage:
         self._lock = threading.RLock()
 
         self._connection.execute(
-            """
+            '''
             CREATE TABLE IF NOT EXISTS records(
                 record_id   INTEGER     PRIMARY KEY     AUTOINCREMENT,
                 timestamp   INTEGER                     NOT NULL,
                 record      JSON                        NOT NULL
             );
-        """
+        '''
         )
         self._connection.execute(
-            """
+            '''
             CREATE UNIQUE INDEX IF NOT EXISTS index_timestamp
                 ON records(timestamp);
-        """
+        '''
         )
-        logger.debug(f"Connected to {db_path} and created table if not exists")
+        logger.debug(f'Connected to {db_path} and created table if not exists')
 
     def __del__(self) -> None:
         self._connection.close()
@@ -43,17 +43,17 @@ class LocalStorage:
             self._delete_old_records(last_valid_ts)
             self._insert_new_records(timestamp, report)
 
-        logger.debug(f"Added report with timestamp {timestamp}")
+        logger.debug(f'Added report with timestamp {timestamp}')
 
     def _delete_old_records(self, last_valid_ts: int) -> None:
         with self._connection:
             cursor = self._connection.cursor()
             try:
-                cursor.execute("DELETE FROM records WHERE timestamp < ?;", (last_valid_ts,))
+                cursor.execute('DELETE FROM records WHERE timestamp < ?;', (last_valid_ts,))
                 self._connection.commit()
-                logger.debug(f"Removed old records older than {last_valid_ts}")
+                logger.debug(f'Removed old records older than {last_valid_ts}')
             except sqlite3.OperationalError as exc:
-                logger.error(f"OperationalError: {exc}. Failed to delete old records older than {last_valid_ts}")
+                logger.error(f'OperationalError: {exc}. Failed to delete old records older than {last_valid_ts}')
 
     def _insert_new_records(self, timestamp: int, report: dict) -> None:
         with self._connection:
@@ -64,8 +64,8 @@ class LocalStorage:
 
                 self._connection.commit()
                 logger.debug(
-                    f"Added {len(report)} sensor record(s) to database with timestamp {timestamp}"
+                    f'Added {len(report)} sensor record(s) to database with timestamp {timestamp}'
                 )
             except sqlite3.IntegrityError as exc:
-                logger.error(f"IntegrityError: {exc}. Could not insert record with timestamp {timestamp}")
+                logger.error(f'IntegrityError: {exc}. Could not insert record with timestamp {timestamp}')
 

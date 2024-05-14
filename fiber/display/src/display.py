@@ -9,7 +9,7 @@ from fiber.display.src.widget import Widget
 
 class CallbackNotCallable(Exception):
     def __init__(self):
-        super().__init__("Provided callback is not callable")
+        super().__init__('Provided callback is not callable')
 
 
 @dataclass
@@ -32,7 +32,7 @@ class Display:
     def __init__(self, width: int, height: int):
         self._stop_thread = Event()
         self._lock = Lock()
-        self._fb = Image.new("1", (width, height))
+        self._fb = Image.new('1', (width, height))
         self._widgets = defaultdict(dict)
         self._changed_page = True
 

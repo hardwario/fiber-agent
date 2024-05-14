@@ -8,7 +8,7 @@ class Widget:
     fb: Image.Image
 
     def __init__(self, width: int, height: int):
-        self.fb = Image.new("1", (width, height))
+        self.fb = Image.new('1', (width, height))
         self._changed = True
 
     def get_width(self) -> int:

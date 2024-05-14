@@ -1,5 +1,5 @@
-PATH_FIBER_FILE = "/var/fiber/"
-PATH_W1_DEVICES = "/sys/bus/w1/devices/w1_bus_master"
+PATH_FIBER_FILE = '/var/fiber/'
+PATH_W1_DEVICES = '/sys/bus/w1/devices/w1_bus_master'
 
 POWER_LED = 0
 PROBE_1 = 1
