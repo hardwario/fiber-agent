@@ -21,7 +21,7 @@ class LedController:
                 self.south_bridge.set_led(PROBE_INDEX[probe][1], color_red)
                 self.south_bridge.flush()
         else:
-            logger.error(f"Invalid probe value: {probe}")
+            logger.error(f'Invalid probe value: {probe}')
 
     def activate_leds(self) -> None:
         self.on(POWER_LED)
