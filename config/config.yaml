@@ -16,4 +16,3 @@ mqtt:
 storage:
   enabled: True
   name: records.db
-
