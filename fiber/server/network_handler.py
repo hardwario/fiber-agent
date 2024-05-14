@@ -6,24 +6,33 @@ from loguru import logger
 
 class NetworkInterfaceHandler:
     def __init__(self, interface: str) -> None:
-        self._serial_number = 1  
-        self._interface = interface
+        self._serial_number = 1
+        self.interface_addresses = netifaces.ifaddresses(interface)
 
     def _get_mac(self) -> None:
         try:
-            mac_address = self._wait_for_mac_network_interface()
+            mac_address = self._wait_for_network_interface_address(netifaces.AF_LINK)
+            return mac_address
         except (KeyError, IndexError) as e:
-            logger.error(f"No MAC address found, restart the system")
+            logger.error(f'No MAC address found, restart the system')
             raise
-        return mac_address
     
     def _get_ip(self) -> None: 
         try:
-            ip_address = self._wait_for_ip_network_interface()
+            ip_address = self._wait_for_network_interface_address(netifaces.AF_INET)
+            return ip_address
         except (KeyError, IndexError) as e:
-            logger.error(f"No IP address found, restart the system")
+            logger.error(f'No IP address found, restart the system')
             raise
-        return ip_address
+
+    def _wait_for_network_interface_address(self, address_family: int) -> str:
+        while True:
+            try:
+                address = self.interface_addresses[address_family][0]['addr']
+                return address
+            except (KeyError, IndexError):
+                logger.debug('Network interface not available yet. Retrying...')
+                time.sleep(1)
     
     def _get_uptime(self) -> None:
         with open('/proc/uptime', 'r') as f:
@@ -40,22 +49,4 @@ class NetworkInterfaceHandler:
 
         os.system('reboot')
 
-    def _wait_for_ip_network_interface(self) -> str:
-        while True:
-            try:
-                addrs = netifaces.ifaddresses(self._interface)
-                ip_address = addrs[netifaces.AF_INET][0]['addr']
-                return ip_address
-            except (KeyError, IndexError):
-                logger.debug("Network interface not available yet. Retrying...")
-                time.sleep(1)
-
-    def _wait_for_mac_network_interface(self) -> str:
-        while True:
-            try:
-                addrs = netifaces.ifaddresses(self._interface)
-                mac_address = addrs[netifaces.AF_LINK][0]['addr']
-                return mac_address
-            except (KeyError, IndexError):
-                logger.debug("Network interface not available yet. Retrying...")
-                time.sleep(1)
+    
