@@ -124,6 +124,10 @@ class ST7920Display(Display):
 
         for row, data in enumerate(rows):
             self.send_row(63 - row, data)
+        
+        self.send([0x34])  # enable RE mode
+        self.send([0x34])
+        self.send([0x36])  # enable graphics display
 
     def start_brightness_thread(self):
         self._bright_thread.start()
