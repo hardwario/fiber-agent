@@ -12,11 +12,9 @@ from pydantic import BaseModel
 
 from fiber.broker.sensor import SensorBroker
 from fiber.client.handler import ClientHandler
+from fiber.common.config_manager import load_config_from_file
 from fiber.common.consts import PATH_W1_DEVICES, POWER_LED
 from fiber.common.queue_manager import QueueManager
-from fiber.sensor.sensor import Sensor
-from fiber.broker.sensor import SensorBroker
-from fiber.common.config_manager import ConfigManager
 from fiber.models.configurations import FiberConfig
 from fiber.sensor.sensor import Sensor
 from fiber.server.manager import ServerManager
@@ -39,8 +37,10 @@ def set_network_properties(static_ip: bool, interface: str, address: str, netmas
 
 
 class SystemManager:
-    def __init__(self, fiber_config: FiberConfig) -> None:
-        self.fiber_config = fiber_config
+    def __init__(self, config_path: str) -> None:
+        self.config_path = config_path
+        self.fiber_config = load_config_from_file(config_path, FiberConfig)
+        self.interface = None
         self.core_stop_event = threading.Event()
         self._server_manager: ServerManager | None = None
         self._sensor_broker: SensorBroker | None = None
@@ -75,7 +75,12 @@ class SystemManager:
             self.core_stop_event, *[self._queues[name] for name in ['server_response', 'client_request']])
         client_handler.set_indicator_state(probe=POWER_LED, state=True)
 
-        self._sensor_broker = SensorBroker(client_handler, self.fiber_config, self._queues['sensor'])
+        if not self.fiber_config.sensor.enabled:
+            logger.info('Sensor disabled. Skipping sensor setup')
+            return
+        
+        self._sensor_broker = SensorBroker(self.config_path, self.fiber_config,
+            client_handler, self._queues['sensor'])
         self._sensor_broker.start()
 
         single_sensor_lock = threading.RLock()
@@ -107,8 +112,7 @@ def run(config_path: str) -> None:
         raise SystemError('You must run the process as root')
 
     try:
-        fiber_config = ConfigManager(config_path, FiberConfig).config_data
-        system_manager = SystemManager(fiber_config)
+        system_manager = SystemManager(config_path)
         system_manager.activate()
     except Exception as e:
         logger.error(

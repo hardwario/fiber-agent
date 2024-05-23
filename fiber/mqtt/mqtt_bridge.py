@@ -7,7 +7,6 @@ import schedule
 from loguru import logger
 
 from fiber.client.handler import ClientHandler
-from fiber.common.config_manager import ConfigManagerError
 from fiber.models.configurations import FiberConfig
 from fiber.models.system import BeaconBody
 
@@ -21,12 +20,13 @@ class CallbackError(Exception):
 
 
 class MQTTBridge:
-    def __init__(self, core_stop_event: threading.Event, client_handler: ClientHandler, fiber_config: FiberConfig) -> None:
+    def __init__(self, config_path: str, fiber_config: FiberConfig, core_stop_event: threading.Event, client_handler: ClientHandler) -> None:
         self._topic_callback: dict[str, callable] = {}
         self.client_handler = client_handler
         self._lock = threading.RLock()
         self._core_stop_event = core_stop_event
         self._fiber_id = self.client_handler.get_fiber_id()
+        self.config_path = config_path
         self._fiber_config = fiber_config
 
         self.mqtt_client = self._create_mqtt_client()
@@ -85,7 +85,7 @@ class MQTTBridge:
                 callback(msg.payload)
             else:
                 logger.debug(f'No callback found for topic: {msg.topic}')
-        except (CallbackError, json.JSONDecodeError, KeyError, ConfigManagerError):
+        except (CallbackError, json.JSONDecodeError, KeyError):
             self.send_error(msg.topic)
 
     def start(self) -> None:

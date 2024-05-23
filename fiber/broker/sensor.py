@@ -30,14 +30,14 @@ class AfterReportInterval(Exception):
 
 
 class SensorBroker:
-    def __init__(self, client_handler: ClientHandler, fiber_config: FiberConfig, sensor_broker_queue: QueueManager) -> None:
+    def __init__(self, config_path: str, fiber_config: FiberConfig, client_handler: ClientHandler, sensor_broker_queue: QueueManager) -> None:
         self._sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
 
         self.fiber_config = fiber_config
 
         if fiber_config.mqtt.enabled:
-            self._mqtt = MQTTHandler(self._stop_event, client_handler, fiber_config)
+            self._mqtt = MQTTHandler(config_path, fiber_config, self._stop_event, client_handler)
             self._mqtt.start()
         else:
             logger.info('MQTT disabled. Continued without MQTT')
@@ -106,7 +106,6 @@ class SensorBroker:
 
     def _handle_received_data(self, recv: SensorOutput) -> None:
         try:
-
             self._sensor_data.recv(recv)
         except AfterReportInterval:
             self.send_report()

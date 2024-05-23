@@ -3,9 +3,9 @@ import json
 
 from loguru import logger
 from pydantic import ValidationError
-from fiber.common.config_manager import ConfigManagerError
 from fiber.models.configurations import FiberConfig
 from fiber.mqtt.mqtt_bridge import MQTTBridge
+from fiber.common.config_manager import save_config
 
 
 class MQTTHandler(MQTTBridge):
@@ -22,7 +22,7 @@ class MQTTHandler(MQTTBridge):
         try:
             topic = '/system/ip'
             ip = self.client_handler.get_ip()
-            self.send_json(topic, ip)            
+            self.send_json(topic, ip)
             self.send_ok(topic)
         except SystemError:
             self.send_error(topic)
@@ -56,16 +56,22 @@ class MQTTHandler(MQTTBridge):
 
     def set_config(self, payload: dict) -> None:
         logger.info('Set configuration')
+        logger.info(f"Payload: {payload}")
         try:
             topic = '/config'
-            payload_json = json.loads(payload)
-            updated_config = FiberConfig(**payload_json)
+            logger.info("Go to validation")
+            payload_dict = json.loads(payload.decode('utf-8'))
+
+            updated_config = FiberConfig(**payload_dict)
+
             self._fiber_config = updated_config
+            logger.info(f'Go to saving')
+            save_config(self.config_path, FiberConfig, payload_dict)
+            logger.info("Go to sending ok")
             self.send_ok(topic)
-            
         except (ValidationError, TypeError) as e:
             logger.error(f'Payload validation error: {e}')
-        except (ConfigManagerError, json.JSONDecodeError):
+        except (json.JSONDecodeError):
             self.send_error(topic) 
 
     def system_reboot(self, payload: None) -> None:
