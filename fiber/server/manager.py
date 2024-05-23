@@ -30,13 +30,13 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
 
         self.response_queue = server_response_queue
         self.request_queue = client_request_queue
-        
+
         DisplayControlHandler.__init__(self)
         NetworkInterfaceHandler.__init__(self, interface)
 
         self.server_handlers: dict[str, callable] = {
             'set_indicator_state': self._set_indicator_state,
-            'set_indicator_color': self._set_indicator_color,
+            'update_sensor_display': self._update_sensor_display,
             'get_mac': self._get_mac,
             'get_ip': self._get_ip,
             'get_uptime': self._get_uptime,

@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from fiber.common.consts import VALID_PROBES
 from fiber.common.southbridge import SouthBridge
 from fiber.display.spidisplay import SPIDisplay
-from fiber.models.indicators import ColorIndicatorBody, StateIndicatorBody
+from fiber.models.indicators import SensorDisplayBody, StateIndicatorBody
 from fiber.server.led_controller import LedController
 
 
@@ -45,9 +45,9 @@ class DisplayControlHandler:
         else:
             raise ValueError(f'Invalid state: {led_state}')
 
-    def _set_indicator_color(self, body: dict[str, None | float | int]) -> None:
+    def _update_sensor_display(self, body: dict[str, None | float | int]) -> None:
         try:
-            verified_body = ColorIndicatorBody(**body)
+            verified_body = SensorDisplayBody(**body)
         except ValidationError:
             logger.error(f'Invalid body: {body}')
             return
