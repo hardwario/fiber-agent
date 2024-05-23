@@ -19,7 +19,7 @@ class SystemConfig(BaseModel):
     '''Enable or disable static IP configuration.'''
     address: str | None
     '''Address IP configuration.'''
-    netmask: str | None
+    netmask: int | None
     '''Netmask configuration.'''
     gateway: str | None
     '''Gateway configuration.'''
