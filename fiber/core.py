@@ -1,64 +1,98 @@
 import os
+import signal
+import subprocess
 import sys
 import threading
-import click
-import signal
 import traceback
+
+import click
 import netifaces
-from fiber.common.consts import POWER_LED, PATH_W1_DEVICES
 from loguru import logger
+from pydantic import BaseModel
+
+from fiber.broker.sensor import SensorBroker
 from fiber.client.handler import ClientHandler
-from fiber.server.manager import ServerManager
+from fiber.common.consts import PATH_W1_DEVICES, POWER_LED
 from fiber.common.queue_manager import QueueManager
 from fiber.sensor.sensor import Sensor
 from fiber.broker.sensor import SensorBroker
 from fiber.common.config_manager import ConfigManager
 from fiber.models.configurations import FiberConfig
+from fiber.sensor.sensor import Sensor
+from fiber.server.manager import ServerManager
+
+
+def get_connection_name(interface):
+    result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show', interface], stdout=subprocess.PIPE)
+    return result.stdout.decode().strip()
+
+def set_network_properties(static_ip: bool, interface: str, address: str, netmask: str, gateway: str, dns: str):
+    connection_name = get_connection_name(interface)
+
+    if static_ip:
+        subprocess.call(['nmcli', 'con', 'mod', connection_name, 'ipv4.addresses', f'{address}/{netmask}', 'ipv4.gateway', gateway, 'ipv4.dns', dns, 'ipv4.method', 'manual'])
+    else:
+        subprocess.call(['nmcli', 'con', 'mod', connection_name, 'ipv4.method', 'auto'])
+
+    subprocess.call(['nmcli', 'con', 'down', connection_name])
+    subprocess.call(['nmcli', 'con', 'up', connection_name])
 
 
 class SystemManager:
     def __init__(self, fiber_config: FiberConfig) -> None:
         self.fiber_config = fiber_config
         self.core_stop_event = threading.Event()
-        self._server_manager: ServerManager = None
-        self._sensor_broker: SensorBroker = None
-        self._sensor_threads: list[Sensor] = []
-        self._queues: dict[str, QueueManager] = {name: QueueManager(
-        ) for name in ['server_response', 'client_request', 'sensor']}
+        self._server_manager: ServerManager | None = None
+        self._sensor_broker: SensorBroker | None = None
+        self._sensor_threads: list[Sensor] = [] 
+        self._queues: dict[str, QueueManager] = {name: QueueManager() 
+                                                 for name in ['server_response', 'client_request', 'sensor']}                          
 
-    def _find_valid_interface(self, interfaces: str) -> str:
+    def _configure_network(self, interfaces: str) -> str:
         available_interfaces = netifaces.interfaces()
-        interface = next((inter for inter in interfaces.split(
-            ',') if inter in available_interfaces), None)
-        if not interface:
+        self.interface = next((inter for inter in interfaces if inter in available_interfaces), None)
+        if not self.interface:
             raise RuntimeError('No valid interface found.')
-        return interface
+        
+        set_network_properties(
+                self.fiber_config.system.static_ip,
+                self.interface,
+                self.fiber_config.system.address,
+                self.fiber_config.system.netmask,
+                self.fiber_config.system.gateway,
+                self.fiber_config.system.dns
+            )
 
-    def start(self) -> None:
-        interface = self._find_valid_interface(self.fiber_config.system.interface)
-        self._server_manager = ServerManager(interface, self.core_stop_event, *[self._queues[name] for name in ['server_response', 'client_request']])
+    def activate(self) -> None:
+        interfaces = self.fiber_config.system.interface.split(',')
+        self._configure_network(interfaces)        
+
+        self._server_manager = ServerManager(self.interface, self.core_stop_event, *[
+                                             self._queues[name] for name in ['server_response', 'client_request']])
         self._server_manager.start()
 
-        client_handler = ClientHandler(self.core_stop_event, *[self._queues[name] for name in ['server_response', 'client_request']])
+        client_handler = ClientHandler(
+            self.core_stop_event, *[self._queues[name] for name in ['server_response', 'client_request']])
         client_handler.set_indicator_state(probe=POWER_LED, state=True)
 
         self._sensor_broker = SensorBroker(client_handler, self.fiber_config, self._queues['sensor'])
         self._sensor_broker.start()
 
-        sindle_sensor_lock = threading.RLock() 
+        single_sensor_lock = threading.RLock()
         for channel in range(8):
-            sensor_manager = Sensor(channel + 1, f'{PATH_W1_DEVICES}{channel + 1}', False, client_handler, self._queues['sensor'], sindle_sensor_lock)
+            sensor_manager = Sensor(channel + 1, f'{PATH_W1_DEVICES}{channel + 1}',
+                                    False, client_handler, self._queues['sensor'], single_sensor_lock)
             sensor_manager.start()
             self._sensor_threads.append(sensor_manager)
 
     def graceful_shutdown(self, signum, frame) -> None:
         logger.success('Performing graceful shutdown')
         if self._server_manager is not None:
-            self._server_manager.close()
+            self._server_manager.quit()
         if self._sensor_broker is not None:
-            self._sensor_broker.close()
+            self._sensor_broker.quit()
         for sensor_thread in self._sensor_threads:
-            sensor_thread.close()
+            sensor_thread.quit()
 
         logger.success('Successful exit')
 
@@ -75,7 +109,7 @@ def run(config_path: str) -> None:
     try:
         fiber_config = ConfigManager(config_path, FiberConfig).config_data
         system_manager = SystemManager(fiber_config)
-        system_manager.start()
+        system_manager.activate()
     except Exception as e:
         logger.error(
             f'{e.__class__.__name__}: Critical system error - {traceback.format_exc()}')
