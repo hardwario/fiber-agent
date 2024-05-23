@@ -48,26 +48,20 @@ class MQTTHandler(MQTTBridge):
     def send_config(self, payload: None) -> None:
         try:        
             topic = '/config'
-            config = self._fiber_config.dict()
+            config = self._fiber_config.model_dump()
             self.send_json(topic, config)
             self.send_ok(topic)
         except SystemError:
             self.send_error(topic)
 
     def set_config(self, payload: dict) -> None:
-        logger.info('Set configuration')
-        logger.info(f"Payload: {payload}")
         try:
             topic = '/config'
-            logger.info("Go to validation")
             payload_dict = json.loads(payload.decode('utf-8'))
-
             updated_config = FiberConfig(**payload_dict)
-
             self._fiber_config = updated_config
-            logger.info(f'Go to saving')
+
             save_config(self.config_path, FiberConfig, payload_dict)
-            logger.info("Go to sending ok")
             self.send_ok(topic)
         except (ValidationError, TypeError) as e:
             logger.error(f'Payload validation error: {e}')

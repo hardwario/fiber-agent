@@ -100,7 +100,7 @@ class Sensor:
                 logger.info(
                     f'CHANNEL {self.channel} to queue - Temperature: ' f'{current_temperature} C')
 
-            self.sensor_broker_queue.send_qmsg(sensor_data.dict())
+            self.sensor_broker_queue.send_qmsg(sensor_data.model_dump())
         except (OSError, ValueError):
             self.known.pop(thermometer, None)
             return False

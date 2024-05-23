@@ -61,4 +61,4 @@ class ClientHandler(ClientManager):
 
     def reboot(self, delay: int = 0) -> None:
         reboot_body = RebootBody(delay=delay)
-        self.send_request(operation='reboot', payload=reboot_body.dict())
+        self.send_request(operation='reboot', payload=reboot_body.model_dump())

@@ -76,7 +76,7 @@ class MQTTBridge:
         logger.debug('MQTT: Subscribed communication topics')
 
     def _on_message(self, client, userdata, msg: mqtt.MQTTMessage) -> None:
-        logger.info(
+        logger.debug(
             f'Received message on topic {msg.topic} with payload {msg.payload}')
 
         try:
@@ -104,7 +104,7 @@ class MQTTBridge:
                 raise SystemError(e)
 
     def send_ok(self, topic: str) -> None:
-        logger.debug(f'Sending OK to {topic}/result')
+        logger.info(f'Sending OK to {topic}/result')
 
         if self.mqtt_client:
             with self._lock:
@@ -148,7 +148,7 @@ class MQTTBridge:
 
             beacon_data = BeaconBody(
                 uptime=uptime, ip_address=ip_address, mac_address=mac)
-            self.send_json('/beacon', beacon_data.dict())
+            self.send_json('/beacon', beacon_data.model_dump())
         except SystemError:
             logger.debug(
                 'Problem while receiving uptime, ip_address or mac_address')
