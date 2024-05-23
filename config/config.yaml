@@ -2,6 +2,11 @@ version: 1
 
 system:
   interface: end0,eth0
+  static_ip: False
+  address: 10.0.0.158
+  netmask: 24
+  gateway: 10.0.0.255
+  dns: 8.8.8.8
 
 sensor:
   enabled: True
@@ -16,3 +21,4 @@ mqtt:
 storage:
   enabled: True
   name: records.db
+
