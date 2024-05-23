@@ -1,5 +1,7 @@
 from pydantic import BaseModel, validator
+
 from fiber.common.consts import VALID_PROBES
+
 
 class StateIndicatorBody(BaseModel):
     '''
@@ -28,9 +30,9 @@ class StateIndicatorBody(BaseModel):
         return value
 
 
-class ColorIndicatorBody(BaseModel):
+class SensorDisplayBody(BaseModel):
     '''
-    Represents the color of an indicator for a specific probe.
+    Represents the body for modifying the sensor display
 
     Attributes:
         output (int): The probe number.
