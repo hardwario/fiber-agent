@@ -4,7 +4,7 @@ from loguru import logger
 import pydantic
 
 
-def load_config_from_file(config_path, config_model):
+def load_config_from_file(config_path: str, config_model):
         try:
             with open(config_path, 'r') as yaml_file:
                 parsed_yaml = yaml.safe_load(yaml_file)
@@ -36,6 +36,6 @@ def save_config(config_path: str, config_model, payload: dict) -> None:
 def restart_fiber_core_service() -> None:
     try:
         subprocess.run(["systemctl", "restart", "fiber-core.service"], check=True)
-        logger.info("fiber-core.service restarted successfully")
+        logger.info("Fiber service restarted successfully")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to restart fiber-core.service: {e}")
