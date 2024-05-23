@@ -71,7 +71,7 @@ class Sensor:
             except OSError as e:
                 raise SensorError(f'Thermometer scan failed: {e}')
 
-            self.update_indicator()
+            self.update_sensor()
             time.sleep(1)
 
     def process_thermometer(self, thermometer: str) -> tuple[float | None, bool]:
@@ -106,12 +106,12 @@ class Sensor:
             return False
         return True
 
-    def update_indicator(self) -> None:
+    def update_sensor(self) -> None:
         if len(self.known) == 0:
-            self.client.set_indicator_color(self.channel, None)
+            self.client.update_sensor_display(self.channel, None)
         else:
             temperature = next(iter(self.known.values()))
-            self.client.set_indicator_color(self.channel, temperature)
+            self.client.update_sensor_display(self.channel, temperature)
 
     def trigger_bulk_read(self) -> None:
         try:
