@@ -1,8 +1,8 @@
 from loguru import logger
-from fiber.client.manager import ClientManager
-from fiber.models.indicators import ColorIndicatorBody, StateIndicatorBody
-from fiber.models.system import FiberIdBody, RebootBody
 
+from fiber.client.manager import ClientManager
+from fiber.models.indicators import SensorDisplayBody, StateIndicatorBody
+from fiber.models.system import FiberIdBody, RebootBody
 
 
 class ClientHandler(ClientManager):
@@ -35,9 +35,10 @@ class ClientHandler(ClientManager):
         '''
         logger.debug(f'Probe: {probe}, State: {state}')
         state_body = StateIndicatorBody(output=probe, state=state)
-        self.send_request(operation='set_indicator_state', payload=dict(state_body))
+        self.send_request(operation='set_indicator_state',
+                          payload=dict(state_body))
 
-    def set_indicator_color(self, probe: int, temperature: int | float | None) -> None:
+    def update_sensor_display(self, probe: int, temperature: int | float | None) -> None:
         '''
         Sets the color of the indicator based on the temperature value.
         If temperature is None, the indicator color is set to red.
@@ -50,14 +51,14 @@ class ClientHandler(ClientManager):
             None
         '''
         logger.debug(f'Probe: {probe}, Temperature: {temperature}')
-        color_body = ColorIndicatorBody(output=probe, temperature=temperature)
-        self.send_request(operation='set_indicator_color', payload=dict(color_body))
+        color_body = SensorDisplayBody(output=probe, temperature=temperature)
+        self.send_request(operation='update_sensor_display',
+                          payload=dict(color_body))
 
     def set_fiber_id(self, fiber_id: int) -> None:
         id_body = FiberIdBody(id=fiber_id)
         self.send_request(operation='set_id', payload=dict(id_body))
-    
+
     def reboot(self, delay: int = 0) -> None:
         reboot_body = RebootBody(delay=delay)
         self.send_request(operation='reboot', payload=reboot_body.dict())
-
