@@ -34,7 +34,7 @@ class ButtonController:
             consumer='button_controller', config=config)
 
     def quit(self) -> None:
-        logger.info("Before stop")
+        logger.info('Before stop')
         self._stop_event.set()
 
         if self._button_thread.is_alive():
@@ -90,4 +90,4 @@ class ButtonController:
                 self.request.release()
                 self.chip.close()
             except Exception as e:
-                logger.error(f"Error with releasing lines: {e}")
+                logger.error(f'Error with releasing lines: {e}')

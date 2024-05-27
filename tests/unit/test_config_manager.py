@@ -14,7 +14,7 @@ class TestConfigFunctions(unittest.TestCase):
     @patch('subprocess.run')
     def test_restart_fiber_core_service(self, mock_subprocess_run):
         restart_fiber_core_service()
-        mock_subprocess_run.assert_called_once_with(["systemctl", "restart", "fiber-core.service"], check=True)
+        mock_subprocess_run.assert_called_once_with(['systemctl', 'restart', 'fiber-core.service'], check=True)
 
 if __name__ == '__main__':
     unittest.main()

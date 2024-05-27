@@ -103,7 +103,7 @@ class TestInterfaceManager(unittest.TestCase):
         self.assertIsNone(response)
 
     def test_recv_error(self):
-        self.system_response_queue.recv_qmsg.side_effect = json.JSONDecodeError("msg", "doc", 0)
+        self.system_response_queue.recv_qmsg.side_effect = json.JSONDecodeError('msg', 'doc', 0)
         with self.assertRaises(SystemError):
             self.manager._recv()
     

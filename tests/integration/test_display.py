@@ -10,9 +10,9 @@ from fiber.display.const import RESET_GPIO
 
 class ST7920:
     def __init__(self):
-        self.chip = gpiod.Chip("/dev/gpiochip0")
+        self.chip = gpiod.Chip('/dev/gpiochip0')
         self.request = self.chip.request_lines(
-            consumer="ST7920Display",
+            consumer='ST7920Display',
             config={
                 RESET_GPIO: gpiod.LineSettings(
                     direction=gpiod.line.Direction.OUTPUT,
@@ -154,5 +154,5 @@ def main():
     s.redraw()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

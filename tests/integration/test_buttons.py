@@ -51,12 +51,12 @@ class ButtonControllerTest:
 
                         if event == 23 and self.current_brightness < self.max_brightness:
                             self.current_brightness += 20
-                            logger.info(f"Button 1 pressed, brightness set to {self.current_brightness}")
+                            logger.info(f'Button 1 pressed, brightness set to {self.current_brightness}')
                         elif event == 24:
-                            logger.info("Button 2 pressed, Stop for 30 seconds")
+                            logger.info('Button 2 pressed, Stop for 30 seconds')
                         elif event == 25 and self.current_brightness > 0:
                             self.current_brightness -= 20
-                            logger.info(f"Button 3 pressed, brightness set to {self.current_brightness}")
+                            logger.info(f'Button 3 pressed, brightness set to {self.current_brightness}')
         except KeyboardInterrupt:
             pass
         finally:
