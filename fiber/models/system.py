@@ -13,13 +13,13 @@ class BeaconBody(BaseModel):
 
     '''
 
-    uptime: int | float
+    uptime: int | float | None
     '''The uptime of the system.'''
 
-    ip_address: str
+    ip_address: str | None
     '''The IP address of the system.'''
 
-    mac_address: str
+    mac_address: str | None
     '''The MAC address of the system.'''
 
     @validator('mac_address')
@@ -30,6 +30,8 @@ class BeaconBody(BaseModel):
         Raises:
             ValueError: If the value is not a valid MAC address.
         '''
+        if value is None:
+            return value
         if not re.match(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$', value):
             raise ValueError('Invalid MAC address format')
         return value
@@ -42,6 +44,8 @@ class BeaconBody(BaseModel):
         Raises:
             ValueError: If the value is not a valid uptime.
         '''
+        if value is None:
+            return value
         if not isinstance(value, (int, float)):
             raise ValueError('Uptime must be a non-negative integer or float')
         return value
