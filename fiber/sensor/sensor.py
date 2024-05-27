@@ -6,6 +6,7 @@ import time
 
 from loguru import logger
 
+from fiber.common.consts import PATH_W1_DEVICES
 from fiber.client.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
 from fiber.models.sensor import SensorOutput
@@ -17,19 +18,19 @@ class SensorError(Exception):
 
 
 class Sensor:
-    def __init__(self, channel: int, bus_directory: str, bulk_read: bool, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager, sensor_lock: threading.RLock) -> None:
+    def __init__(self, channel: int, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager, sensor_lock: threading.RLock, core_stop_event: threading.Event) -> None:
         self.sensor_thread = threading.Thread(target=self._loop)
-        self._stop_event = threading.Event()
+        self._stop_event = core_stop_event
 
         self.channel = channel
-        self.bus_directory = bus_directory
-        self.bulk_read = bulk_read
+        
+        self.bus_directory = f'{PATH_W1_DEVICES}{self.channel}'
         self.sensor_broker_queue = sensor_broker_queue
         self.sensor_lock = sensor_lock
         self.known: dict[str, float | None] = {}
         try:
             self.therm_bulk_read = os.path.join(
-                bus_directory, 'therm_bulk_read')
+                self.bus_directory, 'therm_bulk_read')
         except (OSError, TypeError) as e:
             raise SensorError(e)
         self.interface = interface_handler
@@ -53,8 +54,7 @@ class Sensor:
 
         while not self._stop_event.is_set():
             try:
-                if self.bulk_read:
-                    self.trigger_bulk_read()
+                self.trigger_bulk_read()
 
                 try:
                     logger.debug(
