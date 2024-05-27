@@ -1,5 +1,8 @@
 PATH_FIBER_FILE = '/var/fiber/'
+PATH_CHIP = '/dev/gpiochip0'
 PATH_W1_DEVICES = '/sys/bus/w1/devices/w1_bus_master'
+
+GPIO_LINES = [23, 24, 25]
 
 POWER_LED = 0
 PROBE_1 = 1
