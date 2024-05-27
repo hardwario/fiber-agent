@@ -57,21 +57,29 @@ class ST7920Display(Display):
         self.start_brightness_thread()
 
     def quit(self):
-        self._spi.close()
-        self.request.release()
-        self.chip.close()
-
         with self._request_lock:
             self._bright_thread_stop.set()
             self._buzzer_thread_stop.set()
-            for thread in [self._bright_thread, self._buzzer_thread]:
-                if thread is not None:
-                    thread.join()
-                    if thread.is_alive():
-                        logger.error(
-                            f'Thread {thread.name} did not exit in time')
-                    else:
-                        logger.info(f'Thread {thread.name} exited')
+
+        if self._bright_thread is not None:
+            self._bright_thread.join()
+            if self._bright_thread.is_alive():
+                logger.error(f'Thread {self._bright_thread.name} did not exit in time')
+            else:
+                logger.info(f'Thread {self._bright_thread.name} exited')
+
+        if self._buzzer_thread is not None:
+            self._buzzer_thread.join()
+            if self._buzzer_thread.is_alive():
+                logger.error(f'Thread {self._buzzer_thread.name} did not exit in time')
+            else:
+                logger.info(f'Thread {self._buzzer_thread.name} exited')
+
+        self._spi.close()
+
+        with self._request_lock:
+            self.request.release()
+            self.chip.close()
 
     def setup_spi(self):
         with self._request_lock:
