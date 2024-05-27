@@ -1,11 +1,12 @@
-import paho.mqtt.client as mqtt
 import json
 
+import paho.mqtt.client as mqtt
 from loguru import logger
 from pydantic import ValidationError
+
+from fiber.common.config_manager import save_config
 from fiber.models.configurations import FiberConfig
 from fiber.mqtt.mqtt_bridge import MQTTBridge
-from fiber.common.config_manager import save_config
 
 
 class MQTTHandler(MQTTBridge):
@@ -21,7 +22,7 @@ class MQTTHandler(MQTTBridge):
     def send_ip(self, payload: None) -> None:
         try:
             topic = '/system/ip'
-            ip = self.client_handler.get_ip()
+            ip = self.interface_handler.get_ip()
             self.send_json(topic, ip)
             self.send_ok(topic)
         except SystemError:
@@ -30,7 +31,7 @@ class MQTTHandler(MQTTBridge):
     def send_mac(self, payload: None) -> None:
         try:
             my_topic = '/system/mac'
-            mac = self.client_handler.get_mac()
+            mac = self.interface_handler.get_mac()
             self.send_json(my_topic, mac)
             self.send_ok(my_topic)
         except SystemError:
@@ -39,7 +40,7 @@ class MQTTHandler(MQTTBridge):
     def send_uptime(self, payload: None) -> None:
         try:
             topic = '/system/uptime'
-            uptime = self.client_handler.get_uptime()
+            uptime = self.interface_handler.get_uptime()
             self.send_json(topic, uptime)
             self.send_ok(topic)
         except SystemError:
@@ -70,7 +71,7 @@ class MQTTHandler(MQTTBridge):
 
     def system_reboot(self, payload: None) -> None:
         logger.debug('Reboot request')
-        self.client_handler.reboot()
+        self.interface_handler.reboot()
 
     def send_measurements(self, data: dict) -> None:
         topic = '/measurement'

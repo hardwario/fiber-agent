@@ -1,11 +1,12 @@
 from loguru import logger
 
-from fiber.client.manager import ClientManager
-from fiber.models.indicators import SensorDisplayBody, StateIndicatorBody
+from fiber.client.manager import InterfaceManager
+from fiber.models.indicators import StateIndicatorBody
+from fiber.models.display_sensor import SensorDisplayBody
 from fiber.models.system import FiberIdBody, RebootBody
 
 
-class ClientHandler(ClientManager):
+class InterfaceHandler(InterfaceManager):
     def get_mac(self) -> str:
         mac = self.get_response(operation='get_mac')
         return mac

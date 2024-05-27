@@ -6,7 +6,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from fiber.broker.local_storage import LocalStorage
-from fiber.client.handler import ClientHandler
+from fiber.client.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
 from fiber.models.configurations import FiberConfig
 from fiber.models.sensor import SensorOutput
@@ -30,14 +30,15 @@ class AfterReportInterval(Exception):
 
 
 class SensorBroker:
-    def __init__(self, config_path: str, fiber_config: FiberConfig, client_handler: ClientHandler, sensor_broker_queue: QueueManager) -> None:
+    def __init__(self, config_path: str, fiber_config: FiberConfig, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager) -> None:
         self._sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
 
         self.fiber_config = fiber_config
 
         if fiber_config.mqtt.enabled:
-            self._mqtt = MQTTHandler(config_path, fiber_config, self._stop_event, client_handler)
+            self._mqtt = MQTTHandler(
+                config_path, fiber_config, self._stop_event, interface_handler)
             self._mqtt.start()
         else:
             logger.info('MQTT disabled. Continued without MQTT')

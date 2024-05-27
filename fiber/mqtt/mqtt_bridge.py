@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 import schedule
 from loguru import logger
 
-from fiber.client.handler import ClientHandler
+from fiber.client.handler import InterfaceHandler
 from fiber.models.configurations import FiberConfig
 from fiber.models.system import BeaconBody
 
@@ -20,12 +20,15 @@ class CallbackError(Exception):
 
 
 class MQTTBridge:
-    def __init__(self, config_path: str, fiber_config: FiberConfig, core_stop_event: threading.Event, client_handler: ClientHandler) -> None:
-        self._topic_callback: dict[str, callable] = {}
-        self.client_handler = client_handler
-        self._lock = threading.RLock()
+    def __init__(self, config_path: str, fiber_config: FiberConfig, core_stop_event: threading.Event, interface_handler: InterfaceHandler) -> None:
+        self._mqtt_thread = threading.Thread(target=self._loop)
         self._core_stop_event = core_stop_event
-        self._fiber_id = self.client_handler.get_fiber_id()
+
+
+        self._topic_callback: dict[str, callable] = {}
+        self.interface_handler = interface_handler
+        self._lock = threading.RLock()
+        self._fiber_id = self.interface_handler.get_fiber_id()
         self.config_path = config_path
         self._fiber_config = fiber_config
 
@@ -36,12 +39,12 @@ class MQTTBridge:
 
         self._core_stop_event.set()
 
-        if self.mqtt_thread is not None:
-            self.mqtt_thread.join()
-            if self.mqtt_thread.is_alive():
+        if self._mqtt_thread is not None:
+            self._mqtt_thread.join()
+            if self._mqtt_thread.is_alive():
                 logger.error('Thread did not exit in time')
             else:
-                logger.info(f'Thread {self.mqtt_thread.name} exited')
+                logger.info(f'Thread {self._mqtt_thread.name} exited')
 
     def _create_mqtt_client(self) -> mqtt.Client | None:
         if self._fiber_config.mqtt.host is None or self._fiber_config.mqtt.port is None:
@@ -89,8 +92,8 @@ class MQTTBridge:
             self.send_error(msg.topic)
 
     def start(self) -> None:
-        self.mqtt_thread = threading.Thread(target=self._loop)
-        self.mqtt_thread.start()
+        logger.debug('Starting mqtt broker thread...')
+        self._mqtt_thread.start()
 
     def _loop(self) -> None:
         schedule.every(1).minute.do(self._send_beacon_data).run()
@@ -142,9 +145,10 @@ class MQTTBridge:
 
     def _send_beacon_data(self) -> None:
         try:
-            uptime = self.client_handler.get_uptime()
-            ip_address = self.client_handler.get_ip()
-            mac = self.client_handler.get_mac()
+            uptime = self.interface_handler.get_uptime()
+            ip_address = self.interface_handler.get_ip()
+            mac = self.interface_handler.get_mac()
+            logger.info(f'Uptime: {uptime}, IP: {ip_address}, MAC: {mac}')
 
             beacon_data = BeaconBody(
                 uptime=uptime, ip_address=ip_address, mac_address=mac)

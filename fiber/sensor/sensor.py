@@ -6,7 +6,7 @@ import time
 
 from loguru import logger
 
-from fiber.client.handler import ClientHandler
+from fiber.client.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
 from fiber.models.sensor import SensorOutput
 
@@ -17,7 +17,7 @@ class SensorError(Exception):
 
 
 class Sensor:
-    def __init__(self, channel: int, bus_directory: str, bulk_read: bool, client_handler: ClientHandler, sensor_broker_queue: QueueManager, sensor_lock: threading.RLock) -> None:
+    def __init__(self, channel: int, bus_directory: str, bulk_read: bool, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager, sensor_lock: threading.RLock) -> None:
         self.sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
 
@@ -32,7 +32,7 @@ class Sensor:
                 bus_directory, 'therm_bulk_read')
         except (OSError, TypeError) as e:
             raise SensorError(e)
-        self.client = client_handler
+        self.interface = interface_handler
 
     def quit(self) -> None:
         self._stop_event.set()
@@ -108,10 +108,10 @@ class Sensor:
 
     def update_sensor(self) -> None:
         if len(self.known) == 0:
-            self.client.update_sensor_display(self.channel, None)
+            self.interface.update_sensor_display(self.channel, None)
         else:
             temperature = next(iter(self.known.values()))
-            self.client.update_sensor_display(self.channel, temperature)
+            self.interface.update_sensor_display(self.channel, temperature)
 
     def trigger_bulk_read(self) -> None:
         try:
