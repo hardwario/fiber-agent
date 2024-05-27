@@ -23,11 +23,10 @@ class MQTTBridge:
     def __init__(self, config_path: str, fiber_config: FiberConfig, core_stop_event: threading.Event, interface_handler: InterfaceHandler) -> None:
         self._mqtt_thread = threading.Thread(target=self._loop)
         self._core_stop_event = core_stop_event
-
+        self._lock = threading.RLock()
 
         self._topic_callback: dict[str, callable] = {}
         self.interface_handler = interface_handler
-        self._lock = threading.RLock()
         self._fiber_id = self.interface_handler.get_fiber_id()
         self.config_path = config_path
         self._fiber_config = fiber_config
@@ -148,7 +147,6 @@ class MQTTBridge:
             uptime = self.interface_handler.get_uptime()
             ip_address = self.interface_handler.get_ip()
             mac = self.interface_handler.get_mac()
-            logger.info(f'Uptime: {uptime}, IP: {ip_address}, MAC: {mac}')
 
             beacon_data = BeaconBody(
                 uptime=uptime, ip_address=ip_address, mac_address=mac)
