@@ -11,11 +11,7 @@ from fiber.server.display_handler import DisplayControlHandler
 from fiber.server.network_handler import NetworkInterfaceHandler
 
 
-class ServerStopEventError(Exception):
-    pass
-
-
-class ServerError(Exception):
+class SystemStopEventError(Exception):
     pass
 
 
@@ -23,18 +19,18 @@ class NotFoundError(Exception):
     pass
 
 
-class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
-    def __init__(self, interface: str, core_stop_event: threading.Event, server_response_queue: QueueManager, client_request_queue: QueueManager) -> None:
-        self._server_thread = threading.Thread(target=self._loop)
+class SystemManager(DisplayControlHandler, NetworkInterfaceHandler):
+    def __init__(self, interface: str, core_stop_event: threading.Event, system_response_queue: QueueManager, interface_request_queue: QueueManager) -> None:
+        self._system_thread = threading.Thread(target=self._loop)
         self._core_stop_event = core_stop_event
 
-        self.response_queue = server_response_queue
-        self.request_queue = client_request_queue
+        self.response_queue = system_response_queue
+        self.request_queue = interface_request_queue
 
         DisplayControlHandler.__init__(self)
         NetworkInterfaceHandler.__init__(self, interface)
 
-        self.server_handlers: dict[str, callable] = {
+        self.system_handlers: dict[str, callable] = {
             'set_indicator_state': self._set_indicator_state,
             'update_sensor_display': self._update_sensor_display,
             'get_mac': self._get_mac,
@@ -47,25 +43,25 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
     def quit(self) -> None:
         self.south_bridge.reset_leds()
         self._core_stop_event.set()
-        if self._server_thread is not None:
-            self._server_thread.join()
-            if self._server_thread.is_alive():
+        if self._system_thread is not None:
+            self._system_thread.join()
+            if self._system_thread.is_alive():
                 logger.error(
-                    f'Thread {self._server_thread.name} did not exit in time')
+                    f'Thread {self._system_thread.name} did not exit in time')
             else:
-                logger.info(f'Thread {self._server_thread.name} exited')
+                logger.info(f'Thread {self._system_thread.name} exited')
 
     def start(self) -> None:
-        logger.debug('Starting server manager thread...')
-        self._server_thread.start()
+        logger.debug('Starting system manager thread...')
+        self._system_thread.start()
 
     def _loop(self) -> None:
-        logger.info('Server: OK')
+        logger.info('System: OK')
         while not self._core_stop_event.is_set():
             try:
                 uuid, request, body = self.recv()
                 self.run_handler(uuid, request, body)
-            except ServerStopEventError as e:
+            except SystemStopEventError as e:
                 break
             except (KeyError, TypeError, ValueError) as error:
                 self.send_err(None, None, str(error))
@@ -76,6 +72,7 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
                     f'Request: Command not found for UUID: {uuid}, Request: {request}')
 
         self._spi_display.quit()
+        self._button_controller.quit()
 
     def recv(self) -> tuple[str, str, dict | None]:
         while not self._core_stop_event.is_set():
@@ -83,7 +80,7 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
                 msg = self.request_queue.recv_qmsg(
                     self._core_stop_event, timeout=0.1, empty_error=True)
                 if not msg:
-                    raise ServerStopEventError
+                    raise SystemStopEventError
 
                 try:
                     received_msg = Request(**msg)
@@ -95,10 +92,10 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
                 return received_msg.uuid, received_msg.request, received_msg.body
             except Empty:
                 pass
-        raise ServerStopEventError
+        raise SystemStopEventError
 
     def run_handler(self, uuid: str, request: str, body: dict[str, str | int] | None) -> None:
-        current_handler = self.server_handlers.get(request)
+        current_handler = self.system_handlers.get(request)
         if not current_handler:
             self.send_err(uuid, request, 'Command not found')
             return
@@ -114,13 +111,13 @@ class ServerManager(DisplayControlHandler, NetworkInterfaceHandler):
 
     def send_err(self, uuid: str | None, request: str | None, body_error: str) -> None:
         logger.error(
-            f'Server: Sending error: ("uuid": {uuid}, "response": {request}, "error": True, "body": {body_error})')
+            f'System: Sending error: ("uuid": {uuid}, "response": {request}, "error": True, "body": {body_error})')
         response = Response(uuid=uuid, response=request,
                             error=True, body=body_error)
         self.response_queue.send_qmsg(dict(response))
 
     def send_msg(self, uuid: str, request: str,  msg: int | str | float, error: bool) -> None:
-        logger.debug(f'Server: Sending message: {request}')
+        logger.debug(f'System: Sending message: {request}')
         response = Response(uuid=uuid, response=request, error=error, body=msg)
         self.response_queue.send_qmsg(dict(response))
 

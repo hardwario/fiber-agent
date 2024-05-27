@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 class Response(BaseModel):
     '''
-    A model representing the server's response to a client's request.
+    A model representing the system's response to a client's request.
 
     Attributes:
         uuid (str | None): The UUID correlating to the original request, or None if not applicable.
