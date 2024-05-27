@@ -34,3 +34,5 @@ __pypackages__/
 
 .DS_Store
 Dockerfile
+.vscode/settings.json
+.gitignore
