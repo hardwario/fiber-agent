@@ -22,10 +22,11 @@ class FiberSensorWidget(Widget):
     _eth_power: float
     _bat_power: float
 
-    def __init__(self, width: int, page_swap_time: int = 5):
+    def __init__(self, width: int, page_swap_time: int = 2): # 5 
         super().__init__(width, 10 * 5)  # 9 pixels per sensor, 4 sensors + 1 for voltage
         self._sensor_page = 0
         self._sensors = []
+        self._page_swap_time = page_swap_time
         self._timer = datetime.now() + timedelta(seconds=page_swap_time)
         self._eth_power = None
         self._bat_power = None
@@ -50,13 +51,16 @@ class FiberSensorWidget(Widget):
     def update(self):
         # every 5 seconds, swap to the next sensors
         if datetime.now() > self._timer:
-            self._timer = datetime.now() + timedelta(seconds=5)
+            self._timer = datetime.now() + timedelta(seconds=self._page_swap_time)
             self._changed = True
 
             if (self._sensor_page + 1) * 4 >= len(self._sensors):
                 self._sensor_page = 0
             else:
                 self._sensor_page += 1
+
+    def freeze_page(self):
+        self._timer = datetime.now() + timedelta(seconds=10) # 30
 
     def draw(self):
         draw = ImageDraw.Draw(self.fb)
