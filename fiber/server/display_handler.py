@@ -3,10 +3,12 @@ from enum import Enum
 from loguru import logger
 from pydantic import ValidationError
 
+from fiber.buttons.button import ButtonController
 from fiber.common.consts import VALID_PROBES
 from fiber.common.southbridge import SouthBridge
 from fiber.display.spidisplay import SPIDisplay
-from fiber.models.indicators import SensorDisplayBody, StateIndicatorBody
+from fiber.models.indicators import StateIndicatorBody
+from fiber.models.display_sensor import SensorDisplayBody
 from fiber.server.led_controller import LedController
 
 
@@ -26,7 +28,9 @@ class DisplayControlHandler:
         self.south_bridge = SouthBridge()
         self._led_controller = LedController(self.south_bridge)
         self._spi_display = SPIDisplay()
+        self._button_controller = ButtonController(self._spi_display)
         self._spi_display.start()
+        self._button_controller.start()
 
     def _set_indicator_state(self, body: dict[str, int | bool]) -> None:
         try:
