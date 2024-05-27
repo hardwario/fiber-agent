@@ -3,6 +3,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 
 import click
@@ -12,22 +13,37 @@ from loguru import logger
 from fiber.broker.sensor import SensorBroker
 from fiber.client.handler import InterfaceHandler
 from fiber.common.config_manager import load_config_from_file
-from fiber.common.consts import PATH_W1_DEVICES, POWER_LED
+from fiber.common.consts import POWER_LED
 from fiber.common.queue_manager import QueueManager
 from fiber.models.configurations import FiberConfig
 from fiber.sensor.sensor import Sensor
 from fiber.server.manager import SystemManager
 
 
-def get_connection_name(interface):
-    result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION',
-                            'device', 'show', interface], stdout=subprocess.PIPE)
-    return result.stdout.decode().strip()
+
+def get_connection_name(interface, timeout=30, interval=2):
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if interface in netifaces.interfaces():
+            result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION',
+                                     'device', 'show', interface], stdout=subprocess.PIPE, text=True)
+            connection_name = result.stdout.strip()
+            if connection_name:
+                return connection_name
+            else:
+                logger.debug(f'No connection found for interface {interface}')
+        else:
+            logger.error(f'Interface {interface} is not available')
+        time.sleep(interval)
+
+    raise RuntimeError(f'Failed to find connection for interface {interface} after {timeout} seconds')
 
 
 def set_network_properties(static_ip: bool, interface: str, address: str, netmask: str, gateway: str, dns: str):
-    connection_name = get_connection_name(interface)
-
+    connection_name = get_connection_name(interface=interface, timeout=30, interval=2)
+    if not connection_name:
+        return
+    
     if static_ip:
         subprocess.call(['nmcli', 'con', 'mod', connection_name, 'ipv4.addresses',
                         f'{address}/{netmask}', 'ipv4.gateway', gateway, 'ipv4.dns', dns, 'ipv4.method', 'manual'])
@@ -71,7 +87,7 @@ class CoreManager:
         interfaces = self.fiber_config.system.interface.split(',')
         self._configure_network(interfaces)
 
-        logger.info(self.netw_interface)
+        logger.info(f'Network interface: {self.netw_interface}')
 
         self._system_manager = SystemManager(self.netw_interface, self.core_stop_event, *[
             self._queues[name] for name in ['system_response', 'interface_request']])
@@ -90,9 +106,8 @@ class CoreManager:
         self._sensor_broker.start()
 
         single_sensor_lock = threading.RLock()
-        for channel in range(8):
-            sensor_manager = Sensor(channel + 1, f'{PATH_W1_DEVICES}{channel + 1}',
-                                    False, interface_handler, self._queues['sensor'], single_sensor_lock)
+        for channel in range(1, 9):
+            sensor_manager = Sensor(channel, interface_handler, self._queues['sensor'], single_sensor_lock, self.core_stop_event)
             sensor_manager.start()
             self._sensor_threads.append(sensor_manager)
 
