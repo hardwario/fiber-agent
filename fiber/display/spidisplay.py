@@ -15,8 +15,7 @@ class SPIDisplay:
 
         self._lock = Lock()
 
-        self.start_brightness = 100
-        self.max_brightness = 100
+        self.start_brightness = 40
         self.display = ST7920Display(width=128, height=64, brightness=self.start_brightness)
         self.sensor_widget = FiberSensorWidget(width=self.display.get_width())
 
