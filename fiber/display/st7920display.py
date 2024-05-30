@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 
@@ -5,33 +6,43 @@ import gpiod
 import spidev
 from loguru import logger
 
-from fiber.display.const import (BRIGHTNESS_PWM_GPIO, BUZZER_GPIO,
-                                 PWM_HALF_PERIOD, RESET_GPIO)
+from fiber.display.const import BUZZER_GPIO, PWM_PERIOD, RESET_GPIO
 from fiber.display.src.display import Display
 
 
 class ST7920Display(Display):
     chip: gpiod.Chip
     request: gpiod.LineRequest
-    _request_lock: threading.Lock
     _spi: spidev.SpiDev
 
-    _bright_thread: threading.Thread | None = None
-    _bright_thread_stop: threading.Event
     _brightness: int
-
-    _buzzer_thread: threading.Thread | None = None
-    _buzzer_thread_stop: threading.Event
     _buzzer_on: bool
 
     def __init__(self, width, height, brightness=0):
         super().__init__(width, height)
 
-        self._bright_thread = threading.Thread(target=self._loop)
-        self._buzzer_thread_stop = threading.Event()
-        self._bright_thread_stop = threading.Event()
         self._request_lock = threading.Lock()
+        self._brightness = brightness
 
+        self._configure_pwm()
+        self._configure_gpiod()
+
+        self.setup_spi()
+        self.set_brightness(self._brightness)
+
+    def _configure_pwm(self):
+        if not self._check_file_presence('/sys/class/pwm/pwmchip0', 3):
+            raise RuntimeError('PWM not available')
+
+        if not os.path.exists('/sys/class/pwm/pwmchip0/pwm1'):
+            self._export_pwm()
+
+        self._set_pwm_period(PWM_PERIOD)
+        self._set_pwm_duty_cycle(self._brightness)
+        
+        self._enable_pwm()
+
+    def _configure_gpiod(self):
         self.chip = gpiod.Chip('/dev/gpiochip0')
         with self._request_lock:
             self.request = self.chip.request_lines(
@@ -43,43 +54,17 @@ class ST7920Display(Display):
                     BUZZER_GPIO: gpiod.LineSettings(
                         direction=gpiod.line.Direction.OUTPUT,
                     ),
-                    BRIGHTNESS_PWM_GPIO: gpiod.LineSettings(
-                        direction=gpiod.line.Direction.OUTPUT,
-                    ),
                 },
             )
 
             self.request.set_value(BUZZER_GPIO, gpiod.line.Value.ACTIVE)
 
-        self.setup_spi()
-
-        self.set_brightness(brightness)
-        self.start_brightness_thread()
-
     def quit(self):
-        with self._request_lock:
-            self._bright_thread_stop.set()
-            self._buzzer_thread_stop.set()
-
-        if self._bright_thread is not None:
-            self._bright_thread.join()
-            if self._bright_thread.is_alive():
-                logger.error(f'Thread {self._bright_thread.name} did not exit in time')
-            else:
-                logger.info(f'Thread {self._bright_thread.name} exited')
-
-        if self._buzzer_thread is not None:
-            self._buzzer_thread.join()
-            if self._buzzer_thread.is_alive():
-                logger.error(f'Thread {self._buzzer_thread.name} did not exit in time')
-            else:
-                logger.info(f'Thread {self._buzzer_thread.name} exited')
-
-        self._spi.close()
-
         with self._request_lock:
             self.request.release()
             self.chip.close()
+            self._disable_pwm()
+            self._unexport_pwm()
 
     def setup_spi(self):
         with self._request_lock:
@@ -116,14 +101,11 @@ class ST7920Display(Display):
 
     def send_row(self, row: int, data: bytes):
         # reverse bits in all bytes
-        data = data[::-1]
-        data = [int(f'{byte:08b}'[::-1], 2) for byte in data]
-
+        reversed_data = [int(f'{byte:08b}'[::-1], 2) for byte in data[::-1]]
         # set line address
         self.send([0x80 + row % 32, 0x80 + (8 if row >= 32 else 0)])
-
         # send pixel data
-        self.send(data, rs=True)
+        self.send(reversed_data, rs=True)
 
     def draw(self):
         b = self._fb.tobytes()
@@ -134,43 +116,64 @@ class ST7920Display(Display):
 
         for row, data in enumerate(rows):
             self.send_row(63 - row, data)
-        
+
         self.send([0x34])  # enable RE mode
         self.send([0x34])
         self.send([0x36])  # enable graphics display
 
-    def start_brightness_thread(self):
-        self._bright_thread.start()
-
-    def _loop(self):
-        while not self._bright_thread_stop.is_set():
-            active_time = PWM_HALF_PERIOD * (self._brightness / 100)
-            inactive_time = PWM_HALF_PERIOD - active_time
-            if self._brightness > 0:
-                with self._request_lock:
-                    self.request.set_value(
-                        BRIGHTNESS_PWM_GPIO, gpiod.line.Value.ACTIVE)
-            time.sleep(active_time/1000)
-
-            if self._brightness < 100:
-                with self._request_lock:
-                    self.request.set_value(
-                        BRIGHTNESS_PWM_GPIO, gpiod.line.Value.INACTIVE)
-            time.sleep(inactive_time/1000)
-
     def set_brightness(self, brightness: int):
-        if brightness < 0:
-            self._brightness = 0
-        elif brightness > 100:
-            self._brightness = 100
-        else:
-            self._brightness = brightness
+        self._brightness = max(0, min(100, brightness))
+        self._set_pwm_duty_cycle(self._brightness)
 
     def set_buzzer(self, on: bool):
         self._buzzer_on = on
-        if self._buzzer_on:
-            with self._request_lock:
-                self.request.set_value(BUZZER_GPIO, gpiod.line.Value.ACTIVE)
-        else:
-            with self._request_lock:
-                self.request.set_value(BUZZER_GPIO, gpiod.line.Value.INACTIVE)
+        self.request.set_value(BUZZER_GPIO, gpiod.line.Value.ACTIVE if on else gpiod.line.Value.INACTIVE)
+
+    def _check_file_presence(self, path: str, timeout: int) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            if os.path.exists(path):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _export_pwm(self) -> None:
+        '''Export channel pwm0'''
+        with open('/sys/class/pwm/pwmchip0/export', 'w') as f:
+            f.write('1')  
+
+    def _unexport_pwm(self) -> None:
+        '''Cancel export of channel pwm0'''
+        with open('/sys/class/pwm/pwmchip0/unexport', 'w') as f:
+            f.write('1')  
+
+    def _enable_pwm(self) -> None:
+        '''Turn on PWM'''
+        with open('/sys/class/pwm/pwmchip0/pwm1/enable', 'w') as f:
+            f.write('1')  
+
+    def _disable_pwm(self) -> None:
+        '''Switching off PWM'''
+        with open('/sys/class/pwm/pwmchip0/pwm1/enable', 'w') as f:
+            f.write('0')  # 
+
+    def _set_pwm_period(self, period_ns: int) -> None:
+        '''
+        Set the period in nanoseconds
+            
+        Args:
+            period_ns (int): The period in nanoseconds.
+        '''
+        with open('/sys/class/pwm/pwmchip0/pwm1/period', 'w') as f:
+            f.write(str(period_ns))
+
+    def _set_pwm_duty_cycle(self, duty_cycle: int) -> None:
+        '''
+        Set the duty cycle in percent
+        
+        Args:
+            duty_cycle (int): The duty cycle in percent.
+        '''
+        percent_to_ns = (PWM_PERIOD // 100) * duty_cycle
+        with open('/sys/class/pwm/pwmchip0/pwm1/duty_cycle', 'w') as f:
+            f.write(str(percent_to_ns))  
