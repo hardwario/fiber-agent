@@ -19,7 +19,6 @@ class ButtonController:
         self.st7920_display = spi_display.display
         self.sensor_widget = spi_display.sensor_widget
         self.current_brightness = spi_display.start_brightness
-        self.max_brightness = spi_display.max_brightness
 
         self._configure_lines()
 
@@ -52,7 +51,7 @@ class ButtonController:
         logger.info('Button controller: OK')
         try:
             while not self._stop_event.is_set():
-                time.sleep(0.2)
+                time.sleep(0.05)
 
                 try:
                     is_press = self.request.wait_edge_events(0)
@@ -71,10 +70,10 @@ class ButtonController:
                     for event in press_events:
                         line_offset = event.line_offset
 
-                        if current_time - self.last_press[line_offset] > 0.5:
+                        if current_time - self.last_press[line_offset] > 0.15:
                             self.last_press[line_offset] = current_time
 
-                            if line_offset == 23 and self.current_brightness < self.max_brightness:
+                            if line_offset == 23 and self.current_brightness < 100:
                                 self.current_brightness += 20
                                 self.st7920_display.set_brightness(
                                     self.current_brightness)
@@ -85,9 +84,10 @@ class ButtonController:
                                 self.st7920_display.set_brightness(
                                     self.current_brightness)
 
-                        self.st7920_display.set_buzzer(False)
-                        time.sleep(0.02)
-                        self.st7920_display.set_buzzer(True)
+                            self.st7920_display.set_buzzer(False)
+                            time.sleep(0.02)
+                            self.st7920_display.set_buzzer(True)
+
         except (OSError, gpiod.LineRequestError, gpiod.ChipError) as e:
             logger.error(f'Error in buttons loop: {e}')
         finally:
