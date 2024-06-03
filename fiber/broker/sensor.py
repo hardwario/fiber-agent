@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from fiber.broker.local_storage import LocalStorage
 from fiber.client.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
-from fiber.models.configurations import FiberConfig
+from fiber.models.configurations import FiberConfig, Measurements
 from fiber.models.sensor import SensorOutput
 from fiber.mqtt.mqtt_handler import MQTTHandler
 
@@ -33,8 +33,10 @@ class SensorBroker:
     def __init__(self, config_path: str, fiber_config: FiberConfig, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager) -> None:
         self._sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
+        self._lock = threading.RLock()
 
-        self.fiber_config = fiber_config
+        self.fiber_config: FiberConfig = fiber_config
+        self.measurement_config: Measurements = fiber_config.measurement
 
         if fiber_config.mqtt.enabled:
             self._mqtt = MQTTHandler(
@@ -44,19 +46,18 @@ class SensorBroker:
             logger.info('MQTT disabled. Continued without MQTT')
             self._mqtt = None
 
-        self._storage = (
+        self._storage: LocalStorage | None = (
             LocalStorage(self.fiber_config.storage.name)
             if self.fiber_config.storage.enabled
-            else logger.info('Storage disabled. Continued without storage')
-        )
+            else logger.info('Storage disabled. Continued without storage'))
 
         self.sensor_broker_queue = sensor_broker_queue
-        self._lock = threading.RLock()
-        self.load_intervals()
-        self._sensor_data = SensorData(
+        self._load_intervals()
+
+        self._sensor_data = SensorData(self.measurement_config,
             int(time.time()), self._sampling_interval, self._report_interval)
 
-    def load_intervals(self) -> None:
+    def _load_intervals(self) -> None:
         with self._lock:
             self._sampling_interval = self.fiber_config.sensor.sampling_interval_seconds
             self._report_interval = self.fiber_config.sensor.report_interval_seconds
@@ -72,7 +73,7 @@ class SensorBroker:
                 logger.info(f'Thread {self._sensor_thread.name} exited')
 
     def start(self) -> None:
-        self.load_intervals()
+        self._load_intervals()
         self._sensor_data.reset()
         self._sensor_thread.start()
 
@@ -169,6 +170,12 @@ class Measurement:
             return (m1 + m2)/2
         else:
             return self._values[n//2]
+        
+    @property
+    def last(self) -> int | float | None:
+        if not self._values:
+            return None
+        return self._values[-1]
 
     @property
     def samples(self) -> int:
@@ -180,7 +187,9 @@ class Measurement:
 
 
 class Report:
-    def __init__(self, timestamp_start: int, sampling_interval: int) -> None:
+    def __init__(self, measurement_config: Measurements, timestamp_start: int, sampling_interval: int) -> None:
+        self._measurement_config = measurement_config
+
         self._samples: list[Measurement] = []
         self._sampling_interval = sampling_interval
         self._sample_ts_start = timestamp_start
@@ -209,43 +218,48 @@ class Report:
 
     @property
     def report(self) -> list[dict[str, int | float]]:
-        return [
-            {
+        reports = []
+        for sample in self._samples:
+            report_data = {
                 'timestamp': sample.timestamp,
-                'value': {
-                    'average': sample.average,
-                    'median': sample.median,
-                    'minimum': sample.min,
-                    'maximum': sample.max,
-                },
-                'count': sample.samples,
+                'value': {},
+                'sample_count': sample.samples,
             }
-            for sample in self._samples
-        ]
+            if self._measurement_config.report_minimum:
+                report_data['value']['minimum'] = sample.min
+            if self._measurement_config.report_maximum:
+                report_data['value']['maximum'] = sample.max
+            if self._measurement_config.report_average:
+                report_data['value']['average'] = sample.average
+            if self._measurement_config.report_median:
+                report_data['value']['median'] = sample.median
+            if self._measurement_config.report_last:
+                report_data['value']['last'] = sample.last
+            reports.append(report_data)
+        return reports
 
 
 class SensorData:
-    def __init__(self, start: int, sampling_interval: int, report_interval: int) -> None:
+    def __init__(self, measurement_config: Measurements, start: int, sampling_interval: int, report_interval: int) -> None:
         self._sampling_interval = sampling_interval
         self._report_interval = report_interval
         self._ts_start = start
-        self._ts_end = self._ts_start + report_interval
+        self._ts_end = self._ts_start + self._report_interval
         self._data: dict[int, dict[int, Report]] = {}
+        self.measurement_config = measurement_config
 
     def recv(self, measurement: SensorOutput) -> None:
         if measurement.channel not in self._data:
             self._data[measurement.channel] = {}
 
-        if measurement.timestamp <= self._ts_end:
-            report = self._data[measurement.channel].get(
-                measurement.thermometer)
-            if report is None:
-                report = Report(self._ts_start, self._sampling_interval)
-                self._data[measurement.channel][measurement.thermometer] = report
-            report.add_measurement(measurement.timestamp,
-                                   measurement.temperature)
-        else:
+        if measurement.timestamp >= self._ts_end:
             raise AfterReportInterval
+
+        report = self._data[measurement.channel].get(measurement.thermometer)
+        if report is None:
+            report = Report(self.measurement_config, self._ts_start, self._sampling_interval)
+            self._data[measurement.channel][measurement.thermometer] = report
+        report.add_measurement(measurement.timestamp, measurement.temperature)
 
     @property
     def report(self) -> dict:
@@ -274,10 +288,10 @@ class SensorData:
             else new_report_interval
         )
 
-        start = self._ts_end
+        start = int(time.time())
 
-        self.__init__(start, sampling_interval, report_interval)
+        self.__init__(self.measurement_config, start, sampling_interval, report_interval)
 
     @property
     def ready_to_send(self) -> bool:
-        return int(time.time()) > self._ts_end
+        return int(time.time()) >= self._ts_end
