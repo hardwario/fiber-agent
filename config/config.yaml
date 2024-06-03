@@ -2,23 +2,30 @@ version: 1
 
 system:
   interface: end0,eth0
-  static_ip: False
+  static_ip: false
   address: 10.0.0.158
   netmask: 24
   gateway: 10.0.0.255
   dns: 8.8.8.8
 
 sensor:
-  enabled: True
-  report_interval_seconds: 10
-  sampling_interval_seconds: 5
+  enabled: true
+  report_interval_seconds: 20
+  sampling_interval_seconds: 20
+
+measurement:
+  report_minimum: true
+  report_maximum: true
+  report_average: true
+  report_median: true
+  report_last: true
 
 mqtt:
-  enabled: True
+  enabled: true
   host: localhost
   port: 1883
 
 storage:
-  enabled: True
+  enabled: true
   name: records.db
 
