@@ -44,6 +44,30 @@ class SensorConfig(BaseModel):
     sampling_interval_seconds: int
     '''Interval to read sensor data.'''
 
+
+class Measurements(BaseModel):
+    '''
+    Configuration of sensor measurements.
+
+    Attributes:
+        report_minimum: Enable or disable minimum value.
+        report_maximum: Enable or disable maximum value.
+        report_average: Enable or disable average value.
+        report_median: Enable or disable median value.
+        report_last: Enable or disable last value.
+    '''
+
+    report_minimum: bool
+    '''Enable or disable minimum value.'''
+    report_maximum: bool
+    '''Enable or disable maximum value.'''
+    report_average: bool
+    '''Enable or disable average value.'''
+    report_median: bool
+    '''Enable or disable median value.'''
+    report_last: bool
+    '''Enable or disable last value.'''
+
 class MQTTConfig(BaseModel):
     '''
     Configuration of MQTT interface.
@@ -82,12 +106,14 @@ class FiberConfig(BaseModel):
         version: Version of configuration file.
         system: System configuration.
         sensor: Sensor configuration.
+        measurements: Measurements configuration.
         mqtt: MQTT configuration.
         storage: Storage configuration.
     '''
     version: int
     system: SystemConfig
     sensor: SensorConfig
+    measurement: Measurements
     mqtt: MQTTConfig
     storage: StorageConfig
 
