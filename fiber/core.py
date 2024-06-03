@@ -20,7 +20,6 @@ from fiber.sensor.sensor import Sensor
 from fiber.server.manager import SystemManager
 
 
-
 def get_connection_name(interface, timeout=30, interval=2):
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -37,7 +36,6 @@ def get_connection_name(interface, timeout=30, interval=2):
         time.sleep(interval)
 
     raise RuntimeError(f'Failed to find connection for interface {interface} after {timeout} seconds')
-
 
 def set_network_properties(static_ip: bool, interface: str, address: str, netmask: str, gateway: str, dns: str):
     connection_name = get_connection_name(interface=interface, timeout=30, interval=2)
