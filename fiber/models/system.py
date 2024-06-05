@@ -85,5 +85,17 @@ class RebootBody(BaseModel):
 
     '''
 
-    delay: int
+    delay: int | float
     '''The delay in seconds before rebooting.'''
+
+    @validator('delay')
+    def validate_delay(cls, value):
+        '''
+        Validates the delay field.
+
+        Raises:
+            ValueError: If the value is not a non-negative integer or float.
+        '''
+        if not isinstance(value, (int, float)):
+            raise ValueError('Delay must be a non-negative integer or float')
+        return value
