@@ -22,6 +22,10 @@ class InterfaceHandler(InterfaceManager):
     def get_uptime(self) -> float:
         uptime = self.get_response(operation='get_uptime')
         return uptime
+    
+    def get_voltage(self) -> int | float:
+        voltage = self.get_response(operation='get_voltage')
+        return voltage
 
     def set_indicator_state(self, probe: int, state: bool) -> None:
         '''
@@ -60,6 +64,6 @@ class InterfaceHandler(InterfaceManager):
         id_body = FiberIdBody(id=fiber_id)
         self.send_request(operation='set_id', payload=dict(id_body))
 
-    def reboot(self, delay: int = 0) -> None:
+    def reboot(self, delay: int | float = 0) -> None:
         reboot_body = RebootBody(delay=delay)
         self.send_request(operation='reboot', payload=reboot_body.model_dump())

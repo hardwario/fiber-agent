@@ -37,6 +37,7 @@ class SystemManager(DisplayControlHandler, NetworkInterfaceHandler):
             'get_ip': self._get_ip,
             'get_uptime': self._get_uptime,
             'get_fiber_id': self._get_fiber_id,
+            'get_voltage': self._get_voltage,
             'reboot': self._reboot,
         }
 

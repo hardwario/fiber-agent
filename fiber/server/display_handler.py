@@ -9,6 +9,7 @@ from fiber.common.southbridge import SouthBridge
 from fiber.display.spidisplay import SPIDisplay
 from fiber.models.indicators import StateIndicatorBody
 from fiber.models.display_sensor import SensorDisplayBody
+from fiber.models.voltage import VoltageBody
 from fiber.server.led_controller import LedController
 
 
@@ -31,6 +32,13 @@ class DisplayControlHandler:
         self._button_controller = ButtonController(self._spi_display)
         self._spi_display.start()
         self._button_controller.start()
+
+    def _get_voltage(self) -> dict[str, int | float]:
+        battery_voltage = self._spi_display.sensor_widget._bat_power
+        poe_voltage = self._spi_display.sensor_widget._eth_power
+        voltage_body = VoltageBody(battery_voltage=battery_voltage, poe_voltage=poe_voltage)
+
+        return dict(voltage_body)
 
     def _set_indicator_state(self, body: dict[str, int | bool]) -> None:
         try:

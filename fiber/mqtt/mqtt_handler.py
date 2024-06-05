@@ -18,6 +18,7 @@ class MQTTHandler(MQTTBridge):
         self._acc('/system/ip/get', self.send_ip)
         self._acc('/system/uptime/get', self.send_uptime)
         self._acc('/system/reboot', self.system_reboot)
+        self._acc('/voltage/get', self.send_voltage)
 
     def send_ip(self, payload: None) -> None:
         try:
@@ -46,6 +47,15 @@ class MQTTHandler(MQTTBridge):
         except SystemError:
             self.send_error(topic)
 
+    def send_voltage(self, payload: None) -> None:
+        try:
+            topic = '/voltage'
+            voltage = self.interface_handler.get_voltage()
+            self.send_json(topic, voltage)
+            self.send_ok(topic)
+        except SystemError:
+            self.send_error(topic)
+
     def send_config(self, payload: None) -> None:
         try:        
             topic = '/config'
@@ -69,9 +79,9 @@ class MQTTHandler(MQTTBridge):
         except (json.JSONDecodeError):
             self.send_error(topic) 
 
-    def system_reboot(self, payload: None) -> None:
+    def system_reboot(self, payload: int | float) -> None:
         logger.debug('Reboot request')
-        self.interface_handler.reboot()
+        self.interface_handler.reboot(payload)
 
     def send_measurements(self, data: dict) -> None:
         topic = '/measurement'
