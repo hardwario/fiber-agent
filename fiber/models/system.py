@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
     
 class BeaconBody(BaseModel):
@@ -22,7 +22,7 @@ class BeaconBody(BaseModel):
     mac_address: str | None
     '''The MAC address of the system.'''
 
-    @validator('mac_address')
+    @field_validator('mac_address')
     def validate_mac_address(cls, value):
         '''
         Validates the mac_address field.
@@ -36,7 +36,7 @@ class BeaconBody(BaseModel):
             raise ValueError('Invalid MAC address format')
         return value
     
-    @validator('uptime')
+    @field_validator('uptime')
     def validate_uptime(cls, value):
         '''
         Validates the uptime field.
@@ -63,7 +63,7 @@ class FiberIdBody(BaseModel):
     id: int
     '''The fiber ID.'''
 
-    @validator('id')
+    @field_validator('id')
     def validate_id(cls, value):
         '''
         Validates the id field.
@@ -88,7 +88,7 @@ class RebootBody(BaseModel):
     delay: int | float
     '''The delay in seconds before rebooting.'''
 
-    @validator('delay')
+    @field_validator('delay')
     def validate_delay(cls, value):
         '''
         Validates the delay field.

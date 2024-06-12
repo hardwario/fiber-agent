@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 from fiber.common.consts import VALID_PROBES
 
@@ -17,7 +17,7 @@ class StateIndicatorBody(BaseModel):
     state: bool
     '''The state of the indicator.'''
 
-    @validator('output')
+    @field_validator('output')
     def validate_output(cls, value):
         '''
         Validates the output field.

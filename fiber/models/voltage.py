@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 class VoltageBody(BaseModel):
     '''
@@ -15,7 +15,7 @@ class VoltageBody(BaseModel):
     poe_voltage: int | float
     '''The PoE voltage.'''
 
-    @validator('battery_voltage')
+    @field_validator('battery_voltage')
     def validate_battery_voltage(cls, value):
         '''
         Validates the battery_voltage field.
@@ -27,7 +27,7 @@ class VoltageBody(BaseModel):
             raise ValueError('Battery voltage must be a number')
         return value
     
-    @validator('poe_voltage')
+    @field_validator('poe_voltage')
     def validate_poe_voltage(cls, value):
         '''
         Validates the poe_voltage field.

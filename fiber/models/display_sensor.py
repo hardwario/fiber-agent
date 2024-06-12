@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 from fiber.common.consts import VALID_PROBES
 
 
@@ -18,7 +18,7 @@ class SensorDisplayBody(BaseModel):
     temperature: int | float | None
     '''The temperature value to determine the indicator color.'''
 
-    @validator('output')
+    @field_validator('output')
     def validate_output(cls, value):
         '''
         Validates the output field.
