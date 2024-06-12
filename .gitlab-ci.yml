@@ -1,0 +1,40 @@
+stages:
+  - build
+  # - publish
+
+build:
+  stage: build
+  image:
+    name: debian:latest
+    entrypoint: [""]
+  befpore_script:
+    - apt-get update -qy
+    - apt-get install -y make curl wget git g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu bc
+  script:
+    - echo "Building the project"
+    - git clone git@gitlab.hardwario.com:fiber-v2/buildroot-imager.git
+    - cd buildroot-imager
+    - git submodule update --init --recursive
+    - cp ../../config/config.yaml ./data
+    - ./helper make fiber_defconfig
+    - ./helper data-build
+    - ./helper image
+    - ./helper update
+  
+  artifacts:
+    paths:
+      - buildroot-imager/image/
+      - buildroot-imager/update/
+    expire_in: 1 week
+
+# publish:
+#   stage: publish
+#   image:
+#     name: debian:latest
+#     entrypoint: [""]
+#   before_script:
+#     - apt-get update -qy
+#     - apt-get install -y make curl wget git g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu bc
+#   script:
+#     - echo "Publishing the project"
+#     - git clone
