@@ -9,7 +9,7 @@ build:
     entrypoint: [""]
   before_script:
     - apt-get update -qy
-    - apt-get install -y make curl wget git g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu bc genext2fs file
+    - apt-get install -y make curl wget git gcc g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu genext2fs file cpio unzip rsync bzcat which sed binutils build-essential diffutils bash patch gzip bzip2 perl tar python findutils 
   script:
     - echo "Building the project"
     - git clone https://$DEPLOY_USERNAME:$DEPLOY_TOKEN@gitlab.hardwario.com/fiber-v2/buildroot-imager.git
