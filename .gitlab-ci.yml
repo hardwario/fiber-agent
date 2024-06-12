@@ -7,7 +7,7 @@ build:
   image:
     name: debian:latest
     entrypoint: [""]
-  befpore_script:
+  before_script:
     - apt-get update -qy
     - apt-get install -y make curl wget git g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu bc
   script:
