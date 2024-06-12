@@ -12,7 +12,7 @@ build:
     - apt-get install -y make curl wget git g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu bc
   script:
     - echo "Building the project"
-    - git clone git@gitlab.hardwario.com:fiber-v2/buildroot-imager.git
+    - git clone https://gitlab.hardwario.com/fiber-v2/buildroot-imager.git
     - cd buildroot-imager
     - git submodule update --init --recursive
     - cp ../../config/config.yaml ./data
