@@ -15,7 +15,7 @@ build:
     - git clone https://$DEPLOY_USERNAME:$DEPLOY_TOKEN@gitlab.hardwario.com/fiber-v2/buildroot-imager.git
     - cd buildroot-imager
     - git submodule update --init --recursive
-    - cp ../../config/config.yaml ./data
+    - cp ../config/config.yaml ./data
     - ./helper make fiber_defconfig
     - ./helper data-build
     - ./helper image
