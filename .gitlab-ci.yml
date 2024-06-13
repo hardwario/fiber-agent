@@ -19,7 +19,6 @@ build:
     - git submodule update --init --recursive
     - cp ../config/config.yaml ./data
     - ./helper make fiber_defconfig
-    - ./helper data-build
     - ./helper image
     - ./helper update
   
