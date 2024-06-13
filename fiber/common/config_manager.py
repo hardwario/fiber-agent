@@ -1,7 +1,7 @@
 import subprocess
 import yaml
 from loguru import logger
-import pydantic
+from pydantic import ValidationError
 
 
 def load_config_from_file(config_path: str, config_model):
@@ -15,12 +15,14 @@ def load_config_from_file(config_path: str, config_model):
         except yaml.YAMLError as e:
             logger.error(f'YAML load error: {e}')
             raise
+        except ValidationError as e:
+            raise
 
 def save_config(config_path: str, config_model, payload: dict) -> None:
     try:
         config_model(**payload)
-    except pydantic.ValidationError as e:
-        logger.error(f'Validation error: {e}')
+    except ValidationError as e:
+        logger.error(f'Validation error: {e.json()}')
         raise
 
     try:
@@ -35,7 +37,7 @@ def save_config(config_path: str, config_model, payload: dict) -> None:
 
 def restart_fiber_core_service() -> None:
     try:
-        subprocess.run(['systemctl', 'restart', 'fiber-core.service'], check=True)
-        logger.info('Fiber service restarted successfully')
+        subprocess.run(["systemctl", "restart", "fiber-core.service"], check=True)
+        logger.info("Fiber service restarted successfully")
     except subprocess.CalledProcessError as e:
-        logger.error(f'Failed to restart fiber-core.service: {e}')
+        logger.error(f"Failed to restart fiber-core.service: {e}")
