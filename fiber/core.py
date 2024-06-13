@@ -24,6 +24,7 @@ class CoreManager:
     def __init__(self, config_path: str) -> None:
         self.config_path = config_path
         self.fiber_config = load_config_from_file(config_path, FiberConfig)
+        self.valid_interface = None
         self.core_stop_event = threading.Event()
         self._system_manager: SystemManager | None = None
         self._sensor_broker: SensorBroker | None = None
@@ -34,13 +35,12 @@ class CoreManager:
     def _get_connection_name(self, timeout: int=15, interval: int=1) -> str:
         start_time = time.time()
         while time.time() - start_time < timeout:
-            result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show', self.valid_interface], stdout=subprocess.PIPE, check=True)
+            result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show',
+                                     self.valid_interface], stdout=subprocess.PIPE, check=True)
             connection_name = result.stdout.strip()
             if connection_name:
-                logger.info(f'Connection found for interface {self.valid_interface}: {connection_name}')
                 return connection_name
-            else:
-                logger.info(f'No connection found for interface {self.valid_interface}')
+            
             time.sleep(interval)
         raise RuntimeError(f'Failed to find connection for interface {self.valid_interface} after {timeout} seconds')
 
@@ -71,8 +71,7 @@ class CoreManager:
         interfaces = self.fiber_config.system.interface.split(',')
         self._configure_network(interfaces)
 
-        self._system_manager = SystemManager(self.valid_interface, self.core_stop_event, *[
-            self._queues[name] for name in ['system_response', 'interface_request']])
+        self._system_manager = SystemManager(self.valid_interface, self.core_stop_event, *[self._queues[name] for name in ['system_response', 'interface_request']])
         self._system_manager.start()
 
         interface_handler = InterfaceHandler(
