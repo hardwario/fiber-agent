@@ -9,6 +9,7 @@ import traceback
 import click
 import netifaces
 from loguru import logger
+from types import FrameType
 
 from fiber.broker.sensor import SensorBroker
 from fiber.interface.handler import InterfaceHandler
@@ -92,7 +93,7 @@ class CoreManager:
             sensor_manager.start()
             self._sensor_threads.append(sensor_manager)
 
-    def graceful_shutdown(self, signum, frame) -> None:
+    def graceful_shutdown(self, signum: int | None, frame: FrameType | None) -> None:
         logger.success('Performing graceful shutdown')
         if self._system_manager is not None:
             self._system_manager.quit()
