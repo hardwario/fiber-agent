@@ -17,7 +17,7 @@ from fiber.common.consts import POWER_LED
 from fiber.common.queue_manager import QueueManager
 from fiber.models.configurations import FiberConfig, SystemConfig
 from fiber.sensor.sensor import Sensor
-from fiber.server.manager import SystemManager
+from fiber.system.manager import SystemManager
 
 
 class CoreManager:

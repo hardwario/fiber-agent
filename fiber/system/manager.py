@@ -7,8 +7,8 @@ from pydantic import ValidationError
 from fiber.common.queue_manager import QueueManager
 from fiber.models.request import Request
 from fiber.models.response import Response
-from fiber.server.display_handler import DisplayControlHandler
-from fiber.server.network_handler import NetworkInterfaceHandler
+from fiber.system.display_handler import DisplayControlHandler
+from fiber.system.network_handler import NetworkInterfaceHandler
 
 
 class SystemStopEventError(Exception):

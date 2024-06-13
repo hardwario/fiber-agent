@@ -10,7 +10,7 @@ from fiber.display.spidisplay import SPIDisplay
 from fiber.models.indicators import StateIndicatorBody
 from fiber.models.display_sensor import SensorDisplayBody
 from fiber.models.voltage import VoltageBody
-from fiber.server.led_controller import LedController
+from fiber.system.led_controller import LedController
 
 
 class NotFoundError(Exception):
