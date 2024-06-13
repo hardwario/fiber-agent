@@ -7,7 +7,7 @@ import time
 from loguru import logger
 
 from fiber.common.consts import PATH_W1_DEVICES
-from fiber.client.handler import InterfaceHandler
+from fiber.interface.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
 from fiber.models.sensor import SensorOutput
 

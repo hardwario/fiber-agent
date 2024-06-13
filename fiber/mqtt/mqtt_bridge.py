@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 import schedule
 from loguru import logger
 
-from fiber.client.handler import InterfaceHandler
+from fiber.interface.handler import InterfaceHandler
 from fiber.models.configurations import FiberConfig
 from fiber.models.system import BeaconBody
 

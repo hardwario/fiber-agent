@@ -5,8 +5,8 @@ import threading
 from queue import Queue
 
 from pydantic import ValidationError
-from fiber.client.manager import InterfaceManager
-from fiber.client.handler import InterfaceHandler
+from fiber.interface.manager import InterfaceManager
+from fiber.interface.handler import InterfaceHandler
 from fiber.models.system import FiberIdBody, RebootBody
 
 

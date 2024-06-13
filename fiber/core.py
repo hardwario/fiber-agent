@@ -11,7 +11,7 @@ import netifaces
 from loguru import logger
 
 from fiber.broker.sensor import SensorBroker
-from fiber.client.handler import InterfaceHandler
+from fiber.interface.handler import InterfaceHandler
 from fiber.common.config_manager import load_config_from_file
 from fiber.common.consts import POWER_LED
 from fiber.common.queue_manager import QueueManager

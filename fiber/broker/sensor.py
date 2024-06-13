@@ -6,7 +6,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from fiber.broker.local_storage import LocalStorage
-from fiber.client.handler import InterfaceHandler
+from fiber.interface.handler import InterfaceHandler
 from fiber.common.queue_manager import QueueManager
 from fiber.models.configurations import FiberConfig, Measurements
 from fiber.models.sensor import SensorOutput

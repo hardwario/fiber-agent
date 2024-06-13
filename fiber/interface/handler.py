@@ -1,6 +1,6 @@
 from loguru import logger
 
-from fiber.client.manager import InterfaceManager
+from fiber.interface.manager import InterfaceManager
 from fiber.models.indicators import StateIndicatorBody
 from fiber.models.display_sensor import SensorDisplayBody
 from fiber.models.system import FiberIdBody, RebootBody
