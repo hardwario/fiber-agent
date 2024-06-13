@@ -7,6 +7,8 @@ build:
   image:
     name: debian:latest
     entrypoint: [""]
+  variables:
+    FORCE_UNSAFE_CONFIGURE: "1"
   before_script:
     - apt-get update -qy
     - apt-get install -y make curl wget git gcc g++ bc g++-aarch64-linux-gnu binutils-aarch64-linux-gnu genext2fs file cpio unzip rsync which sed binutils build-essential diffutils bash patch gzip bzip2 perl tar python3 findutils 
