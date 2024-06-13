@@ -4,6 +4,7 @@ stages:
 
 build:
   stage: build
+  timeout: 3 hrs  # Set the timeout to 2 hours
   image:
     name: debian:latest
     entrypoint: [""]
