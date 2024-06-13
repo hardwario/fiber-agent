@@ -11,9 +11,9 @@ cp /app/install/roles/fiber-packages/files/fiber-core.service /etc/systemd/syste
 
 python /app/fiber/setup.py install
 
-mkdir /etc/fiber
+mkdir /etc/fiber -p
 
-mkdir /var/fiber
+mkdir /var/fiber -p
 
 cp /app/config/config.yaml /etc/fiber/config.yaml
 
