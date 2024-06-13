@@ -26,7 +26,7 @@ class ButtonController:
         config = {
             gpio: gpiod.LineSettings(
                 direction=gpiod.line.Direction.INPUT,
-                edge_detection=gpiod.line.Edge.RISING,
+                edge_detection=gpiod.line.Edge.BOTH,
             ) for gpio in GPIO_LINES
         }
         self.request = self.chip.request_lines(
@@ -51,48 +51,37 @@ class ButtonController:
         logger.info('Button controller: OK')
         try:
             while not self._stop_event.is_set():
-                time.sleep(0.05)
+                is_pressed = self.request.wait_edge_events(0)
 
-                try:
-                    is_press = self.request.wait_edge_events(0)
-                except gpiod.LineRequestError as e:
-                    logger.error(f'Error waiting for edge events: {e}')
-                    break
+                if is_pressed:
+                    time.sleep(0.2)
 
-                if is_press:
-                    try:
-                        press_events = self.request.read_edge_events()
-                    except gpiod.LineRequestError as e:
-                        logger.error(f'Error reading edge events: {e}')
-                        break
+                    press_events = self.request.read_edge_events()
+                    logger.info([(event.line_offset, event.event_type)
+                                for event in press_events])
 
-                    current_time = time.time()
-                    for event in press_events:
-                        line_offset = event.line_offset
+                    last_event = press_events[-1]
+                    if last_event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE:
+                        if last_event.line_offset == 23 and self.current_brightness < 100:
+                            self.current_brightness += 20
+                            self.st7920_display.set_brightness(
+                                self.current_brightness)
+                        elif last_event.line_offset == 24:
+                            self.sensor_widget.freeze_page(freeze_time=30)
+                        elif last_event.line_offset == 25 and self.current_brightness > 0:
+                            self.current_brightness -= 20
+                            self.st7920_display.set_brightness(
+                                self.current_brightness)
 
-                        if current_time - self.last_press[line_offset] > 0.15:
-                            self.last_press[line_offset] = current_time
+                        self.st7920_display.set_buzzer(False)
+                        time.sleep(0.02)
+                        self.st7920_display.set_buzzer(True)
 
-                            if line_offset == 23 and self.current_brightness < 100:
-                                self.current_brightness += 20
-                                self.st7920_display.set_brightness(
-                                    self.current_brightness)
-                            elif line_offset == 24:
-                                self.sensor_widget.freeze_page(freeze_time=30)
-                            elif line_offset == 25 and self.current_brightness > 0:
-                                self.current_brightness -= 20
-                                self.st7920_display.set_brightness(
-                                    self.current_brightness)
-
-                            self.st7920_display.set_buzzer(False)
-                            time.sleep(0.02)
-                            self.st7920_display.set_buzzer(True)
-
-        except (OSError, gpiod.LineRequestError, gpiod.ChipError) as e:
+        except (OSError, gpiod.line_request.RequestReleasedError, gpiod.ChipClosedError) as e:
             logger.error(f'Error in buttons loop: {e}')
         finally:
             try:
                 self.request.release()
                 self.chip.close()
-            except (gpiod.ChipError, gpiod.LineRequestError) as error:
+            except (gpiod.line_request.RequestReleasedError, gpiod.ChipClosedError) as error:
                 logger.error(f'Error with releasing lines: {error}')
