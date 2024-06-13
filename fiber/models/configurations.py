@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from ipaddress import IPv4Address, IPv4Network
+from pydantic import BaseModel, field_validator, ValidationInfo
 
 class SystemConfig(BaseModel):
     '''
@@ -19,12 +20,33 @@ class SystemConfig(BaseModel):
     '''Enable or disable static IP configuration.'''
     address: str | None
     '''Address IP configuration.'''
-    netmask: int | None
+    netmask: str | int | None
     '''Netmask configuration.'''
     gateway: str | None
     '''Gateway configuration.'''
     dns: str | None
     '''DNS configuration.'''
+
+    @field_validator('address', 'gateway', 'dns', mode='before')
+    def validate_ip_addresses(cls, value: str, field: ValidationInfo):
+        if value is None:
+            return value
+        if field.field_name in ['address', 'gateway', 'dns']:
+            try:
+                IPv4Address(value)
+            except ValueError:
+                raise ValueError(f"Invalid {field.field_name}: {value}")
+        return value
+
+    @field_validator('netmask', mode='before')
+    def validate_netmask(cls, value):
+        if value is None:
+            return value
+        try:
+            IPv4Network(value, strict=False)
+        except ValueError:
+            raise ValueError(f"Invalid network: {value}")
+        return value
 
 
 class SensorConfig(BaseModel):
