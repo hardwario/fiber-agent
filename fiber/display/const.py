@@ -7,4 +7,4 @@ PWM_PERIOD = 1000000
 START_DUTY_CYCLE = 30
 
 
-FONT_SMALL = ImageFont.truetype('/app/fiber/display/LiberationSans-BaDn.ttf', size=9)
+FONT_SMALL = ImageFont.truetype('/etc/fiber/LiberationSans-BaDn.ttf', size=9)

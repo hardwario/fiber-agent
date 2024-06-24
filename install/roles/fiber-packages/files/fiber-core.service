@@ -6,7 +6,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=root
 Environment='LOGURU_LEVEL=INFO'
-ExecStart=python /app/fiber/core.py -c /app/config/config.yaml
+ExecStart=python -m fiber -c /data/config.yaml
 
 Restart=always
 RestartSec=3

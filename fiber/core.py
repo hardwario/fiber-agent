@@ -121,7 +121,3 @@ def run(config_path: str) -> None:
         if 'core_manager' in locals() and core_manager:
             core_manager.graceful_shutdown(None, None)
         sys.exit(1)
-
-
-if __name__ == '__main__':
-    sys.exit(run())

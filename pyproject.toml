@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fiber"
-version = "1.0.0"
+version = "0.0.1"
 description = ""
 authors = ["Nikita Chuprin <nikita.chuprin@hardwario.com>"]
 packages = [{include = "fiber"}]
