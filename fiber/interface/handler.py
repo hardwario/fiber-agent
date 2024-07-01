@@ -64,6 +64,8 @@ class InterfaceHandler(InterfaceManager):
         id_body = FiberIdBody(id=fiber_id)
         self.send_request(operation='set_id', payload=dict(id_body))
 
-    def reboot(self, delay: int | float = 0) -> None:
+    def reboot(self, delay: int | float | None = 0) -> None:
+        if not delay:
+            delay = 0
         reboot_body = RebootBody(delay=delay)
         self.send_request(operation='reboot', payload=reboot_body.model_dump())
