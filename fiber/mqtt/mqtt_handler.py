@@ -79,7 +79,7 @@ class MQTTHandler(MQTTBridge):
         except (json.JSONDecodeError):
             self.send_error(topic) 
 
-    def system_reboot(self, payload: int | float) -> None:
+    def system_reboot(self, payload: int | float | None) -> None:
         logger.debug('Reboot request')
         self.interface_handler.reboot(payload)
 
