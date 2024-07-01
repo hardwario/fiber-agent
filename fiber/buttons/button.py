@@ -13,7 +13,7 @@ class ButtonController:
         self._button_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
 
-        self.chip = gpiod.Chip(PATH_CHIP)
+        self._chip = gpiod.Chip(PATH_CHIP)
         self.last_press = {gpio: 0 for gpio in GPIO_LINES}
 
         self.st7920_display = spi_display.display
@@ -29,7 +29,7 @@ class ButtonController:
                 edge_detection=gpiod.line.Edge.BOTH,
             ) for gpio in GPIO_LINES
         }
-        self.request = self.chip.request_lines(
+        self.request = self._chip.request_lines(
             consumer='button_controller', config=config)
 
     def quit(self) -> None:
@@ -82,6 +82,6 @@ class ButtonController:
         finally:
             try:
                 self.request.release()
-                self.chip.close()
+                self._chip.close()
             except (gpiod.line_request.RequestReleasedError, gpiod.ChipClosedError) as error:
                 logger.error(f'Error with releasing lines: {error}')
