@@ -33,44 +33,55 @@ class CoreManager:
         self._queues: dict[str, QueueManager] = {name: QueueManager()
                                                  for name in ['system_response', 'interface_request', 'sensor']}
 
-    def _get_connection_name(self, timeout: int=15, interval: int=1) -> str:
+    def _get_connection_name(self, timeout: int=15, interval: int=1) -> str | None:
         start_time = time.time()
         while time.time() - start_time < timeout:
-            result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show',
-                                     self.valid_interface], stdout=subprocess.PIPE, check=True)
-            connection_name = result.stdout.strip()
-            if connection_name:
-                return connection_name
-            
+            try:
+                result = subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show',
+                                        self.valid_interface], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                connection_name = result.stdout.strip()
+                if connection_name:
+                    return connection_name
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to get connection name: {e}")
             time.sleep(interval)
-        raise RuntimeError(f'Failed to find connection for interface {self.valid_interface} after {timeout} seconds')
+        return None
 
-    def _set_network_properties(self, system_config: SystemConfig) -> None:
+    def _set_network_properties(self, system_config: SystemConfig) -> bool:
         connection_name = self._get_connection_name()
+        if not connection_name:
+            logger.warning('No Ethernet connection found. Skipping network configuration.')
+            return False
 
-        if system_config.static_ip:
-            subprocess.call(['nmcli', 'con', 'mod', connection_name,
-                            'ipv4.addresses', f'{system_config.address}/{system_config.netmask}',
-                            'ipv4.gateway', system_config.gateway, 'ipv4.dns',system_config.dns,
-                            'ipv4.method', 'manual'])
-        else:
-            subprocess.call(['nmcli', 'con', 'mod', connection_name, 'ipv4.method', 'auto'])
+        try:
+            if system_config.static_ip:
+                subprocess.check_call(['nmcli', 'con', 'mod', connection_name,
+                                    'ipv4.addresses', f'{system_config.address}/{system_config.netmask}',
+                                    'ipv4.gateway', system_config.gateway, 'ipv4.dns', system_config.dns,
+                                    'ipv4.method', 'manual'])
+            else:
+                subprocess.check_call(['nmcli', 'con', 'mod', connection_name, 'ipv4.method', 'auto'])
 
-        subprocess.call(['nmcli', 'con', 'down', connection_name])
-        subprocess.call(['nmcli', 'con', 'up', connection_name])
+            subprocess.check_call(['nmcli', 'con', 'down', connection_name])
+            subprocess.check_call(['nmcli', 'con', 'up', connection_name])
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Network configuration failed: {e}")
+            return False
+        return True
 
-    def _configure_network(self, interfaces: str) -> str:
+    def _configure_network(self, interfaces: str) -> bool:
         available_interfaces = netifaces.interfaces()
         self.valid_interface = next((inter for inter in interfaces if inter in available_interfaces), None)
-        if not self.valid_interface:
-            raise RuntimeError('No valid interface found.')
         
-        system_config = self.fiber_config.system
-        self._set_network_properties(system_config)
+        if not self.valid_interface:
+            logger.warning('No valid network interface found. Continuing without network.')
+            return False
+        
+        return self._set_network_properties(self.fiber_config.system)
 
     def activate(self) -> None:
         interfaces = self.fiber_config.system.interface.split(',')
-        self._configure_network(interfaces)
+        network_configured = self._configure_network(interfaces)
 
         self._system_manager = SystemManager(self.valid_interface, self.core_stop_event, *[self._queues[name] for name in ['system_response', 'interface_request']])
         self._system_manager.start()
@@ -83,7 +94,7 @@ class CoreManager:
             logger.info('Sensor disabled. Skipping sensor setup')
             return
 
-        self._sensor_broker = SensorBroker(self.config_path, self.fiber_config,
+        self._sensor_broker = SensorBroker(self.config_path, network_configured, self.fiber_config,
                                            interface_handler, self._queues['sensor'])
         self._sensor_broker.start()
 

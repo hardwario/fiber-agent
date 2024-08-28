@@ -30,15 +30,15 @@ class AfterReportInterval(Exception):
 
 
 class SensorBroker:
-    def __init__(self, config_path: str, fiber_config: FiberConfig, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager) -> None:
+    def __init__(self, config_path: str, network_configured: bool, fiber_config: FiberConfig, interface_handler: InterfaceHandler, sensor_broker_queue: QueueManager) -> None:
         self._sensor_thread = threading.Thread(target=self._loop)
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
 
         self.fiber_config: FiberConfig = fiber_config
         self.measurement_config: Measurements = fiber_config.measurement
-
-        if fiber_config.mqtt.enabled:
+        
+        if network_configured and fiber_config.mqtt.enabled:
             self._mqtt = MQTTHandler(
                 config_path, fiber_config, self._stop_event, interface_handler)
             self._mqtt.start()
