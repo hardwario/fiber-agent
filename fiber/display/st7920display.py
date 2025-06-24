@@ -76,11 +76,14 @@ class ST7920Display(Display):
         self._spi.open(6, 0)
         self._spi.max_speed_hz = 1000000
 
+        self._spi.mode = 0b00
         self.send([0x30])  # basic instruction set
         self.send([0x30])  # repeated
         self.send([0x0C])
         self.send([0x01])  # DISPLAY CLEAR
+        time.sleep(0.0005)
         self.send([0x02])  # RETURN HOME CURSOR
+        time.sleep(0.0005)
         self.send([0x07])  # ENTRY MODE SET
 
         self.send([0x34])  # enable RE mode
@@ -116,10 +119,12 @@ class ST7920Display(Display):
 
         for row, data in enumerate(rows):
             self.send_row(63 - row, data)
+            time.sleep(0.0005)
 
         self.send([0x34])  # enable RE mode
         self.send([0x34])
         self.send([0x36])  # enable graphics display
+        time.sleep(0.0005)
 
     def set_brightness(self, brightness: int):
         self._brightness = max(0, min(100, brightness))
