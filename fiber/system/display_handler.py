@@ -80,7 +80,7 @@ class DisplayControlHandler:
             self._spi_display.set_value(led_output, temperature)
             self._display_probes[led_output] = ProbeState.ACTIVE
         try:
-            response = self.south_bridge.flush()
+            response = self.south_bridge.read_voltage()
             if response is not None:
                 self._spi_display.set_voltage(
                     response.voltage_eth, response.voltage_bat)
