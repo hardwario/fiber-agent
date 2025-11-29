@@ -1,0 +1,230 @@
+================================================================================
+                    FIBER MEDICAL THERMOMETER UI LAYOUTS
+================================================================================
+
+Display Size: 128x64 pixels, monospace font (6x10)
+
+================================================================================
+SCREEN 1: OVERVIEW (Main Screen - Default)
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 11:23:45      PROBES                                                    1/2 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Probe A                                                                 OK │
+│ 25.11.2025                                                          36.5°C │
+│                                                                            │
+│ Probe B                                                                 OK │
+│ 25.11.2025                                                          37.2°C │
+│                                                                            │
+│ [Probe with ALARM - shown with inverted colors]                          │
+│ Probe E                                                               ALARM│
+│ 25.11.2025                                                          34.2°C │
+│                                                                            │
+│ Probe D                                                                 OK │
+│ 25.11.2025                                                          37.5°C │
+└────────────────────────────────────────────────────────────────────────────┘
+
+ ↑  Previous page
+ ↓  Next page
+ ENTER (2s) → Service Menu
+
+================================================================================
+SCREEN 2: SERVICE MENU (Long-press ENTER from Overview)
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          SERVICE MENU                                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│                                                                            │
+│                      1) System Info                                        │
+│                                                                            │
+│                      2) Sensor Details                                     │
+│                                                                            │
+│                      3) Back to Overview                                   │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+ ENTER (short) → System Info
+ ↓  Sensor Details
+ ENTER (2s) → Overview
+
+================================================================================
+SCREEN 3: SYSTEM INFO (ENTER from Service Menu)
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        SYSTEM INFO                                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│ ID: FIBER-001                          FW: 1.0.0                          │
+│ Date: 25.11.2025                                                          │
+│ Probes: 4                                                                  │
+│ Pwr: 100%                                                                  │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+ ENTER (short) → Service Menu
+ ENTER (2s) → Overview
+
+================================================================================
+SCREEN 4: SENSOR DETAILS (DOWN from Service Menu)
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                       SENSOR DETAILS                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Probe A                                 Alarm: -35/-5C                     │
+│ Value: 36.5°C                          Wn Delay: 30min                    │
+│ Date: 25.11.2025                       Al Delay: 30min                    │
+│ Warning: -30/-10C                       Int: 15min                         │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+ ENTER (short) → Service Menu
+ ↑/↓ Previous/Next probe (future feature)
+ ENTER (2s) → Overview
+
+================================================================================
+NAVIGATION FLOW DIAGRAM
+================================================================================
+
+                              ┌─────────────┐
+                              │  OVERVIEW   │
+                              │  (Default)  │
+                              └──────┬──────┘
+                                     │
+                    Long-press ENTER │ (2 seconds)
+                    Short-press UP/↓ │ for pagination
+                                     │
+                              ┌──────▼──────┐
+                              │SERVICE MENU │
+                              └──────┬──────┘
+                                     │
+                  ┌──────────────────┼──────────────────┐
+                  │                  │                  │
+          Short ENTER          ↓ DOWN        ENTER (2s)
+                  │                  │                  │
+           ┌──────▼────────┐   ┌─────▼──────────┐     │
+           │ SYSTEM INFO   │   │ SENSOR DETAILS │     │
+           └────────────────┘   └────────────────┘     │
+                 │                     │                │
+                 └─────────┬───────────┘                │
+                           │                            │
+                      Short ENTER                       │
+                           │                            │
+                           ▼                            │
+                  ┌─────────────────┐                   │
+                  │  SERVICE MENU   │◄──────────────────┘
+                  └─────────────────┘
+                           ▲
+                           │
+                    Long-press ENTER
+                           │
+                  ┌─────────────────┐
+                  │   OVERVIEW      │
+                  │   (returns)     │
+                  └─────────────────┘
+
+================================================================================
+BUTTON MAPPING REFERENCE
+================================================================================
+
+┌──────────────────────┬──────────────────────────────────────────────────────┐
+│ Screen: OVERVIEW     │ UP: Previous Page | DOWN: Next Page                  │
+│                      │ ENTER (short): — | ENTER (2s): Service Menu        │
+├──────────────────────┼──────────────────────────────────────────────────────┤
+│ Screen: SERVICE MENU │ UP: — | DOWN: Sensor Details                        │
+│                      │ ENTER (short): System Info | ENTER (2s): Overview  │
+├──────────────────────┼──────────────────────────────────────────────────────┤
+│ Screen: SYSTEM INFO  │ UP: — | DOWN: —                                     │
+│                      │ ENTER (short): Service Menu | ENTER (2s): Overview │
+├──────────────────────┼──────────────────────────────────────────────────────┤
+│ Screen: SENSOR INFO  │ UP: Previous Probe* | DOWN: Next Probe*             │
+│                      │ ENTER (short): Service Menu | ENTER (2s): Overview │
+└──────────────────────┴──────────────────────────────────────────────────────┘
+
+ * = Future enhancement; currently no-op
+
+================================================================================
+COLOR/CONTRAST LEGEND
+================================================================================
+
+Normal Probe (OK):
+┌────────────────────────────┐
+│ Probe A                 OK │  ← Black text on white background
+│ 25.11.2025          36.5°C │
+└────────────────────────────┘
+
+Probe with ALARM:
+┌────────────────────────────┐
+│ Probe E                    │  ← Inverted: White text on black background
+│ 25.11.2025          34.2°C │     Shows "ALARM" instead of "OK"
+└────────────────────────────┘
+
+================================================================================
+DATA DISPLAYED BY SCREEN
+================================================================================
+
+OVERVIEW Screen:
+  • Probe Label (Probe A, B, C, D)
+  • Status (OK or ALARM)
+  • Last Measurement Date (DD.MM.YYYY)
+  • Current Temperature (X.X°C)
+  • Page Number (Page X/Y)
+  • Current Time (HH:MM:SS)
+  • Alarm Priority Sorting (Alarms shown first)
+
+SERVICE MENU Screen:
+  • Menu Items (3 options)
+  • No real-time data
+
+SYSTEM INFO Screen:
+  • Device ID (FIBER-001)
+  • Current Date (DD.MM.YYYY)
+  • Number of Connected Probes (count)
+  • Power Level (0-100%)
+  • Firmware Version (X.X.X)
+
+SENSOR DETAILS Screen:
+  • Probe Label
+  • Current Value (Temperature in °C)
+  • Last Measurement Date
+  • Warning Thresholds (low/high)
+  • Alarm Thresholds (low/high)
+  • Warning Delay (minutes)
+  • Alarm Delay (minutes)
+  • Measurement Interval (minutes)
+
+================================================================================
+PROBE CONFIGURATION DEFAULTS (fiber.yaml)
+================================================================================
+
+Probe A: 36.5°C (baseline), ±0.5°C oscillation, 60s cycle
+Probe B: 37.2°C (baseline), ±0.3°C oscillation, 90s cycle
+Probe C: 36.8°C (baseline), ±0.4°C oscillation, 120s cycle
+Probe D: 37.5°C (baseline), ±0.6°C oscillation, 75s cycle
+
+Warning Zone:  35.0°C ↔ 38.0°C
+Alarm Zone:    34.0°C ↔ 39.0°C
+Hysteresis:    0.5°C (prevents oscillation between states)
+
+================================================================================
