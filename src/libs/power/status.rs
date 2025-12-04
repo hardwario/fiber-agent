@@ -1,33 +1,3 @@
-### FIBER MEDICAL PROJECT
-
-Target : Raspberry CM4
-
-Peripherals: /drivers
-Libraries: /libs
-
-We'll create an app to medical thermo sensors reading
-it has a display, buzzer, buttons, one wire sensors connected
-- Display: /drivers/display.rs
-- Buzzer: /drivers/buzzer.rs
-- STM32: /drivers/stm.rs
-- Buttons: /drivers/buttons.rs
-- Accelerometer: /drivers/lis2dh12.rs
-- W1 sensors: in target (CM4) on /sys/bus/w1/devices/:
-  - each w1 line has in stm32 two related LEDs, green and red, so w1_bus_master_1 should be related in stm32.rs with LED1G and LED1R
-- Power LEDS: in stm32.rs PWRLEDY and PWRLEDG
-- Battery and voltage in: in stm32.rs we have analog VIN and VBAT
-
-The main idea is:
-3) Discover sensors connected (we have 8 lines of W1 sensors DS18B20)
-2) Thread for reading them (the time to trigger the reading should be defined in a fiber.config.yaml) (in this moment just read, not saving)
-1) develop in /libs alarms to:
-    - power (VIN > 12000mV -> LEDPWRG ON && LEDPWRY OFF)
-        (VIN < 11000mV PWRLEDY ON on PWRLEDG off)
-        (VBAT < 3100mV PWRLEDY blinking)
-example:
-```bash
-// src/power.rs
-//
 // Battery/Power management module for medical thermometer.
 // VBAT: 3100mV = 0%, 3400mV = 100%
 // VIN: >12000mV = AC Power, <12000mV = Battery mode
@@ -89,37 +59,56 @@ impl PowerStatus {
         }
     }
 
-    /// Check if battery is low (< 20%)
+    /// Check if battery is low (3100mV ≤ VBAT ≤ 3200mV)
     pub fn is_low(&self) -> bool {
-        self.battery_percent < 20
+        self.vbat_mv >= 3100 && self.vbat_mv <= 3200
     }
 
-    /// Check if battery is critical (< 5%)
+    /// Check if battery is critical (VBAT < 3100mV)
     pub fn is_critical(&self) -> bool {
-        self.battery_percent < 5
+        self.vbat_mv < 3100
+    }
+
+    /// Check if battery is normal (VBAT > 3200mV)
+    pub fn is_normal_battery(&self) -> bool {
+        self.vbat_mv > 3200
+    }
+
+    /// Check if on AC power (VIN > 11000mV)
+    pub fn is_on_ac_power(&self) -> bool {
+        self.vin_mv > 11000
+    }
+
+    /// Check if on battery power (VIN ≤ 11000mV)
+    pub fn is_on_battery(&self) -> bool {
+        self.vin_mv <= 11000
     }
 
     /// Get LED control state for power indicator (PWRLEDG / PWRLEDY)
-    /// Returns (green_on, yellow_on)
-    /// - AC Power: GREEN on, YELLOW off
-    /// - Battery OK: GREEN off, YELLOW on
-    /// - Battery Low: GREEN off, YELLOW blinking (controlled by caller)
-    pub fn get_pwr_led_state(&self) -> (bool, bool) {
-        if self.on_ac_power {
-            // AC Power connected: GREEN on, YELLOW off
-            (true, false)
-        } else if self.is_low() {
-            // Battery low: YELLOW should blink (return as on, caller will blink)
-            (false, true)
-        } else {
-            // Battery mode, not low: GREEN off, YELLOW on
-            (false, true)
-        }
-    }
+    /// Returns (color, blink) using PowerLedColor enum
+    /// - AC Power: GREEN (steady)
+    /// - Battery OK (>3200mV): LIME (steady)
+    /// - Battery Low (3100-3200mV): YELLOW (steady)
+    /// - Battery Critical (<3100mV): YELLOW (blinking)
+    pub fn get_pwr_led_state(&self) -> (crate::libs::leds::state::PowerLedColor, bool) {
+        use crate::libs::leds::state::PowerLedColor;
 
-    /// Check if YELLOW LED should blink (low battery on battery power)
-    pub fn should_yellow_blink(&self) -> bool {
-        !self.on_ac_power && self.is_low()
+        if self.is_on_ac_power() {
+            // AC Power connected: GREEN (steady)
+            (PowerLedColor::Green, false)
+        } else if self.is_critical() {
+            // Battery critical: YELLOW (blinking)
+            (PowerLedColor::Yellow, true)
+        } else if self.is_low() {
+            // Battery low: YELLOW (steady)
+            (PowerLedColor::Yellow, false)
+        } else if self.is_normal_battery() {
+            // Battery OK on battery power: LIME (steady)
+            (PowerLedColor::Lime, false)
+        } else {
+            // Fallback
+            (PowerLedColor::Off, false)
+        }
     }
 }
 
@@ -193,7 +182,3 @@ mod tests {
         assert!(battery_low.should_yellow_blink());
     }
 }
-
-```
-
-echo ds2482 0x18 | sudo tee /sys/bus/i2c/devices/i2c-10/new_device

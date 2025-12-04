@@ -1,0 +1,114 @@
+# FIBER Sensor Configuration
+# Defines temperature alarm thresholds for 8 sensor lines
+# Can have common (default) alarms and per-line overrides
+#
+# Threshold hierarchy (for medical device):
+#   Critical Low (32°C) < Low Alarm (35°C) < Warning Low (36°C) < [NORMAL ZONE 36.5-38.5°C] < Warning High (38.5°C) < High Alarm (39°C) < Critical High (40°C)
+#
+# LINE LED Colors (8 sensors per line):
+#   green      = LEDG only (GREEN)
+#   red        = LEDR only (RED)
+#   yellow     = LEDG + LEDR combined (YELLOW)
+#   off        = Both LEDs off
+#
+# POWER LED Colors (PWRLED):
+#   green      = PWRLEDG only (GREEN)
+#   yellow     = PWRLEDY only (YELLOW)
+#   lime       = PWRLEDG + PWRLEDY combined (LIME/CYAN)
+#   off        = Both LEDs off
+
+# Alarm pattern configuration - controls LED and buzzer behavior for each state
+alarm_patterns:
+  # Warning state - approaching alarm thresholds
+  warning:
+    led_color: yellow           # Line LEDs: LEDG + LEDR (YELLOW) = approaching limits
+    led_blink: slow             # steady, slow (4 cycles), fast (1 cycle)
+    buzzer_enabled: true       # true = beep, false = silent
+    buzzer_pattern: critical        # none, disconnected, critical
+
+  # Alarm state - abnormal condition detected
+  alarm:
+    led_color: red
+    led_blink: steady
+    buzzer_enabled: false
+    buzzer_pattern: none
+
+  # Critical state - urgent condition, immediate response needed
+  critical:
+    led_color: red
+    led_blink: fast             # fast blinking
+    buzzer_enabled: true
+    buzzer_pattern: critical    # Use buzzer_critical_timing below
+
+  # Disconnected state - sensor lost connection
+  disconnected:
+    led_color: red
+    led_blink: slow
+    buzzer_enabled: true
+    buzzer_pattern: disconnected  # Use buzzer_disconnected_timing below
+
+  # Buzzer timing configuration for critical pattern (milliseconds)
+  # on_ms: Duration of PWM beeping phase
+  # off_ms: Duration of silence between beeps
+  buzzer_critical_timing:
+    on_ms: 500      # 500ms of PWM beeping (urgent - shorter beep)
+    off_ms: 500     # 500ms silence between beeps
+
+  # Buzzer timing configuration for disconnected pattern (milliseconds)
+  buzzer_disconnected_timing:
+    on_ms: 1000     # 1000ms of PWM beeping (1 second beep)
+    off_ms: 2000    # 2000ms silence (2 second pause)
+
+common_alarms:
+  # Critical thresholds - life-threatening, immediate intervention needed
+  critical_low_celsius: 18.0    # Below 32°C: severe hypothermia
+  critical_high_celsius: 40.0   # Above 40°C: severe fever/hyperthermia
+  # Alarm thresholds - abnormal, needs attention
+  low_alarm_celsius: 26.0       # Below 35°C: hypothermia
+  high_alarm_celsius: 39.0      # Above 39°C: high fever
+  # Warning thresholds - approaching alarm, monitor closely
+  warning_low_celsius: 27.0     # Below 36°C: mild hypothermia warning
+  warning_high_celsius: 38.5    # Above 38.5°C: elevated temperature warning
+  # Reconnection animation
+  reconnect_blinks: 5
+
+lines:
+  - line: 0
+    enabled: true
+    name: "Sensor 1"
+    # Uses common_alarms if not specified
+
+  - line: 1
+    enabled: true
+    name: "Sensor 2"
+    # Uses common_alarms if not specified
+
+  - line: 2
+    enabled: true
+    name: "Sensor 3"
+    # Uses common_alarms if not specified
+
+  - line: 3
+    enabled: true
+    name: "Sensor 4"
+    # Uses common_alarms if not specified
+
+  - line: 4
+    enabled: true
+    name: "Sensor 5"
+    # Uses common_alarms if not specified
+
+  - line: 5
+    enabled: true
+    name: "Sensor 6"
+    # Uses common_alarms if not specified
+
+  - line: 6
+    enabled: true
+    name: "Sensor 7"
+    # Uses common_alarms if not specified
+
+  - line: 7
+    enabled: true
+    name: "Sensor 8"
+    # Uses common_alarms if not specified

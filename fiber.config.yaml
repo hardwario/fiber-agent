@@ -1,0 +1,109 @@
+power:
+  # Power monitoring update interval
+  update_interval_ms: 10000
+
+  # Battery voltage thresholds (millivolts)
+  battery:
+    min_voltage_mv: 3100        # 0% battery / critical level
+    max_voltage_mv: 3400        # 100% battery / full charge
+    low_threshold_percent: 20   # Legacy, not used (now voltage-based)
+    critical_threshold_percent: 5  # Legacy, not used (now voltage-based)
+
+  # AC power detection (VIN)
+  ac_power:
+    detection_threshold_mv: 12000     # VIN > 12000mV = AC power detected
+    battery_mode_threshold_mv: 11000  # VIN ≤ 11000mV = Battery mode
+
+  # LED blinking configuration
+  led_blink:
+    toggle_count: 10  # Toggle blink every 10 update cycles
+
+  # Power LED states:
+  # - AC Power (VIN > 11000mV): GREEN (steady)
+  # - Battery OK (VBAT > 3200mV): LIME/Cyan (PWRLEDG + PWRLEDY both on, steady)
+  # - Battery Low (3100mV ≤ VBAT ≤ 3200mV): YELLOW (PWRLEDY only, steady)
+  # - Battery Critical (VBAT < 3100mV): YELLOW (PWRLEDY only, BLINKING)
+
+  # Buzzer alerts for power events
+  buzzer:
+    enabled: true
+    # VIN connected: Play happy 3-beep pattern (ReconnectionHappy)
+    # VIN disconnected: Play 2-second long beep (single alert)
+    # Battery mode: Play 100ms beep reminder every 10 seconds
+    # Critical battery: Repeating critical beep pattern until resolved
+    battery_mode_beep_interval_ms: 10000  # Reminder beep every 10 seconds on battery power
+    vin_disconnect_duration_ms: 2000      # Long beep duration when AC power lost
+    critical_beep_on_ms: 200              # Critical battery beep pattern timing
+    critical_beep_off_ms: 200
+
+sensors:
+  num_lines: 8
+  sample_interval_ms: 500
+  aggregation_interval_ms: 10000
+  report_interval_ms: 60000
+  failure_threshold: 3
+
+display:
+  update_interval_ms: 500
+  refresh_rate_hz: 1
+  backlight_enabled: true
+  rotation_degrees: 180
+
+ui:
+  button_debounce_ms: 50
+  menu_idle_timeout_sec: 30
+  buzzer:
+    enabled: true
+    beep_duration_ms: 100
+    alert_interval_ms: 500
+
+logging:
+  enabled: true
+  log_file: "data/sensor_log.csv"
+  interval_ms: 60000
+  max_file_size_mb: 10
+  max_backup_files: 10
+  verbosity: "info"
+
+serial:
+  port: "/dev/ttyAMA4"
+  baud_rate: 115200
+  timeout_ms: 1000
+  max_retries: 3
+
+accelerometer:
+  enabled: true
+  i2c_path: "/dev/i2c-10"
+  update_interval_ms: 100
+  motion_threshold_g: 0.3
+  debounce_samples: 5
+  logging_enabled: true
+
+storage:
+  # SQLite WAL database for medical data storage
+  enabled: true
+  db_path: "/data/fiber_medical.db"
+
+  # Database capacity constraints (medical device compliance)
+  max_size_gb: 5                    # 5GB maximum for 3-year data retention
+
+  # Data retention policy
+  retention_days: 1095              # 3 years minimum retention
+  cleanup_threshold_percent: 90     # Trigger cleanup at 90% capacity
+
+  # Auto-flush configuration
+  flush_interval_ms: 100            # Auto-flush every 100ms
+  flush_threshold_messages: 1000    # Auto-flush every 1000 messages
+
+  # Backup and archival
+  backup_enabled: true
+  backup_path: "/data/backups/"
+
+  # Audit trail (EU MDR 2017/745 compliance)
+  audit_enabled: true
+
+system:
+  debug_mode: false
+  app_name: "FIBER Medical Thermometer"
+  app_version: "0.1.0"
+  timezone_offset_hours: 0

@@ -1,0 +1,25 @@
+[package]
+name = "fiber_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rppal = "0.22.1"
+embedded-graphics = "0.8.1"
+i2cdev = "0.6"
+serialport = { version = "4", default-features = false }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+qrcode = "0.14"
+rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+time = "0.3"
+crossbeam = "0.8"
+
+[[bin]]
+name = "fiber_app"
+path = "src/main.rs"
+
+[lib]
+name = "fiber_app"
+path = "src/lib.rs"
