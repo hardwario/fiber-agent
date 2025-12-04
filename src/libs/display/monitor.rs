@@ -10,6 +10,7 @@ use rppal::gpio::Gpio;
 use crate::drivers::display::St7920;
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
+use crate::libs::network::get_network_status;
 
 use super::{SharedDisplayStateHandle, Screen};
 use super::screens::{render_sensor_overview, render_qr_code_screen};
@@ -52,9 +53,14 @@ pub fn display_loop(
         if last_update.elapsed() >= update_interval {
             last_update = std::time::Instant::now();
 
+            // Fetch current network status
+            let network_status = get_network_status();
+
             // Get current display state (screen and page)
             let (current_screen, qr_generator) = {
-                if let Ok(state) = display_state.lock() {
+                if let Ok(mut state) = display_state.lock() {
+                    // Update network status in display state
+                    state.network_status = network_status;
                     (state.current_screen.clone(), state.qr_generator.clone())
                 } else {
                     (Screen::SensorOverview { page: 0 }, None)
@@ -73,8 +79,8 @@ pub fn display_loop(
                         sensor_state.read().unwrap()
                     });
 
-                    // Render the sensor overview screen
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot) {
+                    // Render the sensor overview screen with network status
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }

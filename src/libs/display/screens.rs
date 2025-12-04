@@ -12,7 +12,8 @@ use crate::drivers::display::St7920;
 use crate::libs::alarms::AlarmState;
 use crate::libs::leds::state::SharedLedState;
 use crate::libs::sensors::state::SharedSensorState;
-use crate::libs::network::QrCodeGenerator;
+use crate::libs::network::{QrCodeGenerator, NetworkStatus};
+use crate::libs::display::icons;
 
 /// Render the sensor overview screen showing all 8 sensors across 2 pages
 pub fn render_sensor_overview(
@@ -20,12 +21,16 @@ pub fn render_sensor_overview(
     page: usize,
     _led_state: &SharedLedState,
     sensor_state: &SharedSensorState,
+    network_status: &NetworkStatus,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // Draw network connection icons on the left (aligned with top of FIBER text)
+    icons::draw_network_status(display, 2, 0, network_status);
 
     // Draw header: "FIBER" centered, page number right-aligned
     Text::with_alignment(

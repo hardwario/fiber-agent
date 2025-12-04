@@ -14,11 +14,12 @@ use rppal::gpio::Gpio;
 
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
-use crate::libs::network::QrCodeGenerator;
+use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 
 pub mod monitor;
 pub mod screens;
 pub mod buttons;
+pub mod icons;
 
 pub use buttons::ButtonMonitor;
 
@@ -54,6 +55,8 @@ pub struct DisplayState {
     pub should_update: bool,
     /// QR code generator instance
     pub qr_generator: Option<Arc<QrCodeGenerator>>,
+    /// Current network connection status
+    pub network_status: NetworkStatus,
 }
 
 impl DisplayState {
@@ -62,6 +65,7 @@ impl DisplayState {
             current_screen: Screen::SensorOverview { page: 0 },
             should_update: true,
             qr_generator: None,
+            network_status: NetworkStatus::disconnected(),
         }
     }
 
