@@ -211,9 +211,9 @@ impl SensorFileConfig {
         Ok(config)
     }
 
-    /// Load sensor configuration from default location (fiber.sensors.config.yaml)
+    /// Load sensor configuration from default location (/data/fiber/config/fiber.sensors.config.yaml)
     pub fn load_default() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = Self::from_file("fiber.sensors.config.yaml")?;
+        let config = Self::from_file("/data/fiber/config/fiber.sensors.config.yaml")?;
 
         // Validate buzzer timings
         if let Some(patterns) = &config.alarm_patterns {
@@ -625,9 +625,9 @@ impl Config {
         Ok(config)
     }
 
-    /// Load configuration from default location (fiber.config.yaml)
+    /// Load configuration from default location (/data/fiber/config/fiber.config.yaml)
     pub fn load_default() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_file("fiber.config.yaml")
+        Self::from_file("/data/fiber/config/fiber.config.yaml")
     }
 
     /// Get a default configuration (for testing or when config file is missing)

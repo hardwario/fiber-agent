@@ -16,7 +16,7 @@ use super::reader::W1DeviceReader;
 use super::state::{SensorReading, SharedSensorStateHandle};
 
 const W1_BASE_PATH: &str = "/sys/bus/w1/devices";
-const SENSOR_CONFIG_FILE: &str = "fiber.sensors.config.yaml";
+const SENSOR_CONFIG_FILE: &str = "/data/fiber/config/fiber.sensors.config.yaml";
 
 /// Background sensor monitoring thread
 pub struct SensorMonitor {

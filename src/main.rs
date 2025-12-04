@@ -24,15 +24,15 @@ fn read_hostname_from_file() -> io::Result<String> {
 fn main() -> io::Result<()> {
     eprintln!("[main] Starting FIBER Medical Thermometer application");
 
-    // Load configuration from fiber.config.yaml
+    // Load configuration from /data/fiber/config/fiber.config.yaml
     eprintln!("[main] Loading configuration...");
     let config = match Config::load_default() {
         Ok(cfg) => {
-            eprintln!("[main] Configuration loaded from fiber.config.yaml");
+            eprintln!("[main] Configuration loaded from /data/fiber/config/fiber.config.yaml");
             cfg
         }
         Err(e) => {
-            eprintln!("[main] Warning: Failed to load fiber.config.yaml: {}", e);
+            eprintln!("[main] Warning: Failed to load /data/fiber/config/fiber.config.yaml: {}", e);
             eprintln!("[main] Using default configuration");
             Config::default_config()
         }
