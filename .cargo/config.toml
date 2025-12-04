@@ -1,6 +1,2 @@
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
-
-# If you also want a 32-bit Pi build, you can add:
-# [target.armv7-unknown-linux-gnueabihf]
-# linker = "arm-linux-gnueabihf-gcc"

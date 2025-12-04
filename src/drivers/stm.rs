@@ -1,4 +1,3 @@
-// src/drivers/stm.rs
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::io::{self, Write};
 use std::thread::sleep;
@@ -106,16 +105,16 @@ impl StmBridge {
     }
 
     fn send_cmd(&mut self, cmd: &str) -> io::Result<Option<String>> {
-        eprintln!(">> {}", cmd);
+        //eprintln!(">> {}", cmd);
         self.port.write_all(cmd.as_bytes())?;
         self.port.write_all(b"\n")?;
         self.port.flush()?;
 
         let reply = self.read_line(Duration::from_millis(1000))?;
         if let Some(ref line) = reply {
-            eprintln!("<< {}", line);
+            //eprintln!("<< {}", line);
         } else {
-            eprintln!("<< (no response)");
+            //eprintln!("<< (no response)");
         }
         Ok(reply)
     }
@@ -229,7 +228,7 @@ impl StmBridge {
             // Turn off both green and red LEDs for each line
             match self.set_line_leds(i, false, false) {
                 Ok(_) => {
-                    eprintln!("[stm] LED {} turned OFF", i);
+                    //eprintln!("[stm] LED {} turned OFF", i);
                 }
                 Err(e) => {
                     eprintln!("[stm] Warning: failed to turn off LED {}: {}", i, e);
