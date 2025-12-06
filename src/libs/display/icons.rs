@@ -5,9 +5,7 @@ use embedded_graphics::pixelcolor::BinaryColor;
 
 use crate::libs::network::status::NetworkStatus;
 
-// ==========================================================
 // PUBLIC API
-// ==========================================================
 
 /// Draw network connection status icon
 /// Returns the width of the drawn icon for layout calculations
@@ -43,11 +41,7 @@ where
     }
 }
 
-// ==========================================================
 // WIFI BITMAPS – EXACT STYLE FROM YOUR IMAGE
-// grid: 11 (width) x 7 (height)
-// '#' below = BinaryColor::On
-// ==========================================================
 
 const WIFI_STRONG_BITMAP: [[u8; 11]; 7] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -81,19 +75,17 @@ const WIFI_WEAK_BITMAP: [[u8; 11]; 7] = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
 ];
 
-// ==========================================================
+
 // NO CONNECTION BITMAP – X SYMBOL
-// grid: 11 (width) x 7 (height)
-// ==========================================================
 
 const NO_CONNECTION_BITMAP: [[u8; 11]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // Row 0: empty
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  // Row 1: top corners of X
-    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],  // Row 2: 
-    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],  // Row 3: center cross
-    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],  // Row 4: 
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  // Row 5: bottom corners of X
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // Row 6: empty
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0], 
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], 
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],  
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  
 ];
 
 // Generic helper to draw any of the bitmaps above
@@ -182,23 +174,17 @@ where
     draw_wifi_bitmap(display, x, y+1, &NO_CONNECTION_BITMAP);
 }
 
-// ==========================================================
-// Ethernet (you can keep your existing one, just example here)
-// ==========================================================
-
-// ==========================================================
 // ETHERNET BITMAP – MATCHING WIFI DIMENSIONS
 // grid: 11 (width) x 7 (height)
-// ==========================================================
 
 const ETHERNET_BITMAP: [[u8; 11]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // Row 0: empty space above
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  // Row 1: top edge of port (8 wide)
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],  // Row 2: left and right edges
-    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],  // Row 3: edges + 3 pins + cable
-    [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],  // Row 4: edges + 3 pins
-    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],  // Row 5: left and right edges
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],  // Row 6: bottom edge of port
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], 
+    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0], 
+    [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0], 
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], 
 ];
 
 fn draw_ethernet<D>(display: &mut D, x: i32, y: i32)

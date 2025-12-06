@@ -22,7 +22,7 @@ fn read_hostname_from_file() -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
-    eprintln!("[main] Starting FIBER Medical Thermometer application");
+    eprintln!("[main] Starting FIBER application");
 
     // Load configuration from /data/fiber/config/fiber.config.yaml
     eprintln!("[main] Loading configuration...");
