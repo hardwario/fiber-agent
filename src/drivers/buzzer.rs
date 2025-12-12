@@ -22,20 +22,20 @@ impl Buzzer {
 
     pub fn on(&mut self) {
         // Active-low buzzer
-        self.pin.set_low();
+        //self.pin.set_low();
     }
 
     pub fn off(&mut self) {
-        self.pin.set_high();
+        //self.pin.set_high();
     }
 
     /// Set buzzer state directly (non-blocking)
     /// Used for precise timing control in the monitor loop
     pub fn set_state(&mut self, on: bool) {
         if on {
-            self.pin.set_low();  // Buzzer ON (active-low)
+            //self.pin.set_low();  // Buzzer ON (active-low)
         } else {
-            self.pin.set_high(); // Buzzer OFF (inactive)
+            //self.pin.set_high(); // Buzzer OFF (inactive)
         }
     }
 
@@ -60,10 +60,10 @@ impl Buzzer {
 
         // Rapidly toggle pin to create PWM waveform
         while start.elapsed() < duration {
-            self.pin.set_low();    // Buzzer ON (active-low)
+            //self.pin.set_low();    // Buzzer ON (active-low)
             thread::sleep(half_period);
 
-            self.pin.set_high();   // Buzzer OFF (inactive)
+            //self.pin.set_high();   // Buzzer OFF (inactive)
             thread::sleep(half_period);
         }
 

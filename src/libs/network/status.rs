@@ -29,16 +29,23 @@ impl NetworkStatus {
 pub fn get_network_status() -> NetworkStatus {
     let mut status = NetworkStatus::disconnected();
 
-    // Check Ethernet connection
-    if is_interface_up("eth0") {
-        status.ethernet_connected = true;
-        return status; // Prioritize Ethernet
+    // Check Ethernet connection (try common names)
+    let eth_interfaces = ["eth0", "enp0s3", "enp4s0", "enp0s31f6", "end0"];
+    for iface in &eth_interfaces {
+        if is_interface_up(iface) {
+            status.ethernet_connected = true;
+            return status; // Prioritize Ethernet
+        }
     }
 
-    // Check WiFi connection
-    if is_interface_up("wlan0") {
-        status.wifi_connected = true;
-        status.wifi_signal_strength = read_wifi_signal_strength();
+    // Check WiFi connection (try common names)
+    let wifi_interfaces = ["wlan0", "wlp3s0", "wlp4s0", "wlo1"];
+    for iface in &wifi_interfaces {
+        if is_interface_up(iface) {
+            status.wifi_connected = true;
+            status.wifi_signal_strength = read_wifi_signal_strength();
+            return status;
+        }
     }
 
     status

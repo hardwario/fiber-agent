@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -118,7 +118,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let qr_generator = match QrCodeGenerator::new(hostname, pin) {
+    let qr_generator = match QrCodeGenerator::new(hostname.clone(), pin) {
         Ok(gen) => {
             eprintln!("[main] QR code generator initialized successfully");
             Arc::new(gen)
@@ -129,9 +129,22 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Create shared power status for power monitoring and display
+    eprintln!("[main] Initializing shared power status...");
+    let power_status = Arc::new(Mutex::new(PowerStatus::default()));
+    eprintln!("[main] Power status initialized");
+
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
-    let _display_monitor = DisplayMonitor::new(led_state.clone(), gpio.clone(), sensor_state.clone())?;
+    let _display_monitor = DisplayMonitor::new(
+        led_state.clone(),
+        gpio.clone(),
+        sensor_state.clone(),
+        power_status.clone(),
+        hostname.clone(),
+        config.system.app_version.clone(),
+        config.system.timezone_offset_hours,
+    )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
     // Set QR code generator in display state
@@ -154,11 +167,6 @@ fn main() -> io::Result<()> {
     // Create buzzer priority manager for coordinating battery and sensor critical alarms
     eprintln!("[main] Initializing buzzer priority manager...");
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
-
-    // Create and spawn power monitoring thread with configured interval
-    eprintln!("[main] Starting power monitor...");
-    let _power_monitor = PowerMonitor::new(stm_guard.clone(), config.power.update_interval_ms, led_state.clone(), power_buzzer.clone(), buzzer_priority_manager.clone())?;
-    eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
 
     // Create and spawn accelerometer monitoring thread if enabled
     let _accel_monitor = if config.accelerometer.enabled {
@@ -195,9 +203,49 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Create and spawn sensor monitoring thread
+    // Create and spawn MQTT monitor if enabled
+    eprintln!("[main] Checking MQTT configuration...");
+    eprintln!("[main]   config.mqtt present: {}", config.mqtt.is_some());
+    if let Some(ref mqtt_config) = config.mqtt {
+        eprintln!("[main]   config.mqtt.enabled: {}", mqtt_config.enabled);
+    }
+
+    let mqtt_handle = if config.mqtt.as_ref().map(|m| m.enabled).unwrap_or(false) {
+        eprintln!("[main] Starting MQTT monitor...");
+        match MqttMonitor::new(config.mqtt.clone().unwrap(), hostname.clone()) {
+            Ok(monitor) => {
+                eprintln!("[main] MQTT monitor started");
+                let handle = monitor.handle();
+                // Keep monitor alive
+                std::mem::forget(monitor);
+                Some(handle)
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to start MQTT: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] MQTT disabled in configuration");
+        None
+    };
+
+    // Create and spawn power monitoring thread with configured interval
+    eprintln!("[main] Starting power monitor...");
+    let _power_monitor = PowerMonitor::new(
+        stm_guard.clone(),
+        config.power.update_interval_ms,
+        led_state.clone(),
+        power_buzzer.clone(),
+        buzzer_priority_manager.clone(),
+        power_status.clone(),
+        mqtt_handle.clone(),
+    )?;
+    eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
+
+    // Create and spawn sensor monitoring thread (pass MQTT handle)
     eprintln!("[main] Starting sensor monitor...");
-    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone()) {
+    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone()) {
         Ok(monitor) => {
             eprintln!("[main] Sensor monitor started");
             Some(monitor)

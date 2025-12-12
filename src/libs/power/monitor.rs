@@ -12,7 +12,9 @@ use crate::libs::buzzer::{BuzzerController, BuzzerPriorityManager};
 use crate::libs::buzzer::pattern::BuzzerPattern;
 use crate::libs::config::BuzzerTiming;
 use crate::libs::logging::get_timestamp_str;
+use crate::libs::mqtt::MqttHandle;
 use super::controller::PowerController;
+use super::status::SharedPowerStatus;
 
 /// Background power monitoring thread
 pub struct PowerMonitor {
@@ -32,12 +34,14 @@ impl PowerMonitor {
         led_state: SharedLedStateHandle,
         buzzer: Arc<Mutex<BuzzerController>>,
         priority_manager: Arc<BuzzerPriorityManager>,
+        power_status: SharedPowerStatus,
+        mqtt_handle: Option<MqttHandle>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(stm, shutdown_flag_clone, update_interval_ms, led_state, buzzer, priority_manager);
+            Self::monitor_loop(stm, shutdown_flag_clone, update_interval_ms, led_state, buzzer, priority_manager, power_status, mqtt_handle);
         });
 
         Ok(Self {
@@ -54,6 +58,8 @@ impl PowerMonitor {
         led_state: SharedLedStateHandle,
         buzzer: Arc<Mutex<BuzzerController>>,
         priority_manager: Arc<BuzzerPriorityManager>,
+        power_status: SharedPowerStatus,
+        mqtt_handle: Option<MqttHandle>,
     ) {
         // Create power controller
         let mut controller = match PowerController::new(stm) {
@@ -84,16 +90,16 @@ impl PowerMonitor {
             }
 
             // Perform power status update
-            eprintln!("[{}] [PowerMonitor] Attempting ADC read...", get_timestamp_str());
+            //eprintln!("[{}] [PowerMonitor] Attempting ADC read...", get_timestamp_str());
             let update_start = Instant::now();
             match controller.update() {
                 Ok(()) => {
                     let update_duration = update_start.elapsed();
-                    eprintln!("[{}] [PowerMonitor] ADC read completed in {}ms", get_timestamp_str(), update_duration.as_millis());
+                   // eprintln!("[{}] [PowerMonitor] ADC read completed in {}ms", get_timestamp_str(), update_duration.as_millis());
                     let status = controller.get_status();
                     let current_vin_status = status.is_on_ac_power();
 
-                    eprintln!(
+/*                     eprintln!(
                         "[{}] [PowerMonitor] Battery: {} mV, VIN: {} mV, AC: {}, Low: {}, Critical: {}",
                         get_timestamp_str(),
                         status.vbat_mv,
@@ -101,23 +107,61 @@ impl PowerMonitor {
                         status.is_on_ac_power(),
                         status.is_low(),
                         status.is_critical()
-                    );
+                    ); */
+
+                    // Update shared power status
+                    if let Ok(mut ps) = power_status.lock() {
+                        *ps = status;
+                    }
 
                     // Update shared LED state
                     // The set_power_leds() method automatically notifies the LED monitor of changes
                     let (color, blink) = status.get_pwr_led_state();
                     led_state.set_power_leds(color, blink);
 
+                    // Publish power status to MQTT if available
+                    if let Some(ref mqtt) = mqtt_handle {
+                        use std::time::UNIX_EPOCH;
+                        let last_ac_loss_secs = status.last_ac_loss_time
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs());
+                        mqtt.send_power_status(
+                            status.vbat_mv,
+                            status.battery_percent,
+                            status.vin_mv,
+                            status.is_on_ac_power(),
+                            last_ac_loss_secs,
+                        );
+                    }
+
                     // Handle VIN connection/disconnection transitions
                     if current_vin_status && !previous_vin_status {
                         // VIN just connected (AC power detected)
                         eprintln!("[{}] [PowerMonitor] AC power detected - VIN connected", get_timestamp_str());
+
+                        // Publish AC reconnect event to MQTT if available
+                        if let Some(ref mqtt) = mqtt_handle {
+                            mqtt.send_ac_reconnect_event();
+                        }
+
                         if let Ok(bz) = buzzer.lock() {
                             bz.play_once(BuzzerPattern::ReconnectionHappy { frequency_hz: 150 });
                         }
                     } else if !current_vin_status && previous_vin_status {
                         // VIN just disconnected (lost AC power, switched to battery)
                         eprintln!("[{}] [PowerMonitor] AC power lost - switched to battery", get_timestamp_str());
+
+                        // Record AC loss timestamp in shared power status
+                        if let Ok(mut ps) = power_status.lock() {
+                            ps.record_ac_loss();
+                            eprintln!("[{}] [PowerMonitor] AC loss timestamp recorded", get_timestamp_str());
+                        }
+
+                        // Publish AC loss event to MQTT if available
+                        if let Some(ref mqtt) = mqtt_handle {
+                            mqtt.send_ac_loss_event();
+                        }
+
                         if let Ok(bz) = buzzer.lock() {
                             let vin_disconnect_timing = BuzzerTiming {
                                 on_ms: 2000,   // 2 second long beep

@@ -8,12 +8,15 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::drivers::display::St7920;
 use crate::libs::alarms::AlarmState;
 use crate::libs::leds::state::SharedLedState;
 use crate::libs::sensors::state::SharedSensorState;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 use crate::libs::display::icons;
+use crate::libs::power::PowerStatus;
 
 /// Render the sensor overview screen showing all 8 sensors across 2 pages
 pub fn render_sensor_overview(
@@ -222,4 +225,172 @@ pub fn render_qr_code_screen(
     }
 
     display.flush()
+}
+
+/// Render the system information screen with pagination (2 pages)
+pub fn render_system_info(
+    display: &mut St7920,
+    page: usize,
+    sensor_state: &SharedSensorState,
+    network_status: &NetworkStatus,
+    power_status: &PowerStatus,
+    hostname: &str,
+    app_version: &str,
+    timezone_offset_hours: i8,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // Header: "SYSTEM INFO" centered with page indicator
+    let header = format!("SYSTEM INFO {}/2", page + 1);
+    Text::with_alignment(
+        &header,
+        Point::new(64, 8),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Separator line
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    if page == 0 {
+        // PAGE 1: Basic System Info
+
+        // Line 1 (y=22): ID: HOSTNAME
+        let id_line = format!("ID:{}", hostname);
+        Text::new(&id_line, Point::new(2, 22), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 2 (y=32): Date
+        let date_str = format!("Date:{}", format_date(timezone_offset_hours));
+        Text::new(&date_str, Point::new(2, 32), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 3 (y=42): Time
+        let time_str = format!("Time:{}", format_time(timezone_offset_hours));
+        Text::new(&time_str, Point::new(2, 42), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 4 (y=52): Probes count and power
+        let connected = count_connected_probes(sensor_state);
+        
+        let probe_line = format!("Probes:{}/8 ", connected);
+        Text::new(&probe_line, Point::new(2, 52), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 5 (y=62): Battery percentage (always show)
+        let power_str = if power_status.on_ac_power { "PoE" } else { "Bat" };
+        let battery_line = format!("Battery:{}%, PWR:{}", power_status.battery_percent, power_str);
+        Text::new(&battery_line, Point::new(2, 62), text_style)
+            .draw(display)
+            .ok();
+
+    } else {
+        // PAGE 2: Network & Version Info
+
+        // Line 1 (y=22): WiFi status
+        let wifi = if network_status.wifi_connected { "On" } else { "Off" };
+        let wifi_line = format!("WiFi:{}", wifi);
+        Text::new(&wifi_line, Point::new(2, 22), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 2 (y=32): Ethernet status
+        let eth = if network_status.ethernet_connected { "On" } else { "Off" };
+        let eth_line = format!("Ethernet:{}", eth);
+        Text::new(&eth_line, Point::new(2, 32), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 3 (y=42): Last power alarm
+        let alarm_str = format_last_alarm(power_status, timezone_offset_hours);
+        let alarm_line = format!("Last Alarm:{}", alarm_str);
+        Text::new(&alarm_line, Point::new(2, 42), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 4 (y=52): Firmware version
+        let fw_line = format!("Firmware:{}", app_version);
+        Text::new(&fw_line, Point::new(2, 52), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 5 (y=62): Hardware version
+        Text::new("Hardware:N/A", Point::new(2, 62), text_style)
+            .draw(display)
+            .ok();
+    }
+
+    display.flush()
+}
+
+/// Format current date as YYYY-MM-DD
+fn format_date(offset_hours: i8) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+
+    let total_secs = now.as_secs() as i64 + (offset_hours as i64 * 3600);
+    let days_since_epoch = total_secs / 86400;
+
+    // Approximate year (365.25 days per year)
+    let year = 1970 + (days_since_epoch as f64 / 365.25) as i32;
+
+    // Approximate day of year
+    let day_of_year = days_since_epoch % 365;
+
+    // Approximate month and day (simple 30-day month approximation)
+    let month = 1 + (day_of_year / 30).min(11);
+    let day = 1 + (day_of_year % 30);
+
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+/// Format current time as HH:MM:SS
+fn format_time(offset_hours: i8) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+
+    let total_secs = now.as_secs() as i64 + (offset_hours as i64 * 3600);
+
+    let hours = ((total_secs / 3600) % 24) as u32;
+    let minutes = ((total_secs / 60) % 60) as u32;
+    let seconds = (total_secs % 60) as u32;
+
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+/// Count number of connected probes
+fn count_connected_probes(sensor_state: &SharedSensorState) -> usize {
+    sensor_state.readings.iter()
+        .filter(|r| r.as_ref().map_or(false, |reading| reading.is_connected))
+        .count()
+}
+
+/// Format last power alarm timestamp
+fn format_last_alarm(power_status: &PowerStatus, offset_hours: i8) -> String {
+    if let Some(alarm_time) = power_status.last_ac_loss_time {
+        let duration = alarm_time.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let total_secs = duration.as_secs() as i64 + (offset_hours as i64 * 3600);
+
+        let hours = ((total_secs / 3600) % 24) as u32;
+        let minutes = ((total_secs / 60) % 60) as u32;
+        let seconds = (total_secs % 60) as u32;
+
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        "None".to_string()
+    }
 }

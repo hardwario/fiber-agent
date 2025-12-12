@@ -11,6 +11,7 @@ pub mod logging;
 pub mod display;
 pub mod network;
 pub mod storage;
+pub mod mqtt;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};
@@ -23,3 +24,4 @@ pub use leds::{LedMonitor, SharedLedState};
 pub use display::DisplayMonitor;
 pub use network::QrCodeGenerator;
 pub use storage::{StorageHandle, StorageThread};
+pub use mqtt::{MqttHandle, MqttMonitor};

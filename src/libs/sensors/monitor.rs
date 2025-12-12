@@ -11,6 +11,7 @@ use crate::libs::config::{SensorConfig, SensorFileConfig};
 use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCallback};
 use crate::libs::buzzer::{BuzzerController, BuzzerPattern, BuzzerPriorityManager};
 use crate::libs::leds::SharedLedStateHandle;
+use crate::libs::mqtt::MqttHandle;
 
 use super::reader::W1DeviceReader;
 use super::state::{SensorReading, SharedSensorStateHandle};
@@ -27,7 +28,7 @@ pub struct SensorMonitor {
 
 impl SensorMonitor {
     /// Create and spawn background sensor monitoring thread
-    pub fn new(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, led_state: SharedLedStateHandle, buzzer: Arc<Mutex<BuzzerController>>, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>) -> io::Result<Self> {
+    pub fn new(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, led_state: SharedLedStateHandle, buzzer: Arc<Mutex<BuzzerController>>, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
@@ -35,7 +36,7 @@ impl SensorMonitor {
 
         // Spawn the main sensor monitoring thread
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(config, stm, shutdown_flag_clone, buzzer_clone, led_state, sensor_state, priority_manager);
+            Self::monitor_loop(config, stm, shutdown_flag_clone, buzzer_clone, led_state, sensor_state, priority_manager, mqtt_handle);
         });
 
         Ok(Self {
@@ -46,7 +47,7 @@ impl SensorMonitor {
     }
 
     /// Background monitoring loop
-    fn monitor_loop(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, shutdown_flag: Arc<AtomicBool>, buzzer: Arc<Mutex<BuzzerController>>, led_state: SharedLedStateHandle, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>) {
+    fn monitor_loop(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, shutdown_flag: Arc<AtomicBool>, buzzer: Arc<Mutex<BuzzerController>>, led_state: SharedLedStateHandle, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>) {
         // Load sensor file configuration
         let sensor_file_config = match SensorFileConfig::load_default() {
             Ok(cfg) => {
@@ -250,9 +251,14 @@ impl SensorMonitor {
                                 consecutive_failures[sensor_idx] = 0;
 
                                 // Update shared sensor state for display with current alarm state
+                                let alarm_state = alarm_controllers[sensor_idx].state();
                                 if let Ok(mut state) = sensor_state.write() {
-                                    let alarm_state = alarm_controllers[sensor_idx].state();
                                     state.set_reading(sensor_idx as u8, SensorReading::new(temp, true, alarm_state));
+                                }
+
+                                // Publish to MQTT if available
+                                if let Some(ref mqtt) = mqtt_handle {
+                                    mqtt.send_sensor_reading(sensor_idx as u8, temp, true, alarm_state);
                                 }
 
                                 //eprintln!("[SensorMonitor] Sensor {}: {:.1}°C",sensor_idx, temp);
@@ -268,9 +274,14 @@ impl SensorMonitor {
                                 if consecutive_failures[sensor_idx] >= failure_debounce_count {
                                     alarm_controllers[sensor_idx].mark_read_failure();
                                     // Mark as disconnected in shared sensor state
+                                    let alarm_state = alarm_controllers[sensor_idx].state();
                                     if let Ok(mut state) = sensor_state.write() {
-                                        let alarm_state = alarm_controllers[sensor_idx].state();
                                         state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
+                                    }
+
+                                    // Publish disconnection to MQTT if available
+                                    if let Some(ref mqtt) = mqtt_handle {
+                                        mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
                                     }
                                 }
                             }
@@ -283,9 +294,14 @@ impl SensorMonitor {
                         if consecutive_failures[sensor_idx] >= failure_debounce_count {
                             alarm_controllers[sensor_idx].mark_read_failure();
                             // Mark as disconnected in shared sensor state
+                            let alarm_state = alarm_controllers[sensor_idx].state();
                             if let Ok(mut state) = sensor_state.write() {
-                                let alarm_state = alarm_controllers[sensor_idx].state();
                                 state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
+                            }
+
+                            // Publish disconnection to MQTT if available
+                            if let Some(ref mqtt) = mqtt_handle {
+                                mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
                             }
                         }
                     }

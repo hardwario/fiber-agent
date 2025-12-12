@@ -11,9 +11,10 @@ use crate::drivers::display::St7920;
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::get_network_status;
+use crate::libs::power::SharedPowerStatus;
 
 use super::{SharedDisplayStateHandle, Screen};
-use super::screens::{render_sensor_overview, render_qr_code_screen};
+use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info};
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -22,6 +23,10 @@ pub fn display_loop(
     led_state: SharedLedStateHandle,
     gpio: Arc<Gpio>,
     sensor_state: SharedSensorStateHandle,
+    power_status: SharedPowerStatus,
+    hostname: String,
+    app_version: String,
+    timezone_offset_hours: i8,
 ) {
     // Initialize display
     let mut display = match St7920::new(gpio) {
@@ -92,6 +97,35 @@ pub fn display_loop(
                         }
                     } else {
                         eprintln!("[DisplayMonitor] Warning: QR generator not initialized");
+                    }
+                }
+                Screen::SystemInfo { page } => {
+                    // Read sensor state for probe count
+                    let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
+                        eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
+                        sensor_state.read().unwrap()
+                    });
+
+                    // Read power status
+                    let power_snapshot = if let Ok(ps) = power_status.lock() {
+                        *ps
+                    } else {
+                        eprintln!("[DisplayMonitor] Warning: Could not read power status");
+                        crate::libs::power::PowerStatus::default()
+                    };
+
+                    // Render system info screen with page number
+                    if let Err(e) = render_system_info(
+                        &mut display,
+                        page,
+                        &sensor_snapshot,
+                        &network_status,
+                        &power_snapshot,
+                        &hostname,
+                        &app_version,
+                        timezone_offset_hours,
+                    ) {
+                        eprintln!("[DisplayMonitor] Error rendering system info display: {}", e);
                     }
                 }
             }

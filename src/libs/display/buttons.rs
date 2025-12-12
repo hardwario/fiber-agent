@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
 use super::SharedDisplayStateHandle;
 
-/// Button monitor state machine for handling ENTER button countdown
+/// Button monitor state machine for handling ENTER button countdown and DOWN button hold
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ButtonMonitorState {
     /// Normal operation - waiting for button input
@@ -18,6 +18,10 @@ enum ButtonMonitorState {
     CountdownActive,
     /// QR code screen is displayed
     ShowingQr,
+    /// DOWN button being held, counting down for 5 seconds
+    DownHoldActive,
+    /// System info screen is displayed
+    ShowingSystem,
 }
 
 /// Button monitor thread for controlling display navigation
@@ -72,6 +76,7 @@ impl ButtonMonitor {
         // Button monitor state machine
         let mut state = ButtonMonitorState::Idle;
         let mut countdown_start = Instant::now();
+        let mut down_hold_start = Instant::now();
 
         // Main button monitoring loop
         loop {
@@ -89,27 +94,67 @@ impl ButtonMonitor {
                 match event {
                     ButtonEvent::Press(Button::Up) => {
                         eprintln!("[ButtonMonitor] UP button pressed");
-                        // Navigate to next page (only if not showing QR code)
+
+                        // Cancel any ongoing countdown
+                        if state == ButtonMonitorState::CountdownActive || state == ButtonMonitorState::DownHoldActive {
+                            eprintln!("[ButtonMonitor] Countdown/hold cancelled by UP button");
+                            state = ButtonMonitorState::Idle;
+                        }
+
+                        // Navigate to next page on navigable screens (Sensor Overview or System Info)
                         if let Ok(mut display_state_lock) = display_state.lock() {
-                            if !display_state_lock.current_screen.is_qr_code() {
+                            if display_state_lock.current_screen.is_navigable() {
                                 display_state_lock.next_page();
                                 eprintln!("[ButtonMonitor] Page changed");
                             }
                         }
-                        // Reset countdown state on any button press
-                        state = ButtonMonitorState::Idle;
+
+                        // Only reset to idle if not already idle (to preserve ShowingSystem state)
+                        if state != ButtonMonitorState::ShowingSystem {
+                            state = ButtonMonitorState::Idle;
+                        }
                     }
                     ButtonEvent::Press(Button::Down) => {
                         eprintln!("[ButtonMonitor] DOWN button pressed");
-                        // Navigate to next page (only if not showing QR code)
-                        if let Ok(mut display_state_lock) = display_state.lock() {
-                            if !display_state_lock.current_screen.is_qr_code() {
-                                display_state_lock.next_page();
-                                eprintln!("[ButtonMonitor] Page changed");
+                        match state {
+                            ButtonMonitorState::Idle => {
+                                // Check if on special screen (QR code only)
+                                let on_special_screen = if let Ok(display_state_lock) = display_state.lock() {
+                                    display_state_lock.current_screen.is_special_screen()
+                                } else {
+                                    false
+                                };
+
+                                if on_special_screen {
+                                    // On QR screen - ignore DOWN
+                                    eprintln!("[ButtonMonitor] DOWN ignored on QR code screen");
+                                } else {
+                                    // Start DOWN hold countdown
+                                    state = ButtonMonitorState::DownHoldActive;
+                                    down_hold_start = Instant::now();
+                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 5 seconds");
+                                }
+                            }
+                            ButtonMonitorState::ShowingSystem => {
+                                // On System screen - navigate pages instead of starting hold
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.next_page();
+                                    eprintln!("[ButtonMonitor] System info page changed");
+                                }
+                            }
+                            ButtonMonitorState::DownHoldActive => {
+                                // Already holding DOWN - ignore additional presses
+                            }
+                            ButtonMonitorState::CountdownActive => {
+                                // Cancel ENTER countdown and start DOWN hold
+                                state = ButtonMonitorState::DownHoldActive;
+                                down_hold_start = Instant::now();
+                                eprintln!("[ButtonMonitor] ENTER countdown cancelled, DOWN hold started");
+                            }
+                            _ => {
+                                // Other states - ignore DOWN
                             }
                         }
-                        // Reset countdown state on any button press
-                        state = ButtonMonitorState::Idle;
                     }
                     ButtonEvent::Press(Button::Enter) => {
                         eprintln!("[ButtonMonitor] ENTER button pressed");
@@ -133,15 +178,45 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
+                            ButtonMonitorState::DownHoldActive => {
+                                // Cancel DOWN hold and start ENTER countdown
+                                state = ButtonMonitorState::CountdownActive;
+                                countdown_start = Instant::now();
+                                eprintln!("[ButtonMonitor] DOWN hold cancelled, ENTER countdown started");
+                            }
+                            ButtonMonitorState::ShowingSystem => {
+                                // Return to sensor overview
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.show_sensor_overview();
+                                    eprintln!("[ButtonMonitor] Exiting system info screen");
+                                }
+                                state = ButtonMonitorState::Idle;
+                            }
+                        }
+                    }
+                    ButtonEvent::Release(Button::Down) => {
+                        // Handle DOWN button release
+                        if state == ButtonMonitorState::DownHoldActive {
+                            let elapsed = down_hold_start.elapsed();
+                            if elapsed < COUNTDOWN_DURATION {
+                                // Released early - cancel hold and navigate page
+                                eprintln!("[ButtonMonitor] DOWN released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.next_page();
+                                    eprintln!("[ButtonMonitor] Page changed");
+                                }
+                                state = ButtonMonitorState::Idle;
+                            }
+                            // If >= 5 seconds, already transitioned to ShowingSystem
                         }
                     }
                     ButtonEvent::Release(_) => {
-                        // Ignore release events
+                        // Ignore other release events
                     }
                 }
             }
 
-            // Check countdown completion
+            // Check countdown completion for ENTER button
             if state == ButtonMonitorState::CountdownActive {
                 if countdown_start.elapsed() >= COUNTDOWN_DURATION {
                     // Transition to QR code screen
@@ -150,6 +225,18 @@ impl ButtonMonitor {
                         eprintln!("[ButtonMonitor] Countdown complete - transitioning to QR code screen");
                     }
                     state = ButtonMonitorState::ShowingQr;
+                }
+            }
+
+            // Check countdown completion for DOWN button hold
+            if state == ButtonMonitorState::DownHoldActive {
+                if down_hold_start.elapsed() >= COUNTDOWN_DURATION {
+                    // Transition to system info screen
+                    if let Ok(mut display_state_lock) = display_state.lock() {
+                        display_state_lock.show_system_info();
+                        eprintln!("[ButtonMonitor] DOWN hold complete (5s) - transitioning to system info screen");
+                    }
+                    state = ButtonMonitorState::ShowingSystem;
                 }
             }
 

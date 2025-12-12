@@ -107,3 +107,70 @@ system:
   app_name: "FIBER Medical Thermometer"
   app_version: "0.1.0"
   timezone_offset_hours: 0
+
+mqtt:
+  # Enable/disable MQTT functionality
+  enabled: true  # Set to true to enable MQTT
+
+  # MQTT broker connection settings
+  broker:
+    host: "10.42.0.1"           # MQTT broker hostname or IP
+    port: 1883                  # 1883 for plain TCP, 8883 for TLS
+    client_id: ""               # Empty = use device hostname
+    username: "fiber"            
+    password: "123456789"
+
+  # TLS/SSL configuration (optional)
+  # tls:
+  #   enabled: false
+  #   ca_cert_path: "/data/fiber/certs/ca.crt"
+  #   client_cert_path: null
+  #   client_key_path: null
+  #   insecure_skip_verify: false
+
+  # Publishing configuration
+  publish:
+    topic_prefix: "fiber"       # Base topic prefix
+    include_hostname: true      # Topics: fiber/{hostname}/...
+    default_qos: 0              # Default QoS for all messages
+
+    # QoS overrides by message type
+    qos_overrides:
+      sensor_readings: 0        # High frequency, latest most important
+      power_status: 1           # Important state changes
+      alarm_events: 2           # Critical medical data (audit trail)
+      power_events: 2           # AC loss events (audit trail)
+      network_status: 0         # Informational
+
+    # Publishing intervals (seconds)
+    intervals:
+      sensors_sec: 5            # Sensor readings every 5s
+      power_sec: 10             # Power status every 10s
+      network_sec: 30           # Network status every 30s
+      system_info_sec: 60       # System info every 60s
+
+    # Message queue size (prevent memory exhaustion)
+    max_queue_size: 10000       # Drop oldest if full
+
+  # Command subscription configuration
+  subscribe:
+    enabled: true               # Accept commands from MQTT
+    max_commands_per_second: 10 # Rate limiting
+    audit_enabled: true         # Log all commands to storage
+
+  # Connection behavior
+  connection:
+    keep_alive_sec: 30          # MQTT keep-alive interval (faster dead connection detection)
+    connection_timeout_sec: 10  # Initial connection timeout (fail fast)
+    max_reconnect_attempts: 0   # 0 = infinite retries
+    reconnect_delay_sec: 1      # Initial reconnect delay
+    max_reconnect_delay_sec: 60 # Max backoff delay (allow longer backoff for persistent failures)
+    clean_session: false        # Preserve session state for faster reconnection
+
+  # Last Will and Testament (LWT)
+  last_will:
+    enabled: true
+    topic: "status"             # Relative to prefix: fiber/{hostname}/status
+    payload: '{"status":"offline","reason":"unexpected_disconnect"}'
+    qos: 1
+    retain: true                # Broker retains offline status

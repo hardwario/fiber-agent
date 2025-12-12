@@ -586,6 +586,160 @@ pub struct StorageConfig {
     pub audit_enabled: bool,
 }
 
+/// MQTT broker configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerConfig {
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub client_id: String,  // Empty = use hostname
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// TLS/SSL configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub ca_cert_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_cert_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_key_path: Option<String>,
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+}
+
+/// QoS overrides by message type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QosOverrides {
+    #[serde(default)]
+    pub sensor_readings: u8,
+    #[serde(default = "default_qos_1")]
+    pub power_status: u8,
+    #[serde(default = "default_qos_2")]
+    pub alarm_events: u8,
+    #[serde(default = "default_qos_2")]
+    pub power_events: u8,
+    #[serde(default)]
+    pub network_status: u8,
+}
+
+/// Publishing intervals configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishIntervals {
+    #[serde(default = "default_sensor_interval")]
+    pub sensors_sec: u64,
+    #[serde(default = "default_power_interval")]
+    pub power_sec: u64,
+    #[serde(default = "default_network_interval")]
+    pub network_sec: u64,
+    #[serde(default = "default_system_interval")]
+    pub system_info_sec: u64,
+}
+
+/// Publishing configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishConfig {
+    pub topic_prefix: String,
+    #[serde(default = "default_true")]
+    pub include_hostname: bool,
+    #[serde(default)]
+    pub default_qos: u8,
+    pub qos_overrides: QosOverrides,
+    pub intervals: PublishIntervals,
+    #[serde(default = "default_queue_size")]
+    pub max_queue_size: usize,
+}
+
+/// Subscription configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_rate_limit")]
+    pub max_commands_per_second: u32,
+    #[serde(default = "default_true")]
+    pub audit_enabled: bool,
+}
+
+/// Connection behavior configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionConfig {
+    #[serde(default = "default_keepalive")]
+    pub keep_alive_sec: u64,
+    #[serde(default = "default_timeout")]
+    pub connection_timeout_sec: u64,
+    #[serde(default)]
+    pub max_reconnect_attempts: u32,  // 0 = infinite
+    #[serde(default = "default_reconnect_delay")]
+    pub reconnect_delay_sec: u64,
+    #[serde(default = "default_max_reconnect_delay")]
+    pub max_reconnect_delay_sec: u64,
+    #[serde(default = "default_true")]
+    pub clean_session: bool,
+}
+
+/// Last Will and Testament configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastWillConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_lwt_topic")]
+    pub topic: String,
+    #[serde(default = "default_lwt_payload")]
+    pub payload: String,
+    #[serde(default = "default_qos_1")]
+    pub qos: u8,
+    #[serde(default = "default_true")]
+    pub retain: bool,
+}
+
+/// MQTT client configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MqttConfig {
+    /// Enable MQTT functionality
+    pub enabled: bool,
+
+    /// MQTT broker configuration
+    pub broker: BrokerConfig,
+
+    /// TLS/SSL configuration (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
+
+    /// Publishing configuration
+    pub publish: PublishConfig,
+
+    /// Subscription configuration
+    pub subscribe: SubscribeConfig,
+
+    /// Connection behavior
+    pub connection: ConnectionConfig,
+
+    /// Last Will and Testament
+    pub last_will: LastWillConfig,
+}
+
+// Default value functions for MQTT configuration
+fn default_true() -> bool { true }
+fn default_qos_1() -> u8 { 1 }
+fn default_qos_2() -> u8 { 2 }
+fn default_queue_size() -> usize { 10000 }
+fn default_sensor_interval() -> u64 { 5 }
+fn default_power_interval() -> u64 { 10 }
+fn default_network_interval() -> u64 { 30 }
+fn default_system_interval() -> u64 { 60 }
+fn default_rate_limit() -> u32 { 10 }
+fn default_keepalive() -> u64 { 60 }
+fn default_timeout() -> u64 { 30 }
+fn default_reconnect_delay() -> u64 { 1 }
+fn default_max_reconnect_delay() -> u64 { 30 }
+fn default_lwt_topic() -> String { "status".to_string() }
+fn default_lwt_payload() -> String { r#"{"status":"offline"}"#.to_string() }
+
 /// Complete application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -615,6 +769,10 @@ pub struct Config {
 
     /// System-wide settings
     pub system: SystemConfig,
+
+    /// MQTT client settings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mqtt: Option<MqttConfig>,
 }
 
 impl Config {
@@ -711,6 +869,7 @@ impl Config {
                 app_version: "0.1.0".to_string(),
                 timezone_offset_hours: 0,
             },
+            mqtt: None,  // MQTT disabled by default
         }
     }
 }

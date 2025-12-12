@@ -3,6 +3,7 @@
 // VIN: >12000mV = AC Power, <12000mV = Battery mode
 
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 /// Power supply information
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +16,8 @@ pub struct PowerStatus {
     pub vin_mv: u16,
     /// Whether on AC power (VIN > 12000mV)
     pub on_ac_power: bool,
+    /// Timestamp of last AC power loss event
+    pub last_ac_loss_time: Option<SystemTime>,
 }
 
 impl PowerStatus {
@@ -29,6 +32,7 @@ impl PowerStatus {
             battery_percent: percent,
             vin_mv,
             on_ac_power,
+            last_ac_loss_time: None,
         }
     }
 
@@ -109,6 +113,11 @@ impl PowerStatus {
             // Fallback
             (PowerLedColor::Off, false)
         }
+    }
+
+    /// Record AC power loss event
+    pub fn record_ac_loss(&mut self) {
+        self.last_ac_loss_time = Some(SystemTime::now());
     }
 }
 

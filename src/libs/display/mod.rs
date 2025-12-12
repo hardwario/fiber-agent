@@ -30,20 +30,38 @@ pub enum Screen {
     SensorOverview { page: usize },
     /// QR code configuration screen for Bluetooth/WiFi setup
     QrCodeConfig,
+    /// System information screen with pagination
+    SystemInfo { page: usize },
 }
 
 impl Screen {
-    /// Get the current page if this is a sensor overview screen
+    /// Get the current page if this is a paginated screen
     pub fn get_page(&self) -> Option<usize> {
         match self {
             Screen::SensorOverview { page } => Some(*page),
             Screen::QrCodeConfig => None,
+            Screen::SystemInfo { page } => Some(*page),
         }
     }
 
     /// Check if this is a QR code screen
     pub fn is_qr_code(&self) -> bool {
         matches!(self, Screen::QrCodeConfig)
+    }
+
+    /// Check if this is a special screen (QR code only - System info allows navigation)
+    pub fn is_special_screen(&self) -> bool {
+        matches!(self, Screen::QrCodeConfig)
+    }
+
+    /// Check if this is a system info screen
+    pub fn is_system_info(&self) -> bool {
+        matches!(self, Screen::SystemInfo { .. })
+    }
+
+    /// Check if this is a navigable screen (Sensor Overview or System Info)
+    pub fn is_navigable(&self) -> bool {
+        matches!(self, Screen::SensorOverview { .. } | Screen::SystemInfo { .. })
     }
 }
 
@@ -74,10 +92,16 @@ impl DisplayState {
         self.qr_generator = Some(generator);
     }
 
-    /// Navigate to next page (only for sensor overview)
+    /// Navigate to next page (works for sensor overview and system info)
     pub fn next_page(&mut self) {
-        if let Screen::SensorOverview { page } = self.current_screen {
-            self.current_screen = Screen::SensorOverview { page: if page == 0 { 1 } else { 0 } };
+        match self.current_screen {
+            Screen::SensorOverview { page } => {
+                self.current_screen = Screen::SensorOverview { page: if page == 0 { 1 } else { 0 } };
+            }
+            Screen::SystemInfo { page } => {
+                self.current_screen = Screen::SystemInfo { page: if page == 0 { 1 } else { 0 } };
+            }
+            _ => {}
         }
     }
 
@@ -89,6 +113,11 @@ impl DisplayState {
     /// Return to sensor overview (last page)
     pub fn show_sensor_overview(&mut self) {
         self.current_screen = Screen::SensorOverview { page: 0 };
+    }
+
+    /// Switch to system info screen (page 0)
+    pub fn show_system_info(&mut self) {
+        self.current_screen = Screen::SystemInfo { page: 0 };
     }
 }
 
@@ -110,14 +139,32 @@ pub struct DisplayMonitor {
 
 impl DisplayMonitor {
     /// Create and spawn the display monitor thread
-    pub fn new(led_state: SharedLedStateHandle, gpio: Arc<Gpio>, sensor_state: SharedSensorStateHandle) -> io::Result<Self> {
+    pub fn new(
+        led_state: SharedLedStateHandle,
+        gpio: Arc<Gpio>,
+        sensor_state: SharedSensorStateHandle,
+        power_status: crate::libs::power::SharedPowerStatus,
+        hostname: String,
+        app_version: String,
+        timezone_offset_hours: i8,
+    ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
         let display_state = Arc::new(Mutex::new(DisplayState::new()));
         let display_state_clone = display_state.clone();
 
         let thread_handle = thread::spawn(move || {
-            monitor::display_loop(shutdown_flag_clone, display_state_clone, led_state, gpio, sensor_state);
+            monitor::display_loop(
+                shutdown_flag_clone,
+                display_state_clone,
+                led_state,
+                gpio,
+                sensor_state,
+                power_status,
+                hostname,
+                app_version,
+                timezone_offset_hours,
+            );
         });
 
         Ok(Self {
