@@ -89,6 +89,12 @@ impl AlarmController {
         self.state_machine.current
     }
 
+    /// Update alarm thresholds (for hot reload)
+    pub fn update_thresholds(&mut self, new_thresholds: AlarmThreshold) {
+        self.thresholds = new_thresholds;
+        eprintln!("[AlarmController] Thresholds updated");
+    }
+
     /// Check if we just entered the Reconnecting state
     pub fn just_reconnecting(&self) -> bool {
         self.state_machine.just_reconnecting()

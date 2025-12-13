@@ -69,6 +69,10 @@ impl TopicBuilder {
         self.build(&["sensors", "summary"])
     }
 
+    pub fn sensors_aggregated(&self) -> String {
+        self.build(&["sensors", "aggregated"])
+    }
+
     // Power topics
     pub fn power_battery_percentage(&self) -> String {
         self.build(&["power", "battery", "percentage"])

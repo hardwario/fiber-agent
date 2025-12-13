@@ -248,6 +248,11 @@ impl MqttHandle {
             .as_secs();
         self.send(MqttMessage::PublishAcReconnectEvent { timestamp });
     }
+
+    /// Send aggregated sensor data
+    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod) {
+        self.send(MqttMessage::PublishAggregatedSensorData { period });
+    }
 }
 
 /// MQTT monitor thread

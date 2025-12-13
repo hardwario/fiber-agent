@@ -1,6 +1,7 @@
 // MQTT message types for channel communication
 
 use crate::libs::alarms::AlarmState;
+use crate::libs::sensors::aggregation::AggregationPeriod;
 
 /// Messages sent to the MQTT monitor thread for publishing
 #[derive(Debug, Clone)]
@@ -11,6 +12,11 @@ pub enum MqttMessage {
         temperature: f32,
         is_connected: bool,
         alarm_state: AlarmState,
+    },
+
+    /// Publish aggregated sensor data
+    PublishAggregatedSensorData {
+        period: AggregationPeriod,
     },
 
     /// Publish an alarm state transition event

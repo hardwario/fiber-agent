@@ -117,6 +117,10 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishAggregatedSensorData { period } => {
+                self.publish_aggregated_sensor_data(period).await
+            }
+
             // Internal messages, not published
             MqttMessage::SetConnectionState(_) | MqttMessage::Shutdown => Ok(()),
         }
@@ -155,6 +159,57 @@ impl MqttPublisher {
 
         self.publish(status_topic, status_payload.to_string(), status_qos, true)
             .await
+    }
+
+    /// Publish aggregated sensor data for a completed period
+    async fn publish_aggregated_sensor_data(
+        &self,
+        period: crate::libs::sensors::aggregation::AggregationPeriod,
+    ) -> Result<(), String> {
+        // Build JSON payload with all 8 sensors
+        let sensors_data: Vec<serde_json::Value> = period.sensors.iter()
+            .map(|sensor| {
+                // Only include valid sensor data
+                let temp_data = if sensor.sample_count > 0 {
+                    json!({
+                        "min_celsius": sensor.min_temp_celsius,
+                        "max_celsius": sensor.max_temp_celsius,
+                        "avg_celsius": sensor.avg_temp_celsius,
+                    })
+                } else {
+                    serde_json::Value::Null
+                };
+
+                json!({
+                    "line": sensor.line,
+                    "sample_count": sensor.sample_count,
+                    "disconnected_count": sensor.disconnected_count,
+                    "temperature": temp_data,
+                    "alarm_counts": {
+                        "normal": sensor.alarm_counts.normal,
+                        "warning": sensor.alarm_counts.warning,
+                        "alarm": sensor.alarm_counts.alarm,
+                        "critical": sensor.alarm_counts.critical,
+                        "disconnected": sensor.alarm_counts.disconnected,
+                        "reconnecting": sensor.alarm_counts.reconnecting,
+                    },
+                    "dominant_alarm_state": format!("{:?}", sensor.dominant_alarm_state()).to_uppercase(),
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "period_start_ts": period.period_start_ts,
+            "period_end_ts": period.period_end_ts,
+            "duration_sec": period.period_end_ts - period.period_start_ts,
+            "sensors": sensors_data,
+        });
+
+        let topic = self.topics.sensors_aggregated();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
     }
 
     /// Publish alarm event

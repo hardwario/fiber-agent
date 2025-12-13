@@ -187,6 +187,10 @@ pub struct SensorLineConfig {
     /// Critical high temperature override (None = use common)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_high_celsius: Option<f32>,
+
+    /// Per-sensor reporting interval override (None = use global)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_interval_ms: Option<u64>,
 }
 
 /// Sensor file configuration (from fiber.sensors.config.yaml)
@@ -254,6 +258,15 @@ impl SensorFileConfig {
         }
     }
 
+    /// Get effective report interval for a sensor line
+    pub fn get_line_report_interval(&self, line: u8, default_ms: u64) -> u64 {
+        self.lines
+            .iter()
+            .find(|l| l.line == line)
+            .and_then(|l| l.report_interval_ms)
+            .unwrap_or(default_ms)
+    }
+
     /// Get default alarm patterns
     fn default_alarm_patterns() -> AlarmPatternsConfig {
         AlarmPatternsConfig {
@@ -316,6 +329,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 1,
@@ -327,6 +341,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 2,
@@ -338,6 +353,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 3,
@@ -349,6 +365,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 4,
@@ -360,6 +377,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 5,
@@ -371,6 +389,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 6,
@@ -382,6 +401,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
                 SensorLineConfig {
                     line: 7,
@@ -393,6 +413,7 @@ impl SensorFileConfig {
                     warning_high_celsius: None,
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
+                    report_interval_ms: None,
                 },
             ],
         }
@@ -810,8 +831,8 @@ impl Config {
             sensors: SensorConfig {
                 num_lines: 8,
                 sample_interval_ms: 5000,
-                aggregation_interval_ms: 10000,
-                report_interval_ms: 60000,
+                aggregation_interval_ms: 60000,
+                report_interval_ms: 120000,
                 failure_threshold: 3,
             },
             display: DisplayConfig {

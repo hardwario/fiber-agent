@@ -2,7 +2,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use crate::libs::mqtt::MqttHandle;
 
 use super::reader::W1DeviceReader;
 use super::state::{SensorReading, SharedSensorStateHandle};
+use super::aggregation::AggregationState;
 
 const W1_BASE_PATH: &str = "/sys/bus/w1/devices";
 const SENSOR_CONFIG_FILE: &str = "/data/fiber/config/fiber.sensors.config.yaml";
@@ -113,21 +114,91 @@ impl SensorMonitor {
         let mut happy_beep_start_time: Option<Instant> = None;  // Track when happy beep started to auto-clear it
         let mut last_sensor_states: [Option<AlarmState>; 8] = [None; 8];  // Track previous states to detect reconnection
         let mut consecutive_failures: [u32; 8] = [0; 8];  // Track consecutive failures per sensor for debouncing
+        let mut last_published_connected: [bool; 8] = [true; 8];  // Track last published connection state to prevent spam
+        let mut last_mqtt_report = Instant::now();  // Track last MQTT publish time
 
         let update_interval = Duration::from_millis(config.sample_interval_ms);
+        let mqtt_report_interval = Duration::from_millis(config.report_interval_ms);
         let failure_debounce_count = 2;  // Require 2 consecutive failures before marking sensor as failed
+
+        // Initialize aggregation state for MQTT reporting
+        let aggregation_state = Arc::new(RwLock::new(
+            AggregationState::new(Duration::from_millis(config.aggregation_interval_ms))
+        ));
+        let mut last_aggregation_report = Instant::now();
+        let aggregation_report_interval = Duration::from_millis(config.report_interval_ms);
+
+        // Config hot reload check interval
+        let mut last_config_check = Instant::now();
+        let config_check_interval = Duration::from_secs(10);
+        let mut current_sensor_file_config = sensor_file_config.clone();
 
         eprintln!(
             "[SensorMonitor] Started monitoring with {}ms sample interval, {} failure threshold",
             config.sample_interval_ms, config.failure_threshold
         );
+        eprintln!(
+            "[SensorMonitor] MQTT reporting enabled with {}ms ({}s) interval",
+            config.report_interval_ms, config.report_interval_ms / 1000
+        );
+        eprintln!(
+            "[SensorMonitor] Aggregation enabled with {}ms ({}s) window, reporting every {}ms ({}s)",
+            config.aggregation_interval_ms, config.aggregation_interval_ms / 1000,
+            config.report_interval_ms, config.report_interval_ms / 1000
+        );
 
         // Main monitoring loop
         loop {
+            // Check if it's time to report to MQTT
+            let should_report_mqtt = last_mqtt_report.elapsed() >= mqtt_report_interval;
+            if should_report_mqtt {
+                last_mqtt_report = Instant::now();
+            }
+
             // Check for shutdown signal
             if shutdown_flag.load(Ordering::Relaxed) {
                 eprintln!("[SensorMonitor] Shutdown signal received, exiting monitor thread");
                 break;
+            }
+
+            // Hot reload sensor configuration
+            if last_config_check.elapsed() >= config_check_interval {
+                last_config_check = Instant::now();
+
+                match SensorFileConfig::load_default() {
+                    Ok(new_config) => {
+                        // Update sensor configuration
+                        current_sensor_file_config = new_config.clone();
+
+                        // Update alarm thresholds for each sensor
+                        for (idx, controller) in alarm_controllers.iter_mut().enumerate() {
+                            let new_thresholds = new_config.get_line_thresholds(idx as u8);
+                            controller.update_thresholds(new_thresholds);
+                        }
+
+                        eprintln!("[SensorMonitor] Configuration reloaded successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("[SensorMonitor] Warning: Failed to reload config: {}", e);
+                    }
+                }
+            }
+
+            // Check if it's time to report aggregated data (global timer, all sensors together)
+            if last_aggregation_report.elapsed() >= aggregation_report_interval {
+                last_aggregation_report = Instant::now();
+
+                let periods = if let Ok(mut agg_state) = aggregation_state.write() {
+                    agg_state.take_completed_periods()  // Drain queue once
+                } else {
+                    Vec::new()
+                };
+
+                if let Some(ref mqtt) = mqtt_handle {
+                    for period in periods {
+                        mqtt.send_aggregated_sensor_data(period);  // Send all 8 sensors in one message
+                    }
+                }
             }
 
             // Determine buzzer pattern based on sensor states
@@ -247,6 +318,7 @@ impl SensorMonitor {
                         match reader.read_temperature(*line_num, device_id, 3000) {
                             Ok(temp) => {
                                 // Successful read - update alarm controller and reset failure counter
+                                let was_disconnected = consecutive_failures[sensor_idx] >= failure_debounce_count;
                                 alarm_controllers[sensor_idx].update(temp);
                                 consecutive_failures[sensor_idx] = 0;
 
@@ -256,9 +328,19 @@ impl SensorMonitor {
                                     state.set_reading(sensor_idx as u8, SensorReading::new(temp, true, alarm_state));
                                 }
 
-                                // Publish to MQTT if available
-                                if let Some(ref mqtt) = mqtt_handle {
-                                    mqtt.send_sensor_reading(sensor_idx as u8, temp, true, alarm_state);
+                                // Add reading to aggregation state
+                                if let Ok(mut agg_state) = aggregation_state.write() {
+                                    agg_state.add_reading(sensor_idx as u8, temp, true, alarm_state);
+                                }
+
+                                // Publish to MQTT if available and report interval has elapsed
+                                // OR if sensor just reconnected (important status change)
+                                let connection_state_changed = !last_published_connected[sensor_idx];
+                                if should_report_mqtt || connection_state_changed {
+                                    if let Some(ref mqtt) = mqtt_handle {
+                                        mqtt.send_sensor_reading(sensor_idx as u8, temp, true, alarm_state);
+                                        last_published_connected[sensor_idx] = true;
+                                    }
                                 }
 
                                 //eprintln!("[SensorMonitor] Sensor {}: {:.1}°C",sensor_idx, temp);
@@ -279,9 +361,18 @@ impl SensorMonitor {
                                         state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
                                     }
 
-                                    // Publish disconnection to MQTT if available
-                                    if let Some(ref mqtt) = mqtt_handle {
-                                        mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                    // Add disconnected reading to aggregation state
+                                    if let Ok(mut agg_state) = aggregation_state.write() {
+                                        agg_state.add_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                    }
+
+                                    // Publish disconnection to MQTT immediately (important status change)
+                                    // Only publish if we haven't already published this disconnected state
+                                    if last_published_connected[sensor_idx] {
+                                        if let Some(ref mqtt) = mqtt_handle {
+                                            mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                            last_published_connected[sensor_idx] = false;
+                                        }
                                     }
                                 }
                             }
@@ -299,9 +390,18 @@ impl SensorMonitor {
                                 state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
                             }
 
-                            // Publish disconnection to MQTT if available
-                            if let Some(ref mqtt) = mqtt_handle {
-                                mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                            // Add disconnected reading to aggregation state
+                            if let Ok(mut agg_state) = aggregation_state.write() {
+                                agg_state.add_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                            }
+
+                            // Publish disconnection to MQTT immediately (important status change)
+                            // Only publish if we haven't already published this disconnected state
+                            if last_published_connected[sensor_idx] {
+                                if let Some(ref mqtt) = mqtt_handle {
+                                    mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                    last_published_connected[sensor_idx] = false;
+                                }
                             }
                         }
                     }
@@ -315,6 +415,13 @@ impl SensorMonitor {
                             alarm_controllers[idx].mark_read_failure();
                         }
                     }
+                }
+            }
+
+            // Check if aggregation window should be finalized
+            if let Ok(mut agg_state) = aggregation_state.write() {
+                if agg_state.should_finalize_window() {
+                    agg_state.finalize_window();
                 }
             }
 

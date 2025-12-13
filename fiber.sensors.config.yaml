@@ -97,6 +97,10 @@ lines:
     enabled: true
     name: "Sensor 5"
     # Uses common_alarms if not specified
+    # NOTE: Per-sensor reporting intervals are reserved for future use
+    # Currently, all sensors report together at the global interval
+    # Example (not yet functional):
+    #   report_interval_ms: 180000  # Future: Report this sensor every 3 minutes
 
   - line: 5
     enabled: true
