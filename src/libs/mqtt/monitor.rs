@@ -14,10 +14,15 @@ use crate::libs::config::MqttConfig;
 use crate::libs::network::status::{get_network_status, NetworkStatus};
 
 use super::connection::{create_shared_connection_state, ConnectionState, SharedConnectionState};
-use super::messages::MqttMessage;
+use super::messages::{MqttCommand, MqttMessage};
 use super::publisher::MqttPublisher;
 use super::subscriber::MqttSubscriber;
 use super::topics::TopicBuilder;
+
+use crate::libs::authorization::AuthorizationManager;
+use crate::libs::config_applier::ConfigApplier;
+use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
+use std::sync::Mutex;
 
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
@@ -479,6 +484,35 @@ impl MqttMonitor {
                 }
             }
 
+            // Initialize authorization components
+            let auth_manager = if config.subscribe.enabled {
+                match Self::init_authorization_manager(&config) {
+                    Ok(manager) => {
+                        eprintln!("[MQTT Monitor] Authorization manager initialized");
+                        Some(Arc::new(manager))
+                    }
+                    Err(e) => {
+                        eprintln!("[MQTT Monitor] Warning: Failed to initialize authorization manager: {}", e);
+                        eprintln!("[MQTT Monitor] Signed configuration commands will not be available");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Initialize configuration applier
+            let config_applier = match ConfigApplier::new(std::path::Path::new("/data/fiber/config")) {
+                Ok(applier) => {
+                    eprintln!("[MQTT Monitor] Configuration applier initialized");
+                    Some(Arc::new(applier))
+                }
+                Err(e) => {
+                    eprintln!("[MQTT Monitor] Warning: Failed to initialize config applier: {}", e);
+                    None
+                }
+            };
+
             // Update connection state
             {
                 if let Ok(mut state) = connection_state.lock() {
@@ -498,6 +532,9 @@ impl MqttMonitor {
 
             // Initialize periodic status reporting
             let mut last_status_log = Instant::now();
+
+            // Initialize periodic challenge cleanup
+            let mut last_challenge_cleanup = Instant::now();
 
             // Main event loop
             loop {
@@ -561,8 +598,160 @@ impl MqttMonitor {
                                     match subscriber.parse_command(&p.topic, &p.payload) {
                                         Ok(cmd) => {
                                             eprintln!("[MQTT Monitor] Received command: {}", cmd.name());
-                                            // TODO: Route command to appropriate handler
-                                            // For now, just log it
+
+                                            // Route command to appropriate handler
+                                            match cmd {
+                                                MqttCommand::ConfigRequest {
+                                                    request_id,
+                                                    command_type,
+                                                    params,
+                                                    reason,
+                                                    signer_id,
+                                                    signature,
+                                                    timestamp,
+                                                    nonce,
+                                                    certificate,
+                                                } => {
+                                                    if let Some(ref auth) = auth_manager {
+                                                        match auth.process_config_request(
+                                                            request_id,
+                                                            command_type,
+                                                            params,
+                                                            reason,
+                                                            signer_id,
+                                                            signature,
+                                                            timestamp,
+                                                            nonce,
+                                                            &certificate,
+                                                        ) {
+                                                            Ok(challenge_msg) => {
+                                                                // Publish challenge
+                                                                if let Err(e) = publisher.handle_message(challenge_msg).await {
+                                                                    eprintln!("[MQTT Monitor] Failed to publish challenge: {}", e);
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[MQTT Monitor] ConfigRequest rejected: {}", e);
+                                                                if let Err(publish_err) = publisher.publish_error(
+                                                                    "config_request",
+                                                                    "authorization_failed",
+                                                                    &format!("{}", e),
+                                                                ).await {
+                                                                    eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[MQTT Monitor] ConfigRequest received but authorization is disabled");
+                                                    }
+                                                }
+
+                                                MqttCommand::ConfigConfirm {
+                                                    challenge_id,
+                                                    confirmation,
+                                                    signer_id,
+                                                    signature,
+                                                    timestamp,
+                                                    nonce,
+                                                    certificate,
+                                                } => {
+                                                    if let Some(ref auth) = auth_manager {
+                                                        match auth.process_config_confirm(
+                                                            challenge_id,
+                                                            confirmation,
+                                                            signer_id,
+                                                            signature,
+                                                            timestamp,
+                                                            nonce,
+                                                            &certificate,
+                                                        ) {
+                                                            Ok((response_msg, maybe_command)) => {
+                                                                // Publish response
+                                                                if let Err(e) = publisher.handle_message(response_msg).await {
+                                                                    eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                }
+
+                                                                // Execute command if approved
+                                                                if let Some(execute_cmd) = maybe_command {
+                                                                    if let Err(e) = Self::execute_config_command(
+                                                                        execute_cmd,
+                                                                        &config_applier,
+                                                                    ) {
+                                                                        eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[MQTT Monitor] ConfigConfirm rejected: {}", e);
+                                                                if let Err(publish_err) = publisher.publish_error(
+                                                                    "config_confirm",
+                                                                    "authorization_failed",
+                                                                    &format!("{}", e),
+                                                                ).await {
+                                                                    eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        eprintln!("[MQTT Monitor] ConfigConfirm received but authorization is disabled");
+                                                    }
+                                                }
+
+                                                MqttCommand::GetSensorConfig => {
+                                                    // Load sensor configuration
+                                                    match crate::libs::config::SensorFileConfig::load_default() {
+                                                        Ok(sensor_config) => {
+                                                            let mut sensors = Vec::new();
+
+                                                            for line in 0..8 {
+                                                                let line_config = sensor_config.lines.iter()
+                                                                    .find(|l| l.line == line);
+
+                                                                if let Some(lc) = line_config {
+                                                                    let thresholds = sensor_config.get_line_thresholds(line);
+                                                                    let has_override = lc.critical_low_celsius.is_some()
+                                                                        || lc.low_alarm_celsius.is_some()
+                                                                        || lc.warning_low_celsius.is_some()
+                                                                        || lc.warning_high_celsius.is_some()
+                                                                        || lc.high_alarm_celsius.is_some()
+                                                                        || lc.critical_high_celsius.is_some();
+
+                                                                    sensors.push(super::messages::SensorConfigData {
+                                                                        line,
+                                                                        name: lc.name.clone(),
+                                                                        enabled: lc.enabled,
+                                                                        has_override,
+                                                                        thresholds,
+                                                                    });
+                                                                }
+                                                            }
+
+                                                            let response = MqttMessage::PublishSensorConfig {
+                                                                sensors,
+                                                            };
+
+                                                            if let Err(e) = publisher.handle_message(response).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish sensor config: {}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("[MQTT Monitor] Failed to load sensor config: {}", e);
+                                                            if let Err(publish_err) = publisher.publish_error(
+                                                                "get_sensor_config",
+                                                                "config_load_error",
+                                                                &format!("Failed to load configuration: {}", e),
+                                                            ).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                _ => {
+                                                    // Other commands - TODO: route to appropriate handlers
+                                                    eprintln!("[MQTT Monitor] Command received but no handler implemented yet");
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             eprintln!("[MQTT Monitor] Invalid command: {}", e);
@@ -717,8 +906,29 @@ impl MqttMonitor {
                                             i + 1, disconnect.reason, disconnect.duration_sec);
                                     }
                                 }
+
+                                // Log authorization status if available
+                                if let Some(ref auth) = auth_manager {
+                                    let active_challenges = auth.active_challenge_count();
+                                    if active_challenges > 0 {
+                                        eprintln!("[MQTT Monitor]   Active challenges: {}", active_challenges);
+                                    }
+                                }
                             }
                             last_status_log = Instant::now();
+                        }
+                    } => {}
+
+                    // Periodic challenge cleanup (every 30 seconds)
+                    _ = async {
+                        if last_challenge_cleanup.elapsed() > Duration::from_secs(30) {
+                            if let Some(ref auth) = auth_manager {
+                                let expired_count = auth.cleanup_expired_challenges();
+                                if expired_count > 0 {
+                                    eprintln!("[MQTT Monitor] Cleaned up {} expired challenges", expired_count);
+                                }
+                            }
+                            last_challenge_cleanup = Instant::now();
                         }
                     } => {}
                 }
@@ -727,6 +937,122 @@ impl MqttMonitor {
             eprintln!("[MQTT Monitor] Monitor loop exited");
             Ok(())
         })
+    }
+
+    /// Initialize authorization manager with crypto components
+    fn init_authorization_manager(_config: &MqttConfig) -> Result<AuthorizationManager, String> {
+        use std::path::Path;
+
+        // Initialize CA registry (trusted Certificate Authorities)
+        let ca_file = Path::new("/data/fiber/config/authorized_signers.yaml");
+        let ca_registry = Arc::new(Mutex::new(
+            CARegistry::load_from_file(ca_file)
+                .map_err(|e| format!("Failed to load CA registry: {:?}", e))?,
+        ));
+
+        // Initialize nonce tracker
+        let nonce_db = Path::new("/tmp/fiber_nonces.db");
+        let nonce_tracker = Arc::new(Mutex::new(
+            NonceTracker::new(nonce_db, 600, 1000)
+                .map_err(|e| format!("Failed to initialize nonce tracker: {:?}", e))?,
+        ));
+
+        // Create signature verifier (with CA-based certificate chain validation)
+        let verifier = Arc::new(SignatureVerifier::new(
+            ca_registry,
+            nonce_tracker,
+            300, // ±5 minutes timestamp drift
+        ));
+
+        // Create authorization manager
+        let audit_db = Path::new("/tmp/fiber_audit.db");
+        let manager = AuthorizationManager::new(
+            verifier,
+            audit_db,
+            300,  // 5 minute challenge timeout
+            10,   // max 10 concurrent challenges
+        );
+
+        Ok(manager)
+    }
+
+    /// Execute an approved configuration command
+    /// Note: In CA-based trust model, signer management (add/remove/update) is handled by the CA platform,
+    /// not directly on the device.
+    fn execute_config_command(
+        cmd: MqttCommand,
+        config_applier: &Option<Arc<ConfigApplier>>,
+    ) -> Result<(), String> {
+        match cmd {
+            MqttCommand::SetSensorThreshold {
+                line,
+                critical_low,
+                alarm_low,
+                warning_low,
+                warning_high,
+                alarm_high,
+                critical_high,
+            } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_threshold_change(
+                        line,
+                        critical_low,
+                        alarm_low,
+                        warning_low,
+                        warning_high,
+                        alarm_high,
+                        critical_high,
+                    );
+
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ Configuration applied successfully");
+                        eprintln!("[MQTT Monitor]   File: {}", result.file_path);
+                        if let Some(backup) = result.backup_path {
+                            eprintln!("[MQTT Monitor]   Backup: {}", backup);
+                        }
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::SetSensorName { line, name } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_name_change(line, name);
+
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ Sensor name changed successfully");
+                        eprintln!("[MQTT Monitor]   File: {}", result.file_path);
+                        if let Some(backup) = result.backup_path {
+                            eprintln!("[MQTT Monitor]   Backup: {}", backup);
+                        }
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::RestartApplication { reason } => {
+                eprintln!("[MQTT Monitor] Restart requested: {}", reason);
+                eprintln!("[MQTT Monitor] Note: Application restart not yet implemented");
+                // TODO: Implement graceful restart
+                Ok(())
+            }
+            // Signer management is handled by the CA platform in CA-based trust model
+            MqttCommand::AddSigner { .. }
+            | MqttCommand::RemoveSigner { .. }
+            | MqttCommand::UpdateSigner { .. } => {
+                Err("Signer management not available in CA-based trust model. Use your CA platform to manage user certificates.".to_string())
+            }
+            _ => {
+                eprintln!("[MQTT Monitor] Command execution not implemented: {}", cmd.name());
+                Ok(())
+            }
+        }
     }
 }
 

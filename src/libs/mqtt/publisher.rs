@@ -121,6 +121,40 @@ impl MqttPublisher {
                 self.publish_aggregated_sensor_data(period).await
             }
 
+            MqttMessage::PublishConfigChallenge {
+                challenge_id,
+                request_id,
+                signer_id,
+                expires_at,
+                preview,
+            } => {
+                self.publish_config_challenge(&challenge_id, &request_id, &signer_id, expires_at, preview)
+                    .await
+            }
+
+            MqttMessage::PublishConfigResponse {
+                challenge_id,
+                request_id,
+                status,
+                applied_at,
+                effective_at,
+                message,
+            } => {
+                self.publish_config_response(
+                    &challenge_id,
+                    &request_id,
+                    &status,
+                    applied_at,
+                    effective_at,
+                    &message,
+                )
+                .await
+            }
+
+            MqttMessage::PublishSensorConfig { sensors } => {
+                self.publish_sensor_config(sensors).await
+            }
+
             // Internal messages, not published
             MqttMessage::SetConnectionState(_) | MqttMessage::Shutdown => Ok(()),
         }
@@ -396,6 +430,114 @@ impl MqttPublisher {
 
         let topic = self.topics.errors();
         let qos = QoS::AtLeastOnce;
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish configuration challenge (preview of changes)
+    pub async fn publish_config_challenge(
+        &self,
+        challenge_id: &str,
+        request_id: &str,
+        signer_id: &str,
+        expires_at: i64,
+        preview: serde_json::Value,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "challenge_id": challenge_id,
+            "request_id": request_id,
+            "signer_id": signer_id,
+            "expires_at": expires_at,
+            "expires_at_iso": DateTime::<Utc>::from_timestamp(expires_at, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            "preview": preview,
+            "status": "awaiting_confirmation",
+        });
+
+        let topic = self.topics.config_challenge();
+        let qos = QoS::ExactlyOnce; // QoS 2 for critical configuration messages
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish configuration response (success/error after applying)
+    pub async fn publish_config_response(
+        &self,
+        challenge_id: &str,
+        request_id: &str,
+        status: &str,
+        applied_at: Option<i64>,
+        effective_at: Option<i64>,
+        message: &str,
+    ) -> Result<(), String> {
+        let mut payload = json!({
+            "timestamp": Self::timestamp(),
+            "challenge_id": challenge_id,
+            "request_id": request_id,
+            "status": status,
+            "message": message,
+        });
+
+        // Add applied_at if present
+        if let Some(ts) = applied_at {
+            payload["applied_at"] = json!(ts);
+            payload["applied_at_iso"] = json!(
+                DateTime::<Utc>::from_timestamp(ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            );
+        }
+
+        // Add effective_at if present
+        if let Some(ts) = effective_at {
+            payload["effective_at"] = json!(ts);
+            payload["effective_at_iso"] = json!(
+                DateTime::<Utc>::from_timestamp(ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default()
+            );
+        }
+
+        let topic = self.topics.config_response();
+        let qos = QoS::ExactlyOnce; // QoS 2 for critical configuration messages
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish sensor configuration data (all 8 sensors)
+    pub async fn publish_sensor_config(
+        &self,
+        sensors: Vec<super::messages::SensorConfigData>,
+    ) -> Result<(), String> {
+        let sensors_data: Vec<serde_json::Value> = sensors
+            .iter()
+            .map(|sensor| {
+                json!({
+                    "line": sensor.line,
+                    "name": sensor.name,
+                    "enabled": sensor.enabled,
+                    "has_override": sensor.has_override,
+                    "thresholds": {
+                        "critical_low_celsius": sensor.thresholds.critical_low_celsius,
+                        "low_alarm_celsius": sensor.thresholds.low_alarm_celsius,
+                        "warning_low_celsius": sensor.thresholds.warning_low_celsius,
+                        "warning_high_celsius": sensor.thresholds.warning_high_celsius,
+                        "high_alarm_celsius": sensor.thresholds.high_alarm_celsius,
+                        "critical_high_celsius": sensor.thresholds.critical_high_celsius,
+                    },
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "sensors": sensors_data,
+        });
+
+        let topic = self.topics.responses_sensor_config();
+        let qos = QoS::AtLeastOnce; // QoS 1 for query responses
 
         self.publish(topic, payload.to_string(), qos, false).await
     }

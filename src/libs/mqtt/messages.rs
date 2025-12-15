@@ -1,7 +1,9 @@
 // MQTT message types for channel communication
 
-use crate::libs::alarms::AlarmState;
+use crate::libs::alarms::{AlarmState, AlarmThreshold};
+use crate::libs::crypto::UserCertificate;
 use crate::libs::sensors::aggregation::AggregationPeriod;
+use serde_json::Value;
 
 /// Messages sent to the MQTT monitor thread for publishing
 #[derive(Debug, Clone)]
@@ -60,11 +62,45 @@ pub enum MqttMessage {
         hostname: String,
     },
 
+    /// Publish configuration challenge (preview of changes)
+    PublishConfigChallenge {
+        challenge_id: String,
+        request_id: String,
+        signer_id: String,
+        expires_at: i64,
+        preview: Value, // ChangePreview as JSON
+    },
+
+    /// Publish configuration response (success/error)
+    PublishConfigResponse {
+        challenge_id: String,
+        request_id: String,
+        status: String, // SUCCESS, ERROR
+        applied_at: Option<i64>,
+        effective_at: Option<i64>,
+        message: String,
+    },
+
+    /// Publish sensor configuration data
+    PublishSensorConfig {
+        sensors: Vec<SensorConfigData>,
+    },
+
     /// Update connection state (internal message)
     SetConnectionState(super::connection::ConnectionState),
 
     /// Graceful shutdown signal
     Shutdown,
+}
+
+/// Sensor configuration data for query response
+#[derive(Debug, Clone)]
+pub struct SensorConfigData {
+    pub line: u8,
+    pub name: String,
+    pub enabled: bool,
+    pub has_override: bool, // true if using per-line thresholds, false if using common defaults
+    pub thresholds: AlarmThreshold,
 }
 
 /// Commands received from MQTT broker
@@ -93,8 +129,50 @@ pub enum MqttCommand {
     /// Get device information
     GetDeviceInfo,
 
+    /// Get sensor configuration (all 8 sensors)
+    GetSensorConfig,
+
+    /// Set sensor name (signed via ConfigRequest)
+    SetSensorName { line: u8, name: String },
+
     /// Restart application
     RestartApplication { reason: String },
+
+    /// Add signer (signed via ConfigRequest)
+    AddSigner { signer_data: Value },
+
+    /// Remove signer (signed via ConfigRequest)
+    RemoveSigner { signer_id: String },
+
+    /// Update signer (signed via ConfigRequest)
+    UpdateSigner {
+        signer_id: String,
+        changes: Value,
+    },
+
+    /// Configuration change request (signed with Ed25519)
+    ConfigRequest {
+        request_id: String,
+        command_type: String,
+        params: Value, // Command-specific parameters as JSON
+        reason: Option<String>,
+        signer_id: String,
+        signature: String, // Base64-encoded Ed25519 signature
+        timestamp: i64,
+        nonce: String,
+        certificate: UserCertificate, // User certificate signed by CA
+    },
+
+    /// Configuration change confirmation (signed)
+    ConfigConfirm {
+        challenge_id: String,
+        confirmation: String, // APPROVED or REJECTED
+        signer_id: String,
+        signature: String, // Base64-encoded Ed25519 signature
+        timestamp: i64,
+        nonce: String,
+        certificate: UserCertificate, // User certificate signed by CA
+    },
 }
 
 impl MqttCommand {
@@ -106,7 +184,14 @@ impl MqttCommand {
             MqttCommand::SetDisplayScreen { .. } => "set_display_screen",
             MqttCommand::FlushStorage => "flush_storage",
             MqttCommand::GetDeviceInfo => "get_device_info",
+            MqttCommand::GetSensorConfig => "get_sensor_config",
+            MqttCommand::SetSensorName { .. } => "set_sensor_name",
             MqttCommand::RestartApplication { .. } => "restart_application",
+            MqttCommand::AddSigner { .. } => "add_signer",
+            MqttCommand::RemoveSigner { .. } => "remove_signer",
+            MqttCommand::UpdateSigner { .. } => "update_signer",
+            MqttCommand::ConfigRequest { .. } => "config_request",
+            MqttCommand::ConfigConfirm { .. } => "config_confirm",
         }
     }
 }

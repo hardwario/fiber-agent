@@ -1,5 +1,6 @@
 // MQTT command subscription and handling
 
+use crate::libs::crypto::UserCertificate;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -82,7 +83,10 @@ impl MqttSubscriber {
             "set_screen" => self.parse_set_screen(&json),
             "flush_storage" => Ok(MqttCommand::FlushStorage),
             "get_info" => Ok(MqttCommand::GetDeviceInfo),
+            "get_sensor_config" => Ok(MqttCommand::GetSensorConfig),
             "restart" => self.parse_restart(&json),
+            "config_request" => self.parse_config_request(&json),
+            "config_confirm" => self.parse_config_confirm(&json),
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
     }
@@ -230,6 +234,207 @@ impl MqttSubscriber {
         }
 
         Ok(MqttCommand::RestartApplication { reason })
+    }
+
+    /// Parse config_request command (signed with Ed25519)
+    fn parse_config_request(&self, json: &Value) -> Result<MqttCommand, String> {
+        let request_id = json
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'request_id' field".to_string())?
+            .to_string();
+
+        let command_type = json
+            .get("command_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'command_type' field".to_string())?
+            .to_string();
+
+        let params = json
+            .get("params")
+            .ok_or_else(|| "Missing 'params' field".to_string())?
+            .clone();
+
+        let reason = json
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let signer_id = json
+            .get("signer_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'signer_id' field".to_string())?
+            .to_string();
+
+        let signature = json
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'signature' field".to_string())?
+            .to_string();
+
+        let timestamp = json
+            .get("timestamp")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "Missing or invalid 'timestamp' field".to_string())?;
+
+        let nonce = json
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'nonce' field".to_string())?
+            .to_string();
+
+        // Parse user certificate (signed by CA)
+        let certificate = self.parse_certificate(json)?;
+
+        // Validate request_id format (UUID-like)
+        if request_id.len() < 16 || request_id.len() > 64 {
+            return Err("Invalid request_id format (must be 16-64 chars)".to_string());
+        }
+
+        // Validate nonce format (should be 32+ chars for security)
+        if nonce.len() < 32 {
+            return Err("Invalid nonce format (must be at least 32 chars)".to_string());
+        }
+
+        // Validate signature is base64-like (Ed25519 signatures are 64 bytes -> ~88 chars base64)
+        if signature.len() < 80 || signature.len() > 100 {
+            return Err("Invalid signature format (expected base64 Ed25519 signature)".to_string());
+        }
+
+        // Validate signer_id matches certificate
+        if signer_id != certificate.signer_id {
+            return Err(format!(
+                "Signer ID mismatch: command has '{}' but certificate has '{}'",
+                signer_id, certificate.signer_id
+            ));
+        }
+
+        Ok(MqttCommand::ConfigRequest {
+            request_id,
+            command_type,
+            params,
+            reason,
+            signer_id,
+            signature,
+            timestamp,
+            nonce,
+            certificate,
+        })
+    }
+
+    /// Parse config_confirm command (signed confirmation)
+    fn parse_config_confirm(&self, json: &Value) -> Result<MqttCommand, String> {
+        let challenge_id = json
+            .get("challenge_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'challenge_id' field".to_string())?
+            .to_string();
+
+        let confirmation = json
+            .get("confirmation")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'confirmation' field".to_string())?
+            .to_string();
+
+        let signer_id = json
+            .get("signer_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'signer_id' field".to_string())?
+            .to_string();
+
+        let signature = json
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'signature' field".to_string())?
+            .to_string();
+
+        let timestamp = json
+            .get("timestamp")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "Missing or invalid 'timestamp' field".to_string())?;
+
+        let nonce = json
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing or invalid 'nonce' field".to_string())?
+            .to_string();
+
+        // Parse user certificate (signed by CA)
+        let certificate = self.parse_certificate(json)?;
+
+        // Validate challenge_id format
+        if challenge_id.len() < 16 || challenge_id.len() > 64 {
+            return Err("Invalid challenge_id format (must be 16-64 chars)".to_string());
+        }
+
+        // Validate confirmation value
+        if confirmation != "APPROVED" && confirmation != "REJECTED" {
+            return Err(format!(
+                "Invalid confirmation value: {} (must be APPROVED or REJECTED)",
+                confirmation
+            ));
+        }
+
+        // Validate nonce format (should be 32+ chars for security)
+        if nonce.len() < 32 {
+            return Err("Invalid nonce format (must be at least 32 chars)".to_string());
+        }
+
+        // Validate signature format (Ed25519 signatures are 64 bytes -> ~88 chars base64)
+        if signature.len() < 80 || signature.len() > 100 {
+            return Err("Invalid signature format (expected base64 Ed25519 signature)".to_string());
+        }
+
+        // Validate signer_id matches certificate
+        if signer_id != certificate.signer_id {
+            return Err(format!(
+                "Signer ID mismatch: command has '{}' but certificate has '{}'",
+                signer_id, certificate.signer_id
+            ));
+        }
+
+        Ok(MqttCommand::ConfigConfirm {
+            challenge_id,
+            confirmation,
+            signer_id,
+            signature,
+            timestamp,
+            nonce,
+            certificate,
+        })
+    }
+
+    /// Parse user certificate from JSON command
+    fn parse_certificate(&self, json: &Value) -> Result<UserCertificate, String> {
+        let cert_json = json
+            .get("certificate")
+            .ok_or_else(|| "Missing 'certificate' field".to_string())?;
+
+        let certificate: UserCertificate =
+            serde_json::from_value(cert_json.clone()).map_err(|e| {
+                format!(
+                    "Invalid certificate format: {}. Expected fields: signer_id, full_name, role, public_key_ed25519, permissions, issued_at, expires_at, issuer, certificate_signature",
+                    e
+                )
+            })?;
+
+        // Basic validation of certificate fields
+        if certificate.signer_id.is_empty() {
+            return Err("Certificate signer_id cannot be empty".to_string());
+        }
+
+        if certificate.public_key_ed25519.len() != 64 {
+            return Err(format!(
+                "Certificate public_key_ed25519 must be 64 hex characters, got {}",
+                certificate.public_key_ed25519.len()
+            ));
+        }
+
+        if certificate.certificate_signature.is_empty() {
+            return Err("Certificate signature cannot be empty".to_string());
+        }
+
+        Ok(certificate)
     }
 }
 

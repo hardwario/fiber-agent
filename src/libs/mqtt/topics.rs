@@ -133,8 +133,29 @@ impl TopicBuilder {
         self.build(&["commands", "system", "get_info"])
     }
 
+    pub fn commands_sensor_get_config(&self) -> String {
+        self.build(&["commands", "sensor", "get_config"])
+    }
+
     pub fn commands_system_restart(&self) -> String {
         self.build(&["commands", "system", "restart"])
+    }
+
+    // Configuration management topics (EU MDR-compliant signed commands)
+    pub fn commands_config_request(&self) -> String {
+        self.build(&["commands", "config", "request"])
+    }
+
+    pub fn commands_config_confirm(&self) -> String {
+        self.build(&["commands", "config", "confirm"])
+    }
+
+    pub fn config_challenge(&self) -> String {
+        self.build(&["config", "challenge"])
+    }
+
+    pub fn config_response(&self) -> String {
+        self.build(&["config", "response"])
     }
 
     // Error topic
@@ -145,6 +166,10 @@ impl TopicBuilder {
     // Response topics
     pub fn responses(&self, command_type: &str) -> String {
         self.build(&["responses", command_type])
+    }
+
+    pub fn responses_sensor_config(&self) -> String {
+        self.build(&["responses", "sensor_config"])
     }
 }
 

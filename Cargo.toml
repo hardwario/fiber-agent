@@ -23,6 +23,18 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 rand = "0.8"
 
+# Cryptography dependencies (Ed25519 signatures for EU MDR compliance)
+ed25519-dalek = { version = "2.1", features = ["std", "rand_core"] }
+signature = "2.2"
+base64 = "0.21"
+hex = "0.4"
+
+# UUID generation for challenge_id
+uuid = { version = "1.6", features = ["v4", "fast-rng", "serde"] }
+
+# Replay protection (LRU cache for nonce tracking)
+lru = "0.12"
+
 [[bin]]
 name = "fiber_app"
 path = "src/main.rs"

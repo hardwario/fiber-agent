@@ -175,6 +175,28 @@ impl Database {
             format!("Failed to create audit_log table: {}", e),
         ))?;
 
+        // Create config_changes table (EU MDR compliance - signed configuration changes)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS config_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                challenge_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                signer_id TEXT NOT NULL,
+                signer_name TEXT NOT NULL,
+                command_type TEXT NOT NULL,
+                command_json TEXT NOT NULL,
+                signature_base64 TEXT NOT NULL,
+                nonce TEXT NOT NULL UNIQUE,
+                verification_status TEXT NOT NULL,
+                applied INTEGER NOT NULL DEFAULT 0,
+                error_msg TEXT
+            )",
+        )
+        .map_err(|e| StorageError::DatabaseInitError(
+            format!("Failed to create config_changes table: {}", e),
+        ))?;
+
         // Create indexes for fast queries
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_sensor_readings_timestamp
@@ -190,7 +212,13 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
              ON audit_log(timestamp DESC);
              CREATE INDEX IF NOT EXISTS idx_audit_log_operation
-             ON audit_log(operation);",
+             ON audit_log(operation);
+             CREATE INDEX IF NOT EXISTS idx_config_changes_timestamp
+             ON config_changes(timestamp DESC);
+             CREATE INDEX IF NOT EXISTS idx_config_changes_signer
+             ON config_changes(signer_id);
+             CREATE INDEX IF NOT EXISTS idx_config_changes_nonce
+             ON config_changes(nonce);",
         )
         .map_err(|e| StorageError::DatabaseInitError(
             format!("Failed to create indexes: {}", e),

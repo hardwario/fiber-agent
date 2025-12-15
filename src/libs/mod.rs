@@ -12,6 +12,9 @@ pub mod display;
 pub mod network;
 pub mod storage;
 pub mod mqtt;
+pub mod crypto;
+pub mod authorization;
+pub mod config_applier;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};
