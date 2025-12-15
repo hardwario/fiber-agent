@@ -87,8 +87,14 @@ pub fn render_sensor_overview(
             ("?", false)                                       // Unknown state
         };
 
-        // Format sensor line: "Sensor_  XX.X°C  STATUS"
-        let label = format!("Sensor{}  ", sensor_idx);
+        // Format sensor line: "NAME  XX.X°C  STATUS"
+        // Get name from shared state (truncate to 8 chars for display)
+        let name = &sensor_state.names[sensor_idx];
+        let label = if name.len() > 8 {
+            format!("{}  ", &name[..8])
+        } else {
+            format!("{:8}  ", name)
+        };
 
         // Get temperature from sensor state
         let temp_str = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {

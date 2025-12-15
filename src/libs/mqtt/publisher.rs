@@ -56,21 +56,23 @@ impl MqttPublisher {
         match msg {
             MqttMessage::PublishSensorReading {
                 line,
+                name,
                 temperature,
                 is_connected,
                 alarm_state,
             } => {
-                self.publish_sensor_reading(line, temperature, is_connected, alarm_state)
+                self.publish_sensor_reading(line, &name, temperature, is_connected, alarm_state)
                     .await
             }
 
             MqttMessage::PublishAlarmEvent {
                 line,
+                name,
                 from_state,
                 to_state,
                 temperature,
             } => {
-                self.publish_alarm_event(line, from_state, to_state, temperature)
+                self.publish_alarm_event(line, &name, from_state, to_state, temperature)
                     .await
             }
 
@@ -117,8 +119,8 @@ impl MqttPublisher {
                     .await
             }
 
-            MqttMessage::PublishAggregatedSensorData { period } => {
-                self.publish_aggregated_sensor_data(period).await
+            MqttMessage::PublishAggregatedSensorData { period, names } => {
+                self.publish_aggregated_sensor_data(period, &names).await
             }
 
             MqttMessage::PublishConfigChallenge {
@@ -164,6 +166,7 @@ impl MqttPublisher {
     async fn publish_sensor_reading(
         &self,
         line: u8,
+        name: &str,
         temperature: f32,
         is_connected: bool,
         alarm_state: AlarmState,
@@ -171,6 +174,7 @@ impl MqttPublisher {
         let payload = json!({
             "timestamp": Self::timestamp(),
             "line": line,
+            "name": name,
             "temperature_celsius": temperature,
             "is_connected": is_connected,
             "alarm_state": format!("{:?}", alarm_state).to_uppercase(),
@@ -184,6 +188,7 @@ impl MqttPublisher {
         // Also publish status (retained)
         let status_payload = json!({
             "timestamp": Self::timestamp(),
+            "name": name,
             "is_connected": is_connected,
             "alarm_state": format!("{:?}", alarm_state).to_uppercase(),
         });
@@ -199,6 +204,7 @@ impl MqttPublisher {
     async fn publish_aggregated_sensor_data(
         &self,
         period: crate::libs::sensors::aggregation::AggregationPeriod,
+        names: &[String; 8],
     ) -> Result<(), String> {
         // Build JSON payload with all 8 sensors
         let sensors_data: Vec<serde_json::Value> = period.sensors.iter()
@@ -214,8 +220,12 @@ impl MqttPublisher {
                     serde_json::Value::Null
                 };
 
+                // Get sensor name
+                let name = &names[sensor.line as usize];
+
                 json!({
                     "line": sensor.line,
+                    "name": name,
                     "sample_count": sensor.sample_count,
                     "disconnected_count": sensor.disconnected_count,
                     "temperature": temp_data,
@@ -250,6 +260,7 @@ impl MqttPublisher {
     async fn publish_alarm_event(
         &self,
         line: u8,
+        name: &str,
         from_state: AlarmState,
         to_state: AlarmState,
         temperature: f32,
@@ -257,6 +268,7 @@ impl MqttPublisher {
         let payload = json!({
             "timestamp": Self::timestamp(),
             "line": line,
+            "name": name,
             "from_state": format!("{:?}", from_state).to_uppercase(),
             "to_state": format!("{:?}", to_state).to_uppercase(),
             "temperature_celsius": temperature,
@@ -306,18 +318,9 @@ impl MqttPublisher {
 
         let qos = Self::qos_from_u8(self.qos_overrides.power_status);
 
-        // Publish main status
+        // Publish power status (includes battery and AC info)
         let topic = self.topics.power_battery_percentage();
-        self.publish(topic, payload.to_string(), qos, false).await?;
-
-        // Publish AC connection status (retained)
-        let ac_payload = json!({
-            "timestamp": Self::timestamp(),
-            "connected": on_ac_power,
-        });
-        let ac_topic = self.topics.power_ac_connected();
-        self.publish(ac_topic, ac_payload.to_string(), qos, true)
-            .await
+        self.publish(topic, payload.to_string(), qos, false).await
     }
 
     /// Publish AC loss event
@@ -368,21 +371,13 @@ impl MqttPublisher {
                 "connected": ethernet_connected,
                 "interface": "eth0",
             },
+            "has_internet": wifi_connected || ethernet_connected,
         });
 
-        let topic = self.topics.network_wifi_connected();
+        let topic = self.topics.network_status();
         let qos = Self::qos_from_u8(self.qos_overrides.network_status);
 
-        self.publish(topic, payload.to_string(), qos, false).await?;
-
-        // Publish WiFi connection status (retained)
-        let wifi_payload = json!({
-            "timestamp": Self::timestamp(),
-            "connected": wifi_connected,
-        });
-        let wifi_topic = self.topics.network_wifi_connected();
-        self.publish(wifi_topic, wifi_payload.to_string(), qos, true)
-            .await
+        self.publish(topic, payload.to_string(), qos, true).await
     }
 
     /// Publish system information
@@ -392,18 +387,34 @@ impl MqttPublisher {
         uptime_seconds: u64,
         hostname: &str,
     ) -> Result<(), String> {
+        // Format uptime in human-readable form
+        let days = uptime_seconds / 86400;
+        let hours = (uptime_seconds % 86400) / 3600;
+        let minutes = (uptime_seconds % 3600) / 60;
+        let secs = uptime_seconds % 60;
+        let uptime_human = if days > 0 {
+            format!("{}d {}h {}m {}s", days, hours, minutes, secs)
+        } else if hours > 0 {
+            format!("{}h {}m {}s", hours, minutes, secs)
+        } else if minutes > 0 {
+            format!("{}m {}s", minutes, secs)
+        } else {
+            format!("{}s", secs)
+        };
+
         let payload = json!({
             "timestamp": Self::timestamp(),
             "hostname": hostname,
-            "version": version,
+            "firmware_version": version,
             "uptime_seconds": uptime_seconds,
+            "uptime_human": uptime_human,
             "app_name": "FIBER Medical Thermometer",
         });
 
-        let topic = self.topics.info_version();
-        let qos = QoS::AtMostOnce;
+        let topic = self.topics.system_info();
+        let qos = QoS::AtLeastOnce;
 
-        self.publish(topic, payload.to_string(), qos, false).await
+        self.publish(topic, payload.to_string(), qos, true).await
     }
 
     /// Publish device online status (for Last Will and Testament)

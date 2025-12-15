@@ -95,6 +95,10 @@ impl TopicBuilder {
     }
 
     // Network topics
+    pub fn network_status(&self) -> String {
+        self.build(&["network", "status"])
+    }
+
     pub fn network_wifi_connected(&self) -> String {
         self.build(&["network", "wifi", "connected"])
     }
@@ -105,6 +109,11 @@ impl TopicBuilder {
 
     pub fn network_ethernet_connected(&self) -> String {
         self.build(&["network", "ethernet", "connected"])
+    }
+
+    // System info topics
+    pub fn system_info(&self) -> String {
+        self.build(&["system", "info"])
     }
 
     // Alarm topics

@@ -36,6 +36,8 @@ impl SensorReading {
 pub struct SharedSensorState {
     /// Array of sensor readings (8 sensors)
     pub readings: [Option<SensorReading>; 8],
+    /// Sensor names from config (hot-reloaded)
+    pub names: [String; 8],
 }
 
 impl SharedSensorState {
@@ -43,6 +45,30 @@ impl SharedSensorState {
     pub fn new() -> Self {
         Self {
             readings: [None, None, None, None, None, None, None, None],
+            names: [
+                "Sensor 1".to_string(),
+                "Sensor 2".to_string(),
+                "Sensor 3".to_string(),
+                "Sensor 4".to_string(),
+                "Sensor 5".to_string(),
+                "Sensor 6".to_string(),
+                "Sensor 7".to_string(),
+                "Sensor 8".to_string(),
+            ],
+        }
+    }
+
+    /// Update sensor names from config
+    pub fn set_names(&mut self, names: [String; 8]) {
+        self.names = names;
+    }
+
+    /// Get sensor name (with fallback to default)
+    pub fn get_name(&self, sensor_idx: u8) -> &str {
+        if (sensor_idx as usize) < 8 {
+            &self.names[sensor_idx as usize]
+        } else {
+            "Unknown"
         }
     }
 

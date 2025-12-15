@@ -133,6 +133,26 @@ impl SensorMonitor {
         let config_check_interval = Duration::from_secs(10);
         let mut current_sensor_file_config = sensor_file_config.clone();
 
+        // Initialize sensor names from config
+        {
+            let names: [String; 8] = sensor_file_config.lines.iter()
+                .take(8)
+                .map(|l| l.name.clone())
+                .chain(std::iter::repeat("Unknown".to_string()))
+                .take(8)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| [
+                    "Sensor 1".to_string(), "Sensor 2".to_string(),
+                    "Sensor 3".to_string(), "Sensor 4".to_string(),
+                    "Sensor 5".to_string(), "Sensor 6".to_string(),
+                    "Sensor 7".to_string(), "Sensor 8".to_string(),
+                ]);
+            if let Ok(mut state) = sensor_state.write() {
+                state.set_names(names);
+            }
+        }
+
         eprintln!(
             "[SensorMonitor] Started monitoring with {}ms sample interval, {} failure threshold",
             config.sample_interval_ms, config.failure_threshold
@@ -176,6 +196,24 @@ impl SensorMonitor {
                             controller.update_thresholds(new_thresholds);
                         }
 
+                        // Update sensor names
+                        let names: [String; 8] = new_config.lines.iter()
+                            .take(8)
+                            .map(|l| l.name.clone())
+                            .chain(std::iter::repeat("Unknown".to_string()))
+                            .take(8)
+                            .collect::<Vec<_>>()
+                            .try_into()
+                            .unwrap_or_else(|_| [
+                                "Sensor 1".to_string(), "Sensor 2".to_string(),
+                                "Sensor 3".to_string(), "Sensor 4".to_string(),
+                                "Sensor 5".to_string(), "Sensor 6".to_string(),
+                                "Sensor 7".to_string(), "Sensor 8".to_string(),
+                            ]);
+                        if let Ok(mut state) = sensor_state.write() {
+                            state.set_names(names);
+                        }
+
                         eprintln!("[SensorMonitor] Configuration reloaded successfully");
                     }
                     Err(e) => {
@@ -195,8 +233,17 @@ impl SensorMonitor {
                 };
 
                 if let Some(ref mqtt) = mqtt_handle {
+                    // Get sensor names from shared state
+                    let names = sensor_state.read()
+                        .map(|s| s.names.clone())
+                        .unwrap_or_else(|_| [
+                            "Sensor 1".to_string(), "Sensor 2".to_string(),
+                            "Sensor 3".to_string(), "Sensor 4".to_string(),
+                            "Sensor 5".to_string(), "Sensor 6".to_string(),
+                            "Sensor 7".to_string(), "Sensor 8".to_string(),
+                        ]);
                     for period in periods {
-                        mqtt.send_aggregated_sensor_data(period);  // Send all 8 sensors in one message
+                        mqtt.send_aggregated_sensor_data(period, names.clone());  // Send all 8 sensors in one message
                     }
                 }
             }
@@ -338,7 +385,11 @@ impl SensorMonitor {
                                 let connection_state_changed = !last_published_connected[sensor_idx];
                                 if should_report_mqtt || connection_state_changed {
                                     if let Some(ref mqtt) = mqtt_handle {
-                                        mqtt.send_sensor_reading(sensor_idx as u8, temp, true, alarm_state);
+                                        // Get sensor name from shared state
+                                        let name = sensor_state.read()
+                                            .map(|s| s.get_name(sensor_idx as u8).to_string())
+                                            .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
+                                        mqtt.send_sensor_reading(sensor_idx as u8, &name, temp, true, alarm_state);
                                         last_published_connected[sensor_idx] = true;
                                     }
                                 }
@@ -370,7 +421,11 @@ impl SensorMonitor {
                                     // Only publish if we haven't already published this disconnected state
                                     if last_published_connected[sensor_idx] {
                                         if let Some(ref mqtt) = mqtt_handle {
-                                            mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                            // Get sensor name from shared state
+                                            let name = sensor_state.read()
+                                                .map(|s| s.get_name(sensor_idx as u8).to_string())
+                                                .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
+                                            mqtt.send_sensor_reading(sensor_idx as u8, &name, 0.0, false, alarm_state);
                                             last_published_connected[sensor_idx] = false;
                                         }
                                     }
@@ -399,7 +454,11 @@ impl SensorMonitor {
                             // Only publish if we haven't already published this disconnected state
                             if last_published_connected[sensor_idx] {
                                 if let Some(ref mqtt) = mqtt_handle {
-                                    mqtt.send_sensor_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                    // Get sensor name from shared state
+                                    let name = sensor_state.read()
+                                        .map(|s| s.get_name(sensor_idx as u8).to_string())
+                                        .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
+                                    mqtt.send_sensor_reading(sensor_idx as u8, &name, 0.0, false, alarm_state);
                                     last_published_connected[sensor_idx] = false;
                                 }
                             }

@@ -11,6 +11,7 @@ pub enum MqttMessage {
     /// Publish a sensor reading
     PublishSensorReading {
         line: u8,
+        name: String,
         temperature: f32,
         is_connected: bool,
         alarm_state: AlarmState,
@@ -19,11 +20,13 @@ pub enum MqttMessage {
     /// Publish aggregated sensor data
     PublishAggregatedSensorData {
         period: AggregationPeriod,
+        names: [String; 8],
     },
 
     /// Publish an alarm state transition event
     PublishAlarmEvent {
         line: u8,
+        name: String,
         from_state: AlarmState,
         to_state: AlarmState,
         temperature: f32,
@@ -204,6 +207,7 @@ mod tests {
     fn test_message_variants() {
         let msg = MqttMessage::PublishSensorReading {
             line: 0,
+            name: "Test Sensor".to_string(),
             temperature: 36.5,
             is_connected: true,
             alarm_state: AlarmState::Normal,

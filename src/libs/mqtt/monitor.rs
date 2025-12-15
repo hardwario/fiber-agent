@@ -188,12 +188,14 @@ impl MqttHandle {
     pub fn send_sensor_reading(
         &self,
         line: u8,
+        name: &str,
         temperature: f32,
         is_connected: bool,
         alarm_state: crate::libs::alarms::AlarmState,
     ) {
         self.send(MqttMessage::PublishSensorReading {
             line,
+            name: name.to_string(),
             temperature,
             is_connected,
             alarm_state,
@@ -204,12 +206,14 @@ impl MqttHandle {
     pub fn send_alarm_event(
         &self,
         line: u8,
+        name: &str,
         from_state: crate::libs::alarms::AlarmState,
         to_state: crate::libs::alarms::AlarmState,
         temperature: f32,
     ) {
         self.send(MqttMessage::PublishAlarmEvent {
             line,
+            name: name.to_string(),
             from_state,
             to_state,
             temperature,
@@ -255,8 +259,36 @@ impl MqttHandle {
     }
 
     /// Send aggregated sensor data
-    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod) {
-        self.send(MqttMessage::PublishAggregatedSensorData { period });
+    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod, names: [String; 8]) {
+        self.send(MqttMessage::PublishAggregatedSensorData { period, names });
+    }
+
+    /// Send network status
+    pub fn send_network_status(
+        &self,
+        wifi_connected: bool,
+        wifi_signal_dbm: i32,
+        ethernet_connected: bool,
+    ) {
+        self.send(MqttMessage::PublishNetworkStatus {
+            wifi_connected,
+            wifi_signal_dbm,
+            ethernet_connected,
+        });
+    }
+
+    /// Send system information
+    pub fn send_system_info(
+        &self,
+        version: String,
+        uptime_seconds: u64,
+        hostname: String,
+    ) {
+        self.send(MqttMessage::PublishSystemInfo {
+            version,
+            uptime_seconds,
+            hostname,
+        });
     }
 }
 
@@ -532,6 +564,8 @@ impl MqttMonitor {
 
             // Initialize periodic status reporting
             let mut last_status_log = Instant::now();
+            let app_start_time = Instant::now();
+            let firmware_version = env!("CARGO_PKG_VERSION").to_string();
 
             // Initialize periodic challenge cleanup
             let mut last_challenge_cleanup = Instant::now();
@@ -915,6 +949,27 @@ impl MqttMonitor {
                                     }
                                 }
                             }
+
+                            // Publish network status via MQTT
+                            let network = get_network_status();
+                            if let Err(e) = publisher.handle_message(MqttMessage::PublishNetworkStatus {
+                                wifi_connected: network.wifi_connected,
+                                wifi_signal_dbm: network.wifi_signal_strength,
+                                ethernet_connected: network.ethernet_connected,
+                            }).await {
+                                eprintln!("[MQTT Monitor] Failed to publish network status: {}", e);
+                            }
+
+                            // Publish system info via MQTT
+                            let uptime_seconds = app_start_time.elapsed().as_secs();
+                            if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemInfo {
+                                version: firmware_version.clone(),
+                                uptime_seconds,
+                                hostname: hostname.clone(),
+                            }).await {
+                                eprintln!("[MQTT Monitor] Failed to publish system info: {}", e);
+                            }
+
                             last_status_log = Instant::now();
                         }
                     } => {}
