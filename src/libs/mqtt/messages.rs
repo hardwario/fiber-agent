@@ -89,6 +89,13 @@ pub enum MqttMessage {
         sensors: Vec<SensorConfigData>,
     },
 
+    /// Publish interval configuration data
+    PublishIntervalConfig {
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    },
+
     /// Update connection state (internal message)
     SetConnectionState(super::connection::ConnectionState),
 
@@ -141,6 +148,16 @@ pub enum MqttCommand {
     /// Restart application
     RestartApplication { reason: String },
 
+    /// Set sensor intervals (sample, aggregation, report)
+    SetInterval {
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    },
+
+    /// Get current sensor intervals
+    GetInterval,
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -190,6 +207,8 @@ impl MqttCommand {
             MqttCommand::GetSensorConfig => "get_sensor_config",
             MqttCommand::SetSensorName { .. } => "set_sensor_name",
             MqttCommand::RestartApplication { .. } => "restart_application",
+            MqttCommand::SetInterval { .. } => "set_interval",
+            MqttCommand::GetInterval => "get_interval",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",

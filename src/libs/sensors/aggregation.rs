@@ -201,6 +201,28 @@ impl AggregationState {
         self.window_start.elapsed() >= self.aggregation_interval
     }
 
+    /// Update the aggregation interval (for hot-reload support)
+    /// Always resets the window to ensure clean state after any config reload.
+    /// This discards partially collected samples but ensures predictable timing.
+    pub fn update_interval(&mut self, new_interval: Duration) {
+        let changed = new_interval != self.aggregation_interval;
+        self.aggregation_interval = new_interval;
+
+        // Always reset window on hot-reload to ensure clean state
+        // Even if interval didn't change, other config values may have changed
+        eprintln!(
+            "[Aggregation] Interval {} (now {:?}), resetting window",
+            if changed { "changed" } else { "refreshed" },
+            new_interval
+        );
+
+        let window_start_ts = Self::unix_timestamp();
+        for sensor in &mut self.current_windows {
+            sensor.reset(window_start_ts);
+        }
+        self.window_start = Instant::now();
+    }
+
     /// Finalize the current window and start a new one
     pub fn finalize_window(&mut self) {
         let window_end_ts = Self::unix_timestamp();

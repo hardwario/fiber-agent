@@ -781,6 +781,33 @@ impl MqttMonitor {
                                                     }
                                                 }
 
+                                                MqttCommand::GetInterval => {
+                                                    // Load main configuration for intervals
+                                                    match crate::libs::config::Config::load_default() {
+                                                        Ok(main_config) => {
+                                                            let response = MqttMessage::PublishIntervalConfig {
+                                                                sample_interval_ms: main_config.sensors.sample_interval_ms,
+                                                                aggregation_interval_ms: main_config.sensors.aggregation_interval_ms,
+                                                                report_interval_ms: main_config.sensors.report_interval_ms,
+                                                            };
+
+                                                            if let Err(e) = publisher.handle_message(response).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish interval config: {}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("[MQTT Monitor] Failed to load main config: {}", e);
+                                                            if let Err(publish_err) = publisher.publish_error(
+                                                                "get_interval",
+                                                                "config_load_error",
+                                                                &format!("Failed to load configuration: {}", e),
+                                                            ).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 _ => {
                                                     // Other commands - TODO: route to appropriate handlers
                                                     eprintln!("[MQTT Monitor] Command received but no handler implemented yet");
@@ -1092,10 +1119,32 @@ impl MqttMonitor {
                 }
             }
             MqttCommand::RestartApplication { reason } => {
-                eprintln!("[MQTT Monitor] Restart requested: {}", reason);
-                eprintln!("[MQTT Monitor] Note: Application restart not yet implemented");
-                // TODO: Implement graceful restart
+                eprintln!("[MQTT Monitor] Device reboot requested: {}", reason);
+                std::process::Command::new("reboot")
+                    .spawn()
+                    .map_err(|e| format!("Failed to execute reboot: {}", e))?;
                 Ok(())
+            }
+            MqttCommand::SetInterval {
+                sample_interval_ms,
+                aggregation_interval_ms,
+                report_interval_ms,
+            } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_interval_change(
+                        sample_interval_ms,
+                        aggregation_interval_ms,
+                        report_interval_ms,
+                    );
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ Sensor intervals updated (will apply on next hot-reload cycle)");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
             }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }

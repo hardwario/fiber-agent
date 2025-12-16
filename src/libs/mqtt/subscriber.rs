@@ -85,6 +85,8 @@ impl MqttSubscriber {
             "get_info" => Ok(MqttCommand::GetDeviceInfo),
             "get_sensor_config" => Ok(MqttCommand::GetSensorConfig),
             "restart" => self.parse_restart(&json),
+            "set_interval" => self.parse_set_interval(&json),
+            "get_interval" => Ok(MqttCommand::GetInterval),
             "config_request" => self.parse_config_request(&json),
             "config_confirm" => self.parse_config_confirm(&json),
             _ => Err(format!("Unknown command type: {}", command_type)),
@@ -234,6 +236,44 @@ impl MqttSubscriber {
         }
 
         Ok(MqttCommand::RestartApplication { reason })
+    }
+
+    /// Parse set_interval command
+    fn parse_set_interval(&self, json: &Value) -> Result<MqttCommand, String> {
+        let sample_interval_ms = json
+            .get("sample_interval_ms")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "Missing or invalid 'sample_interval_ms' field".to_string())?;
+
+        let aggregation_interval_ms = json
+            .get("aggregation_interval_ms")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "Missing or invalid 'aggregation_interval_ms' field".to_string())?;
+
+        let report_interval_ms = json
+            .get("report_interval_ms")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "Missing or invalid 'report_interval_ms' field".to_string())?;
+
+        // Validate intervals
+        if sample_interval_ms < 100 {
+            return Err("sample_interval_ms must be >= 100ms".to_string());
+        }
+        if report_interval_ms > 86_400_000 {
+            return Err("report_interval_ms must be <= 24 hours (86400000ms)".to_string());
+        }
+        if sample_interval_ms > aggregation_interval_ms {
+            return Err("sample_interval_ms must be <= aggregation_interval_ms".to_string());
+        }
+        if aggregation_interval_ms > report_interval_ms {
+            return Err("aggregation_interval_ms must be <= report_interval_ms".to_string());
+        }
+
+        Ok(MqttCommand::SetInterval {
+            sample_interval_ms,
+            aggregation_interval_ms,
+            report_interval_ms,
+        })
     }
 
     /// Parse config_request command (signed with Ed25519)

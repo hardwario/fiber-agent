@@ -157,6 +157,15 @@ impl MqttPublisher {
                 self.publish_sensor_config(sensors).await
             }
 
+            MqttMessage::PublishIntervalConfig {
+                sample_interval_ms,
+                aggregation_interval_ms,
+                report_interval_ms,
+            } => {
+                self.publish_interval_config(sample_interval_ms, aggregation_interval_ms, report_interval_ms)
+                    .await
+            }
+
             // Internal messages, not published
             MqttMessage::SetConnectionState(_) | MqttMessage::Shutdown => Ok(()),
         }
@@ -548,6 +557,28 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.responses_sensor_config();
+        let qos = QoS::AtLeastOnce; // QoS 1 for query responses
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish interval configuration data
+    pub async fn publish_interval_config(
+        &self,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "intervals": {
+                "sample_interval_ms": sample_interval_ms,
+                "aggregation_interval_ms": aggregation_interval_ms,
+                "report_interval_ms": report_interval_ms,
+            },
+        });
+
+        let topic = self.topics.responses_interval_config();
         let qos = QoS::AtLeastOnce; // QoS 1 for query responses
 
         self.publish(topic, payload.to_string(), qos, false).await

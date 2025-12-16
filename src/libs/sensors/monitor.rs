@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::StmBridge;
-use crate::libs::config::{SensorConfig, SensorFileConfig};
+use crate::libs::config::{Config, SensorConfig, SensorFileConfig};
 use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCallback};
 use crate::libs::buzzer::{BuzzerController, BuzzerPattern, BuzzerPriorityManager};
 use crate::libs::leds::SharedLedStateHandle;
@@ -117,8 +117,8 @@ impl SensorMonitor {
         let mut last_published_connected: [bool; 8] = [true; 8];  // Track last published connection state to prevent spam
         let mut last_mqtt_report = Instant::now();  // Track last MQTT publish time
 
-        let update_interval = Duration::from_millis(config.sample_interval_ms);
-        let mqtt_report_interval = Duration::from_millis(config.report_interval_ms);
+        let mut update_interval = Duration::from_millis(config.sample_interval_ms);
+        let mut mqtt_report_interval = Duration::from_millis(config.report_interval_ms);
         let failure_debounce_count = 2;  // Require 2 consecutive failures before marking sensor as failed
 
         // Initialize aggregation state for MQTT reporting
@@ -126,7 +126,12 @@ impl SensorMonitor {
             AggregationState::new(Duration::from_millis(config.aggregation_interval_ms))
         ));
         let mut last_aggregation_report = Instant::now();
-        let aggregation_report_interval = Duration::from_millis(config.report_interval_ms);
+        let mut aggregation_report_interval = Duration::from_millis(config.report_interval_ms);
+
+        // Track current interval values for hot-reload comparison
+        let mut current_sample_interval_ms = config.sample_interval_ms;
+        let mut current_aggregation_interval_ms = config.aggregation_interval_ms;
+        let mut current_report_interval_ms = config.report_interval_ms;
 
         // Config hot reload check interval
         let mut last_config_check = Instant::now();
@@ -169,6 +174,9 @@ impl SensorMonitor {
 
         // Main monitoring loop
         loop {
+            // Track cycle start time to calculate accurate sleep duration
+            let cycle_start = Instant::now();
+
             // Check if it's time to report to MQTT
             let should_report_mqtt = last_mqtt_report.elapsed() >= mqtt_report_interval;
             if should_report_mqtt {
@@ -214,10 +222,52 @@ impl SensorMonitor {
                             state.set_names(names);
                         }
 
-                        eprintln!("[SensorMonitor] Configuration reloaded successfully");
+                        eprintln!("[SensorMonitor] Sensor configuration reloaded successfully");
                     }
                     Err(e) => {
-                        eprintln!("[SensorMonitor] Warning: Failed to reload config: {}", e);
+                        eprintln!("[SensorMonitor] Warning: Failed to reload sensor config: {}", e);
+                    }
+                }
+
+                // Also hot-reload main config for interval changes
+                match Config::load_default() {
+                    Ok(main_config) => {
+                        let new_sample = main_config.sensors.sample_interval_ms;
+                        let new_aggregation = main_config.sensors.aggregation_interval_ms;
+                        let new_report = main_config.sensors.report_interval_ms;
+
+                        // Check if any interval changed
+                        if new_sample != current_sample_interval_ms
+                            || new_aggregation != current_aggregation_interval_ms
+                            || new_report != current_report_interval_ms
+                        {
+                            eprintln!(
+                                "[SensorMonitor] Hot-reloading intervals: sample={}ms->{}ms, aggregation={}ms->{}ms, report={}ms->{}ms",
+                                current_sample_interval_ms, new_sample,
+                                current_aggregation_interval_ms, new_aggregation,
+                                current_report_interval_ms, new_report
+                            );
+
+                            // Update intervals
+                            update_interval = Duration::from_millis(new_sample);
+                            mqtt_report_interval = Duration::from_millis(new_report);
+                            aggregation_report_interval = Duration::from_millis(new_report);
+
+                            // Update aggregation window
+                            if let Ok(mut agg) = aggregation_state.write() {
+                                agg.update_interval(Duration::from_millis(new_aggregation));
+                            }
+
+                            // Track current values
+                            current_sample_interval_ms = new_sample;
+                            current_aggregation_interval_ms = new_aggregation;
+                            current_report_interval_ms = new_report;
+
+                            eprintln!("[SensorMonitor] Intervals updated successfully");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[SensorMonitor] Warning: Failed to reload main config: {}", e);
                     }
                 }
             }
@@ -353,19 +403,39 @@ impl SensorMonitor {
             // Enumerate available W1 devices
             match reader.enum_devices() {
                 Ok(devices) => {
-                    // Read each connected device
-                    for (line_num, device_id) in devices.iter() {
-                        let sensor_idx = *line_num as usize;
-                        if sensor_idx >= config.num_lines as usize {
-                            continue;
-                        }
+                    // Filter devices to only those within configured line count
+                    let devices_to_read: Vec<_> = devices.iter()
+                        .filter(|(line_num, _)| (*line_num as usize) < config.num_lines as usize)
+                        .collect();
 
-                        // Read temperature from this sensor (3 second timeout instead of 10s)
-                        // Shorter timeout ensures buzzer updates happen more frequently even during sensor reads
-                        match reader.read_temperature(*line_num, device_id, 3000) {
+                    // Read all sensors in PARALLEL using thread::scope
+                    // Since each sensor is on a separate 1-Wire bus (w1_bus_master1, w1_bus_master2, etc.),
+                    // they can be read simultaneously, reducing total read time from ~8s to ~1s
+                    let read_results: Vec<(u8, Result<f32, std::io::Error>)> = thread::scope(|s| {
+                        let handles: Vec<_> = devices_to_read.iter().map(|(line_num, device_id)| {
+                            let reader_ref = &reader;
+                            let line = *line_num;
+                            let dev_id = device_id.clone();
+                            s.spawn(move || {
+                                (line, reader_ref.read_temperature(line, &dev_id, 3000))
+                            })
+                        }).collect();
+
+                        handles.into_iter()
+                            .map(|h: thread::ScopedJoinHandle<'_, (u8, Result<f32, std::io::Error>)>| {
+                                h.join().expect("Sensor read thread panicked")
+                            })
+                            .collect()
+                    });
+
+                    // Process results sequentially (alarm controllers and state updates aren't thread-safe)
+                    for (line_num, result) in read_results {
+                        let sensor_idx = line_num as usize;
+
+                        match result {
                             Ok(temp) => {
                                 // Successful read - update alarm controller and reset failure counter
-                                let was_disconnected = consecutive_failures[sensor_idx] >= failure_debounce_count;
+                                let _was_disconnected = consecutive_failures[sensor_idx] >= failure_debounce_count;
                                 alarm_controllers[sensor_idx].update(temp);
                                 consecutive_failures[sensor_idx] = 0;
 
@@ -393,8 +463,6 @@ impl SensorMonitor {
                                         last_published_connected[sensor_idx] = true;
                                     }
                                 }
-
-                                //eprintln!("[SensorMonitor] Sensor {}: {:.1}°C",sensor_idx, temp);
                             }
                             Err(e) => {
                                 // Track consecutive failures with debouncing
@@ -496,8 +564,30 @@ impl SensorMonitor {
                 controller.advance_reconnect_animation();
             }
 
-            // Sleep before next update
-            thread::sleep(update_interval);
+            // Calculate remaining sleep time to achieve target sample interval
+            // The sample_interval_ms represents the total cycle time (read + sleep),
+            // not just the sleep time. This accounts for 1-Wire sensor conversion time.
+            let cycle_duration = cycle_start.elapsed();
+            let sleep_time = update_interval.saturating_sub(cycle_duration);
+
+            if sleep_time.is_zero() && update_interval.as_millis() > 0 {
+                // Only warn once per minute to avoid log spam
+                static LAST_WARNING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last = LAST_WARNING.load(Ordering::Relaxed);
+                if now_secs >= last + 60 {
+                    LAST_WARNING.store(now_secs, Ordering::Relaxed);
+                    eprintln!(
+                        "[SensorMonitor] Warning: Sensor read cycle took {:?}, exceeds target interval {:?}",
+                        cycle_duration, update_interval
+                    );
+                }
+            }
+
+            thread::sleep(sleep_time);
         }
 
         eprintln!("[SensorMonitor] Monitor thread exited cleanly");

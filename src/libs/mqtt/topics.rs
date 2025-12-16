@@ -180,6 +180,10 @@ impl TopicBuilder {
     pub fn responses_sensor_config(&self) -> String {
         self.build(&["responses", "sensor_config"])
     }
+
+    pub fn responses_interval_config(&self) -> String {
+        self.build(&["responses", "interval_config"])
+    }
 }
 
 #[cfg(test)]

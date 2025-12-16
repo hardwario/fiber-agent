@@ -450,6 +450,7 @@ impl AuthorizationManager {
             "set_screen" => "set_screen",
             "flush_storage" => "flush_storage",
             "restart_application" => "restart_application",
+            "set_interval" => "set_interval",
             "get_info" => "get_info",
             "get_status" => "get_status",
             "add_signer" => "add_signer",
@@ -486,7 +487,13 @@ impl AuthorizationManager {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Change sensor line {} name to \"{}\"", line, name)
             }
-            "restart_application" => "Restart the application".to_string(),
+            "restart_application" => "Reboot the device".to_string(),
+            "set_interval" => {
+                let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                let report = params.get("report_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                format!("Change sensor intervals: sample={}ms, aggregation={}ms, report={}ms", sample, aggregation, report)
+            }
             "add_signer" => {
                 let signer_id = params.get("signer_id").and_then(|v| v.as_str()).unwrap_or("Unknown");
                 let role = params.get("role").and_then(|v| v.as_str()).unwrap_or("Unknown");
@@ -540,6 +547,25 @@ impl AuthorizationManager {
             "restart_application" => {
                 let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());
                 Ok(MqttCommand::RestartApplication { reason })
+            }
+            "set_interval" => {
+                let sample_interval_ms = challenge.params.get("sample_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing sample_interval_ms".to_string()))?;
+
+                let aggregation_interval_ms = challenge.params.get("aggregation_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing aggregation_interval_ms".to_string()))?;
+
+                let report_interval_ms = challenge.params.get("report_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing report_interval_ms".to_string()))?;
+
+                Ok(MqttCommand::SetInterval {
+                    sample_interval_ms,
+                    aggregation_interval_ms,
+                    report_interval_ms,
+                })
             }
             "add_signer" => {
                 Ok(MqttCommand::AddSigner {

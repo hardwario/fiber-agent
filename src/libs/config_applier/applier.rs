@@ -322,6 +322,137 @@ impl ConfigApplier {
         }
     }
 
+    /// Apply sensor interval changes to main configuration
+    pub fn apply_interval_change(
+        &self,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    ) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // 1. Validate intervals
+        if let Err(e) = ConfigValidator::validate_intervals(
+            sample_interval_ms,
+            aggregation_interval_ms,
+            report_interval_ms,
+        ) {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        // 2. Determine config file path (main config, not sensors config)
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        // 3. Read current configuration
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 4. Parse YAML
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 5. Create backup
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // 6. Update intervals in config
+        if let Err(e) = self.update_sensor_intervals(
+            &mut config,
+            sample_interval_ms,
+            aggregation_interval_ms,
+            report_interval_ms,
+        ) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        // 7. Serialize to YAML
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 8. Write atomically
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            // Attempt rollback
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ Sensor intervals updated: sample={}ms, aggregation={}ms, report={}ms",
+            sample_interval_ms, aggregation_interval_ms, report_interval_ms
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     // --- Private helper methods ---
 
     /// Update thresholds for a specific sensor line in the YAML structure
@@ -417,6 +548,37 @@ impl ConfigApplier {
         line_map.insert(
             Value::String("name".to_string()),
             Value::String(name.to_string()),
+        );
+
+        Ok(())
+    }
+
+    /// Update sensor intervals in the main YAML config structure
+    fn update_sensor_intervals(
+        &self,
+        config: &mut Value,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    ) -> Result<(), String> {
+        // Get or create 'sensors' section
+        let sensors = config
+            .get_mut("sensors")
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Missing 'sensors' section in config".to_string())?;
+
+        // Update interval fields
+        sensors.insert(
+            Value::String("sample_interval_ms".to_string()),
+            Value::Number(serde_yaml::Number::from(sample_interval_ms)),
+        );
+        sensors.insert(
+            Value::String("aggregation_interval_ms".to_string()),
+            Value::Number(serde_yaml::Number::from(aggregation_interval_ms)),
+        );
+        sensors.insert(
+            Value::String("report_interval_ms".to_string()),
+            Value::Number(serde_yaml::Number::from(report_interval_ms)),
         );
 
         Ok(())

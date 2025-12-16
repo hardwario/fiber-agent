@@ -101,6 +101,52 @@ impl ConfigValidator {
 
         Ok(())
     }
+
+    /// Validate sensor interval settings
+    ///
+    /// Ensures:
+    /// - sample_interval_ms >= 100ms (minimum sampling rate)
+    /// - report_interval_ms <= 24 hours
+    /// - sample_interval_ms <= aggregation_interval_ms <= report_interval_ms
+    pub fn validate_intervals(
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    ) -> Result<(), String> {
+        // Minimum sample interval of 100ms
+        if sample_interval_ms < 100 {
+            return Err(format!(
+                "sample_interval_ms ({}) must be >= 100ms",
+                sample_interval_ms
+            ));
+        }
+
+        // Maximum report interval of 24 hours
+        const MAX_INTERVAL_MS: u64 = 24 * 60 * 60 * 1000; // 86,400,000ms
+        if report_interval_ms > MAX_INTERVAL_MS {
+            return Err(format!(
+                "report_interval_ms ({}) must be <= 24 hours ({}ms)",
+                report_interval_ms, MAX_INTERVAL_MS
+            ));
+        }
+
+        // Logical ordering: sample <= aggregation <= report
+        if sample_interval_ms > aggregation_interval_ms {
+            return Err(format!(
+                "sample_interval_ms ({}) must be <= aggregation_interval_ms ({})",
+                sample_interval_ms, aggregation_interval_ms
+            ));
+        }
+
+        if aggregation_interval_ms > report_interval_ms {
+            return Err(format!(
+                "aggregation_interval_ms ({}) must be <= report_interval_ms ({})",
+                aggregation_interval_ms, report_interval_ms
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
