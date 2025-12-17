@@ -1,0 +1,56 @@
+prep_tags:
+  stage: prep
+  image: alpine:latest
+  before_script:
+    - apk update && apk add --no-cache git
+    - set -xe
+    # bring in every remote branch and tag
+    - git fetch --all
+    # ensure origin/main is up-to-date
+    - git fetch origin main
+  script:
+    - |
+      # 1) Decide VERSION
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        VERSION="$CI_COMMIT_TAG"
+      else
+        VERSION="latest"
+      fi
+
+      # 2) Decide FOLDER & determine BRANCH
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        TAG_SHA=$(git rev-parse "$CI_COMMIT_TAG")
+        MAIN_SHA=$(git rev-parse origin/main)
+        if [ "$TAG_SHA" = "$MAIN_SHA" ]; then
+          FOLDER="release"
+          BRANCH="main"
+        else
+          FOLDER="dev"
+          BRANCH=$(git branch -r --contains "$TAG_SHA" \
+                    | grep -v HEAD \
+                    | sed 's| *origin/||' \
+                    | head -n1)
+        fi
+      else
+        # not a tag → main→release, everything else→dev
+        if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+          FOLDER="release"
+          BRANCH="main"
+        else
+          FOLDER="dev"
+          BRANCH="$CI_COMMIT_REF_NAME"
+        fi
+      fi
+
+      # 3) Export for downstream
+      echo "VERSION=$VERSION" > tags.env
+      echo "FOLDER=$FOLDER"   >> tags.env
+      echo "BRANCH=$BRANCH"   >> tags.env
+      echo "‣ Running core for VERSION=$VERSION, FOLDER=$FOLDER, BRANCH=$BRANCH"
+  artifacts:
+    paths:
+      - tags.env
+    reports:
+      dotenv: tags.env
+  rules:
+    - !reference [.rules:only_tags, rules]

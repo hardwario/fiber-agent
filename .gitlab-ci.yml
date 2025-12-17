@@ -1,0 +1,31 @@
+variables:
+  POETRY_VERSION: "2.1.0"        # Specify the Poetry version
+  GIT_STRATEGY: fetch            # Ensure the CI pipeline has access to the full repository
+  GIT_CLEAN_FLAGS: -ffdx         # Clean untracked files and reset to the latest commit
+  SYSTEM_TRIGGER_TOKEN: "$SYSTEM_TRIGGER_TOKEN" # Token for triggering downstream pipelines
+  SYSTEM_PROJECT_ID: "499"       # System project ID
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_PROTECTED == "true"'
+      when: always
+    - when: never
+
+stages:
+  - prep
+  - trigger
+
+include:
+  - local: .gitlab/ci/_rules.yml
+  - local: .gitlab/ci/_templates.yml
+  - local: .gitlab/ci/lint.yml
+  - local: .gitlab/ci/test.yml
+  - local: .gitlab/ci/prep_tags.yml
+  - local: .gitlab/ci/trigger_yocto_qbee.yml
+  - local: .gitlab/ci/generate_requirements.yml

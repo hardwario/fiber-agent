@@ -1,0 +1,22 @@
+trigger-yocto-qbee:
+  stage: trigger
+  image: curlimages/curl:latest
+  needs: 
+    - prep_tags
+  dependencies: 
+    - prep_tags
+  script:
+    - |
+      source tags.env
+      echo "→ Triggering downstream pipeline on ref: $TARGET_REF"
+      curl -v -X POST --fail \
+            -F token="$SYSTEM_TRIGGER_TOKEN" \
+            -F ref="$TARGET_REF" \
+            -F "variables[FOLDER]=$FOLDER" \
+            -F "variables[TAG]=$VERSION" \
+            -F "variables[BRANCH]=$BRANCH" \
+            "https://gitlab.hardwario.com/api/v4/projects/$SYSTEM_PROJECT_ID/trigger/pipeline"
+  rules:
+    - !reference [.rules:only_tags, rules]
+  variables:
+    TARGET_REF: "$CI_DEFAULT_BRANCH"
