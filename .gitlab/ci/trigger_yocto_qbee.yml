@@ -1,14 +1,13 @@
 trigger-yocto-qbee:
   stage: trigger
   image: curlimages/curl:latest
-  needs: 
-    - prep_tags
-  dependencies: 
-    - prep_tags
+  needs:
+    - job: prep_tags
+      artifacts: true
   script:
     - |
-      source tags.env
       echo "→ Triggering downstream pipeline on ref: $TARGET_REF"
+      echo "  VERSION=$VERSION, FOLDER=$FOLDER, BRANCH=$BRANCH"
       curl -v -X POST --fail \
             -F token="$SYSTEM_TRIGGER_TOKEN" \
             -F ref="$TARGET_REF" \
