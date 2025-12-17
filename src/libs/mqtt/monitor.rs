@@ -169,6 +169,53 @@ fn check_broker_reachable(host: &str, port: u16) -> bool {
     }
 }
 
+/// Create MQTT client options with all configured parameters
+fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> MqttOptions {
+    let mut mqttoptions = MqttOptions::new(
+        client_id,
+        config.broker.host.clone(),
+        config.broker.port,
+    );
+
+    // Set connection parameters
+    mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
+    mqttoptions.set_clean_session(config.connection.clean_session);
+
+    // Set credentials if provided
+    if let (Some(username), Some(password)) = (&config.broker.username, &config.broker.password) {
+        eprintln!("[MQTT Monitor] Setting credentials for user: {}", username);
+        mqttoptions.set_credentials(username, password);
+    }
+
+    // Set Last Will and Testament
+    if config.last_will.enabled {
+        let lwt_topic = if config.publish.include_hostname {
+            format!(
+                "{}/{}/{}",
+                config.publish.topic_prefix, hostname, config.last_will.topic
+            )
+        } else {
+            format!("{}/{}", config.publish.topic_prefix, config.last_will.topic)
+        };
+
+        let qos = match config.last_will.qos {
+            0 => QoS::AtMostOnce,
+            1 => QoS::AtLeastOnce,
+            2 => QoS::ExactlyOnce,
+            _ => QoS::AtLeastOnce,
+        };
+
+        mqttoptions.set_last_will(rumqttc::LastWill {
+            topic: lwt_topic,
+            message: config.last_will.payload.as_bytes().to_vec().into(),
+            qos,
+            retain: config.last_will.retain,
+        });
+    }
+
+    mqttoptions
+}
+
 /// MQTT monitor handle for sending messages
 #[derive(Clone)]
 pub struct MqttHandle {
@@ -377,54 +424,6 @@ impl MqttMonitor {
             return Err("Client ID cannot be empty - check hostname configuration".to_string());
         }
 
-        // Create MQTT client options
-        let mut mqttoptions = MqttOptions::new(
-            client_id,
-            config.broker.host.clone(),
-            config.broker.port,
-        );
-
-        // Set connection parameters
-        mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
-        mqttoptions.set_clean_session(config.connection.clean_session);
-
-        // Set credentials if provided
-        if let (Some(username), Some(password)) = (&config.broker.username, &config.broker.password)
-        {
-            eprintln!("[MQTT Monitor] Setting credentials for user: {}", username);
-            mqttoptions.set_credentials(username, password);
-        } else {
-            eprintln!("[MQTT Monitor] WARNING: No credentials configured");
-            eprintln!("[MQTT Monitor]   Username: {:?}", config.broker.username.is_some());
-            eprintln!("[MQTT Monitor]   Password: {:?}", config.broker.password.is_some());
-        }
-
-        // Set Last Will and Testament
-        if config.last_will.enabled {
-            let lwt_topic = if config.publish.include_hostname {
-                format!(
-                    "{}/{}/{}",
-                    config.publish.topic_prefix, hostname, config.last_will.topic
-                )
-            } else {
-                format!("{}/{}", config.publish.topic_prefix, config.last_will.topic)
-            };
-
-            let qos = match config.last_will.qos {
-                0 => QoS::AtMostOnce,
-                1 => QoS::AtLeastOnce,
-                2 => QoS::ExactlyOnce,
-                _ => QoS::AtLeastOnce,
-            };
-
-            mqttoptions.set_last_will(rumqttc::LastWill {
-                topic: lwt_topic,
-                message: config.last_will.payload.as_bytes().to_vec().into(),
-                qos,
-                retain: config.last_will.retain,
-            });
-        }
-
         eprintln!("[MQTT Monitor] Connection parameters:");
         eprintln!("[MQTT Monitor]   Broker: {}:{}", config.broker.host, config.broker.port);
         eprintln!("[MQTT Monitor]   Client ID: {}",
@@ -434,10 +433,6 @@ impl MqttMonitor {
         if config.last_will.enabled {
             eprintln!("[MQTT Monitor]   Last Will: enabled");
         }
-        eprintln!(
-            "[MQTT Monitor] Connecting to {}:{}...",
-            config.broker.host, config.broker.port
-        );
 
         // Create async runtime for rumqttc (multi-threaded required for AsyncClient)
         eprintln!("[MQTT Monitor] Creating Tokio multi-threaded runtime...");
@@ -451,140 +446,199 @@ impl MqttMonitor {
             })?;
         eprintln!("[MQTT Monitor] Tokio runtime created successfully");
 
-        runtime.block_on(async {
-            // Create MQTT client and event loop
-            let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
-
-            eprintln!("[MQTT Monitor] AsyncClient created, waiting for initial connection...");
-
-            // Wait for initial CONNACK (with timeout)
-            let connection_timeout = Duration::from_secs(config.connection.connection_timeout_sec);
-            let connection_start = Instant::now();
-            let mut connected = false;
-
-            while connection_start.elapsed() < connection_timeout {
-                match tokio::time::timeout(Duration::from_secs(1), eventloop.poll()).await {
-                    Ok(Ok(Event::Incoming(Incoming::ConnAck(connack)))) => {
-                        eprintln!("[MQTT Monitor] Initial CONNACK received");
-                        eprintln!("[MQTT Monitor]   Session present: {}", connack.session_present);
-                        connected = true;
-                        break;
-                    }
-                    Ok(Err(e)) => {
-                        eprintln!("[MQTT Monitor] Connection error during initial connect: {}", e);
-                        return Err(format!("Initial connection failed: {}", e));
-                    }
-                    Ok(Ok(_)) => {
-                        // Other event, continue polling
-                    }
-                    Err(_) => {
-                        // Timeout, continue waiting
-                        eprintln!("[MQTT Monitor] Still waiting for CONNACK...");
-                    }
-                }
-            }
-
-            if !connected {
-                return Err(format!("Failed to connect within {}s timeout",
-                    config.connection.connection_timeout_sec));
-            }
-
-            eprintln!("[MQTT Monitor] Initial connection successful, entering main loop");
-
-            // Create topic builder
-            let topics = TopicBuilder::new(
-                config.publish.topic_prefix.clone(),
-                hostname.clone(),
-                config.publish.include_hostname,
-            );
-
-            // Create publisher
-            let publisher = MqttPublisher::new(client.clone(), topics.clone(), &config.publish);
-
-            // Create subscriber
-            let mut subscriber = MqttSubscriber::new(
-                config.subscribe.max_commands_per_second,
-                config.subscribe.audit_enabled,
-            );
-
-            // Subscribe to command topics if enabled
-            if config.subscribe.enabled {
-                let cmd_topic = topics.commands_wildcard();
-                eprintln!("[MQTT Monitor] Subscribing to commands: {}", cmd_topic);
-                if let Err(e) = client.subscribe(&cmd_topic, QoS::AtLeastOnce).await {
-                    eprintln!("[MQTT Monitor] Warning: Failed to subscribe to commands: {}", e);
-                }
-            }
-
-            // Initialize authorization components
-            let auth_manager = if config.subscribe.enabled {
-                match Self::init_authorization_manager(&config) {
-                    Ok(manager) => {
-                        eprintln!("[MQTT Monitor] Authorization manager initialized");
-                        Some(Arc::new(manager))
-                    }
-                    Err(e) => {
-                        eprintln!("[MQTT Monitor] Warning: Failed to initialize authorization manager: {}", e);
-                        eprintln!("[MQTT Monitor] Signed configuration commands will not be available");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Initialize configuration applier
-            let config_applier = match ConfigApplier::new(std::path::Path::new("/data/fiber/config")) {
-                Ok(applier) => {
-                    eprintln!("[MQTT Monitor] Configuration applier initialized");
-                    Some(Arc::new(applier))
+        // Initialize components that persist across reconnections
+        let auth_manager = if config.subscribe.enabled {
+            match Self::init_authorization_manager(&config) {
+                Ok(manager) => {
+                    eprintln!("[MQTT Monitor] Authorization manager initialized");
+                    Some(Arc::new(manager))
                 }
                 Err(e) => {
-                    eprintln!("[MQTT Monitor] Warning: Failed to initialize config applier: {}", e);
+                    eprintln!("[MQTT Monitor] Warning: Failed to initialize authorization manager: {}", e);
+                    eprintln!("[MQTT Monitor] Signed configuration commands will not be available");
                     None
                 }
-            };
-
-            // Update connection state
-            {
-                if let Ok(mut state) = connection_state.lock() {
-                    state.set_state(ConnectionState::Connecting);
-                }
             }
+        } else {
+            None
+        };
 
+        let config_applier = match ConfigApplier::new(std::path::Path::new("/data/fiber/config")) {
+            Ok(applier) => {
+                eprintln!("[MQTT Monitor] Configuration applier initialized");
+                Some(Arc::new(applier))
+            }
+            Err(e) => {
+                eprintln!("[MQTT Monitor] Warning: Failed to initialize config applier: {}", e);
+                None
+            }
+        };
+
+        // Track connection attempts for logging
+        let mut connection_attempt: u32 = 0;
+
+        runtime.block_on(async {
             // Initialize reconnection state with exponential backoff
             let mut reconnect_state = ReconnectionState::new(
                 config.connection.reconnect_delay_sec,
                 config.connection.max_reconnect_delay_sec,
             );
 
-            // Initialize network monitoring
-            let mut last_network_check = Instant::now();
-            let mut last_known_network = NetworkStatus::disconnected();
-
-            // Initialize periodic status reporting
-            let mut last_status_log = Instant::now();
-            let app_start_time = Instant::now();
-            let firmware_version = env!("CARGO_PKG_VERSION").to_string();
-
-            // Initialize periodic challenge cleanup
-            let mut last_challenge_cleanup = Instant::now();
-
-            // Main event loop
-            loop {
+            // ========== OUTER LOOP: Client Lifecycle Management ==========
+            // This loop creates fresh MQTT clients when needed (on errors, network recovery, etc.)
+            'connection: loop {
                 // Check for shutdown signal
                 if shutdown_flag.load(Ordering::Relaxed) {
-                    eprintln!("[MQTT Monitor] Shutdown signal received");
+                    eprintln!("[MQTT Monitor] Shutdown signal received before connection attempt");
                     break;
                 }
 
-                // Use tokio::select! to handle both MQTT events and channel messages
-                tokio::select! {
+                connection_attempt += 1;
+                eprintln!("[MQTT Monitor] === Connection attempt #{} ===", connection_attempt);
+
+                // Check if network is available before trying to connect
+                let network = get_network_status();
+                if !network.wifi_connected && !network.ethernet_connected {
+                    eprintln!("[MQTT Monitor] No network available - waiting for network...");
+                    // Wait for network with timeout
+                    match tokio::task::spawn_blocking(|| wait_for_network(60)).await {
+                        Ok(true) => {
+                            eprintln!("[MQTT Monitor] Network is now available");
+                        }
+                        Ok(false) => {
+                            eprintln!("[MQTT Monitor] Network still unavailable, will retry...");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue 'connection;
+                        }
+                        Err(e) => {
+                            eprintln!("[MQTT Monitor] Error waiting for network: {}", e);
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue 'connection;
+                        }
+                    }
+                }
+
+                // Update connection state
+                if let Ok(mut state) = connection_state.lock() {
+                    state.set_state(ConnectionState::Connecting);
+                }
+
+                // Create fresh MQTT client options and client
+                let mqttoptions = create_mqtt_options(&config, &hostname, &client_id);
+                let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+
+                eprintln!("[MQTT Monitor] Fresh MQTT client created, waiting for CONNACK...");
+
+                // Wait for initial CONNACK (with timeout)
+                let connection_timeout = Duration::from_secs(config.connection.connection_timeout_sec);
+                let connection_start = Instant::now();
+                let mut connected = false;
+
+                while connection_start.elapsed() < connection_timeout {
+                    if shutdown_flag.load(Ordering::Relaxed) {
+                        eprintln!("[MQTT Monitor] Shutdown during connection attempt");
+                        break 'connection;
+                    }
+
+                    match tokio::time::timeout(Duration::from_secs(1), eventloop.poll()).await {
+                        Ok(Ok(Event::Incoming(Incoming::ConnAck(connack)))) => {
+                            eprintln!("[MQTT Monitor] ✓ CONNACK received - connected to broker");
+                            eprintln!("[MQTT Monitor]   Session present: {}", connack.session_present);
+                            connected = true;
+                            reconnect_state.reset();
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("[MQTT Monitor] Connection error during connect: {}", e);
+                            let delay = reconnect_state.calculate_delay();
+                            tokio::time::sleep(delay).await;
+                            continue 'connection;
+                        }
+                        Ok(Ok(_)) => {
+                            // Other event, continue polling
+                        }
+                        Err(_) => {
+                            // Timeout, continue waiting
+                            eprintln!("[MQTT Monitor] Still waiting for CONNACK...");
+                        }
+                    }
+                }
+
+                if !connected {
+                    eprintln!("[MQTT Monitor] Connection timeout after {}s", config.connection.connection_timeout_sec);
+                    let delay = reconnect_state.calculate_delay();
+                    tokio::time::sleep(delay).await;
+                    continue 'connection;
+                }
+
+                // Update connection state
+                if let Ok(mut state) = connection_state.lock() {
+                    if connection_attempt > 1 {
+                        state.record_reconnection();
+                    }
+                    state.set_state(ConnectionState::Connected);
+                }
+
+                // Create topic builder
+                let topics = TopicBuilder::new(
+                    config.publish.topic_prefix.clone(),
+                    hostname.clone(),
+                    config.publish.include_hostname,
+                );
+
+                // Create publisher with fresh client
+                let publisher = MqttPublisher::new(client.clone(), topics.clone(), &config.publish);
+
+                // Create subscriber
+                let mut subscriber = MqttSubscriber::new(
+                    config.subscribe.max_commands_per_second,
+                    config.subscribe.audit_enabled,
+                );
+
+                // Subscribe to command topics
+                if config.subscribe.enabled {
+                    let cmd_topic = topics.commands_wildcard();
+                    eprintln!("[MQTT Monitor] Subscribing to commands: {}", cmd_topic);
+                    if let Err(e) = client.subscribe(&cmd_topic, QoS::AtLeastOnce).await {
+                        eprintln!("[MQTT Monitor] Warning: Failed to subscribe to commands: {}", e);
+                    }
+                }
+
+                // Publish online status
+                if let Err(e) = publisher.publish_online_status().await {
+                    eprintln!("[MQTT Monitor] Failed to publish online status: {}", e);
+                }
+
+                eprintln!("[MQTT Monitor] Connection established, entering event loop");
+
+                // Initialize network monitoring for this connection
+                let mut last_network_check = Instant::now();
+                let mut last_known_network = get_network_status();
+
+                // Initialize periodic status reporting
+                let mut last_status_log = Instant::now();
+                let app_start_time = Instant::now();
+                let firmware_version = env!("CARGO_PKG_VERSION").to_string();
+
+                // Initialize periodic challenge cleanup
+                let mut last_challenge_cleanup = Instant::now();
+
+                // ========== INNER LOOP: Event Processing ==========
+                // This loop handles MQTT events until an error requires client recreation
+                loop {
+                    // Check for shutdown signal
+                    if shutdown_flag.load(Ordering::Relaxed) {
+                        eprintln!("[MQTT Monitor] Shutdown signal received");
+                        break 'connection;
+                    }
+
+                    // Use tokio::select! to handle both MQTT events and channel messages
+                    tokio::select! {
                     // Handle MQTT broker events
                     event = eventloop.poll() => {
                         match event {
                             Ok(Event::Incoming(Incoming::ConnAck(connack))) => {
-                                eprintln!("[MQTT Monitor] ✓ Connected to broker");
+                                eprintln!("[MQTT Monitor] ✓ Connected to broker (rumqttc auto-reconnect)");
                                 eprintln!("[MQTT Monitor]   Session present: {}", connack.session_present);
                                 eprintln!("[MQTT Monitor]   Connection time: {}",
                                     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"));
@@ -607,7 +661,20 @@ impl MqttMonitor {
                                     } else {
                                         eprintln!("[MQTT Monitor]   Initial connection successful");
                                     }
+                                    state.record_reconnection();
                                     state.set_state(ConnectionState::Connected);
+                                }
+
+                                // Re-subscribe to command topics (required after reconnection)
+                                // Always re-subscribe as the broker may have lost our subscriptions
+                                if config.subscribe.enabled {
+                                    let cmd_topic = topics.commands_wildcard();
+                                    eprintln!("[MQTT Monitor] Re-subscribing to commands: {}", cmd_topic);
+                                    if let Err(e) = client.subscribe(&cmd_topic, QoS::AtLeastOnce).await {
+                                        eprintln!("[MQTT Monitor] Warning: Failed to re-subscribe to commands: {}", e);
+                                    } else {
+                                        eprintln!("[MQTT Monitor] ✓ Re-subscribed to commands successfully");
+                                    }
                                 }
 
                                 // Publish online status
@@ -845,10 +912,12 @@ impl MqttMonitor {
 
                                 if !network.wifi_connected && !network.ethernet_connected {
                                     eprintln!("[MQTT Monitor] Network down - waiting for network...");
-                                    // Actually wait for network and check result
+                                    // Wait for network to return
                                     match tokio::task::spawn_blocking(|| wait_for_network(60)).await {
                                         Ok(true) => {
-                                            eprintln!("[MQTT Monitor] Network is now available");
+                                            eprintln!("[MQTT Monitor] Network is now available - will create fresh connection");
+                                            // Reset backoff since we're starting fresh after network recovery
+                                            reconnect_state.reset();
                                         }
                                         Ok(false) => {
                                             eprintln!("[MQTT Monitor] Network still unavailable after 60s");
@@ -858,17 +927,21 @@ impl MqttMonitor {
                                         }
                                     }
                                 } else {
-                                    // Network is up, check if broker is reachable
+                                    // Network is up but MQTT failed - check broker reachability for diagnostics
                                     let broker_host = config.broker.host.clone();
                                     let broker_port = config.broker.port;
                                     tokio::task::spawn_blocking(move || {
                                         check_broker_reachable(&broker_host, broker_port)
                                     }).await.ok();
+
+                                    // Apply backoff delay before recreating client
+                                    let delay = reconnect_state.calculate_delay();
+                                    tokio::time::sleep(delay).await;
                                 }
 
-                                // Calculate backoff delay
-                                let delay = reconnect_state.calculate_delay();
-                                tokio::time::sleep(delay).await;
+                                // Break to outer loop to create fresh MQTT client
+                                eprintln!("[MQTT Monitor] Breaking out to recreate MQTT client...");
+                                continue 'connection;
                             }
 
                             _ => {}
@@ -1013,8 +1086,9 @@ impl MqttMonitor {
                             last_challenge_cleanup = Instant::now();
                         }
                     } => {}
-                }
-            }
+                    }
+                } // End of inner event loop
+            } // End of 'connection outer loop
 
             eprintln!("[MQTT Monitor] Monitor loop exited");
             Ok(())
