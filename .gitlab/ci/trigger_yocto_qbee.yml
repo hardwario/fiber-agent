@@ -7,7 +7,7 @@ trigger-yocto-qbee:
   script:
     - |
       echo "→ Triggering downstream pipeline on ref: $TARGET_REF"
-      echo "  VERSION=$VERSION, FOLDER=$FOLDER, BRANCH=$BRANCH"
+      echo "  VERSION=$VERSION, FOLDER=$FOLDER, BRANCH=$BRANCH", $SYSTEM_TRIGGER_TOKEN, $SYSTEM_PROJECT_ID
       curl -v -X POST --fail \
             -F token="$SYSTEM_TRIGGER_TOKEN" \
             -F ref="$TARGET_REF" \
