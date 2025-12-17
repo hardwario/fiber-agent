@@ -3,7 +3,7 @@ variables:
   GIT_STRATEGY: fetch            # Ensure the CI pipeline has access to the full repository
   GIT_CLEAN_FLAGS: -ffdx         # Clean untracked files and reset to the latest commit
   SYSTEM_TRIGGER_TOKEN: "$SYSTEM_TRIGGER_TOKEN" # Token for triggering downstream pipelines
-  SYSTEM_PROJECT_ID: "499"       # System project ID
+  SYSTEM_PROJECT_ID: "632"       # System project ID
 
 workflow:
   rules:
