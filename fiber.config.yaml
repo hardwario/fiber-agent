@@ -1,6 +1,6 @@
 power:
   # Power monitoring update interval
-  update_interval_ms: 10000
+  update_interval_ms: 60000
 
   # Battery voltage thresholds (millivolts)
   battery:
@@ -38,7 +38,7 @@ power:
 
 sensors:
   num_lines: 8
-  sample_interval_ms: 500
+  sample_interval_ms: 1000
   aggregation_interval_ms: 60000   # 1 minute
   report_interval_ms: 120000        # 2 minutes
   failure_threshold: 3
