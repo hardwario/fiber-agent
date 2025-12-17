@@ -66,11 +66,12 @@ hex2bin() {
 # Create output directory if it doesn't exist
 mkdir -p "${OUTPUT_DIR}"
 
+mkdir -p "${OUTPUT_DIR}/keys"
 # ============================================
 # STEP 1: Generate CA keypair
 # ============================================
-CA_PRIVATE_KEY_FILE="${OUTPUT_DIR}/ca.key"
-CA_PUBLIC_KEY_FILE="${OUTPUT_DIR}/ca.pub"
+CA_PRIVATE_KEY_FILE="${OUTPUT_DIR}/keys/ca.key"
+CA_PUBLIC_KEY_FILE="${OUTPUT_DIR}/keys/ca.pub"
 
 echo "[1/5] Generating Ed25519 CA keypair..."
 
@@ -93,7 +94,7 @@ TRUSTED_SINCE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 echo "[2/5] Creating authorized_signers.yaml (version 2 - CA model)..."
 
-YAML_FILE="${OUTPUT_DIR}/authorized_signers.yaml"
+YAML_FILE="${OUTPUT_DIR}/config/authorized_signers.yaml"
 
 cat > "${YAML_FILE}" << EOF
 # Fiber Device CA Registry (Certificate Authority Trust Model)

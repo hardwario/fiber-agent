@@ -74,12 +74,12 @@ pub fn render_sensor_overview(
         // Get sensor reading to determine status from AlarmState
         let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
             let (ch, is_alm) = match reading.alarm_state {
-                AlarmState::NeverConnected => ("D", false),   // Never connected - no alarm
+                AlarmState::NeverConnected => ("-", false),   // Never connected - no alarm
                 AlarmState::Disconnected => ("E", true),      // Disconnected - alarm
                 AlarmState::Reconnecting => ("W", true),      // Reconnecting - show warning
                 AlarmState::Normal => ("N", false),           // Normal - no alarm
                 AlarmState::Warning => ("W", true),           // Warning - alarm
-                AlarmState::Alarm => ("C", true),             // Alarm - critical
+                AlarmState::Alarm => ("A", true),             // Alarm - critical
                 AlarmState::Critical => ("C", true),          // Critical - critical
             };
             (ch, is_alm)
