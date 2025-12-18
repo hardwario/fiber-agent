@@ -62,10 +62,10 @@ alarm_patterns:
 common_alarms:
   # Critical thresholds - life-threatening, immediate intervention needed
   critical_low_celsius: 18.0    # Below 32°C: severe hypothermia
-  critical_high_celsius: 40.0   # Above 40°C: severe fever/hyperthermia
+  critical_high_celsius: 41.0   # Above 40°C: severe fever/hyperthermia
   # Alarm thresholds - abnormal, needs attention
   low_alarm_celsius: 26.0       # Below 35°C: hypothermia
-  high_alarm_celsius: 39.0      # Above 39°C: high fever
+  high_alarm_celsius: 40.0      # Above 39°C: high fever
   # Warning thresholds - approaching alarm, monitor closely
   warning_low_celsius: 27.0     # Below 36°C: mild hypothermia warning
   warning_high_celsius: 38.5    # Above 38.5°C: elevated temperature warning
