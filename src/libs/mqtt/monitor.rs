@@ -22,7 +22,11 @@ use super::topics::TopicBuilder;
 use crate::libs::authorization::AuthorizationManager;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
+use crate::libs::pairing::PairingHandle;
 use std::sync::Mutex;
+
+/// Shared pairing handle that can be set after MQTT monitor is created
+pub type SharedPairingHandle = Arc<Mutex<Option<PairingHandle>>>;
 
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
@@ -345,6 +349,7 @@ pub struct MqttMonitor {
     shutdown_flag: Arc<AtomicBool>,
     connection_state: SharedConnectionState,
     handle: MqttHandle,
+    pairing_handle: SharedPairingHandle,
 }
 
 impl MqttMonitor {
@@ -363,6 +368,10 @@ impl MqttMonitor {
         let connection_state = create_shared_connection_state();
         let connection_state_clone = connection_state.clone();
 
+        // Create shared pairing handle slot (will be set later)
+        let pairing_handle: SharedPairingHandle = Arc::new(Mutex::new(None));
+        let pairing_handle_clone = pairing_handle.clone();
+
         // Create handle for sending messages
         let handle = MqttHandle { sender };
         let handle_clone = handle.clone();
@@ -375,6 +384,7 @@ impl MqttMonitor {
                 receiver,
                 shutdown_flag_clone,
                 connection_state_clone,
+                pairing_handle_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -387,7 +397,16 @@ impl MqttMonitor {
             shutdown_flag,
             connection_state,
             handle: handle_clone,
+            pairing_handle,
         })
+    }
+
+    /// Set the pairing handle (call after PairingMonitor is created)
+    pub fn set_pairing_handle(&self, handle: PairingHandle) {
+        if let Ok(mut ph) = self.pairing_handle.lock() {
+            *ph = Some(handle);
+            eprintln!("[MQTT Monitor] Pairing handle set");
+        }
     }
 
     /// Get handle for sending messages
@@ -407,6 +426,7 @@ impl MqttMonitor {
         receiver: Receiver<MqttMessage>,
         shutdown_flag: Arc<AtomicBool>,
         connection_state: SharedConnectionState,
+        pairing_handle: SharedPairingHandle,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -602,6 +622,13 @@ impl MqttMonitor {
                     if let Err(e) = client.subscribe(&cmd_topic, QoS::AtLeastOnce).await {
                         eprintln!("[MQTT Monitor] Warning: Failed to subscribe to commands: {}", e);
                     }
+
+                    // Subscribe to pairing request topic
+                    let pair_topic = topics.pair_request();
+                    eprintln!("[MQTT Monitor] Subscribing to pairing: {}", pair_topic);
+                    if let Err(e) = client.subscribe(&pair_topic, QoS::ExactlyOnce).await {
+                        eprintln!("[MQTT Monitor] Warning: Failed to subscribe to pairing: {}", e);
+                    }
                 }
 
                 // Publish online status
@@ -675,6 +702,15 @@ impl MqttMonitor {
                                     } else {
                                         eprintln!("[MQTT Monitor] ✓ Re-subscribed to commands successfully");
                                     }
+
+                                    // Re-subscribe to pairing topic
+                                    let pair_topic = topics.pair_request();
+                                    eprintln!("[MQTT Monitor] Re-subscribing to pairing: {}", pair_topic);
+                                    if let Err(e) = client.subscribe(&pair_topic, QoS::ExactlyOnce).await {
+                                        eprintln!("[MQTT Monitor] Warning: Failed to re-subscribe to pairing: {}", e);
+                                    } else {
+                                        eprintln!("[MQTT Monitor] ✓ Re-subscribed to pairing successfully");
+                                    }
                                 }
 
                                 // Publish online status
@@ -694,8 +730,41 @@ impl MqttMonitor {
                             }
 
                             Ok(Event::Incoming(Incoming::Publish(p))) => {
-                                // Handle incoming command
+                                // Handle incoming messages
                                 if config.subscribe.enabled {
+                                    // Check if this is a pairing request (different format from commands)
+                                    let pair_topic = topics.pair_request();
+                                    if p.topic == pair_topic {
+                                        // Parse pairing request
+                                        match Self::parse_pairing_request(&p.payload) {
+                                            Ok(pairing_req) => {
+                                                eprintln!("[MQTT Monitor] Received pairing request: {} from {}",
+                                                    pairing_req.request_id, pairing_req.admin_username);
+
+                                                // Route to PairingMonitor
+                                                if let Ok(ph_guard) = pairing_handle.lock() {
+                                                    if let Some(ref ph) = *ph_guard {
+                                                        ph.process_request(pairing_req);
+                                                        eprintln!("[MQTT Monitor] Pairing request routed to PairingMonitor");
+                                                    } else {
+                                                        eprintln!("[MQTT Monitor] Pairing handle not set - cannot process request");
+                                                        if let Err(publish_err) = publisher.publish_error("pairing_request", "not_available", "Pairing not initialized").await {
+                                                            eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[MQTT Monitor] Invalid pairing request: {}", e);
+                                                if let Err(publish_err) = publisher.publish_error("pairing_request", "parse_error", &e).await {
+                                                    eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    // Handle regular commands
                                     match subscriber.parse_command(&p.topic, &p.payload) {
                                         Ok(cmd) => {
                                             eprintln!("[MQTT Monitor] Received command: {}", cmd.name());
@@ -1086,6 +1155,31 @@ impl MqttMonitor {
                             last_challenge_cleanup = Instant::now();
                         }
                     } => {}
+
+                    // Poll for pairing results and publish them
+                    _ = async {
+                        if let Ok(ph_guard) = pairing_handle.lock() {
+                            if let Some(ref ph) = *ph_guard {
+                                while let Some(result) = ph.try_recv_result() {
+                                    match result {
+                                        crate::libs::pairing::PairingResult::Success(response) => {
+                                            eprintln!("[MQTT Monitor] Publishing pairing success response for {}",
+                                                response.admin_certificate.signer_id);
+                                            if let Err(e) = publisher.publish_pairing_response(&response).await {
+                                                eprintln!("[MQTT Monitor] Failed to publish pairing response: {}", e);
+                                            }
+                                        }
+                                        crate::libs::pairing::PairingResult::Error(error) => {
+                                            eprintln!("[MQTT Monitor] Publishing pairing error: {}", error.error);
+                                            if let Err(e) = publisher.publish_pairing_error(&error).await {
+                                                eprintln!("[MQTT Monitor] Failed to publish pairing error: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } => {}
                     }
                 } // End of inner event loop
             } // End of 'connection outer loop
@@ -1095,16 +1189,74 @@ impl MqttMonitor {
         })
     }
 
+    /// Parse pairing request from MQTT payload
+    fn parse_pairing_request(payload: &[u8]) -> Result<crate::libs::pairing::PairingRequest, String> {
+        let json_str = std::str::from_utf8(payload)
+            .map_err(|e| format!("Invalid UTF-8: {}", e))?;
+
+        let request: crate::libs::pairing::PairingRequest = serde_json::from_str(json_str)
+            .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+        // Basic validation
+        if request.request_id.is_empty() {
+            return Err("Missing request_id".to_string());
+        }
+        if request.admin_username.is_empty() {
+            return Err("Missing admin_username".to_string());
+        }
+
+        Ok(request)
+    }
+
     /// Initialize authorization manager with crypto components
     fn init_authorization_manager(_config: &MqttConfig) -> Result<AuthorizationManager, String> {
         use std::path::Path;
+        use crate::libs::crypto::CertificateAuthority;
 
         // Initialize CA registry (trusted Certificate Authorities)
         let ca_file = Path::new("/data/fiber/config/authorized_signers.yaml");
-        let ca_registry = Arc::new(Mutex::new(
-            CARegistry::load_from_file(ca_file)
-                .map_err(|e| format!("Failed to load CA registry: {:?}", e))?,
-        ));
+        let mut registry = CARegistry::load_from_file(ca_file)
+            .map_err(|e| format!("Failed to load CA registry: {:?}", e))?;
+
+        // Try to load device CA and register it as trusted
+        let device_ca_file = Path::new("/data/fiber/config/device_ca.key");
+        if device_ca_file.exists() {
+            match crate::libs::pairing::ca_key::DeviceCaKey::load_existing(device_ca_file) {
+                Ok(device_ca) => {
+                    let ca_id = device_ca.ca_id();
+                    let public_key_hex = device_ca.public_key_hex();
+
+                    // Register the device CA
+                    let device_ca_entry = CertificateAuthority {
+                        ca_id: ca_id.clone(),
+                        ca_public_key_ed25519: public_key_hex.clone(),
+                        trusted_since: chrono::Utc::now().to_rfc3339(),
+                        enabled: true,
+                        description: Some("Device's own CA (auto-registered)".to_string()),
+                    };
+                    registry.add_ca(device_ca_entry);
+
+                    // Also register with generic "device_ca" ID for compatibility
+                    let generic_ca_entry = CertificateAuthority {
+                        ca_id: "device_ca".to_string(),
+                        ca_public_key_ed25519: public_key_hex,
+                        trusted_since: chrono::Utc::now().to_rfc3339(),
+                        enabled: true,
+                        description: Some("Device CA (compatibility alias)".to_string()),
+                    };
+                    registry.add_ca(generic_ca_entry);
+
+                    eprintln!("[MQTT Monitor] Device CA registered as trusted: {}", ca_id);
+                }
+                Err(e) => {
+                    eprintln!("[MQTT Monitor] Warning: Could not load device CA: {}", e);
+                }
+            }
+        } else {
+            eprintln!("[MQTT Monitor] Device CA file not found, pairing not yet performed");
+        }
+
+        let ca_registry = Arc::new(Mutex::new(registry));
 
         // Initialize nonce tracker
         let nonce_db = Path::new("/tmp/fiber_nonces.db");

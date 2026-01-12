@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -155,9 +155,9 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Create and spawn button monitor thread for screen navigation
+    // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone())?;
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None)?;
     eprintln!("[main] Button monitor started");
 
     // Create buzzer controller for power monitoring alerts
@@ -188,7 +188,7 @@ fn main() -> io::Result<()> {
 
     // Initialize storage thread for medical data persistence
     eprintln!("[main] Starting storage thread...");
-    let (_storage_handle, _storage_thread) = match StorageThread::spawn(&config.storage.db_path, config.storage.max_size_gb) {
+    let (storage_handle, _storage_thread) = match StorageThread::spawn(&config.storage.db_path, config.storage.max_size_gb) {
         Ok((handle, thread)) => {
             eprintln!(
                 "[main] Storage thread started - database: {}, max size: {}GB",
@@ -210,25 +210,60 @@ fn main() -> io::Result<()> {
         eprintln!("[main]   config.mqtt.enabled: {}", mqtt_config.enabled);
     }
 
-    let mqtt_handle = if config.mqtt.as_ref().map(|m| m.enabled).unwrap_or(false) {
+    let (mqtt_handle, mqtt_monitor) = if config.mqtt.as_ref().map(|m| m.enabled).unwrap_or(false) {
         eprintln!("[main] Starting MQTT monitor...");
         match MqttMonitor::new(config.mqtt.clone().unwrap(), hostname.clone()) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started");
                 let handle = monitor.handle();
+                (Some(handle), Some(monitor))
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to start MQTT: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        eprintln!("[main] MQTT disabled in configuration");
+        (None, None)
+    };
+
+    // Create and spawn pairing monitor if MQTT is enabled
+    let pairing_handle = if mqtt_handle.is_some() {
+        eprintln!("[main] Starting pairing monitor...");
+        let config_dir = std::path::Path::new("/data/fiber/config");
+        match PairingMonitor::new(hostname.clone(), config_dir, _display_monitor.display_state.clone()) {
+            Ok(monitor) => {
+                eprintln!("[main] Pairing monitor started");
+                let handle = monitor.handle();
+                // Set pairing handle in MQTT monitor for routing
+                if let Some(ref mqtt_mon) = mqtt_monitor {
+                    mqtt_mon.set_pairing_handle(handle.clone());
+                }
                 // Keep monitor alive
                 std::mem::forget(monitor);
                 Some(handle)
             }
             Err(e) => {
-                eprintln!("[main] Warning: Failed to start MQTT: {}", e);
+                eprintln!("[main] Warning: Failed to start pairing monitor: {}", e);
                 None
             }
         }
     } else {
-        eprintln!("[main] MQTT disabled in configuration");
+        eprintln!("[main] Pairing monitor disabled (MQTT not enabled)");
         None
     };
+
+    // Keep MQTT monitor alive (after pairing handle is set)
+    if let Some(monitor) = mqtt_monitor {
+        std::mem::forget(monitor);
+    }
+
+    // Update button monitor with pairing handle
+    eprintln!("[main] Restarting button monitor with pairing support...");
+    drop(_button_monitor);
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), pairing_handle.clone())?;
+    eprintln!("[main] Button monitor restarted with pairing support");
 
     // Create and spawn power monitoring thread with configured interval
     eprintln!("[main] Starting power monitor...");
@@ -245,7 +280,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn sensor monitoring thread (pass MQTT handle)
     eprintln!("[main] Starting sensor monitor...");
-    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone()) {
+    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle)) {
         Ok(monitor) => {
             eprintln!("[main] Sensor monitor started");
             Some(monitor)

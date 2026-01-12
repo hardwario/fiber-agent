@@ -166,6 +166,14 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishPairingResponse(response) => {
+                self.publish_pairing_response(&response).await
+            }
+
+            MqttMessage::PublishPairingError(error) => {
+                self.publish_pairing_error(&error).await
+            }
+
             // Internal messages, not published
             MqttMessage::SetConnectionState(_) | MqttMessage::Shutdown => Ok(()),
         }
@@ -582,6 +590,34 @@ impl MqttPublisher {
         let qos = QoS::AtLeastOnce; // QoS 1 for query responses
 
         self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish pairing response (success)
+    pub async fn publish_pairing_response(
+        &self,
+        response: &crate::libs::pairing::messages::PairingResponse,
+    ) -> Result<(), String> {
+        let payload = serde_json::to_string(&response)
+            .map_err(|e| format!("Failed to serialize pairing response: {}", e))?;
+
+        let topic = self.topics.pair_response();
+        let qos = QoS::ExactlyOnce; // QoS 2 for pairing (critical)
+
+        self.publish(topic, payload, qos, false).await
+    }
+
+    /// Publish pairing error
+    pub async fn publish_pairing_error(
+        &self,
+        error: &crate::libs::pairing::messages::PairingError,
+    ) -> Result<(), String> {
+        let payload = serde_json::to_string(&error)
+            .map_err(|e| format!("Failed to serialize pairing error: {}", e))?;
+
+        let topic = self.topics.pair_response();
+        let qos = QoS::ExactlyOnce; // QoS 2 for pairing (critical)
+
+        self.publish(topic, payload, qos, false).await
     }
 }
 

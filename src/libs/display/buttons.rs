@@ -7,6 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
+use crate::libs::pairing::PairingHandle;
 use super::SharedDisplayStateHandle;
 
 /// Button monitor state machine for handling ENTER button countdown and DOWN button hold
@@ -22,6 +23,10 @@ enum ButtonMonitorState {
     DownHoldActive,
     /// System info screen is displayed
     ShowingSystem,
+    /// UP button being held, counting down for 5 seconds for pairing
+    UpHoldActive,
+    /// Pairing screen is displayed
+    ShowingPairing,
 }
 
 /// Button monitor thread for controlling display navigation
@@ -35,14 +40,16 @@ impl ButtonMonitor {
     ///
     /// The thread will continuously monitor button input and update the display page
     /// when UP/DOWN buttons are pressed. The ENTER button is reserved for future use.
+    /// If a pairing_handle is provided, UP held for 5 seconds triggers pairing mode.
     pub fn new(
         display_state: SharedDisplayStateHandle,
+        pairing_handle: Option<PairingHandle>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state);
+            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle);
         });
 
         Ok(Self {
@@ -55,6 +62,7 @@ impl ButtonMonitor {
     fn button_loop(
         shutdown_flag: Arc<AtomicBool>,
         display_state: SharedDisplayStateHandle,
+        pairing_handle: Option<PairingHandle>,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -77,6 +85,7 @@ impl ButtonMonitor {
         let mut state = ButtonMonitorState::Idle;
         let mut countdown_start = Instant::now();
         let mut down_hold_start = Instant::now();
+        let mut up_hold_start = Instant::now();
 
         // Main button monitoring loop
         loop {
@@ -95,27 +104,97 @@ impl ButtonMonitor {
                     ButtonEvent::Press(Button::Up) => {
                         eprintln!("[ButtonMonitor] UP button pressed");
 
-                        // Cancel any ongoing countdown
-                        if state == ButtonMonitorState::CountdownActive || state == ButtonMonitorState::DownHoldActive {
-                            eprintln!("[ButtonMonitor] Countdown/hold cancelled by UP button");
+                        // Handle ShowingPairing - any button cancels
+                        if state == ButtonMonitorState::ShowingPairing {
+                            if let Some(ref ph) = pairing_handle {
+                                ph.cancel_pairing();
+                            }
+                            if let Ok(mut display_state_lock) = display_state.lock() {
+                                display_state_lock.show_sensor_overview();
+                            }
                             state = ButtonMonitorState::Idle;
+                            eprintln!("[ButtonMonitor] Pairing cancelled by UP button");
+                            continue;
                         }
 
-                        // Navigate to next page on navigable screens (Sensor Overview or System Info)
-                        if let Ok(mut display_state_lock) = display_state.lock() {
-                            if display_state_lock.current_screen.is_navigable() {
-                                display_state_lock.next_page();
-                                eprintln!("[ButtonMonitor] Page changed");
+                        match state {
+                            ButtonMonitorState::Idle => {
+                                // Check if on special screen (QR code only)
+                                let on_special_screen = if let Ok(display_state_lock) = display_state.lock() {
+                                    display_state_lock.current_screen.is_special_screen()
+                                } else {
+                                    false
+                                };
+
+                                if on_special_screen {
+                                    // On QR screen - ignore UP
+                                    eprintln!("[ButtonMonitor] UP ignored on QR code screen");
+                                } else {
+                                    // Start UP hold countdown (for pairing if handle available)
+                                    state = ButtonMonitorState::UpHoldActive;
+                                    up_hold_start = Instant::now();
+                                    eprintln!("[ButtonMonitor] UP hold started - counting 5 seconds for pairing");
+                                }
+                            }
+                            ButtonMonitorState::ShowingSystem => {
+                                // On System screen - navigate pages instead of starting hold
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.next_page();
+                                    eprintln!("[ButtonMonitor] System info page changed");
+                                }
+                            }
+                            ButtonMonitorState::UpHoldActive => {
+                                // Already holding UP - ignore additional presses
+                            }
+                            ButtonMonitorState::CountdownActive => {
+                                // Cancel ENTER countdown and start UP hold
+                                state = ButtonMonitorState::UpHoldActive;
+                                up_hold_start = Instant::now();
+                                eprintln!("[ButtonMonitor] ENTER countdown cancelled, UP hold started");
+                            }
+                            ButtonMonitorState::DownHoldActive => {
+                                // Cancel DOWN hold
+                                state = ButtonMonitorState::Idle;
+                                eprintln!("[ButtonMonitor] DOWN hold cancelled by UP button");
+                            }
+                            _ => {
+                                // Other states - ignore UP
                             }
                         }
-
-                        // Only reset to idle if not already idle (to preserve ShowingSystem state)
-                        if state != ButtonMonitorState::ShowingSystem {
-                            state = ButtonMonitorState::Idle;
+                    }
+                    ButtonEvent::Release(Button::Up) => {
+                        if state == ButtonMonitorState::UpHoldActive {
+                            let elapsed = up_hold_start.elapsed();
+                            if elapsed < COUNTDOWN_DURATION {
+                                // Released early - cancel hold and navigate page
+                                eprintln!("[ButtonMonitor] UP released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    if display_state_lock.current_screen.is_navigable() {
+                                        display_state_lock.next_page();
+                                        eprintln!("[ButtonMonitor] Page changed");
+                                    }
+                                }
+                                state = ButtonMonitorState::Idle;
+                            }
+                            // If >= 5 seconds, already transitioned to ShowingPairing
                         }
                     }
                     ButtonEvent::Press(Button::Down) => {
                         eprintln!("[ButtonMonitor] DOWN button pressed");
+
+                        // Handle ShowingPairing - any button cancels
+                        if state == ButtonMonitorState::ShowingPairing {
+                            if let Some(ref ph) = pairing_handle {
+                                ph.cancel_pairing();
+                            }
+                            if let Ok(mut display_state_lock) = display_state.lock() {
+                                display_state_lock.show_sensor_overview();
+                            }
+                            state = ButtonMonitorState::Idle;
+                            eprintln!("[ButtonMonitor] Pairing cancelled by DOWN button");
+                            continue;
+                        }
+
                         match state {
                             ButtonMonitorState::Idle => {
                                 // Check if on special screen (QR code only)
@@ -151,13 +230,47 @@ impl ButtonMonitor {
                                 down_hold_start = Instant::now();
                                 eprintln!("[ButtonMonitor] ENTER countdown cancelled, DOWN hold started");
                             }
+                            ButtonMonitorState::UpHoldActive => {
+                                // Cancel UP hold
+                                state = ButtonMonitorState::Idle;
+                                eprintln!("[ButtonMonitor] UP hold cancelled by DOWN button");
+                            }
                             _ => {
                                 // Other states - ignore DOWN
                             }
                         }
                     }
+                    ButtonEvent::Release(Button::Down) => {
+                        if state == ButtonMonitorState::DownHoldActive {
+                            let elapsed = down_hold_start.elapsed();
+                            if elapsed < COUNTDOWN_DURATION {
+                                // Released early - cancel hold and navigate page
+                                eprintln!("[ButtonMonitor] DOWN released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.next_page();
+                                    eprintln!("[ButtonMonitor] Page changed");
+                                }
+                                state = ButtonMonitorState::Idle;
+                            }
+                            // If >= 5 seconds, already transitioned to ShowingSystem
+                        }
+                    }
                     ButtonEvent::Press(Button::Enter) => {
                         eprintln!("[ButtonMonitor] ENTER button pressed");
+
+                        // Handle ShowingPairing - any button cancels
+                        if state == ButtonMonitorState::ShowingPairing {
+                            if let Some(ref ph) = pairing_handle {
+                                ph.cancel_pairing();
+                            }
+                            if let Ok(mut display_state_lock) = display_state.lock() {
+                                display_state_lock.show_sensor_overview();
+                            }
+                            state = ButtonMonitorState::Idle;
+                            eprintln!("[ButtonMonitor] Pairing cancelled by ENTER button");
+                            continue;
+                        }
+
                         match state {
                             ButtonMonitorState::Idle => {
                                 // Start countdown
@@ -192,26 +305,18 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
-                        }
-                    }
-                    ButtonEvent::Release(Button::Down) => {
-                        // Handle DOWN button release
-                        if state == ButtonMonitorState::DownHoldActive {
-                            let elapsed = down_hold_start.elapsed();
-                            if elapsed < COUNTDOWN_DURATION {
-                                // Released early - cancel hold and navigate page
-                                eprintln!("[ButtonMonitor] DOWN released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
-                                if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.next_page();
-                                    eprintln!("[ButtonMonitor] Page changed");
-                                }
+                            ButtonMonitorState::UpHoldActive => {
+                                // Cancel UP hold (pairing countdown)
                                 state = ButtonMonitorState::Idle;
+                                eprintln!("[ButtonMonitor] UP hold cancelled by ENTER");
                             }
-                            // If >= 5 seconds, already transitioned to ShowingSystem
+                            ButtonMonitorState::ShowingPairing => {
+                                // Already handled above
+                            }
                         }
                     }
-                    ButtonEvent::Release(_) => {
-                        // Ignore other release events
+                    ButtonEvent::Release(Button::Enter) => {
+                        // Ignore ENTER release
                     }
                 }
             }
@@ -237,6 +342,21 @@ impl ButtonMonitor {
                         eprintln!("[ButtonMonitor] DOWN hold complete (5s) - transitioning to system info screen");
                     }
                     state = ButtonMonitorState::ShowingSystem;
+                }
+            }
+
+            // Check countdown completion for UP button hold (pairing)
+            if state == ButtonMonitorState::UpHoldActive {
+                if up_hold_start.elapsed() >= COUNTDOWN_DURATION {
+                    // Trigger pairing mode if handle available
+                    if let Some(ref ph) = pairing_handle {
+                        ph.start_pairing();
+                        eprintln!("[ButtonMonitor] UP hold complete (5s) - triggering pairing mode");
+                        state = ButtonMonitorState::ShowingPairing;
+                    } else {
+                        eprintln!("[ButtonMonitor] UP hold complete (5s) - pairing not available (MQTT disabled)");
+                        state = ButtonMonitorState::Idle;
+                    }
                 }
             }
 

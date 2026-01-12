@@ -197,6 +197,20 @@ impl CARegistry {
     pub fn is_empty(&self) -> bool {
         self.authorities.is_empty()
     }
+
+    /// Add or update a CA at runtime (e.g., device's own CA)
+    pub fn add_ca(&mut self, ca: CertificateAuthority) {
+        eprintln!(
+            "[CARegistry] Adding CA: {} (enabled: {})",
+            ca.ca_id, ca.enabled
+        );
+        self.authorities.insert(ca.ca_id.clone(), ca);
+    }
+
+    /// Check if a CA is registered
+    pub fn has_ca(&self, ca_id: &str) -> bool {
+        self.authorities.contains_key(ca_id)
+    }
 }
 
 #[cfg(test)]

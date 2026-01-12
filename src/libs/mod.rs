@@ -15,6 +15,7 @@ pub mod mqtt;
 pub mod crypto;
 pub mod authorization;
 pub mod config_applier;
+pub mod pairing;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};
@@ -28,3 +29,4 @@ pub use display::DisplayMonitor;
 pub use network::QrCodeGenerator;
 pub use storage::{StorageHandle, StorageThread};
 pub use mqtt::{MqttHandle, MqttMonitor};
+pub use pairing::{PairingMonitor, PairingHandle};

@@ -15,3 +15,4 @@ pub use libs::buzzer::BuzzerController;
 pub use libs::display::{DisplayMonitor, ButtonMonitor};
 pub use libs::network::QrCodeGenerator;
 pub use libs::mqtt::{MqttMonitor, MqttHandle};
+pub use libs::pairing::{PairingMonitor, PairingHandle};

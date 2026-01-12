@@ -400,3 +400,74 @@ fn format_last_alarm(power_status: &PowerStatus, offset_hours: i8) -> String {
         "None".to_string()
     }
 }
+
+/// Render the pairing mode screen showing the pairing code
+pub fn render_pairing_screen(
+    display: &mut St7920,
+    code: &str,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // Draw title
+    Text::with_alignment(
+        "PAIRING MODE",
+        Point::new(64, 8),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Draw separator line
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    // Draw instruction text
+    Text::with_alignment(
+        "Enter code in Viewer:",
+        Point::new(64, 26),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Draw the pairing code prominently (larger space between chars)
+    // Code format: ABC123 displayed as "A B C 1 2 3" for readability
+    let spaced_code: String = code.chars()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Text::with_alignment(
+        &spaced_code,
+        Point::new(64, 40),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Draw box around the code for emphasis
+    Rectangle::new(Point::new(20, 30), Size::new(88, 16))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    // Draw expiry hint
+    Text::with_alignment(
+        "Code expires in 5 min",
+        Point::new(64, 56),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    display.flush()
+}

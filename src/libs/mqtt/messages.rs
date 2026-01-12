@@ -2,6 +2,7 @@
 
 use crate::libs::alarms::{AlarmState, AlarmThreshold};
 use crate::libs::crypto::UserCertificate;
+use crate::libs::pairing::messages::{PairingError, PairingResponse};
 use crate::libs::sensors::aggregation::AggregationPeriod;
 use serde_json::Value;
 
@@ -95,6 +96,12 @@ pub enum MqttMessage {
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
     },
+
+    /// Publish successful pairing response
+    PublishPairingResponse(PairingResponse),
+
+    /// Publish pairing error
+    PublishPairingError(PairingError),
 
     /// Update connection state (internal message)
     SetConnectionState(super::connection::ConnectionState),
@@ -193,6 +200,13 @@ pub enum MqttCommand {
         nonce: String,
         certificate: UserCertificate, // User certificate signed by CA
     },
+
+    /// Pairing request from viewer backend
+    PairingRequest {
+        request_id: String,
+        timestamp: i64,
+        admin_username: String,
+    },
 }
 
 impl MqttCommand {
@@ -214,6 +228,7 @@ impl MqttCommand {
             MqttCommand::UpdateSigner { .. } => "update_signer",
             MqttCommand::ConfigRequest { .. } => "config_request",
             MqttCommand::ConfigConfirm { .. } => "config_confirm",
+            MqttCommand::PairingRequest { .. } => "pairing_request",
         }
     }
 }

@@ -35,6 +35,11 @@ uuid = { version = "1.6", features = ["v4", "fast-rng", "serde"] }
 # Replay protection (LRU cache for nonce tracking)
 lru = "0.12"
 
+# Pairing protocol encryption
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+
 [[bin]]
 name = "fiber_app"
 path = "src/main.rs"
@@ -42,3 +47,6 @@ path = "src/main.rs"
 [lib]
 name = "fiber_app"
 path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile = "3"

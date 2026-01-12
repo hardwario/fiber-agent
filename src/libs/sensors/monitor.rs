@@ -12,6 +12,7 @@ use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCa
 use crate::libs::buzzer::{BuzzerController, BuzzerPattern, BuzzerPriorityManager};
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::mqtt::MqttHandle;
+use crate::libs::storage::StorageHandle;
 
 use super::reader::W1DeviceReader;
 use super::state::{SensorReading, SharedSensorStateHandle};
@@ -29,7 +30,7 @@ pub struct SensorMonitor {
 
 impl SensorMonitor {
     /// Create and spawn background sensor monitoring thread
-    pub fn new(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, led_state: SharedLedStateHandle, buzzer: Arc<Mutex<BuzzerController>>, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>) -> io::Result<Self> {
+    pub fn new(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, led_state: SharedLedStateHandle, buzzer: Arc<Mutex<BuzzerController>>, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>, storage_handle: Option<StorageHandle>) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
@@ -37,7 +38,7 @@ impl SensorMonitor {
 
         // Spawn the main sensor monitoring thread
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(config, stm, shutdown_flag_clone, buzzer_clone, led_state, sensor_state, priority_manager, mqtt_handle);
+            Self::monitor_loop(config, stm, shutdown_flag_clone, buzzer_clone, led_state, sensor_state, priority_manager, mqtt_handle, storage_handle);
         });
 
         Ok(Self {
@@ -48,7 +49,7 @@ impl SensorMonitor {
     }
 
     /// Background monitoring loop
-    fn monitor_loop(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, shutdown_flag: Arc<AtomicBool>, buzzer: Arc<Mutex<BuzzerController>>, led_state: SharedLedStateHandle, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>) {
+    fn monitor_loop(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, shutdown_flag: Arc<AtomicBool>, buzzer: Arc<Mutex<BuzzerController>>, led_state: SharedLedStateHandle, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>, storage_handle: Option<StorageHandle>) {
         // Load sensor file configuration
         let sensor_file_config = match SensorFileConfig::load_default() {
             Ok(cfg) => {
@@ -450,6 +451,21 @@ impl SensorMonitor {
                                     agg_state.add_reading(sensor_idx as u8, temp, true, alarm_state);
                                 }
 
+                                // Store sensor reading in database for audit trail
+                                if let Some(ref storage) = storage_handle {
+                                    let timestamp = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64;
+                                    let _ = storage.write_sensor_reading(
+                                        timestamp,
+                                        sensor_idx as u8,
+                                        temp,
+                                        true,
+                                        alarm_state,
+                                    );
+                                }
+
                                 // Publish to MQTT if available and report interval has elapsed
                                 // OR if sensor just reconnected (important status change)
                                 let connection_state_changed = !last_published_connected[sensor_idx];
@@ -485,6 +501,21 @@ impl SensorMonitor {
                                         agg_state.add_reading(sensor_idx as u8, 0.0, false, alarm_state);
                                     }
 
+                                    // Store disconnected reading in database for audit trail
+                                    if let Some(ref storage) = storage_handle {
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs() as i64;
+                                        let _ = storage.write_sensor_reading(
+                                            timestamp,
+                                            sensor_idx as u8,
+                                            0.0,
+                                            false,
+                                            alarm_state,
+                                        );
+                                    }
+
                                     // Publish disconnection to MQTT immediately (important status change)
                                     // Only publish if we haven't already published this disconnected state
                                     if last_published_connected[sensor_idx] {
@@ -516,6 +547,21 @@ impl SensorMonitor {
                             // Add disconnected reading to aggregation state
                             if let Ok(mut agg_state) = aggregation_state.write() {
                                 agg_state.add_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                            }
+
+                            // Store disconnected reading in database for audit trail
+                            if let Some(ref storage) = storage_handle {
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                let _ = storage.write_sensor_reading(
+                                    timestamp,
+                                    sensor_idx as u8,
+                                    0.0,
+                                    false,
+                                    alarm_state,
+                                );
                             }
 
                             // Publish disconnection to MQTT immediately (important status change)

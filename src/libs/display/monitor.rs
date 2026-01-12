@@ -14,7 +14,7 @@ use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
 
 use super::{SharedDisplayStateHandle, Screen};
-use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info};
+use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen};
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -126,6 +126,12 @@ pub fn display_loop(
                         timezone_offset_hours,
                     ) {
                         eprintln!("[DisplayMonitor] Error rendering system info display: {}", e);
+                    }
+                }
+                Screen::Pairing { code } => {
+                    // Render pairing mode screen with code
+                    if let Err(e) = render_pairing_screen(&mut display, &code) {
+                        eprintln!("[DisplayMonitor] Error rendering pairing display: {}", e);
                     }
                 }
             }

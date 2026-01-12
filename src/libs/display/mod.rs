@@ -32,6 +32,8 @@ pub enum Screen {
     QrCodeConfig,
     /// System information screen with pagination
     SystemInfo { page: usize },
+    /// Pairing mode - displays pairing code
+    Pairing { code: String },
 }
 
 impl Screen {
@@ -41,6 +43,7 @@ impl Screen {
             Screen::SensorOverview { page } => Some(*page),
             Screen::QrCodeConfig => None,
             Screen::SystemInfo { page } => Some(*page),
+            Screen::Pairing { .. } => None,
         }
     }
 
@@ -49,9 +52,14 @@ impl Screen {
         matches!(self, Screen::QrCodeConfig)
     }
 
-    /// Check if this is a special screen (QR code only - System info allows navigation)
+    /// Check if this is a special screen (QR code or Pairing - System info allows navigation)
     pub fn is_special_screen(&self) -> bool {
-        matches!(self, Screen::QrCodeConfig)
+        matches!(self, Screen::QrCodeConfig | Screen::Pairing { .. })
+    }
+
+    /// Check if this is a pairing screen
+    pub fn is_pairing(&self) -> bool {
+        matches!(self, Screen::Pairing { .. })
     }
 
     /// Check if this is a system info screen
@@ -118,6 +126,12 @@ impl DisplayState {
     /// Switch to system info screen (page 0)
     pub fn show_system_info(&mut self) {
         self.current_screen = Screen::SystemInfo { page: 0 };
+    }
+
+    /// Switch to pairing screen with code
+    pub fn show_pairing(&mut self, code: String) {
+        self.current_screen = Screen::Pairing { code };
+        self.should_update = true;
     }
 }
 

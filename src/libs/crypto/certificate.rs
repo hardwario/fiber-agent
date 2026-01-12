@@ -11,7 +11,6 @@ use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// User certificate issued by CA
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,19 +47,21 @@ impl UserCertificate {
     /// Build canonical message for certificate signing/verification
     /// This is the message that the CA signs when issuing the certificate
     pub fn build_canonical_message(&self) -> String {
-        // Deterministic JSON serialization (alphabetically sorted keys)
-        let msg = json!({
-            "expires_at": self.expires_at,
-            "full_name": self.full_name,
-            "issued_at": self.issued_at,
-            "issuer": self.issuer,
-            "permissions": self.permissions,
-            "public_key_ed25519": self.public_key_ed25519,
-            "role": self.role,
-            "signer_id": self.signer_id,
-        });
+        // Must match backend format: json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        // BTreeMap guarantees alphabetical key ordering
+        use std::collections::BTreeMap;
 
-        serde_json::to_string(&msg).unwrap()
+        let mut map: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
+        map.insert("expires_at", serde_json::Value::String(self.expires_at.clone()));
+        map.insert("full_name", serde_json::Value::String(self.full_name.clone()));
+        map.insert("issued_at", serde_json::Value::String(self.issued_at.clone()));
+        map.insert("issuer", serde_json::Value::String(self.issuer.clone()));
+        map.insert("permissions", serde_json::json!(self.permissions));
+        map.insert("public_key_ed25519", serde_json::Value::String(self.public_key_ed25519.clone()));
+        map.insert("role", serde_json::Value::String(self.role.clone()));
+        map.insert("signer_id", serde_json::Value::String(self.signer_id.clone()));
+
+        serde_json::to_string(&map).unwrap()
     }
 
     /// Check if certificate has expired

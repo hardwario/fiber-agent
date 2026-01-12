@@ -167,6 +167,15 @@ impl TopicBuilder {
         self.build(&["config", "response"])
     }
 
+    // Pairing topics
+    pub fn pair_request(&self) -> String {
+        self.build(&["pair", "request"])
+    }
+
+    pub fn pair_response(&self) -> String {
+        self.build(&["pair", "response"])
+    }
+
     // Error topic
     pub fn errors(&self) -> String {
         self.build(&["errors"])
