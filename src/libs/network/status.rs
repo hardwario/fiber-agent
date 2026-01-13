@@ -4,14 +4,18 @@
 use std::fs;
 
 /// Network connection status
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NetworkStatus {
     /// WiFi connection state
     pub wifi_connected: bool,
     /// WiFi signal strength in dBm (-30 to -90 typical range)
     pub wifi_signal_strength: i32,
+    /// WiFi IP address (if connected)
+    pub wifi_ip: Option<String>,
     /// Ethernet connection state
     pub ethernet_connected: bool,
+    /// Ethernet IP address (if connected)
+    pub ethernet_ip: Option<String>,
 }
 
 impl NetworkStatus {
@@ -20,7 +24,9 @@ impl NetworkStatus {
         Self {
             wifi_connected: false,
             wifi_signal_strength: -90,
+            wifi_ip: None,
             ethernet_connected: false,
+            ethernet_ip: None,
         }
     }
 }
@@ -34,7 +40,8 @@ pub fn get_network_status() -> NetworkStatus {
     for iface in &eth_interfaces {
         if is_interface_up(iface) {
             status.ethernet_connected = true;
-            return status; // Prioritize Ethernet
+            status.ethernet_ip = get_interface_ip(iface);
+            break;
         }
     }
 
@@ -44,11 +51,40 @@ pub fn get_network_status() -> NetworkStatus {
         if is_interface_up(iface) {
             status.wifi_connected = true;
             status.wifi_signal_strength = read_wifi_signal_strength();
-            return status;
+            status.wifi_ip = get_interface_ip(iface);
+            break;
         }
     }
 
     status
+}
+
+/// Get IP address of a network interface using ip command
+fn get_interface_ip(interface: &str) -> Option<String> {
+    // Try using ip command to get IPv4 address
+    if let Ok(output) = std::process::Command::new("ip")
+        .args(["addr", "show", interface])
+        .output()
+    {
+        if let Ok(output_str) = String::from_utf8(output.stdout) {
+            // Look for inet line: "inet 192.168.1.100/24 brd ..."
+            for line in output_str.lines() {
+                let line = line.trim();
+                if line.starts_with("inet ") && !line.starts_with("inet6") {
+                    // Parse: "inet 192.168.1.100/24 ..."
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        // Remove subnet mask (e.g., /24)
+                        let ip_with_mask = parts[1];
+                        if let Some(ip) = ip_with_mask.split('/').next() {
+                            return Some(ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Check if a network interface is up

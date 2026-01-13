@@ -453,6 +453,258 @@ impl ConfigApplier {
         }
     }
 
+    /// Apply system info report interval change to main configuration
+    pub fn apply_system_info_interval_change(&self, interval_seconds: u64) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // 1. Validate interval (minimum 10 seconds, maximum 24 hours)
+        if interval_seconds < 10 {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("System info interval must be at least 10 seconds".to_string()),
+                applied_at,
+            };
+        }
+        if interval_seconds > 86400 {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("System info interval must be at most 86400 seconds (24 hours)".to_string()),
+                applied_at,
+            };
+        }
+
+        // 2. Determine config file path (main config)
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        // 3. Read current configuration
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 4. Parse YAML
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 5. Create backup
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // 6. Update system info interval in mqtt section
+        if let Err(e) = self.update_system_info_interval(&mut config, interval_seconds) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        // 7. Serialize to YAML
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 8. Write atomically
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            // Attempt rollback
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ System info interval updated: {}s",
+            interval_seconds
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Apply device label change to main configuration
+    pub fn apply_device_label_change(&self, label: String) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // 1. Validate label (1-64 characters, printable)
+        if label.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("Device label cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+        if label.len() > 64 {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("Device label must be at most 64 characters".to_string()),
+                applied_at,
+            };
+        }
+
+        // 2. Determine config file path (main config)
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        // 3. Read current configuration
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 4. Parse YAML
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 5. Create backup
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // 6. Update device_label in system section
+        if let Err(e) = self.update_device_label(&mut config, &label) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        // 7. Serialize to YAML
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 8. Write atomically
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            // Attempt rollback
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ Device label updated: \"{}\"",
+            label
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     // --- Private helper methods ---
 
     /// Update thresholds for a specific sensor line in the YAML structure
@@ -579,6 +831,54 @@ impl ConfigApplier {
         sensors.insert(
             Value::String("report_interval_ms".to_string()),
             Value::Number(serde_yaml::Number::from(report_interval_ms)),
+        );
+
+        Ok(())
+    }
+
+    /// Update system info interval in the MQTT section of main config
+    fn update_system_info_interval(
+        &self,
+        config: &mut Value,
+        interval_seconds: u64,
+    ) -> Result<(), String> {
+        // Get or create 'mqtt' section
+        let mqtt = config
+            .get_mut("mqtt")
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Missing 'mqtt' section in config".to_string())?;
+
+        // Update system_info_interval_seconds field
+        mqtt.insert(
+            Value::String("system_info_interval_seconds".to_string()),
+            Value::Number(serde_yaml::Number::from(interval_seconds)),
+        );
+
+        Ok(())
+    }
+
+    /// Update device label in the system section of main config
+    fn update_device_label(&self, config: &mut Value, label: &str) -> Result<(), String> {
+        // Get 'system' section, create if doesn't exist
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+
+        // Get or create 'system' section
+        let system_key = Value::String("system".to_string());
+        if !config_map.contains_key(&system_key) {
+            config_map.insert(system_key.clone(), Value::Mapping(Mapping::new()));
+        }
+
+        let system = config_map
+            .get_mut(&system_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Failed to get/create 'system' section".to_string())?;
+
+        // Update device_label field
+        system.insert(
+            Value::String("device_label".to_string()),
+            Value::String(label.to_string()),
         );
 
         Ok(())

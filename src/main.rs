@@ -136,12 +136,15 @@ fn main() -> io::Result<()> {
 
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
+    // Get device label from config, defaulting to hostname
+    let device_label = config.system.device_label.clone().unwrap_or_else(|| hostname.clone());
     let _display_monitor = DisplayMonitor::new(
         led_state.clone(),
         gpio.clone(),
         sensor_state.clone(),
         power_status.clone(),
         hostname.clone(),
+        device_label,
         config.system.app_version.clone(),
         config.system.timezone_offset_hours,
     )?;
@@ -212,7 +215,7 @@ fn main() -> io::Result<()> {
 
     let (mqtt_handle, mqtt_monitor) = if config.mqtt.as_ref().map(|m| m.enabled).unwrap_or(false) {
         eprintln!("[main] Starting MQTT monitor...");
-        match MqttMonitor::new(config.mqtt.clone().unwrap(), hostname.clone()) {
+        match MqttMonitor::new(config.mqtt.clone().unwrap(), hostname.clone(), power_status.clone()) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started");
                 let handle = monitor.handle();
@@ -274,7 +277,6 @@ fn main() -> io::Result<()> {
         power_buzzer.clone(),
         buzzer_priority_manager.clone(),
         power_status.clone(),
-        mqtt_handle.clone(),
     )?;
     eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
 

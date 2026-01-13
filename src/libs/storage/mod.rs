@@ -36,6 +36,7 @@
 
 pub mod audit;
 pub mod db;
+pub mod disk;
 pub mod error;
 pub mod models;
 pub mod reader;
@@ -44,6 +45,7 @@ pub mod thread;
 pub mod writer;
 
 // Re-export public API
+pub use disk::{get_partition_usage, PartitionUsage};
 pub use error::{StorageError, StorageResult};
 pub use models::{AlarmEvent, AuditLogEntry, SensorReading, StorageStats};
 pub use reader::StorageReader;

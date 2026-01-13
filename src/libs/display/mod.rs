@@ -107,7 +107,8 @@ impl DisplayState {
                 self.current_screen = Screen::SensorOverview { page: if page == 0 { 1 } else { 0 } };
             }
             Screen::SystemInfo { page } => {
-                self.current_screen = Screen::SystemInfo { page: if page == 0 { 1 } else { 0 } };
+                // System info has 3 pages (0, 1, 2)
+                self.current_screen = Screen::SystemInfo { page: (page + 1) % 3 };
             }
             _ => {}
         }
@@ -159,6 +160,7 @@ impl DisplayMonitor {
         sensor_state: SharedSensorStateHandle,
         power_status: crate::libs::power::SharedPowerStatus,
         hostname: String,
+        device_label: String,
         app_version: String,
         timezone_offset_hours: i8,
     ) -> io::Result<Self> {
@@ -176,6 +178,7 @@ impl DisplayMonitor {
                 sensor_state,
                 power_status,
                 hostname,
+                device_label,
                 app_version,
                 timezone_offset_hours,
             );

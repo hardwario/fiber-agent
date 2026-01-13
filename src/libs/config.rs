@@ -571,6 +571,10 @@ pub struct SystemConfig {
 
     /// Timezone offset from UTC (hours)
     pub timezone_offset_hours: i8,
+
+    /// Device label (user-friendly name, defaults to hostname)
+    #[serde(default)]
+    pub device_label: Option<String>,
 }
 
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
@@ -889,6 +893,7 @@ impl Config {
                 app_name: "FIBER Medical Thermometer".to_string(),
                 app_version: "0.1.0".to_string(),
                 timezone_offset_hours: 0,
+                device_label: None, // Defaults to hostname at runtime
             },
             mqtt: None,  // MQTT disabled by default
         }

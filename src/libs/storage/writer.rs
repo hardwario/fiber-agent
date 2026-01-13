@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn test_batch_write_sensor_readings() {
         let db = Database::new("/tmp/test_batch.db", 5).expect("Failed to create test DB");
-        let conn = db.connect().expect("Failed to connect");
+        let mut conn = db.connect().expect("Failed to connect");
 
         let readings = vec![
             SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal),
@@ -261,7 +261,7 @@ mod tests {
             SensorReading::new(1002, 2, 36.7, true, AlarmState::Normal),
         ];
 
-        let result = StorageWriter::write_sensor_readings_batch(&conn, &readings);
+        let result = StorageWriter::write_sensor_readings_batch(&mut conn, &readings);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 3);
 

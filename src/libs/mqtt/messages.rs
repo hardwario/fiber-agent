@@ -9,15 +9,6 @@ use serde_json::Value;
 /// Messages sent to the MQTT monitor thread for publishing
 #[derive(Debug, Clone)]
 pub enum MqttMessage {
-    /// Publish a sensor reading
-    PublishSensorReading {
-        line: u8,
-        name: String,
-        temperature: f32,
-        is_connected: bool,
-        alarm_state: AlarmState,
-    },
-
     /// Publish aggregated sensor data
     PublishAggregatedSensorData {
         period: AggregationPeriod,
@@ -33,37 +24,42 @@ pub enum MqttMessage {
         temperature: f32,
     },
 
-    /// Publish power status
-    PublishPowerStatus {
-        battery_mv: u16,
-        battery_percent: u8,
-        vin_mv: u16,
-        on_ac_power: bool,
-        last_ac_loss_time: Option<u64>,
-    },
-
-    /// Publish AC power loss event
-    PublishAcLossEvent {
-        timestamp: u64,
-    },
-
-    /// Publish AC power reconnect event
-    PublishAcReconnectEvent {
-        timestamp: u64,
-    },
-
-    /// Publish network status
-    PublishNetworkStatus {
-        wifi_connected: bool,
-        wifi_signal_dbm: i32,
-        ethernet_connected: bool,
-    },
-
-    /// Publish system information
-    PublishSystemInfo {
-        version: String,
-        uptime_seconds: u64,
+    /// Publish combined system status (power, network, storage, uptime)
+    PublishSystemStatus {
+        /// Hostname
         hostname: String,
+        /// Device label (user-friendly name)
+        device_label: String,
+        /// Firmware version
+        version: String,
+        /// Uptime in seconds
+        uptime_seconds: u64,
+        /// Battery voltage in mV
+        battery_mv: u16,
+        /// Battery percentage (0-100)
+        battery_percent: u8,
+        /// Input voltage in mV
+        vin_mv: u16,
+        /// On DC power
+        on_dc_power: bool,
+        /// Last DC loss timestamp (epoch seconds)
+        last_dc_loss_time: Option<u64>,
+        /// WiFi connected
+        wifi_connected: bool,
+        /// WiFi signal in dBm
+        wifi_signal_dbm: i32,
+        /// WiFi IP address
+        wifi_ip: Option<String>,
+        /// Ethernet connected
+        ethernet_connected: bool,
+        /// Ethernet IP address
+        ethernet_ip: Option<String>,
+        /// Storage total bytes
+        storage_total_bytes: u64,
+        /// Storage available bytes
+        storage_available_bytes: u64,
+        /// Storage used percent
+        storage_used_percent: u8,
     },
 
     /// Publish configuration challenge (preview of changes)
@@ -165,6 +161,16 @@ pub enum MqttCommand {
     /// Get current sensor intervals
     GetInterval,
 
+    /// Set system info report interval (signed via ConfigRequest)
+    SetSystemInfoInterval {
+        interval_seconds: u64,
+    },
+
+    /// Set device label (signed via ConfigRequest)
+    SetDeviceLabel {
+        label: String,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -223,6 +229,8 @@ impl MqttCommand {
             MqttCommand::RestartApplication { .. } => "restart_application",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",
+            MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
+            MqttCommand::SetDeviceLabel { .. } => "set_device_label",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",
@@ -236,22 +244,6 @@ impl MqttCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_message_variants() {
-        let msg = MqttMessage::PublishSensorReading {
-            line: 0,
-            name: "Test Sensor".to_string(),
-            temperature: 36.5,
-            is_connected: true,
-            alarm_state: AlarmState::Normal,
-        };
-
-        match msg {
-            MqttMessage::PublishSensorReading { line, .. } => assert_eq!(line, 0),
-            _ => panic!("Wrong message type"),
-        }
-    }
 
     #[test]
     fn test_command_names() {

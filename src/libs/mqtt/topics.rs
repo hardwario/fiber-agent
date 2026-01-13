@@ -53,14 +53,6 @@ impl TopicBuilder {
     }
 
     // Sensor topics
-    pub fn sensor_temperature(&self, line: u8) -> String {
-        self.build(&["sensors", &format!("line{}", line), "temperature"])
-    }
-
-    pub fn sensor_status(&self, line: u8) -> String {
-        self.build(&["sensors", &format!("line{}", line), "status"])
-    }
-
     pub fn sensor_alarm(&self, line: u8) -> String {
         self.build(&["sensors", &format!("line{}", line), "alarm"])
     }
@@ -86,12 +78,12 @@ impl TopicBuilder {
         self.build(&["power", "battery", "status"])
     }
 
-    pub fn power_ac_connected(&self) -> String {
+    pub fn power_dc_connected(&self) -> String {
         self.build(&["power", "ac", "connected"])
     }
 
-    pub fn power_events_ac_loss(&self) -> String {
-        self.build(&["power", "events", "ac_loss"])
+    pub fn power_events_dc_loss(&self) -> String {
+        self.build(&["power", "events", "dc_loss"])
     }
 
     // Network topics
@@ -204,7 +196,7 @@ mod tests {
         let builder = TopicBuilder::new("fiber".to_string(), "DEVICE001".to_string(), true);
 
         assert_eq!(builder.status(), "fiber/DEVICE001/status");
-        assert_eq!(builder.sensor_temperature(0), "fiber/DEVICE001/sensors/line0/temperature");
+        assert_eq!(builder.sensors_aggregated(), "fiber/DEVICE001/sensors/aggregated");
         assert_eq!(builder.power_battery_percentage(), "fiber/DEVICE001/power/battery/percentage");
         assert_eq!(builder.commands_wildcard(), "fiber/DEVICE001/commands/#");
     }
@@ -214,7 +206,7 @@ mod tests {
         let builder = TopicBuilder::new("fiber".to_string(), "DEVICE001".to_string(), false);
 
         assert_eq!(builder.status(), "fiber/status");
-        assert_eq!(builder.sensor_temperature(0), "fiber/sensors/line0/temperature");
+        assert_eq!(builder.sensors_aggregated(), "fiber/sensors/aggregated");
         assert_eq!(builder.power_battery_percentage(), "fiber/power/battery/percentage");
         assert_eq!(builder.commands_wildcard(), "fiber/commands/#");
     }
@@ -224,7 +216,7 @@ mod tests {
         let builder = TopicBuilder::new("fiber".to_string(), "TEST".to_string(), true);
 
         for line in 0..8 {
-            let topic = builder.sensor_temperature(line);
+            let topic = builder.sensor_alarm(line);
             assert!(topic.contains(&format!("line{}", line)));
         }
     }

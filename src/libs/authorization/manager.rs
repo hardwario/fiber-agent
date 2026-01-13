@@ -451,6 +451,7 @@ impl AuthorizationManager {
             "flush_storage" => "flush_storage",
             "restart_application" => "restart_application",
             "set_interval" => "set_interval",
+            "set_system_info_interval" => "set_system_info_interval",
             "get_info" => "get_info",
             "get_status" => "get_status",
             "add_signer" => "add_signer",
@@ -566,6 +567,13 @@ impl AuthorizationManager {
                     aggregation_interval_ms,
                     report_interval_ms,
                 })
+            }
+            "set_system_info_interval" => {
+                let interval_seconds = challenge.params.get("interval_seconds")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing interval_seconds".to_string()))?;
+
+                Ok(MqttCommand::SetSystemInfoInterval { interval_seconds })
             }
             "add_signer" => {
                 Ok(MqttCommand::AddSigner {

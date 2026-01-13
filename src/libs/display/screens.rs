@@ -233,7 +233,7 @@ pub fn render_qr_code_screen(
     display.flush()
 }
 
-/// Render the system information screen with pagination (2 pages)
+/// Render the system information screen with pagination (3 pages)
 pub fn render_system_info(
     display: &mut St7920,
     page: usize,
@@ -241,6 +241,7 @@ pub fn render_system_info(
     network_status: &NetworkStatus,
     power_status: &PowerStatus,
     hostname: &str,
+    device_label: &str,
     app_version: &str,
     timezone_offset_hours: i8,
 ) -> anyhow::Result<()> {
@@ -250,7 +251,7 @@ pub fn render_system_info(
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Header: "SYSTEM INFO" centered with page indicator
-    let header = format!("SYSTEM INFO {}/2", page + 1);
+    let header = format!("SYSTEM INFO {}/3", page + 1);
     Text::with_alignment(
         &header,
         Point::new(64, 8),
@@ -289,20 +290,20 @@ pub fn render_system_info(
 
         // Line 4 (y=52): Probes count and power
         let connected = count_connected_probes(sensor_state);
-        
+
         let probe_line = format!("Probes:{}/8 ", connected);
         Text::new(&probe_line, Point::new(2, 52), text_style)
             .draw(display)
             .ok();
 
         // Line 5 (y=62): Battery percentage (always show)
-        let power_str = if power_status.on_ac_power { "PoE" } else { "Bat" };
+        let power_str = if power_status.on_dc_power { "PoE" } else { "Bat" };
         let battery_line = format!("Battery:{}%, PWR:{}", power_status.battery_percent, power_str);
         Text::new(&battery_line, Point::new(2, 62), text_style)
             .draw(display)
             .ok();
 
-    } else {
+    } else if page == 1 {
         // PAGE 2: Network & Version Info
 
         // Line 1 (y=22): WiFi status
@@ -334,6 +335,50 @@ pub fn render_system_info(
 
         // Line 5 (y=62): Hardware version
         Text::new("Hardware:N/A", Point::new(2, 62), text_style)
+            .draw(display)
+            .ok();
+    } else {
+        // PAGE 3: Device Label & IP Address
+
+        // Line 1 (y=22): Device Label (truncate if too long)
+        let label_display = if device_label.len() > 18 {
+            format!("{}...", &device_label[..15])
+        } else {
+            device_label.to_string()
+        };
+        let label_line = format!("Label:{}", label_display);
+        Text::new(&label_line, Point::new(2, 22), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 2 (y=32): WiFi IP
+        let wifi_ip = network_status.wifi_ip.as_deref().unwrap_or("N/A");
+        let wifi_ip_line = format!("WiFi IP:{}", wifi_ip);
+        Text::new(&wifi_ip_line, Point::new(2, 32), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 3 (y=42): Ethernet IP
+        let eth_ip = network_status.ethernet_ip.as_deref().unwrap_or("N/A");
+        let eth_ip_line = format!("Eth IP:{}", eth_ip);
+        Text::new(&eth_ip_line, Point::new(2, 42), text_style)
+            .draw(display)
+            .ok();
+
+        // Line 4 (y=52): WiFi Signal strength (if connected)
+        if network_status.wifi_connected {
+            let signal_line = format!("WiFi Signal:{}dBm", network_status.wifi_signal_strength);
+            Text::new(&signal_line, Point::new(2, 52), text_style)
+                .draw(display)
+                .ok();
+        } else {
+            Text::new("WiFi Signal:N/A", Point::new(2, 52), text_style)
+                .draw(display)
+                .ok();
+        }
+
+        // Line 5 (y=62): empty or reserved for future use
+        Text::new("", Point::new(2, 62), text_style)
             .draw(display)
             .ok();
     }
@@ -387,7 +432,7 @@ fn count_connected_probes(sensor_state: &SharedSensorState) -> usize {
 
 /// Format last power alarm timestamp
 fn format_last_alarm(power_status: &PowerStatus, offset_hours: i8) -> String {
-    if let Some(alarm_time) = power_status.last_ac_loss_time {
+    if let Some(alarm_time) = power_status.last_dc_loss_time {
         let duration = alarm_time.duration_since(UNIX_EPOCH).unwrap_or_default();
         let total_secs = duration.as_secs() as i64 + (offset_hours as i64 * 3600);
 

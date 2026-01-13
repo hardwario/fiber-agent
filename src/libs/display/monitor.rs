@@ -25,6 +25,7 @@ pub fn display_loop(
     sensor_state: SharedSensorStateHandle,
     power_status: SharedPowerStatus,
     hostname: String,
+    device_label: String,
     app_version: String,
     timezone_offset_hours: i8,
 ) {
@@ -65,7 +66,7 @@ pub fn display_loop(
             let (current_screen, qr_generator) = {
                 if let Ok(mut state) = display_state.lock() {
                     // Update network status in display state
-                    state.network_status = network_status;
+                    state.network_status = network_status.clone();
                     (state.current_screen.clone(), state.qr_generator.clone())
                 } else {
                     (Screen::SensorOverview { page: 0 }, None)
@@ -122,6 +123,7 @@ pub fn display_loop(
                         &network_status,
                         &power_snapshot,
                         &hostname,
+                        &device_label,
                         &app_version,
                         timezone_offset_hours,
                     ) {

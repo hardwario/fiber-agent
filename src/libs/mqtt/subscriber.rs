@@ -276,6 +276,24 @@ impl MqttSubscriber {
         })
     }
 
+    /// Parse set_system_info_interval command
+    fn parse_set_system_info_interval(&self, json: &Value) -> Result<MqttCommand, String> {
+        let interval_seconds = json
+            .get("interval_seconds")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "Missing or invalid 'interval_seconds' field".to_string())?;
+
+        // Validate interval
+        if interval_seconds < 5 {
+            return Err("interval_seconds must be >= 5".to_string());
+        }
+        if interval_seconds > 86400 {
+            return Err("interval_seconds must be <= 86400 (24 hours)".to_string());
+        }
+
+        Ok(MqttCommand::SetSystemInfoInterval { interval_seconds })
+    }
+
     /// Parse config_request command (signed with Ed25519)
     fn parse_config_request(&self, json: &Value) -> Result<MqttCommand, String> {
         let request_id = json

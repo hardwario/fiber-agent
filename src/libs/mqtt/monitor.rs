@@ -235,24 +235,6 @@ impl MqttHandle {
         }
     }
 
-    /// Send sensor reading
-    pub fn send_sensor_reading(
-        &self,
-        line: u8,
-        name: &str,
-        temperature: f32,
-        is_connected: bool,
-        alarm_state: crate::libs::alarms::AlarmState,
-    ) {
-        self.send(MqttMessage::PublishSensorReading {
-            line,
-            name: name.to_string(),
-            temperature,
-            is_connected,
-            alarm_state,
-        });
-    }
-
     /// Send alarm event
     pub fn send_alarm_event(
         &self,
@@ -271,74 +253,51 @@ impl MqttHandle {
         });
     }
 
-    /// Send power status
-    pub fn send_power_status(
-        &self,
-        battery_mv: u16,
-        battery_percent: u8,
-        vin_mv: u16,
-        on_ac_power: bool,
-        last_ac_loss_time: Option<u64>,
-    ) {
-        self.send(MqttMessage::PublishPowerStatus {
-            battery_mv,
-            battery_percent,
-            vin_mv,
-            on_ac_power,
-            last_ac_loss_time,
-        });
-    }
-
-    /// Send AC power loss event
-    pub fn send_ac_loss_event(&self) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.send(MqttMessage::PublishAcLossEvent { timestamp });
-    }
-
-    /// Send AC power reconnect event
-    pub fn send_ac_reconnect_event(&self) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.send(MqttMessage::PublishAcReconnectEvent { timestamp });
-    }
-
     /// Send aggregated sensor data
     pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod, names: [String; 8]) {
         self.send(MqttMessage::PublishAggregatedSensorData { period, names });
     }
 
-    /// Send network status
-    pub fn send_network_status(
+    /// Send combined system status (power, network, storage, uptime)
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_system_status(
         &self,
-        wifi_connected: bool,
-        wifi_signal_dbm: i32,
-        ethernet_connected: bool,
-    ) {
-        self.send(MqttMessage::PublishNetworkStatus {
-            wifi_connected,
-            wifi_signal_dbm,
-            ethernet_connected,
-        });
-    }
-
-    /// Send system information
-    pub fn send_system_info(
-        &self,
+        hostname: String,
+        device_label: String,
         version: String,
         uptime_seconds: u64,
-        hostname: String,
+        battery_mv: u16,
+        battery_percent: u8,
+        vin_mv: u16,
+        on_dc_power: bool,
+        last_dc_loss_time: Option<u64>,
+        wifi_connected: bool,
+        wifi_signal_dbm: i32,
+        wifi_ip: Option<String>,
+        ethernet_connected: bool,
+        ethernet_ip: Option<String>,
+        storage_total_bytes: u64,
+        storage_available_bytes: u64,
+        storage_used_percent: u8,
     ) {
-        self.send(MqttMessage::PublishSystemInfo {
+        self.send(MqttMessage::PublishSystemStatus {
+            hostname,
+            device_label,
             version,
             uptime_seconds,
-            hostname,
+            battery_mv,
+            battery_percent,
+            vin_mv,
+            on_dc_power,
+            last_dc_loss_time,
+            wifi_connected,
+            wifi_signal_dbm,
+            wifi_ip,
+            ethernet_connected,
+            ethernet_ip,
+            storage_total_bytes,
+            storage_available_bytes,
+            storage_used_percent,
         });
     }
 }
@@ -354,7 +313,7 @@ pub struct MqttMonitor {
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
-    pub fn new(config: MqttConfig, hostname: String) -> io::Result<Self> {
+    pub fn new(config: MqttConfig, hostname: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
 
@@ -385,6 +344,7 @@ impl MqttMonitor {
                 shutdown_flag_clone,
                 connection_state_clone,
                 pairing_handle_clone,
+                power_status,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -427,6 +387,7 @@ impl MqttMonitor {
         shutdown_flag: Arc<AtomicBool>,
         connection_state: SharedConnectionState,
         pairing_handle: SharedPairingHandle,
+        power_status: crate::libs::power::status::SharedPowerStatus,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -1119,24 +1080,43 @@ impl MqttMonitor {
                                 }
                             }
 
-                            // Publish network status via MQTT
+                            // Publish combined system status via MQTT
                             let network = get_network_status();
-                            if let Err(e) = publisher.handle_message(MqttMessage::PublishNetworkStatus {
-                                wifi_connected: network.wifi_connected,
-                                wifi_signal_dbm: network.wifi_signal_strength,
-                                ethernet_connected: network.ethernet_connected,
-                            }).await {
-                                eprintln!("[MQTT Monitor] Failed to publish network status: {}", e);
-                            }
-
-                            // Publish system info via MQTT
                             let uptime_seconds = app_start_time.elapsed().as_secs();
-                            if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemInfo {
+                            let storage_usage = crate::libs::storage::get_partition_usage("/data");
+
+                            // Get power data from shared state
+                            let power = power_status.lock().map(|p| *p).unwrap_or_default();
+                            let last_dc_loss_time = power.last_dc_loss_time
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs());
+
+                            // Get device label from config, defaulting to hostname
+                            let device_label = crate::libs::config::Config::load_default()
+                                .ok()
+                                .and_then(|cfg| cfg.system.device_label)
+                                .unwrap_or_else(|| hostname.clone());
+
+                            if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemStatus {
+                                hostname: hostname.clone(),
+                                device_label,
                                 version: firmware_version.clone(),
                                 uptime_seconds,
-                                hostname: hostname.clone(),
+                                battery_mv: power.vbat_mv,
+                                battery_percent: power.battery_percent,
+                                vin_mv: power.vin_mv,
+                                on_dc_power: power.on_dc_power,
+                                last_dc_loss_time,
+                                wifi_connected: network.wifi_connected,
+                                wifi_signal_dbm: network.wifi_signal_strength,
+                                wifi_ip: network.wifi_ip,
+                                ethernet_connected: network.ethernet_connected,
+                                ethernet_ip: network.ethernet_ip,
+                                storage_total_bytes: storage_usage.total_bytes,
+                                storage_available_bytes: storage_usage.available_bytes,
+                                storage_used_percent: storage_usage.used_percent,
                             }).await {
-                                eprintln!("[MQTT Monitor] Failed to publish system info: {}", e);
+                                eprintln!("[MQTT Monitor] Failed to publish system status: {}", e);
                             }
 
                             last_status_log = Instant::now();
@@ -1364,6 +1344,32 @@ impl MqttMonitor {
                     );
                     if result.success {
                         eprintln!("[MQTT Monitor] ✓ Sensor intervals updated (will apply on next hot-reload cycle)");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::SetSystemInfoInterval { interval_seconds } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_system_info_interval_change(interval_seconds);
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ System info interval updated to {}s (will apply on next hot-reload cycle)", interval_seconds);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::SetDeviceLabel { label } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_device_label_change(label.clone());
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ Device label updated to \"{}\" (will apply on next hot-reload cycle)", label);
                         Ok(())
                     } else {
                         Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))

@@ -1,6 +1,6 @@
 // Battery/Power management module for medical thermometer.
 // VBAT: 3100mV = 0%, 3400mV = 100%
-// VIN: >12000mV = AC Power, <12000mV = Battery mode
+// VIN: >12000mV = DC Power, <12000mV = Battery mode
 
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -14,25 +14,25 @@ pub struct PowerStatus {
     pub battery_percent: u8,
     /// Main input voltage (VIN) in millivolts
     pub vin_mv: u16,
-    /// Whether on AC power (VIN > 12000mV)
-    pub on_ac_power: bool,
-    /// Timestamp of last AC power loss event
-    pub last_ac_loss_time: Option<SystemTime>,
+    /// Whether on DC power (VIN > 12000mV)
+    pub on_dc_power: bool,
+    /// Timestamp of last DC power loss event
+    pub last_dc_loss_time: Option<SystemTime>,
 }
 
 impl PowerStatus {
     /// Create power status from VBAT and VIN voltages in millivolts
     /// Maps: 3100mV → 0%, 3400mV → 100% (VBAT)
-    /// VIN > 12000mV = AC power, < 12000mV = Battery mode
+    /// VIN > 12000mV = DC power, < 12000mV = Battery mode
     pub fn new(vbat_mv: u16, vin_mv: u16) -> Self {
         let percent = Self::calculate_battery_percent(vbat_mv);
-        let on_ac_power = vin_mv > 12000;
+        let on_dc_power = vin_mv > 12000;
         Self {
             vbat_mv,
             battery_percent: percent,
             vin_mv,
-            on_ac_power,
-            last_ac_loss_time: None,
+            on_dc_power,
+            last_dc_loss_time: None,
         }
     }
 
@@ -78,8 +78,8 @@ impl PowerStatus {
         self.vbat_mv > 3200
     }
 
-    /// Check if on AC power (VIN > 11000mV)
-    pub fn is_on_ac_power(&self) -> bool {
+    /// Check if on DC power (VIN > 11000mV)
+    pub fn is_on_dc_power(&self) -> bool {
         self.vin_mv > 11000
     }
 
@@ -90,15 +90,15 @@ impl PowerStatus {
 
     /// Get LED control state for power indicator (PWRLEDG / PWRLEDY)
     /// Returns (color, blink) using PowerLedColor enum
-    /// - AC Power: GREEN (steady)
+    /// - DC Power: GREEN (steady)
     /// - Battery OK (>3200mV): LIME (steady)
     /// - Battery Low (3100-3200mV): YELLOW (steady)
     /// - Battery Critical (<3100mV): YELLOW (blinking)
     pub fn get_pwr_led_state(&self) -> (crate::libs::leds::state::PowerLedColor, bool) {
         use crate::libs::leds::state::PowerLedColor;
 
-        if self.is_on_ac_power() {
-            // AC Power connected: GREEN (steady)
+        if self.is_on_dc_power() {
+            // DC Power connected: GREEN (steady)
             (PowerLedColor::Green, false)
         } else if self.is_critical() {
             // Battery critical: YELLOW (blinking)
@@ -115,15 +115,15 @@ impl PowerStatus {
         }
     }
 
-    /// Record AC power loss event
-    pub fn record_ac_loss(&mut self) {
-        self.last_ac_loss_time = Some(SystemTime::now());
+    /// Record DC power loss event
+    pub fn record_dc_loss(&mut self) {
+        self.last_dc_loss_time = Some(SystemTime::now());
     }
 }
 
 impl Default for PowerStatus {
     fn default() -> Self {
-        // Default to full battery (3400mV) and AC power (15000mV)
+        // Default to full battery (3400mV) and DC power (15000mV)
         Self::new(3400, 15000)
     }
 }
@@ -165,29 +165,42 @@ mod tests {
     }
 
     #[test]
-    fn test_pwr_led_ac_power() {
-        // AC Power (VIN > 12000mV): GREEN on, YELLOW off
-        let ac = PowerStatus::new(3400, 15000);
-        let (green, yellow) = ac.get_pwr_led_state();
-        assert!(green && !yellow, "AC power should have GREEN on, YELLOW off");
-        assert!(!ac.should_yellow_blink());
+    fn test_pwr_led_dc_power() {
+        use crate::libs::leds::state::PowerLedColor;
+        // DC Power (VIN > 12000mV): GREEN steady
+        let dc = PowerStatus::new(3400, 15000);
+        let (color, blink) = dc.get_pwr_led_state();
+        assert_eq!(color, PowerLedColor::Green, "DC power should be GREEN");
+        assert!(!blink, "DC power should not blink");
     }
 
     #[test]
     fn test_pwr_led_battery_ok() {
-        // Battery mode, not low: GREEN off, YELLOW on
+        use crate::libs::leds::state::PowerLedColor;
+        // Battery mode, not low: LIME steady
         let battery_ok = PowerStatus::new(3300, 5000);
-        let (green, yellow) = battery_ok.get_pwr_led_state();
-        assert!(!green && yellow, "Battery OK should have GREEN off, YELLOW on");
-        assert!(!battery_ok.should_yellow_blink());
+        let (color, blink) = battery_ok.get_pwr_led_state();
+        assert_eq!(color, PowerLedColor::Lime, "Battery OK should be LIME");
+        assert!(!blink, "Battery OK should not blink");
     }
 
     #[test]
     fn test_pwr_led_battery_low() {
-        // Battery low: YELLOW should blink
-        let battery_low = PowerStatus::new(3120, 5000); // ~7%
-        let (green, yellow) = battery_low.get_pwr_led_state();
-        assert!(!green && yellow, "Battery low should have GREEN off, YELLOW on (blinking)");
-        assert!(battery_low.should_yellow_blink());
+        use crate::libs::leds::state::PowerLedColor;
+        // Battery low: YELLOW steady
+        let battery_low = PowerStatus::new(3150, 5000);
+        let (color, blink) = battery_low.get_pwr_led_state();
+        assert_eq!(color, PowerLedColor::Yellow, "Battery low should be YELLOW");
+        assert!(!blink, "Battery low should not blink (critical blinks)");
+    }
+
+    #[test]
+    fn test_pwr_led_battery_critical() {
+        use crate::libs::leds::state::PowerLedColor;
+        // Battery critical: YELLOW blinking
+        let battery_critical = PowerStatus::new(3050, 5000);
+        let (color, blink) = battery_critical.get_pwr_led_state();
+        assert_eq!(color, PowerLedColor::Yellow, "Battery critical should be YELLOW");
+        assert!(blink, "Battery critical should blink");
     }
 }

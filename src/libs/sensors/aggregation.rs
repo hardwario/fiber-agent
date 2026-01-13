@@ -67,6 +67,7 @@ pub struct SensorAggregation {
     pub max_temp_celsius: f32,
     pub avg_temp_celsius: f32,
     pub alarm_counts: AlarmStateCounts,
+    pub alarm_triggered_at: Option<u64>,
     pub window_start_ts: u64,
     pub window_end_ts: u64,
 }
@@ -81,15 +82,21 @@ impl SensorAggregation {
             max_temp_celsius: f32::MIN,
             avg_temp_celsius: 0.0,
             alarm_counts: AlarmStateCounts::new(),
+            alarm_triggered_at: None,
             window_start_ts: 0,
             window_end_ts: 0,
         }
     }
 
     /// Add a sample to the aggregation window
-    pub fn add_sample(&mut self, temperature: f32, is_connected: bool, alarm_state: AlarmState) {
+    /// `persistent_alarm_ts` is the timestamp when the sensor entered its current alarm state
+    /// (managed by AggregationState, persists across windows)
+    pub fn add_sample(&mut self, temperature: f32, is_connected: bool, alarm_state: AlarmState, persistent_alarm_ts: Option<u64>) {
         // Track alarm state counts
         self.alarm_counts.increment(alarm_state);
+
+        // Use the persistent alarm timestamp from AggregationState
+        self.alarm_triggered_at = persistent_alarm_ts;
 
         if is_connected {
             // Update temperature statistics using running average
@@ -123,6 +130,7 @@ impl SensorAggregation {
         self.max_temp_celsius = f32::MIN;
         self.avg_temp_celsius = 0.0;
         self.alarm_counts = AlarmStateCounts::new();
+        self.alarm_triggered_at = None;
         self.window_start_ts = window_start_ts;
         self.window_end_ts = 0;
     }
@@ -157,6 +165,10 @@ pub struct AggregationState {
     window_start: Instant,
     aggregation_interval: Duration,
     completed_periods: VecDeque<AggregationPeriod>,
+    /// Track last alarm state per sensor (for detecting transitions)
+    last_alarm_states: [AlarmState; 8],
+    /// Timestamp when each sensor entered its current alarm state (persists across windows)
+    alarm_state_timestamps: [Option<u64>; 8],
 }
 
 impl AggregationState {
@@ -179,6 +191,9 @@ impl AggregationState {
             window_start: Instant::now(),
             aggregation_interval,
             completed_periods: VecDeque::with_capacity(MAX_BUFFERED_PERIODS),
+            // Initialize all sensors as Normal with no alarm timestamp
+            last_alarm_states: [AlarmState::Normal; 8],
+            alarm_state_timestamps: [None; 8],
         };
 
         // Set initial timestamps for all sensors
@@ -191,8 +206,28 @@ impl AggregationState {
 
     /// Add a reading to the appropriate sensor's aggregation window
     pub fn add_reading(&mut self, line: u8, temperature: f32, is_connected: bool, alarm_state: AlarmState) {
-        if let Some(sensor) = self.current_windows.get_mut(line as usize) {
-            sensor.add_sample(temperature, is_connected, alarm_state);
+        let line_idx = line as usize;
+        if line_idx >= 8 {
+            return;
+        }
+
+        // Check if alarm state changed from last reading
+        let last_state = self.last_alarm_states[line_idx];
+        if alarm_state != last_state {
+            // State changed - update persistent timestamp
+            self.last_alarm_states[line_idx] = alarm_state;
+
+            // Set timestamp for non-Normal states, clear for Normal
+            if matches!(alarm_state, AlarmState::Normal) {
+                self.alarm_state_timestamps[line_idx] = None;
+            } else {
+                self.alarm_state_timestamps[line_idx] = Some(Self::unix_timestamp());
+            }
+        }
+
+        // Add sample to the current window
+        if let Some(sensor) = self.current_windows.get_mut(line_idx) {
+            sensor.add_sample(temperature, is_connected, alarm_state, self.alarm_state_timestamps[line_idx]);
         }
     }
 
@@ -303,15 +338,15 @@ mod tests {
     fn test_sensor_aggregation_running_average() {
         let mut sensor = SensorAggregation::new(0);
 
-        sensor.add_sample(36.0, true, AlarmState::Normal);
+        sensor.add_sample(36.0, true, AlarmState::Normal, None);
         assert_eq!(sensor.sample_count, 1);
         assert_eq!(sensor.avg_temp_celsius, 36.0);
 
-        sensor.add_sample(38.0, true, AlarmState::Normal);
+        sensor.add_sample(38.0, true, AlarmState::Normal, None);
         assert_eq!(sensor.sample_count, 2);
         assert_eq!(sensor.avg_temp_celsius, 37.0);
 
-        sensor.add_sample(37.0, true, AlarmState::Normal);
+        sensor.add_sample(37.0, true, AlarmState::Normal, None);
         assert_eq!(sensor.sample_count, 3);
         assert!((sensor.avg_temp_celsius - 37.0).abs() < 0.01);
     }
@@ -320,9 +355,9 @@ mod tests {
     fn test_sensor_aggregation_min_max() {
         let mut sensor = SensorAggregation::new(0);
 
-        sensor.add_sample(36.5, true, AlarmState::Normal);
-        sensor.add_sample(37.2, true, AlarmState::Normal);
-        sensor.add_sample(35.8, true, AlarmState::Normal);
+        sensor.add_sample(36.5, true, AlarmState::Normal, None);
+        sensor.add_sample(37.2, true, AlarmState::Normal, None);
+        sensor.add_sample(35.8, true, AlarmState::Normal, None);
 
         assert_eq!(sensor.min_temp_celsius, 35.8);
         assert_eq!(sensor.max_temp_celsius, 37.2);
@@ -332,9 +367,9 @@ mod tests {
     fn test_sensor_aggregation_disconnected() {
         let mut sensor = SensorAggregation::new(0);
 
-        sensor.add_sample(36.0, true, AlarmState::Normal);
-        sensor.add_sample(36.0, true, AlarmState::Normal);
-        sensor.add_sample(0.0, false, AlarmState::Disconnected);
+        sensor.add_sample(36.0, true, AlarmState::Normal, None);
+        sensor.add_sample(36.0, true, AlarmState::Normal, None);
+        sensor.add_sample(0.0, false, AlarmState::Disconnected, Some(12345));
 
         assert_eq!(sensor.sample_count, 2);
         assert_eq!(sensor.disconnected_count, 1);

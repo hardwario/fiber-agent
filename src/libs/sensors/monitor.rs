@@ -115,11 +115,8 @@ impl SensorMonitor {
         let mut happy_beep_start_time: Option<Instant> = None;  // Track when happy beep started to auto-clear it
         let mut last_sensor_states: [Option<AlarmState>; 8] = [None; 8];  // Track previous states to detect reconnection
         let mut consecutive_failures: [u32; 8] = [0; 8];  // Track consecutive failures per sensor for debouncing
-        let mut last_published_connected: [bool; 8] = [true; 8];  // Track last published connection state to prevent spam
-        let mut last_mqtt_report = Instant::now();  // Track last MQTT publish time
 
         let mut update_interval = Duration::from_millis(config.sample_interval_ms);
-        let mut mqtt_report_interval = Duration::from_millis(config.report_interval_ms);
         let failure_debounce_count = 2;  // Require 2 consecutive failures before marking sensor as failed
 
         // Initialize aggregation state for MQTT reporting
@@ -177,12 +174,6 @@ impl SensorMonitor {
         loop {
             // Track cycle start time to calculate accurate sleep duration
             let cycle_start = Instant::now();
-
-            // Check if it's time to report to MQTT
-            let should_report_mqtt = last_mqtt_report.elapsed() >= mqtt_report_interval;
-            if should_report_mqtt {
-                last_mqtt_report = Instant::now();
-            }
 
             // Check for shutdown signal
             if shutdown_flag.load(Ordering::Relaxed) {
@@ -251,7 +242,6 @@ impl SensorMonitor {
 
                             // Update intervals
                             update_interval = Duration::from_millis(new_sample);
-                            mqtt_report_interval = Duration::from_millis(new_report);
                             aggregation_report_interval = Duration::from_millis(new_report);
 
                             // Update aggregation window
@@ -465,20 +455,6 @@ impl SensorMonitor {
                                         alarm_state,
                                     );
                                 }
-
-                                // Publish to MQTT if available and report interval has elapsed
-                                // OR if sensor just reconnected (important status change)
-                                let connection_state_changed = !last_published_connected[sensor_idx];
-                                if should_report_mqtt || connection_state_changed {
-                                    if let Some(ref mqtt) = mqtt_handle {
-                                        // Get sensor name from shared state
-                                        let name = sensor_state.read()
-                                            .map(|s| s.get_name(sensor_idx as u8).to_string())
-                                            .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
-                                        mqtt.send_sensor_reading(sensor_idx as u8, &name, temp, true, alarm_state);
-                                        last_published_connected[sensor_idx] = true;
-                                    }
-                                }
                             }
                             Err(e) => {
                                 // Track consecutive failures with debouncing
@@ -515,19 +491,6 @@ impl SensorMonitor {
                                             alarm_state,
                                         );
                                     }
-
-                                    // Publish disconnection to MQTT immediately (important status change)
-                                    // Only publish if we haven't already published this disconnected state
-                                    if last_published_connected[sensor_idx] {
-                                        if let Some(ref mqtt) = mqtt_handle {
-                                            // Get sensor name from shared state
-                                            let name = sensor_state.read()
-                                                .map(|s| s.get_name(sensor_idx as u8).to_string())
-                                                .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
-                                            mqtt.send_sensor_reading(sensor_idx as u8, &name, 0.0, false, alarm_state);
-                                            last_published_connected[sensor_idx] = false;
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -562,19 +525,6 @@ impl SensorMonitor {
                                     false,
                                     alarm_state,
                                 );
-                            }
-
-                            // Publish disconnection to MQTT immediately (important status change)
-                            // Only publish if we haven't already published this disconnected state
-                            if last_published_connected[sensor_idx] {
-                                if let Some(ref mqtt) = mqtt_handle {
-                                    // Get sensor name from shared state
-                                    let name = sensor_state.read()
-                                        .map(|s| s.get_name(sensor_idx as u8).to_string())
-                                        .unwrap_or_else(|_| format!("Sensor {}", sensor_idx + 1));
-                                    mqtt.send_sensor_reading(sensor_idx as u8, &name, 0.0, false, alarm_state);
-                                    last_published_connected[sensor_idx] = false;
-                                }
                             }
                         }
                     }
