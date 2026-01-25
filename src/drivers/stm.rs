@@ -105,16 +105,16 @@ impl StmBridge {
     }
 
     fn send_cmd(&mut self, cmd: &str) -> io::Result<Option<String>> {
-        //eprintln!(">> {}", cmd);
+        eprintln!("[STM] >> {}", cmd);
         self.port.write_all(cmd.as_bytes())?;
         self.port.write_all(b"\n")?;
         self.port.flush()?;
 
         let reply = self.read_line(Duration::from_millis(1000))?;
         if let Some(ref line) = reply {
-            //eprintln!("<< {}", line);
+            eprintln!("[STM] << {}", line);
         } else {
-            //eprintln!("<< (no response)");
+            eprintln!("[STM] << (no response)");
         }
         Ok(reply)
     }
@@ -240,7 +240,7 @@ impl StmBridge {
         Ok(())
     }
 
-    /// Control one of the 8 line LEDs:
+    /// Control one of the 8 line LEDs (legacy method - 2 commands):
     /// - `index` in 0..8
     /// - `green_on` / `red_on` as booleans.
     pub fn set_line_leds(&mut self, index: u8, green_on: bool, red_on: bool) -> io::Result<()> {
@@ -259,6 +259,40 @@ impl StmBridge {
 
         let _ = self.send_cmd(&g_cmd)?;
         let _ = self.send_cmd(&r_cmd)?;
+        Ok(())
+    }
+
+    /// Set LED with color and blink pattern (firmware-managed blinking)
+    /// - `index`: 0-7 for line LEDs
+    /// - `color`: 'O'=off, 'G'=green, 'R'=red, 'Y'=yellow
+    /// - `pattern`: 'S'=steady, 'L'=slow blink, 'F'=fast blink
+    pub fn set_led_state(&mut self, index: u8, color: char, pattern: char) -> io::Result<()> {
+        let cmd = format!("LED {} {} {}", index, color, pattern);
+        let _ = self.send_cmd(&cmd)?;
+        Ok(())
+    }
+
+    /// Set power LED with color and blink pattern (firmware-managed blinking)
+    /// - `color`: 'O'=off, 'G'=green, 'Y'=yellow, 'L'=lime (both)
+    /// - `pattern`: 'S'=steady, 'L'=slow blink, 'F'=fast blink
+    pub fn set_pwr_led_state(&mut self, color: char, pattern: char) -> io::Result<()> {
+        let cmd = format!("PWR {} {}", color, pattern);
+        let _ = self.send_cmd(&cmd)?;
+        Ok(())
+    }
+
+    /// Sync blink phase (optional - call on startup to reset phase to 0)
+    pub fn sync_blink(&mut self) -> io::Result<()> {
+        let _ = self.send_cmd("SYNC")?;
+        Ok(())
+    }
+
+    /// Set LED brightness (0-100%)
+    /// Controls brightness for all LEDs (line LEDs + power LED) via software PWM
+    pub fn set_brightness(&mut self, brightness: u8) -> io::Result<()> {
+        let val = brightness.min(100);
+        let cmd = format!("BRIGHT {}", val);
+        let _ = self.send_cmd(&cmd)?;
         Ok(())
     }
 }

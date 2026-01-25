@@ -1,20 +1,20 @@
-// Dedicated LED control thread - manages all LED blinking with consistent timing
+// Dedicated LED control thread - manages all LED updates via firmware-managed blinking
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::drivers::StmBridge;
-use super::state::SharedLedStateHandle;
+use crate::libs::alarms::color::{BlinkPattern, LedColor};
+use super::state::{PowerLedColor, SharedLedStateHandle};
 
 /// Dedicated LED control thread
 ///
-/// This thread manages all LED updates (both power and line LEDs) at a fixed 50ms
-/// interval, ensuring consistent blinking patterns independent of other monitoring
-/// loops. This solves timing issues where LED updates were tied to sensor read
-/// intervals (which have variable latency).
+/// This thread manages all LED updates (both power and line LEDs) by sending
+/// state changes to the STM32 firmware. The firmware handles all blink timing
+/// internally via a timer interrupt, eliminating UART latency-induced drift.
 pub struct LedMonitor {
     thread_handle: Option<JoinHandle<()>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -45,21 +45,30 @@ impl LedMonitor {
 
     /// Background LED monitoring loop
     ///
-    /// Event-driven: waits for LED state changes and sends commands to STM32 immediately.
-    /// Wakes up every 50ms to recalculate blink states, but only sends commands on actual change.
+    /// Event-driven: waits for LED state changes and sends commands to STM32 when changes occur.
+    /// Firmware handles all blink timing internally via TIM14 interrupt.
     fn monitor_loop(
         stm: Arc<Mutex<StmBridge>>,
         shutdown_flag: Arc<AtomicBool>,
         shared_state: SharedLedStateHandle,
     ) {
-        const CHECK_INTERVAL_MS: u64 = 50;  // Check for state changes every 50ms to handle blink calculations
+        const CHECK_INTERVAL_MS: u64 = 100;  // Only need to check for state changes
         let check_interval = Duration::from_millis(CHECK_INTERVAL_MS);
 
-        eprintln!("[LedMonitor] Started (event-driven, checking every {}ms)", CHECK_INTERVAL_MS);
+        eprintln!("[LedMonitor] Started (firmware-managed blinking)");
 
-        // State caching: track last sent LED states to only send commands on change
-        let mut last_line_states: [(bool, bool); 8] = [(false, false); 8];  // (green, red) for each line
-        let mut last_power_leds: (bool, bool) = (false, false);  // (green, yellow)
+        // Track last sent states to only send on actual change
+        // (color, pattern) for each line LED
+        let mut last_line_states: [Option<(LedColor, BlinkPattern)>; 8] = [None; 8];
+        // (color, blink) for power LED
+        let mut last_power_state: Option<(PowerLedColor, bool)> = None;
+
+        // Sync blink phase on startup
+        if let Ok(mut stm_guard) = stm.lock() {
+            if let Err(e) = stm_guard.sync_blink() {
+                eprintln!("[LedMonitor] Warning: failed to sync blink phase: {}", e);
+            }
+        }
 
         // Main LED control loop
         loop {
@@ -75,57 +84,60 @@ impl LedMonitor {
             // Read current shared LED state
             let led_state = shared_state.read();
 
-            // Calculate blink cycle (0-7) based on elapsed time
-            let blink_cycle = self::calculate_blink_cycle();
-
-            // Calculate LED states for all configured lines
-            let mut led_updates = Vec::new();
-            for (idx, line_opt) in led_state.lines.iter().enumerate() {
-                if let Some(line_state) = line_opt {
-                    let (green, red) = self::get_led_pins_with_timing(
-                        line_state.led_state,
-                        blink_cycle,
-                    );
-                    led_updates.push((idx as u8, green, red));
-                }
+            // Debug: print current state
+            let active_lines: Vec<usize> = led_state.lines.iter().enumerate()
+                .filter_map(|(i, opt)| opt.as_ref().map(|_| i))
+                .collect();
+            if !active_lines.is_empty() {
+                eprintln!("[LedMonitor] DEBUG: Active lines: {:?}", active_lines);
             }
 
-            // Calculate power LED state
-            let (power_green, power_yellow) = if led_state.power.blink {
-                // LED should blink: calculate state based on elapsed time
-                // Blinks at 1Hz: 500ms on, 500ms off
-                let blink_on = (Instant::now().elapsed().as_millis() as u64 % 1000) < 500;
-                let (g, y) = led_state.power.get_pins();
-                if blink_on {
-                    (g, y)
-                } else {
-                    (false, false)
-                }
-            } else {
-                // LED should be steady
-                led_state.power.get_pins()
-            };
-
-            // Acquire lock only to send commands that actually changed
+            // Acquire lock to send commands
             if let Ok(mut stm_guard) = stm.lock() {
-                // Update line LEDs - only send commands if state changed
-                for (idx, green, red) in led_updates {
-                    let idx_usize = idx as usize;
-                    if (green, red) != last_line_states[idx_usize] {
-                        if let Err(e) = stm_guard.set_line_leds(idx, green, red) {
-                            eprintln!("[LedMonitor] Error setting line LED {}: {}", idx, e);
-                        } else {
-                            last_line_states[idx_usize] = (green, red);
+                // Update line LEDs - only send if state changed
+                for (idx, line_opt) in led_state.lines.iter().enumerate() {
+                    if let Some(line_state) = line_opt {
+                        let current = (line_state.led_state.color, line_state.led_state.pattern);
+                        if last_line_states[idx] != Some(current) {
+                            let color = match current.0 {
+                                LedColor::Off => 'O',
+                                LedColor::Green => 'G',
+                                LedColor::Red => 'R',
+                                LedColor::Yellow => 'Y',
+                            };
+                            let pattern = match current.1 {
+                                BlinkPattern::Steady => 'S',
+                                BlinkPattern::BlinkSlow => 'L',
+                                BlinkPattern::BlinkFast => 'F',
+                            };
+                            eprintln!("[LedMonitor] DEBUG: Setting LED {} to color={} pattern={}", idx, color, pattern);
+                            if let Err(e) = stm_guard.set_led_state(idx as u8, color, pattern) {
+                                eprintln!("[LedMonitor] Error setting LED {}: {}", idx, e);
+                            } else {
+                                eprintln!("[LedMonitor] DEBUG: LED {} set successfully", idx);
+                                last_line_states[idx] = Some(current);
+                            }
                         }
                     }
                 }
 
-                // Update power LEDs - only send commands if state changed
-                if (power_green, power_yellow) != last_power_leds {
-                    if let Err(e) = stm_guard.set_pwr_leds(power_green, power_yellow) {
+                // Update power LED - only send if state changed
+                let power_current = (led_state.power.color, led_state.power.blink);
+                if last_power_state != Some(power_current) {
+                    let color = match led_state.power.color {
+                        PowerLedColor::Off => 'O',
+                        PowerLedColor::Green => 'G',
+                        PowerLedColor::Yellow => 'Y',
+                        PowerLedColor::Lime => 'L',
+                    };
+                    // Power LED blink uses slow pattern
+                    let pattern = if led_state.power.blink { 'L' } else { 'S' };
+                    eprintln!("[LedMonitor] DEBUG: Setting PWR LED to color={} pattern={}", color, pattern);
+                    if let Err(e) = stm_guard.set_pwr_led_state(color, pattern) {
                         eprintln!("[LedMonitor] Error setting power LED: {}", e);
                     } else {
-                        last_power_leds = (power_green, power_yellow);
+                        eprintln!("[LedMonitor] DEBUG: PWR LED set successfully");
+                        last_power_state = Some(power_current);
                     }
                 }
             } else {
@@ -163,43 +175,5 @@ impl Drop for LedMonitor {
                 thread::sleep(Duration::from_millis(10));
             }
         }
-    }
-}
-
-/// Calculate blink cycle (0-7) based on elapsed time since program start
-/// With 50ms updates: 8 * 50ms = 400ms per full cycle
-fn calculate_blink_cycle() -> u8 {
-    // Use elapsed time from program start (this is stable across all threads)
-    // Since we can't easily get a global start time, we'll derive it from system time
-    // This gives us a blink cycle that's synchronized across the application
-    let elapsed_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-
-    // 8-cycle * 50ms = 400ms per full blink cycle
-    ((elapsed_ms / 50) % 8) as u8
-}
-
-/// Get LED pin states based on LED state and time-based blinking
-/// This replaces the inline logic from sensor monitor
-fn get_led_pins_with_timing(
-    led_state: crate::libs::alarms::color::LedState,
-    blink_cycle: u8,
-) -> (bool, bool) {
-    use crate::libs::alarms::color::{LedColor, BlinkPattern};
-
-    let is_on = match led_state.pattern {
-        BlinkPattern::Steady => true,
-        BlinkPattern::BlinkSlow => blink_cycle < 4,      // 4 on, 4 off
-        BlinkPattern::BlinkFast => blink_cycle % 2 == 0, // 1 on, 1 off
-    };
-
-    match (led_state.color, is_on) {
-        (LedColor::Green, true) => (true, false),
-        (LedColor::Red, true) => (false, true),
-        (LedColor::Yellow, true) => (true, true),   // Both on for yellow (LEDG + LEDR)
-        (LedColor::Off, true) => (false, false),
-        (_, false) => (false, false),
     }
 }

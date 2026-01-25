@@ -570,6 +570,7 @@ impl SensorMonitor {
             // The set_line_led() method automatically notifies the LED monitor of changes
             for (idx, controller) in alarm_controllers.iter().enumerate() {
                 let led = controller.get_led_state();
+                eprintln!("[SensorMonitor] DEBUG: Setting LED {} to color={:?} pattern={:?}", idx, led.color, led.pattern);
                 led_state.set_line_led(idx as u8, led);
             }
 
