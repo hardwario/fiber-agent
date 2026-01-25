@@ -14,7 +14,7 @@ use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
 
 use super::{SharedDisplayStateHandle, Screen};
-use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen};
+use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen, render_sensor_detail};
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -69,7 +69,7 @@ pub fn display_loop(
                     state.network_status = network_status.clone();
                     (state.current_screen.clone(), state.qr_generator.clone())
                 } else {
-                    (Screen::SensorOverview { page: 0 }, None)
+                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None)
                 }
             };
 
@@ -78,16 +78,28 @@ pub fn display_loop(
 
             // Dispatch rendering based on current screen
             match current_screen {
-                Screen::SensorOverview { page } => {
+                Screen::SensorOverview { page, selected_sensor } => {
                     // Read sensor state for temperature readings
                     let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
                         eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
                         sensor_state.read().unwrap()
                     });
 
-                    // Render the sensor overview screen with network status
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status) {
+                    // Render the sensor overview screen with network status and selection cursor
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
+                    }
+                }
+                Screen::SensorDetail { sensor_idx } => {
+                    // Read sensor state for temperature readings and thresholds
+                    let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
+                        eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
+                        sensor_state.read().unwrap()
+                    });
+
+                    // Render the sensor detail screen with thresholds
+                    if let Err(e) = render_sensor_detail(&mut display, sensor_idx, &sensor_snapshot) {
+                        eprintln!("[DisplayMonitor] Error rendering sensor detail display: {}", e);
                     }
                 }
                 Screen::QrCodeConfig => {
@@ -115,6 +127,12 @@ pub fn display_loop(
                         crate::libs::power::PowerStatus::default()
                     };
 
+                    // Read device_label fresh from config for hot-reload support
+                    let current_device_label = crate::libs::config::Config::load_default()
+                        .ok()
+                        .and_then(|cfg| cfg.system.device_label)
+                        .unwrap_or_else(|| hostname.clone());
+
                     // Render system info screen with page number
                     if let Err(e) = render_system_info(
                         &mut display,
@@ -123,7 +141,7 @@ pub fn display_loop(
                         &network_status,
                         &power_snapshot,
                         &hostname,
-                        &device_label,
+                        &current_device_label,
                         &app_version,
                         timezone_offset_hours,
                     ) {

@@ -136,7 +136,7 @@ impl SensorMonitor {
         let config_check_interval = Duration::from_secs(10);
         let mut current_sensor_file_config = sensor_file_config.clone();
 
-        // Initialize sensor names from config
+        // Initialize sensor names and thresholds from config
         {
             let names: [String; 8] = sensor_file_config.lines.iter()
                 .take(8)
@@ -151,8 +151,17 @@ impl SensorMonitor {
                     "Sensor 5".to_string(), "Sensor 6".to_string(),
                     "Sensor 7".to_string(), "Sensor 8".to_string(),
                 ]);
+
+            // Collect thresholds for each sensor
+            let thresholds: [crate::libs::alarms::AlarmThreshold; 8] = (0..8)
+                .map(|idx| sensor_file_config.get_line_thresholds(idx as u8))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+
             if let Ok(mut state) = sensor_state.write() {
                 state.set_names(names);
+                state.set_thresholds(thresholds);
             }
         }
 
@@ -210,8 +219,17 @@ impl SensorMonitor {
                                 "Sensor 5".to_string(), "Sensor 6".to_string(),
                                 "Sensor 7".to_string(), "Sensor 8".to_string(),
                             ]);
+
+                        // Update thresholds for display
+                        let thresholds: [crate::libs::alarms::AlarmThreshold; 8] = (0..8)
+                            .map(|idx| new_config.get_line_thresholds(idx as u8))
+                            .collect::<Vec<_>>()
+                            .try_into()
+                            .unwrap();
+
                         if let Ok(mut state) = sensor_state.write() {
                             state.set_names(names);
+                            state.set_thresholds(thresholds);
                         }
 
                         eprintln!("[SensorMonitor] Sensor configuration reloaded successfully");

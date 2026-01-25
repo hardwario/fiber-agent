@@ -27,7 +27,14 @@ pub use buttons::ButtonMonitor;
 #[derive(Clone, Debug)]
 pub enum Screen {
     /// Sensor overview showing temperature readings
-    SensorOverview { page: usize },
+    /// page: 0 or 1 (4 sensors per page)
+    /// selected_sensor: Some(0-7) when in selection mode, None when in page mode
+    SensorOverview {
+        page: usize,
+        selected_sensor: Option<usize>,
+    },
+    /// Sensor detail view showing thresholds for a specific sensor
+    SensorDetail { sensor_idx: usize },
     /// QR code configuration screen for Bluetooth/WiFi setup
     QrCodeConfig,
     /// System information screen with pagination
@@ -40,10 +47,11 @@ impl Screen {
     /// Get the current page if this is a paginated screen
     pub fn get_page(&self) -> Option<usize> {
         match self {
-            Screen::SensorOverview { page } => Some(*page),
+            Screen::SensorOverview { page, .. } => Some(*page),
             Screen::QrCodeConfig => None,
             Screen::SystemInfo { page } => Some(*page),
             Screen::Pairing { .. } => None,
+            Screen::SensorDetail { .. } => None,
         }
     }
 
@@ -71,6 +79,29 @@ impl Screen {
     pub fn is_navigable(&self) -> bool {
         matches!(self, Screen::SensorOverview { .. } | Screen::SystemInfo { .. })
     }
+
+    /// Check if this is a sensor overview screen
+    pub fn is_sensor_overview(&self) -> bool {
+        matches!(self, Screen::SensorOverview { .. })
+    }
+
+    /// Check if sensor selection mode is active
+    pub fn is_selection_mode(&self) -> bool {
+        matches!(self, Screen::SensorOverview { selected_sensor: Some(_), .. })
+    }
+
+    /// Check if this is a sensor detail screen
+    pub fn is_sensor_detail(&self) -> bool {
+        matches!(self, Screen::SensorDetail { .. })
+    }
+
+    /// Get selected sensor index if in selection mode
+    pub fn get_selected_sensor(&self) -> Option<usize> {
+        match self {
+            Screen::SensorOverview { selected_sensor, .. } => *selected_sensor,
+            _ => None,
+        }
+    }
 }
 
 /// Shared display state for managing screen navigation and display control
@@ -88,7 +119,7 @@ pub struct DisplayState {
 impl DisplayState {
     pub fn new() -> Self {
         Self {
-            current_screen: Screen::SensorOverview { page: 0 },
+            current_screen: Screen::SensorOverview { page: 0, selected_sensor: None },
             should_update: true,
             qr_generator: None,
             network_status: NetworkStatus::disconnected(),
@@ -100,11 +131,15 @@ impl DisplayState {
         self.qr_generator = Some(generator);
     }
 
-    /// Navigate to next page (works for sensor overview and system info)
+    /// Navigate to next page (works for sensor overview and system info when not in selection mode)
     pub fn next_page(&mut self) {
         match self.current_screen {
-            Screen::SensorOverview { page } => {
-                self.current_screen = Screen::SensorOverview { page: if page == 0 { 1 } else { 0 } };
+            Screen::SensorOverview { page, selected_sensor: None } => {
+                // Only page navigation when not in selection mode
+                self.current_screen = Screen::SensorOverview {
+                    page: if page == 0 { 1 } else { 0 },
+                    selected_sensor: None,
+                };
             }
             Screen::SystemInfo { page } => {
                 // System info has 3 pages (0, 1, 2)
@@ -119,9 +154,9 @@ impl DisplayState {
         self.current_screen = Screen::QrCodeConfig;
     }
 
-    /// Return to sensor overview (last page)
+    /// Return to sensor overview (page 0, no selection)
     pub fn show_sensor_overview(&mut self) {
-        self.current_screen = Screen::SensorOverview { page: 0 };
+        self.current_screen = Screen::SensorOverview { page: 0, selected_sensor: None };
     }
 
     /// Switch to system info screen (page 0)
@@ -133,6 +168,76 @@ impl DisplayState {
     pub fn show_pairing(&mut self, code: String) {
         self.current_screen = Screen::Pairing { code };
         self.should_update = true;
+    }
+
+    /// Enter selection mode (from SensorOverview)
+    pub fn enter_selection_mode(&mut self) {
+        if let Screen::SensorOverview { page, .. } = self.current_screen {
+            // Start selection at first sensor on current page
+            let first_sensor = page * 4;
+            self.current_screen = Screen::SensorOverview {
+                page,
+                selected_sensor: Some(first_sensor),
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Exit selection mode (return to page mode)
+    pub fn exit_selection_mode(&mut self) {
+        if let Screen::SensorOverview { page, selected_sensor: Some(_) } = self.current_screen {
+            self.current_screen = Screen::SensorOverview {
+                page,
+                selected_sensor: None,
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Move selection cursor up (wraps within all 8 sensors)
+    pub fn selection_up(&mut self) {
+        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+            let new_idx = if idx == 0 { 7 } else { idx - 1 };
+            let new_page = new_idx / 4;
+            self.current_screen = Screen::SensorOverview {
+                page: new_page,
+                selected_sensor: Some(new_idx),
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Move selection cursor down (wraps within all 8 sensors)
+    pub fn selection_down(&mut self) {
+        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+            let new_idx = if idx >= 7 { 0 } else { idx + 1 };
+            let new_page = new_idx / 4;
+            self.current_screen = Screen::SensorOverview {
+                page: new_page,
+                selected_sensor: Some(new_idx),
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Enter detail view for selected sensor
+    pub fn enter_detail_view(&mut self) {
+        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+            self.current_screen = Screen::SensorDetail { sensor_idx: idx };
+            self.should_update = true;
+        }
+    }
+
+    /// Exit detail view back to selection mode
+    pub fn exit_detail_view(&mut self) {
+        if let Screen::SensorDetail { sensor_idx } = self.current_screen {
+            let page = sensor_idx / 4;
+            self.current_screen = Screen::SensorOverview {
+                page,
+                selected_sensor: Some(sensor_idx),
+            };
+            self.should_update = true;
+        }
     }
 }
 

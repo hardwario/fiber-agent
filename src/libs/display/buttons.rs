@@ -27,6 +27,10 @@ enum ButtonMonitorState {
     UpHoldActive,
     /// Pairing screen is displayed
     ShowingPairing,
+    /// Sensor selection mode - cursor navigation active
+    SelectionMode,
+    /// Viewing sensor detail screen
+    ShowingDetail,
 }
 
 /// Button monitor thread for controlling display navigation
@@ -80,12 +84,14 @@ impl ButtonMonitor {
 
         let poll_interval = Duration::from_millis(50);
         const COUNTDOWN_DURATION: Duration = Duration::from_secs(5);
+        const SELECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
         // Button monitor state machine
         let mut state = ButtonMonitorState::Idle;
         let mut countdown_start = Instant::now();
         let mut down_hold_start = Instant::now();
         let mut up_hold_start = Instant::now();
+        let mut selection_activity = Instant::now(); // Track last activity in selection/detail mode
 
         // Main button monitoring loop
         loop {
@@ -143,6 +149,14 @@ impl ButtonMonitor {
                                     eprintln!("[ButtonMonitor] System info page changed");
                                 }
                             }
+                            ButtonMonitorState::SelectionMode => {
+                                // In selection mode - move cursor up
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.selection_up();
+                                    eprintln!("[ButtonMonitor] Selection cursor moved up");
+                                }
+                                selection_activity = Instant::now(); // Reset inactivity timer
+                            }
                             ButtonMonitorState::UpHoldActive => {
                                 // Already holding UP - ignore additional presses
                             }
@@ -158,7 +172,7 @@ impl ButtonMonitor {
                                 eprintln!("[ButtonMonitor] DOWN hold cancelled by UP button");
                             }
                             _ => {
-                                // Other states - ignore UP
+                                // Other states (ShowingQr, ShowingDetail) - ignore UP
                             }
                         }
                     }
@@ -235,8 +249,16 @@ impl ButtonMonitor {
                                 state = ButtonMonitorState::Idle;
                                 eprintln!("[ButtonMonitor] UP hold cancelled by DOWN button");
                             }
+                            ButtonMonitorState::SelectionMode => {
+                                // In selection mode - move cursor down
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.selection_down();
+                                    eprintln!("[ButtonMonitor] Selection cursor moved down");
+                                }
+                                selection_activity = Instant::now(); // Reset inactivity timer
+                            }
                             _ => {
-                                // Other states - ignore DOWN
+                                // Other states (ShowingQr, ShowingDetail) - ignore DOWN
                             }
                         }
                     }
@@ -313,10 +335,54 @@ impl ButtonMonitor {
                             ButtonMonitorState::ShowingPairing => {
                                 // Already handled above
                             }
+                            ButtonMonitorState::SelectionMode => {
+                                // In selection mode - enter detail view
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.enter_detail_view();
+                                    eprintln!("[ButtonMonitor] Entering sensor detail view");
+                                }
+                                state = ButtonMonitorState::ShowingDetail;
+                                selection_activity = Instant::now(); // Reset inactivity timer
+                            }
+                            ButtonMonitorState::ShowingDetail => {
+                                // In detail view - exit back to selection mode
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.exit_detail_view();
+                                    eprintln!("[ButtonMonitor] Exiting sensor detail view");
+                                }
+                                state = ButtonMonitorState::SelectionMode;
+                                selection_activity = Instant::now(); // Reset inactivity timer
+                            }
                         }
                     }
                     ButtonEvent::Release(Button::Enter) => {
-                        // Ignore ENTER release
+                        // Handle Enter release for entering selection mode
+                        if state == ButtonMonitorState::CountdownActive {
+                            let elapsed = countdown_start.elapsed();
+                            if elapsed < COUNTDOWN_DURATION {
+                                // Released early - check if on sensor overview to enter selection mode
+                                let on_sensor_overview = if let Ok(display_state_lock) = display_state.lock() {
+                                    display_state_lock.current_screen.is_sensor_overview()
+                                } else {
+                                    false
+                                };
+
+                                if on_sensor_overview {
+                                    // Enter selection mode
+                                    if let Ok(mut display_state_lock) = display_state.lock() {
+                                        display_state_lock.enter_selection_mode();
+                                        eprintln!("[ButtonMonitor] ENTER released early ({:.1}s) - entering selection mode", elapsed.as_secs_f32());
+                                    }
+                                    state = ButtonMonitorState::SelectionMode;
+                                    selection_activity = Instant::now(); // Start inactivity timer
+                                } else {
+                                    // Not on sensor overview - just cancel countdown
+                                    eprintln!("[ButtonMonitor] ENTER released early ({:.1}s) - countdown cancelled", elapsed.as_secs_f32());
+                                    state = ButtonMonitorState::Idle;
+                                }
+                            }
+                            // If >= 5 seconds, already transitioned to ShowingQr
+                        }
                     }
                 }
             }
@@ -358,6 +424,18 @@ impl ButtonMonitor {
                         state = ButtonMonitorState::Idle;
                     }
                 }
+            }
+
+            // Check inactivity timeout for selection/detail mode (15 seconds)
+            if (state == ButtonMonitorState::SelectionMode || state == ButtonMonitorState::ShowingDetail)
+                && selection_activity.elapsed() >= SELECTION_TIMEOUT
+            {
+                // Return to normal sensor overview
+                if let Ok(mut display_state_lock) = display_state.lock() {
+                    display_state_lock.show_sensor_overview();
+                    eprintln!("[ButtonMonitor] Selection mode timeout (15s) - returning to normal view");
+                }
+                state = ButtonMonitorState::Idle;
             }
 
             // Sleep before next poll

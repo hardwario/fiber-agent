@@ -19,12 +19,14 @@ use crate::libs::display::icons;
 use crate::libs::power::PowerStatus;
 
 /// Render the sensor overview screen showing all 8 sensors across 2 pages
+/// When selected_sensor is Some, shows cursor at that sensor position (selection mode)
 pub fn render_sensor_overview(
     display: &mut St7920,
     page: usize,
     _led_state: &SharedLedState,
     sensor_state: &SharedSensorState,
     network_status: &NetworkStatus,
+    selected_sensor: Option<usize>,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -35,7 +37,7 @@ pub fn render_sensor_overview(
     // Draw network connection icons on the left (aligned with top of FIBER text)
     icons::draw_network_status(display, 2, 0, network_status);
 
-    // Draw header: "FIBER" centered, page number right-aligned
+    // Draw header: "FIBER" centered, page/mode indicator right-aligned
     Text::with_alignment(
         "FIBER",
         Point::new(64, 8),
@@ -45,9 +47,14 @@ pub fn render_sensor_overview(
     .draw(display)
     .ok();
 
-    let page_str = format!("{}/2", page + 1);
+    // Show "SEL" when in selection mode, otherwise page number
+    let mode_str = if selected_sensor.is_some() {
+        "SEL".to_string()
+    } else {
+        format!("{}/2", page + 1)
+    };
     Text::with_alignment(
-        &page_str,
+        &mode_str,
         Point::new(126, 8),
         text_style,
         Alignment::Right,
@@ -61,6 +68,9 @@ pub fn render_sensor_overview(
         .draw(display)
         .ok();
 
+    // Calculate x offset for labels (make room for cursor in selection mode)
+    let label_x = if selected_sensor.is_some() { 8 } else { 2 };
+
     // Draw 4 sensors for this page
     let start_sensor = page * 4;
     for row in 0..4 {
@@ -70,6 +80,9 @@ pub fn render_sensor_overview(
         }
 
         let y = 20 + (row as i32 * 12);
+
+        // Check if this row is selected (cursor position)
+        let is_selected = selected_sensor == Some(sensor_idx);
 
         // Get sensor reading to determine status from AlarmState
         let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
@@ -88,12 +101,13 @@ pub fn render_sensor_overview(
         };
 
         // Format sensor line: "NAME  XX.X°C  STATUS"
-        // Get name from shared state (truncate to 8 chars for display)
+        // Get name from shared state (truncate to 7 chars in selection mode, 8 otherwise)
         let name = &sensor_state.names[sensor_idx];
-        let label = if name.len() > 8 {
-            format!("{}  ", &name[..8])
+        let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
+        let label = if name.len() > max_name_len {
+            format!("{}  ", &name[..max_name_len])
         } else {
-            format!("{:8}  ", name)
+            format!("{:width$}  ", name, width = max_name_len)
         };
 
         // Get temperature from sensor state
@@ -107,8 +121,33 @@ pub fn render_sensor_overview(
             "--.-°C".to_string()
         };
 
-        // Draw background highlight for alarm rows
-        if is_alarm {
+        // Draw background highlight for selected or alarm rows
+        if is_selected {
+            // Selection cursor highlight (inverted background)
+            Rectangle::new(Point::new(0, y - 8), Size::new(128, 11))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)
+                .ok();
+
+            let inverted_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
+
+            // Draw cursor arrow
+            Text::new(">", Point::new(1, y), inverted_style)
+                .draw(display)
+                .ok();
+
+            Text::new(&label, Point::new(label_x, y), inverted_style)
+                .draw(display)
+                .ok();
+
+            Text::with_alignment(&temp_str, Point::new(70, y), inverted_style, Alignment::Left)
+                .draw(display)
+                .ok();
+
+            Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
+                .draw(display)
+                .ok();
+        } else if is_alarm {
             Rectangle::new(Point::new(0, y - 8), Size::new(128, 11))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)
@@ -117,7 +156,7 @@ pub fn render_sensor_overview(
             // Use inverted text style for alarm rows
             let inverted_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
 
-            Text::new(&label, Point::new(2, y), inverted_style)
+            Text::new(&label, Point::new(label_x, y), inverted_style)
                 .draw(display)
                 .ok();
 
@@ -129,8 +168,8 @@ pub fn render_sensor_overview(
                 .draw(display)
                 .ok();
         } else {
-            // Normal text style for non-alarm rows
-            Text::new(&label, Point::new(2, y), text_style)
+            // Normal text style for non-alarm, non-selected rows
+            Text::new(&label, Point::new(label_x, y), text_style)
                 .draw(display)
                 .ok();
 
@@ -513,6 +552,91 @@ pub fn render_pairing_screen(
     )
     .draw(display)
     .ok();
+
+    display.flush()
+}
+
+/// Render the sensor detail screen showing thresholds and current reading
+pub fn render_sensor_detail(
+    display: &mut St7920,
+    sensor_idx: usize,
+    sensor_state: &SharedSensorState,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // Get sensor name (truncate to 16 chars for display)
+    let name = &sensor_state.names[sensor_idx];
+    let display_name = if name.len() > 16 {
+        &name[..16]
+    } else {
+        name.as_str()
+    };
+
+    // Header: Sensor name centered
+    Text::with_alignment(
+        display_name,
+        Point::new(64, 8),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Separator line
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    // Get current reading and thresholds
+    let reading = sensor_state.readings[sensor_idx].as_ref();
+    let threshold = &sensor_state.thresholds[sensor_idx];
+
+    // Line 1 (y=22): Current temperature and alarm state
+    let (temp_str, state_str) = if let Some(r) = reading {
+        let temp = if r.is_connected {
+            format!("{:.1}C", r.temperature)
+        } else {
+            "--.-C".to_string()
+        };
+        let state = match r.alarm_state {
+            AlarmState::NeverConnected => "-",
+            AlarmState::Disconnected => "E",
+            AlarmState::Reconnecting => "W",
+            AlarmState::Normal => "N",
+            AlarmState::Warning => "W",
+            AlarmState::Alarm => "A",
+            AlarmState::Critical => "C",
+        };
+        (temp, state)
+    } else {
+        ("--.-C".to_string(), "?")
+    };
+    let now_line = format!("Now:{} [{}]", temp_str, state_str);
+    Text::new(&now_line, Point::new(2, 22), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 2 (y=34): Critical thresholds
+    let critical_line = format!("CL:{:.1} CH:{:.1}", threshold.critical_low_celsius, threshold.critical_high_celsius);
+    Text::new(&critical_line, Point::new(2, 34), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 3 (y=46): Alarm thresholds
+    let alarm_line = format!("AL:{:.1} AH:{:.1}", threshold.low_alarm_celsius, threshold.high_alarm_celsius);
+    Text::new(&alarm_line, Point::new(2, 46), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 4 (y=58): Warning thresholds
+    let warning_line = format!("WL:{:.1} WH:{:.1}", threshold.warning_low_celsius, threshold.warning_high_celsius);
+    Text::new(&warning_line, Point::new(2, 58), text_style)
+        .draw(display)
+        .ok();
 
     display.flush()
 }

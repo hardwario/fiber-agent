@@ -457,6 +457,7 @@ impl AuthorizationManager {
             "add_signer" => "add_signer",
             "remove_signer" => "remove_signer",
             "update_signer" => "update_signer",
+            "set_device_label" => "set_device_label",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -507,6 +508,10 @@ impl AuthorizationManager {
             "update_signer" => {
                 let signer_id = params.get("signer_id").and_then(|v| v.as_str()).unwrap_or("Unknown");
                 format!("Update signer '{}' permissions/settings", signer_id)
+            }
+            "set_device_label" => {
+                let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Change device label to \"{}\"", label)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -602,6 +607,14 @@ impl AuthorizationManager {
                     signer_id,
                     changes,
                 })
+            }
+            "set_device_label" => {
+                let label = challenge.params.get("label")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing label".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::SetDeviceLabel { label })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",

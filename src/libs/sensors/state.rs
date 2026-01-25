@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::libs::alarms::AlarmState;
+use crate::libs::alarms::{AlarmState, AlarmThreshold};
 
 /// Single sensor reading with temperature and connection status
 #[derive(Clone, Debug)]
@@ -38,6 +38,8 @@ pub struct SharedSensorState {
     pub readings: [Option<SensorReading>; 8],
     /// Sensor names from config (hot-reloaded)
     pub names: [String; 8],
+    /// Alarm thresholds per sensor (for detail display)
+    pub thresholds: [AlarmThreshold; 8],
 }
 
 impl SharedSensorState {
@@ -55,6 +57,16 @@ impl SharedSensorState {
                 "Sensor 7".to_string(),
                 "Sensor 8".to_string(),
             ],
+            thresholds: [
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+                AlarmThreshold::default_medical(),
+            ],
         }
     }
 
@@ -69,6 +81,20 @@ impl SharedSensorState {
             &self.names[sensor_idx as usize]
         } else {
             "Unknown"
+        }
+    }
+
+    /// Update alarm thresholds from config
+    pub fn set_thresholds(&mut self, thresholds: [AlarmThreshold; 8]) {
+        self.thresholds = thresholds;
+    }
+
+    /// Get threshold for a specific sensor
+    pub fn get_threshold(&self, sensor_idx: u8) -> &AlarmThreshold {
+        if (sensor_idx as usize) < 8 {
+            &self.thresholds[sensor_idx as usize]
+        } else {
+            &self.thresholds[0] // Fallback to first sensor's thresholds
         }
     }
 
