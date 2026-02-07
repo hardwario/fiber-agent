@@ -306,6 +306,10 @@ impl ButtonMonitor {
                                 eprintln!("[ButtonMonitor] Countdown restarted");
                             }
                             ButtonMonitorState::ShowingQr => {
+                                // Stop BLE advertising
+                                if let Err(e) = crate::libs::ble::stop_ble_advertising() {
+                                    eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
+                                }
                                 // Return to sensor overview
                                 if let Ok(mut display_state_lock) = display_state.lock() {
                                     display_state_lock.show_sensor_overview();
@@ -390,6 +394,10 @@ impl ButtonMonitor {
             // Check countdown completion for ENTER button
             if state == ButtonMonitorState::CountdownActive {
                 if countdown_start.elapsed() >= COUNTDOWN_DURATION {
+                    // Start BLE advertising
+                    if let Err(e) = crate::libs::ble::start_ble_advertising() {
+                        eprintln!("[ButtonMonitor] Failed to start BLE advertising: {}", e);
+                    }
                     // Transition to QR code screen
                     if let Ok(mut display_state_lock) = display_state.lock() {
                         display_state_lock.show_qr_code();

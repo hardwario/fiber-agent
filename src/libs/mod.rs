@@ -16,6 +16,7 @@ pub mod crypto;
 pub mod authorization;
 pub mod config_applier;
 pub mod pairing;
+pub mod ble;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};
