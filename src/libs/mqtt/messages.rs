@@ -171,6 +171,27 @@ pub enum MqttCommand {
         label: String,
     },
 
+    /// Set LED brightness (signed via ConfigRequest)
+    SetLedBrightness {
+        brightness: u8,
+    },
+
+    /// Set screen brightness (signed via ConfigRequest)
+    SetScreenBrightness {
+        brightness: u8,
+    },
+
+    /// Set network configuration (signed via ConfigRequest)
+    SetNetworkConfig {
+        interface: String,      // "ethernet" or "wifi"
+        config_type: String,    // "dhcp" or "static"
+        ip_address: Option<String>,
+        subnet_mask: Option<String>,
+        gateway: Option<String>,
+        dns_primary: Option<String>,
+        dns_secondary: Option<String>,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -231,6 +252,9 @@ impl MqttCommand {
             MqttCommand::GetInterval => "get_interval",
             MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
             MqttCommand::SetDeviceLabel { .. } => "set_device_label",
+            MqttCommand::SetLedBrightness { .. } => "set_led_brightness",
+            MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
+            MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",

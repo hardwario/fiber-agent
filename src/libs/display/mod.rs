@@ -5,7 +5,7 @@
 //! alarm states, and status indicators in a multi-page format.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -15,6 +15,9 @@ use rppal::gpio::Gpio;
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
+
+/// Type alias for shared screen brightness handle (0-100%)
+pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
 
 pub mod monitor;
 pub mod screens;
@@ -268,6 +271,7 @@ impl DisplayMonitor {
         device_label: String,
         app_version: String,
         timezone_offset_hours: i8,
+        screen_brightness: SharedScreenBrightnessHandle,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
@@ -286,6 +290,7 @@ impl DisplayMonitor {
                 device_label,
                 app_version,
                 timezone_offset_hours,
+                screen_brightness,
             );
         });
 

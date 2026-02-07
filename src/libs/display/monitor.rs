@@ -1,6 +1,6 @@
 //! Display monitor thread - continuously updates the ST7920 display
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -28,6 +28,7 @@ pub fn display_loop(
     device_label: String,
     app_version: String,
     timezone_offset_hours: i8,
+    screen_brightness: Arc<AtomicU8>,
 ) {
     // Initialize display
     let mut display = match St7920::new(gpio) {
@@ -45,6 +46,9 @@ pub fn display_loop(
     let update_interval = Duration::from_millis(UPDATE_INTERVAL_MS);
     let mut last_update = std::time::Instant::now();
 
+    // Track last applied brightness to detect changes
+    let mut last_brightness: u8 = 100; // Default to full brightness
+
     eprintln!("[DisplayMonitor] Started display loop with {}ms update interval", UPDATE_INTERVAL_MS);
 
     // Main display loop
@@ -53,6 +57,17 @@ pub fn display_loop(
         if shutdown_flag.load(Ordering::Relaxed) {
             eprintln!("[DisplayMonitor] Shutdown signal received, exiting display thread");
             break;
+        }
+
+        // Check for brightness changes and apply via PWM
+        let current_brightness = screen_brightness.load(Ordering::Relaxed);
+        if current_brightness != last_brightness {
+            if let Err(e) = display.set_brightness(current_brightness) {
+                eprintln!("[DisplayMonitor] Failed to set brightness to {}%: {}", current_brightness, e);
+            } else {
+                eprintln!("[DisplayMonitor] Screen brightness set to {}%", current_brightness);
+            }
+            last_brightness = current_brightness;
         }
 
         // Throttle updates to reduce flicker and CPU usage

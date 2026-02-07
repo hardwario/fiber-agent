@@ -125,3 +125,15 @@ impl OriginDimensions for St7920 {
         Size::new(128, 64)
     }
 }
+
+impl St7920 {
+    /// Set backlight brightness using hardware PWM
+    ///
+    /// GPIO 13 supports hardware PWM (PWM1 channel 1) on Raspberry Pi.
+    /// The brightness is specified as a percentage (0-100).
+    pub fn set_brightness(&mut self, percent: u8) -> Result<()> {
+        let duty = (percent.min(100) as f64) / 100.0;
+        self.bl.set_pwm_frequency(1000.0, duty)?;
+        Ok(())
+    }
+}

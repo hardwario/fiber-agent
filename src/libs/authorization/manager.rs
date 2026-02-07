@@ -458,6 +458,9 @@ impl AuthorizationManager {
             "remove_signer" => "remove_signer",
             "update_signer" => "update_signer",
             "set_device_label" => "set_device_label",
+            "set_led_brightness" => "set_led_brightness",
+            "set_screen_brightness" => "set_screen_brightness",
+            "set_network_config" => "set_network_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -512,6 +515,19 @@ impl AuthorizationManager {
             "set_device_label" => {
                 let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Change device label to \"{}\"", label)
+            }
+            "set_led_brightness" => {
+                let brightness = params.get("brightness").and_then(|v| v.as_u64()).unwrap_or(50);
+                format!("Set LED brightness to {}%", brightness)
+            }
+            "set_screen_brightness" => {
+                let brightness = params.get("brightness").and_then(|v| v.as_u64()).unwrap_or(50);
+                format!("Set screen brightness to {}%", brightness)
+            }
+            "set_network_config" => {
+                let iface = params.get("interface").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let cfg_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Configure {} network to {}", iface, cfg_type)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -615,6 +631,73 @@ impl AuthorizationManager {
                     .to_string();
 
                 Ok(MqttCommand::SetDeviceLabel { label })
+            }
+            "set_led_brightness" => {
+                let brightness = challenge.params.get("brightness")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing brightness".to_string()))?
+                    as u8;
+
+                // Validate range
+                if brightness > 100 {
+                    return Err(AuthError::InvalidCommand("Brightness must be 0-100".to_string()));
+                }
+
+                Ok(MqttCommand::SetLedBrightness { brightness })
+            }
+            "set_screen_brightness" => {
+                let brightness = challenge.params.get("brightness")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing brightness".to_string()))?
+                    as u8;
+
+                // Validate range
+                if brightness > 100 {
+                    return Err(AuthError::InvalidCommand("Brightness must be 0-100".to_string()));
+                }
+
+                Ok(MqttCommand::SetScreenBrightness { brightness })
+            }
+            "set_network_config" => {
+                let interface = challenge.params.get("interface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ethernet")
+                    .to_string();
+
+                let config_type = challenge.params.get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("dhcp")
+                    .to_string();
+
+                let ip_address = challenge.params.get("ip_address")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let subnet_mask = challenge.params.get("subnet_mask")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let gateway = challenge.params.get("gateway")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let dns_primary = challenge.params.get("dns_primary")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let dns_secondary = challenge.params.get("dns_secondary")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                Ok(MqttCommand::SetNetworkConfig {
+                    interface,
+                    config_type,
+                    ip_address,
+                    subnet_mask,
+                    gateway,
+                    dns_primary,
+                    dns_secondary,
+                })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",

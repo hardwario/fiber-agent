@@ -116,6 +116,16 @@ impl W1DeviceReader {
                     let temp_str = content.trim();
                     if let Ok(temp_millic) = temp_str.parse::<f32>() {
                         let temp_c = temp_millic / 1000.0;
+
+                        // DS18B20 returns 85°C as default power-on value before first conversion
+                        // This is not a valid reading - reject it so debouncing handles it as a failure
+                        if (temp_c - 85.0).abs() < 0.1 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Sensor returned power-on default value (85°C)",
+                            ));
+                        }
+
                         return Ok(temp_c);
                     } else {
                         return Err(io::Error::new(

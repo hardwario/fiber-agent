@@ -1,6 +1,7 @@
 // FIBER Medical Thermometer main application
 
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
@@ -13,6 +14,12 @@ use fiber_app::libs::StorageThread;
 fn read_pin_from_file() -> io::Result<String> {
     let pin = fs::read_to_string("/data/ble/pin.txt")?;
     Ok(pin.trim().to_string())
+}
+
+/// Read BLE MAC address from /data/ble/mac.txt
+fn read_mac_from_file() -> io::Result<String> {
+    let mac = fs::read_to_string("/data/ble/mac.txt")?;
+    Ok(mac.trim().to_string())
 }
 
 /// Read hostname from /etc/hostname and convert to uppercase
@@ -106,6 +113,19 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Read MAC address from file (written by ble-fiber service)
+    let mac_address = match read_mac_from_file() {
+        Ok(m) => {
+            eprintln!("[main] MAC address read from /data/ble/mac.txt: {}", m);
+            m
+        }
+        Err(e) => {
+            eprintln!("[main] Warning: Failed to read MAC from /data/ble/mac.txt: {}", e);
+            eprintln!("[main] Using placeholder MAC address");
+            "00:00:00:00:00:00".to_string()
+        }
+    };
+
     // Read hostname from file
     let hostname = match read_hostname_from_file() {
         Ok(h) => {
@@ -118,9 +138,10 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let qr_generator = match QrCodeGenerator::new(hostname.clone(), pin) {
+    let qr_generator = match QrCodeGenerator::new(mac_address, pin, hostname.clone()) {
         Ok(gen) => {
             eprintln!("[main] QR code generator initialized successfully");
+            eprintln!("[main] QR content: {}", gen.get_content());
             Arc::new(gen)
         }
         Err(e) => {
@@ -133,6 +154,11 @@ fn main() -> io::Result<()> {
     eprintln!("[main] Initializing shared power status...");
     let power_status = Arc::new(Mutex::new(PowerStatus::default()));
     eprintln!("[main] Power status initialized");
+
+    // Create shared screen brightness for display backlight control (default 100%)
+    eprintln!("[main] Initializing screen brightness control...");
+    let screen_brightness = Arc::new(AtomicU8::new(100));
+    eprintln!("[main] Screen brightness initialized at 100%");
 
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
@@ -147,6 +173,7 @@ fn main() -> io::Result<()> {
         device_label,
         config.system.app_version.clone(),
         config.system.timezone_offset_hours,
+        screen_brightness.clone(),
     )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
@@ -215,9 +242,15 @@ fn main() -> io::Result<()> {
 
     let (mqtt_handle, mqtt_monitor) = if config.mqtt.as_ref().map(|m| m.enabled).unwrap_or(false) {
         eprintln!("[main] Starting MQTT monitor...");
-        match MqttMonitor::new(config.mqtt.clone().unwrap(), hostname.clone(), power_status.clone()) {
+        match MqttMonitor::new_with_stm(
+            config.mqtt.clone().unwrap(),
+            hostname.clone(),
+            power_status.clone(),
+            Some(stm_guard.clone()),
+            Some(screen_brightness.clone()),
+        ) {
             Ok(monitor) => {
-                eprintln!("[main] MQTT monitor started");
+                eprintln!("[main] MQTT monitor started with STM bridge and screen brightness control");
                 let handle = monitor.handle();
                 (Some(handle), Some(monitor))
             }

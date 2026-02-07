@@ -3,11 +3,12 @@ use qrcode::QrCode;
 
 /// QR Code generator for Bluetooth/WiFi configuration
 ///
-/// Generates a scannable QR code containing device ID and pairing code
-/// in the format: BT:DEVICE_ID:PAIRING_CODE
+/// Generates a scannable QR code containing device connection info as JSON:
+/// {"t":"fiber","v":1,"m":"AA:BB:CC:DD:EE:FF","p":"123456","n":"FIBER-001"}
 pub struct QrCodeGenerator {
-    device_id: String,
-    pairing_code: String,
+    mac_address: String,
+    pin: String,
+    device_name: String,
     qr_matrix: Vec<Vec<bool>>,
 }
 
@@ -15,19 +16,25 @@ impl QrCodeGenerator {
     /// Create a new QR code generator
     ///
     /// # Arguments
-    /// * `device_id` - Unique device identifier (e.g., "FIBER_001")
-    /// * `pairing_code` - Bluetooth pairing code (e.g., "1234")
-    pub fn new(device_id: String, pairing_code: String) -> Result<Self> {
-        // Generate QR code data in format: BT:DEVICE_ID:PAIRING_CODE
-        let qr_content = format!("BT:{}:{}", device_id, pairing_code);
+    /// * `mac_address` - Bluetooth MAC address (e.g., "AA:BB:CC:DD:EE:FF")
+    /// * `pin` - PIN for authentication (e.g., "123456")
+    /// * `device_name` - Device name/hostname (e.g., "FIBER-001")
+    pub fn new(mac_address: String, pin: String, device_name: String) -> Result<Self> {
+        // Generate QR code data in JSON format
+        // t = type ("fiber"), v = protocol version, m = MAC, p = PIN, n = name
+        let qr_content = format!(
+            r#"{{"t":"fiber","v":1,"m":"{}","p":"{}","n":"{}"}}"#,
+            mac_address, pin, device_name
+        );
         let code = QrCode::new(&qr_content)?;
 
         // Convert QR code to boolean matrix for rendering
         let qr_matrix = Self::qr_to_matrix(&code);
 
         Ok(Self {
-            device_id,
-            pairing_code,
+            mac_address,
+            pin,
+            device_name,
             qr_matrix,
         })
     }
@@ -68,19 +75,27 @@ impl QrCodeGenerator {
         }
     }
 
-    /// Get device ID
-    pub fn get_device_id(&self) -> &str {
-        &self.device_id
+    /// Get MAC address
+    pub fn get_mac_address(&self) -> &str {
+        &self.mac_address
     }
 
-    /// Get pairing code
-    pub fn get_pairing_code(&self) -> &str {
-        &self.pairing_code
+    /// Get PIN
+    pub fn get_pin(&self) -> &str {
+        &self.pin
     }
 
-    /// Get the full QR content string
+    /// Get device name
+    pub fn get_device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Get the full QR content string (JSON format)
     pub fn get_content(&self) -> String {
-        format!("BT:{}:{}", self.device_id, self.pairing_code)
+        format!(
+            r#"{{"t":"fiber","v":1,"m":"{}","p":"{}","n":"{}"}}"#,
+            self.mac_address, self.pin, self.device_name
+        )
     }
 }
 
@@ -91,20 +106,26 @@ mod tests {
     #[test]
     fn test_qr_generator_creation() {
         let generator = QrCodeGenerator::new(
-            "FIBER_001".to_string(),
-            "1234".to_string(),
+            "AA:BB:CC:DD:EE:FF".to_string(),
+            "123456".to_string(),
+            "FIBER-001".to_string(),
         ).expect("Failed to create QR generator");
 
-        assert_eq!(generator.get_device_id(), "FIBER_001");
-        assert_eq!(generator.get_pairing_code(), "1234");
-        assert_eq!(generator.get_content(), "BT:FIBER_001:1234");
+        assert_eq!(generator.get_mac_address(), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(generator.get_pin(), "123456");
+        assert_eq!(generator.get_device_name(), "FIBER-001");
+        assert_eq!(
+            generator.get_content(),
+            r#"{"t":"fiber","v":1,"m":"AA:BB:CC:DD:EE:FF","p":"123456","n":"FIBER-001"}"#
+        );
     }
 
     #[test]
     fn test_qr_matrix_is_square() {
         let generator = QrCodeGenerator::new(
-            "TEST_DEVICE".to_string(),
-            "9999".to_string(),
+            "11:22:33:44:55:66".to_string(),
+            "999999".to_string(),
+            "TEST-DEVICE".to_string(),
         ).expect("Failed to create QR generator");
 
         let matrix = generator.get_qr_matrix();

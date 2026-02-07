@@ -28,6 +28,12 @@ use std::sync::Mutex;
 /// Shared pairing handle that can be set after MQTT monitor is created
 pub type SharedPairingHandle = Arc<Mutex<Option<PairingHandle>>>;
 
+/// Shared STM bridge for hardware commands
+pub type SharedStmBridge = Arc<Mutex<crate::drivers::StmBridge>>;
+
+/// Shared screen brightness handle for display backlight control
+pub type SharedScreenBrightnessHandle = std::sync::Arc<std::sync::atomic::AtomicU8>;
+
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
 enum ErrorCategory {
@@ -309,13 +315,32 @@ pub struct MqttMonitor {
     connection_state: SharedConnectionState,
     handle: MqttHandle,
     pairing_handle: SharedPairingHandle,
+    stm_bridge: Option<SharedStmBridge>,
+    screen_brightness: Option<SharedScreenBrightnessHandle>,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
+        Self::new_with_stm(config, hostname, power_status, None, None)
+    }
+
+    /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
+    pub fn new_with_stm(
+        config: MqttConfig,
+        hostname: String,
+        power_status: crate::libs::power::status::SharedPowerStatus,
+        stm_bridge: Option<SharedStmBridge>,
+        screen_brightness: Option<SharedScreenBrightnessHandle>,
+    ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
+        if stm_bridge.is_some() {
+            eprintln!("[MQTT Monitor] STM bridge available for hardware commands");
+        }
+        if screen_brightness.is_some() {
+            eprintln!("[MQTT Monitor] Screen brightness control available");
+        }
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
@@ -335,6 +360,12 @@ impl MqttMonitor {
         let handle = MqttHandle { sender };
         let handle_clone = handle.clone();
 
+        // Clone STM bridge for monitor thread
+        let stm_bridge_clone = stm_bridge.clone();
+
+        // Clone screen brightness for monitor thread
+        let screen_brightness_clone = screen_brightness.clone();
+
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
             if let Err(e) = Self::monitor_loop(
@@ -345,6 +376,8 @@ impl MqttMonitor {
                 connection_state_clone,
                 pairing_handle_clone,
                 power_status,
+                stm_bridge_clone,
+                screen_brightness_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -358,6 +391,8 @@ impl MqttMonitor {
             connection_state,
             handle: handle_clone,
             pairing_handle,
+            stm_bridge,
+            screen_brightness,
         })
     }
 
@@ -388,6 +423,8 @@ impl MqttMonitor {
         connection_state: SharedConnectionState,
         pairing_handle: SharedPairingHandle,
         power_status: crate::libs::power::status::SharedPowerStatus,
+        stm_bridge: Option<SharedStmBridge>,
+        screen_brightness: Option<SharedScreenBrightnessHandle>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -807,6 +844,8 @@ impl MqttMonitor {
                                                                     if let Err(e) = Self::execute_config_command(
                                                                         execute_cmd,
                                                                         &config_applier,
+                                                                        &stm_bridge,
+                                                                        &screen_brightness,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     }
@@ -1270,6 +1309,8 @@ impl MqttMonitor {
     fn execute_config_command(
         cmd: MqttCommand,
         config_applier: &Option<Arc<ConfigApplier>>,
+        stm_bridge: &Option<SharedStmBridge>,
+        screen_brightness: &Option<SharedScreenBrightnessHandle>,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -1378,6 +1419,56 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetLedBrightness { brightness } => {
+                if let Some(stm) = stm_bridge {
+                    match stm.lock() {
+                        Ok(mut stm_guard) => {
+                            match stm_guard.set_brightness(brightness) {
+                                Ok(_) => {
+                                    eprintln!("[MQTT Monitor] ✓ LED brightness set to {}%", brightness);
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    Err(format!("Failed to set brightness: {}", e))
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            Err(format!("Failed to lock STM bridge: {}", e))
+                        }
+                    }
+                } else {
+                    Err("STM bridge not available for brightness control".to_string())
+                }
+            }
+            MqttCommand::SetScreenBrightness { brightness } => {
+                if let Some(sb) = screen_brightness {
+                    sb.store(brightness, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("[MQTT Monitor] ✓ Screen brightness set to {}%", brightness);
+                    Ok(())
+                } else {
+                    Err("Screen brightness control not available".to_string())
+                }
+            }
+            MqttCommand::SetNetworkConfig {
+                interface,
+                config_type,
+                ip_address,
+                subnet_mask,
+                gateway,
+                dns_primary,
+                dns_secondary,
+            } => {
+                Self::execute_network_config(
+                    &interface,
+                    &config_type,
+                    ip_address,
+                    subnet_mask,
+                    gateway,
+                    dns_primary,
+                    dns_secondary,
+                )
+            }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
             | MqttCommand::RemoveSigner { .. }
@@ -1389,6 +1480,143 @@ impl MqttMonitor {
                 Ok(())
             }
         }
+    }
+
+    /// Execute network configuration using nmcli
+    fn execute_network_config(
+        interface: &str,
+        config_type: &str,
+        ip_address: Option<String>,
+        subnet_mask: Option<String>,
+        gateway: Option<String>,
+        dns_primary: Option<String>,
+        dns_secondary: Option<String>,
+    ) -> Result<(), String> {
+        eprintln!("[MQTT Monitor] Configuring network: {} {}", interface, config_type);
+
+        // Find connection name for the interface type
+        let conn_name = Self::get_nmcli_connection_name(interface)?;
+        eprintln!("[MQTT Monitor] Found connection: {}", conn_name);
+
+        if config_type == "dhcp" {
+            // Set to DHCP (automatic)
+            let output = std::process::Command::new("nmcli")
+                .args(["con", "mod", &conn_name, "ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", ""])
+                .output()
+                .map_err(|e| format!("nmcli failed: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("nmcli mod failed: {}", stderr));
+            }
+            eprintln!("[MQTT Monitor] Set {} to DHCP", conn_name);
+        } else {
+            // Static IP configuration
+            let ip = ip_address.ok_or("IP address required for static configuration")?;
+            let gw = gateway.ok_or("Gateway required for static configuration")?;
+            let mask = subnet_mask.unwrap_or_else(|| "255.255.255.0".to_string());
+            let cidr = Self::subnet_to_cidr(&mask);
+
+            let ip_with_cidr = format!("{}/{}", ip, cidr);
+
+            // Set static IP
+            let output = std::process::Command::new("nmcli")
+                .args([
+                    "con", "mod", &conn_name,
+                    "ipv4.method", "manual",
+                    "ipv4.addresses", &ip_with_cidr,
+                    "ipv4.gateway", &gw,
+                ])
+                .output()
+                .map_err(|e| format!("nmcli failed: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("nmcli mod failed: {}", stderr));
+            }
+            eprintln!("[MQTT Monitor] Set {} to static IP: {}", conn_name, ip_with_cidr);
+
+            // Set DNS if provided
+            if let Some(dns) = dns_primary {
+                let dns_str = match dns_secondary {
+                    Some(ref s) => format!("{},{}", dns, s),
+                    None => dns,
+                };
+
+                let output = std::process::Command::new("nmcli")
+                    .args(["con", "mod", &conn_name, "ipv4.dns", &dns_str])
+                    .output()
+                    .map_err(|e| format!("nmcli dns failed: {}", e))?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!("[MQTT Monitor] Warning: Failed to set DNS: {}", stderr);
+                } else {
+                    eprintln!("[MQTT Monitor] Set DNS: {}", dns_str);
+                }
+            }
+        }
+
+        // Restart connection to apply changes
+        eprintln!("[MQTT Monitor] Restarting connection {}...", conn_name);
+        let _ = std::process::Command::new("nmcli")
+            .args(["con", "down", &conn_name])
+            .output();
+
+        let output = std::process::Command::new("nmcli")
+            .args(["con", "up", &conn_name])
+            .output()
+            .map_err(|e| format!("Failed to restart connection: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to bring up connection: {}", stderr));
+        }
+
+        eprintln!("[MQTT Monitor] ✓ Network configuration applied successfully");
+        Ok(())
+    }
+
+    /// Get NetworkManager connection name for interface type
+    fn get_nmcli_connection_name(interface: &str) -> Result<String, String> {
+        let target_type = if interface == "ethernet" {
+            "802-3-ethernet"
+        } else {
+            "802-11-wireless"
+        };
+
+        let output = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "NAME,TYPE", "con", "show"])
+            .output()
+            .map_err(|e| format!("nmcli failed: {}", e))?;
+
+        if !output.status.success() {
+            return Err("Failed to list connections".to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.ends_with(target_type) {
+                // Format is "NAME:TYPE", so split and get the name
+                if let Some(name) = line.rsplit(':').nth(1) {
+                    return Ok(name.to_string());
+                }
+                // Fallback: take everything before the last colon
+                if let Some(colon_pos) = line.rfind(':') {
+                    return Ok(line[..colon_pos].to_string());
+                }
+            }
+        }
+
+        Err(format!("No {} connection found", interface))
+    }
+
+    /// Convert subnet mask to CIDR notation
+    fn subnet_to_cidr(mask: &str) -> u8 {
+        mask.split('.')
+            .filter_map(|p| p.parse::<u8>().ok())
+            .map(|b| b.count_ones() as u8)
+            .sum()
     }
 }
 
