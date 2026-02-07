@@ -1,21 +1,43 @@
 use std::process::Command;
+use std::thread;
 
-/// Inicia BLE advertising para pareamento
+/// Inicia BLE advertising para pareamento (non-blocking)
 pub fn start_ble_advertising() -> Result<(), String> {
     eprintln!("[BLE] Starting advertising...");
-    run_btmgmt(&["power", "off"])?;
-    run_btmgmt(&["le", "on"])?;
-    run_btmgmt(&["power", "on"])?;
-    run_btmgmt(&["add-adv", "-g", "1"])?;
-    eprintln!("[BLE] Advertising started successfully");
+    // Spawn in separate thread to avoid blocking button monitor
+    thread::spawn(|| {
+        if let Err(e) = run_btmgmt(&["power", "off"]) {
+            eprintln!("[BLE] Failed to power off: {}", e);
+            return;
+        }
+        if let Err(e) = run_btmgmt(&["le", "on"]) {
+            eprintln!("[BLE] Failed to enable LE: {}", e);
+            return;
+        }
+        if let Err(e) = run_btmgmt(&["power", "on"]) {
+            eprintln!("[BLE] Failed to power on: {}", e);
+            return;
+        }
+        if let Err(e) = run_btmgmt(&["add-adv", "-g", "1"]) {
+            eprintln!("[BLE] Failed to add advertisement: {}", e);
+            return;
+        }
+        eprintln!("[BLE] Advertising started successfully");
+    });
     Ok(())
 }
 
-/// Para BLE advertising (conexões existentes permanecem)
+/// Para BLE advertising (non-blocking)
 pub fn stop_ble_advertising() -> Result<(), String> {
     eprintln!("[BLE] Stopping advertising...");
-    run_btmgmt(&["remove-adv", "1"])?;
-    eprintln!("[BLE] Advertising stopped");
+    // Spawn in separate thread to avoid blocking button monitor
+    thread::spawn(|| {
+        if let Err(e) = run_btmgmt(&["remove-adv", "1"]) {
+            eprintln!("[BLE] Failed to remove advertisement: {}", e);
+            return;
+        }
+        eprintln!("[BLE] Advertising stopped");
+    });
     Ok(())
 }
 
