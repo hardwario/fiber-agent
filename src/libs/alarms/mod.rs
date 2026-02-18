@@ -2,7 +2,7 @@
 //!
 //! This library provides a reusable alarm system that can be used for sensors, power monitoring,
 //! motion detection, and other threshold-based monitoring. It supports:
-//! - Multiple alarm states (normal, warning, alarm, critical)
+//! - Multiple alarm states (normal, warning, critical, disconnected, reconnecting)
 //! - Configurable thresholds with per-line overrides
 //! - LED color control with blink patterns (orange via simultaneous red+green)
 //! - Event callbacks for logging, alerts, and custom actions
@@ -11,11 +11,13 @@
 pub mod callbacks;
 pub mod color;
 pub mod controller;
+pub mod mqtt_callback;
 pub mod state;
 pub mod threshold;
 
 pub use callbacks::{AlarmCallback, AlarmEvent, LoggingCallback, BuzzerCallback, BuzzerStateCallback, BeepPattern};
 pub use color::{BlinkPattern, LedColor};
 pub use controller::AlarmController;
+pub use mqtt_callback::MqttAlarmCallback;
 pub use state::AlarmState;
 pub use threshold::AlarmThreshold;

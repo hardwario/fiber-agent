@@ -110,7 +110,7 @@ impl SignatureVerifier {
         }
 
         // 5. Check nonce hasn't been used (replay protection)
-        let mut nonce_tracker = self.nonce_tracker.lock().unwrap();
+        let mut nonce_tracker = self.nonce_tracker.lock().unwrap_or_else(|e| e.into_inner());
         if nonce_tracker.is_nonce_used(nonce)? {
             return Err(CryptoError::NonceAlreadyUsed(nonce.to_string()));
         }
@@ -174,7 +174,7 @@ impl SignatureVerifier {
 
     /// Verify certificate is signed by a trusted CA
     fn verify_certificate(&self, certificate: &UserCertificate) -> Result<(), CryptoError> {
-        let ca_registry = self.ca_registry.lock().unwrap();
+        let ca_registry = self.ca_registry.lock().unwrap_or_else(|e| e.into_inner());
 
         // Try to find the CA by issuer ID first
         if let Some(ca) = ca_registry.get_enabled_ca(&certificate.issuer) {
@@ -204,13 +204,13 @@ impl SignatureVerifier {
 
     /// Reload CA registry from disk
     pub fn reload_registry(&self) -> Result<bool, CryptoError> {
-        let mut ca_registry = self.ca_registry.lock().unwrap();
+        let mut ca_registry = self.ca_registry.lock().unwrap_or_else(|e| e.into_inner());
         ca_registry.reload_if_modified()
     }
 
     /// Cleanup old nonces from tracker
     pub fn cleanup_old_nonces(&self) -> Result<usize, CryptoError> {
-        let mut nonce_tracker = self.nonce_tracker.lock().unwrap();
+        let mut nonce_tracker = self.nonce_tracker.lock().unwrap_or_else(|e| e.into_inner());
         nonce_tracker.cleanup_old_nonces()
     }
 }

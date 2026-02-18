@@ -81,7 +81,7 @@ fn main() -> io::Result<()> {
     eprintln!("[main] Activating sensor power...");
     let stm_guard = Arc::new(Mutex::new(stm));
     {
-        let mut stm_locked = stm_guard.lock().unwrap();
+        let mut stm_locked = stm_guard.lock().unwrap_or_else(|e| e.into_inner());
         stm_locked.init_sensor_power()?;
         stm_locked.init_leds_off()?;
     }
@@ -265,7 +265,8 @@ fn main() -> io::Result<()> {
     };
 
     // Create and spawn pairing monitor if MQTT is enabled
-    let pairing_handle = if mqtt_handle.is_some() {
+    // Store monitor in _pairing_monitor to keep it alive until main loop exits
+    let (_pairing_monitor, pairing_handle) = if mqtt_handle.is_some() {
         eprintln!("[main] Starting pairing monitor...");
         let config_dir = std::path::Path::new("/data/fiber/config");
         match PairingMonitor::new(hostname.clone(), config_dir, _display_monitor.display_state.clone()) {
@@ -276,24 +277,20 @@ fn main() -> io::Result<()> {
                 if let Some(ref mqtt_mon) = mqtt_monitor {
                     mqtt_mon.set_pairing_handle(handle.clone());
                 }
-                // Keep monitor alive
-                std::mem::forget(monitor);
-                Some(handle)
+                (Some(monitor), Some(handle))
             }
             Err(e) => {
                 eprintln!("[main] Warning: Failed to start pairing monitor: {}", e);
-                None
+                (None, None)
             }
         }
     } else {
         eprintln!("[main] Pairing monitor disabled (MQTT not enabled)");
-        None
+        (None, None)
     };
 
-    // Keep MQTT monitor alive (after pairing handle is set)
-    if let Some(monitor) = mqtt_monitor {
-        std::mem::forget(monitor);
-    }
+    // Store MQTT monitor to keep it alive (after pairing handle is set)
+    let _mqtt_monitor = mqtt_monitor;
 
     // Update button monitor with pairing handle
     eprintln!("[main] Restarting button monitor with pairing support...");

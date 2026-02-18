@@ -1,54 +1,32 @@
 power:
-  # Power monitoring update interval
   update_interval_ms: 60000
-
-  # Battery voltage thresholds (millivolts)
   battery:
-    min_voltage_mv: 3100        # 0% battery / critical level
-    max_voltage_mv: 3400        # 100% battery / full charge
-    low_threshold_percent: 20   # Legacy, not used (now voltage-based)
-    critical_threshold_percent: 5  # Legacy, not used (now voltage-based)
-
-  # AC power detection (VIN)
+    min_voltage_mv: 3100
+    max_voltage_mv: 3400
+    low_threshold_percent: 20
+    critical_threshold_percent: 5
   ac_power:
-    detection_threshold_mv: 12000     # VIN > 12000mV = AC power detected
-    battery_mode_threshold_mv: 11000  # VIN ≤ 11000mV = Battery mode
-
-  # LED blinking configuration
+    detection_threshold_mv: 12000
+    battery_mode_threshold_mv: 11000
   led_blink:
-    toggle_count: 10  # Toggle blink every 10 update cycles
-
-  # Power LED states:
-  # - AC Power (VIN > 11000mV): GREEN (steady)
-  # - Battery OK (VBAT > 3200mV): LIME/Cyan (PWRLEDG + PWRLEDY both on, steady)
-  # - Battery Low (3100mV ≤ VBAT ≤ 3200mV): YELLOW (PWRLEDY only, steady)
-  # - Battery Critical (VBAT < 3100mV): YELLOW (PWRLEDY only, BLINKING)
-
-  # Buzzer alerts for power events
+    toggle_count: 10
   buzzer:
     enabled: true
-    # VIN connected: Play happy 3-beep pattern (ReconnectionHappy)
-    # VIN disconnected: Play 2-second long beep (single alert)
-    # Battery mode: Play 100ms beep reminder every 10 seconds
-    # Critical battery: Repeating critical beep pattern until resolved
-    battery_mode_beep_interval_ms: 10000  # Reminder beep every 10 seconds on battery power
-    vin_disconnect_duration_ms: 2000      # Long beep duration when AC power lost
-    critical_beep_on_ms: 200              # Critical battery beep pattern timing
+    battery_mode_beep_interval_ms: 10000
+    vin_disconnect_duration_ms: 2000
+    critical_beep_on_ms: 200
     critical_beep_off_ms: 200
-
 sensors:
   num_lines: 8
-  sample_interval_ms: 1000
-  aggregation_interval_ms: 60000   # 1 minute
-  report_interval_ms: 120000        # 2 minutes
+  sample_interval_ms: 2000
+  aggregation_interval_ms: 15000
+  report_interval_ms: 60000
   failure_threshold: 3
-
 display:
   update_interval_ms: 500
   refresh_rate_hz: 1
   backlight_enabled: true
   rotation_degrees: 180
-
 ui:
   button_debounce_ms: 50
   menu_idle_timeout_sec: 30
@@ -56,121 +34,82 @@ ui:
     enabled: true
     beep_duration_ms: 100
     alert_interval_ms: 500
-
 logging:
   enabled: true
-  log_file: "data/sensor_log.csv"
+  log_file: data/sensor_log.csv
   interval_ms: 60000
   max_file_size_mb: 10
   max_backup_files: 10
-  verbosity: "info"
-
+  verbosity: info
 serial:
-  port: "/dev/ttyAMA4"
+  port: /dev/ttyAMA4
   baud_rate: 115200
   timeout_ms: 1000
   max_retries: 3
-
 accelerometer:
   enabled: true
-  i2c_path: "/dev/i2c-10"
+  i2c_path: /dev/i2c-10
   update_interval_ms: 100
   motion_threshold_g: 0.3
   debounce_samples: 5
   logging_enabled: true
-
 storage:
-  # SQLite WAL database for medical data storage
   enabled: true
-  db_path: "/data/fiber_medical.db"
-
-  # Database capacity constraints (medical device compliance)
-  max_size_gb: 5                    # 5GB maximum for 3-year data retention
-
-  # Data retention policy
-  retention_days: 1095              # 3 years minimum retention
-  cleanup_threshold_percent: 90     # Trigger cleanup at 90% capacity
-
-  # Auto-flush configuration
-  flush_interval_ms: 100            # Auto-flush every 100ms
-  flush_threshold_messages: 1000    # Auto-flush every 1000 messages
-
-  # Backup and archival
+  db_path: /data/fiber_medical.db
+  max_size_gb: 5
+  retention_days: 1095
+  cleanup_threshold_percent: 90
+  flush_interval_ms: 100
+  flush_threshold_messages: 1000
   backup_enabled: true
-  backup_path: "/data/backups/"
-
-  # Audit trail (EU MDR 2017/745 compliance)
+  backup_path: /data/backups/
   audit_enabled: true
-
 system:
   debug_mode: false
-  app_name: "FIBER Medical Thermometer"
-  app_version: "0.1.0"
+  app_name: FIBER Medical Thermometer
+  app_version: 0.1.0
   timezone_offset_hours: 0
-
+  device_label: ENZO
+  led_brightness: 25
+  screen_brightness: 50
 mqtt:
-  # Enable/disable MQTT functionality
-  enabled: true  # Set to true to enable MQTT
-
-  # MQTT broker connection settings
+  enabled: true
   broker:
-    host: "10.42.0.1"           # MQTT broker hostname or IP
-    port: 1883                  # 1883 for plain TCP, 8883 for TLS
-    client_id: ""               # Empty = use device hostname
-    username: "fiber"            
-    password: "123456789"
-
-  # TLS/SSL configuration (optional)
-  # tls:
-  #   enabled: false
-  #   ca_cert_path: "/data/fiber/certs/ca.crt"
-  #   client_cert_path: null
-  #   client_key_path: null
-  #   insecure_skip_verify: false
-
-  # Publishing configuration
+    host: localhost
+    port: 1883
+    client_id: ''
+    username: fiber
+    password: '123456789'
   publish:
-    topic_prefix: "fiber"       # Base topic prefix
-    include_hostname: true      # Topics: fiber/{hostname}/...
-    default_qos: 0              # Default QoS for all messages
-
-    # QoS overrides by message type
+    topic_prefix: fiber
+    include_hostname: true
+    default_qos: 0
     qos_overrides:
-      sensor_readings: 0        # High frequency, latest most important
-      power_status: 1           # Important state changes
-      alarm_events: 2           # Critical medical data (audit trail)
-      power_events: 2           # AC loss events (audit trail)
-      network_status: 0         # Informational
-
-    # Publishing intervals (seconds)
+      sensor_readings: 0
+      power_status: 1
+      alarm_events: 2
+      power_events: 2
+      network_status: 0
     intervals:
-      sensors_sec: 5            # Sensor readings every 5s
-      power_sec: 10             # Power status every 10s
-      network_sec: 30           # Network status every 30s
-      system_info_sec: 60       # System info every 60s
-
-    # Message queue size (prevent memory exhaustion)
-    max_queue_size: 10000       # Drop oldest if full
-
-  # Command subscription configuration
+      sensors_sec: 5
+      power_sec: 10
+      network_sec: 30
+      system_info_sec: 60
+    max_queue_size: 10000
   subscribe:
-    enabled: true               # Accept commands from MQTT
-    max_commands_per_second: 10 # Rate limiting
-    audit_enabled: true         # Log all commands to storage
-
-  # Connection behavior
+    enabled: true
+    max_commands_per_second: 10
+    audit_enabled: true
   connection:
-    keep_alive_sec: 30          # MQTT keep-alive interval (faster dead connection detection)
-    connection_timeout_sec: 10  # Initial connection timeout (fail fast)
-    max_reconnect_attempts: 0   # 0 = infinite retries
-    reconnect_delay_sec: 1      # Initial reconnect delay
-    max_reconnect_delay_sec: 60 # Max backoff delay (allow longer backoff for persistent failures)
-    clean_session: false        # Preserve session state for faster reconnection
-
-  # Last Will and Testament (LWT)
+    keep_alive_sec: 30
+    connection_timeout_sec: 10
+    max_reconnect_attempts: 0
+    reconnect_delay_sec: 1
+    max_reconnect_delay_sec: 60
+    clean_session: false
   last_will:
     enabled: true
-    topic: "status"             # Relative to prefix: fiber/{hostname}/status
+    topic: status
     payload: '{"status":"offline","reason":"unexpected_disconnect"}'
     qos: 1
-    retain: true                # Broker retains offline status
+    retain: true

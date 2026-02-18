@@ -111,19 +111,17 @@ impl MqttSubscriber {
             .ok_or_else(|| "Missing 'thresholds' field".to_string())?;
 
         let critical_low = Self::parse_temp(thresholds, "critical_low")?;
-        let alarm_low = Self::parse_temp(thresholds, "alarm_low")?;
+        let alarm_low = Self::parse_temp_optional(thresholds, "alarm_low", 0.0);
         let warning_low = Self::parse_temp(thresholds, "warning_low")?;
         let warning_high = Self::parse_temp(thresholds, "warning_high")?;
-        let alarm_high = Self::parse_temp(thresholds, "alarm_high")?;
+        let alarm_high = Self::parse_temp_optional(thresholds, "alarm_high", 100.0);
         let critical_high = Self::parse_temp(thresholds, "critical_high")?;
 
-        // Validate threshold ordering
+        // Validate threshold ordering (4-level: critical_low < warning_low < warning_high < critical_high)
         self.validate_threshold_ordering(
             critical_low,
-            alarm_low,
             warning_low,
             warning_high,
-            alarm_high,
             critical_high,
         )?;
 
@@ -157,30 +155,30 @@ impl MqttSubscriber {
         Ok(temp)
     }
 
-    /// Validate threshold ordering
+    /// Parse optional temperature value from JSON (returns default if missing)
+    fn parse_temp_optional(obj: &Value, field: &str, default: f32) -> f32 {
+        obj.get(field)
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(default)
+    }
+
+    /// Validate threshold ordering (4-level system)
     fn validate_threshold_ordering(
         &self,
         critical_low: f32,
-        alarm_low: f32,
         warning_low: f32,
         warning_high: f32,
-        alarm_high: f32,
         critical_high: f32,
     ) -> Result<(), String> {
-        if critical_low >= alarm_low {
-            return Err("critical_low must be less than alarm_low".to_string());
-        }
-        if alarm_low >= warning_low {
-            return Err("alarm_low must be less than warning_low".to_string());
+        if critical_low >= warning_low {
+            return Err("critical_low must be less than warning_low".to_string());
         }
         if warning_low >= warning_high {
             return Err("warning_low must be less than warning_high".to_string());
         }
-        if warning_high >= alarm_high {
-            return Err("warning_high must be less than alarm_high".to_string());
-        }
-        if alarm_high >= critical_high {
-            return Err("alarm_high must be less than critical_high".to_string());
+        if warning_high >= critical_high {
+            return Err("warning_high must be less than critical_high".to_string());
         }
 
         Ok(())
@@ -557,15 +555,14 @@ mod tests {
     fn test_invalid_threshold_ordering() {
         let mut subscriber = MqttSubscriber::new(10, false);
 
+        // critical_low (36) >= warning_low (35) should fail
         let payload = br#"{
             "command": "set_threshold",
             "line": 0,
             "thresholds": {
-                "critical_low": 35.0,
-                "alarm_low": 34.0,
+                "critical_low": 36.0,
                 "warning_low": 35.0,
                 "warning_high": 39.0,
-                "alarm_high": 40.0,
                 "critical_high": 42.0
             }
         }"#;
@@ -573,6 +570,39 @@ mod tests {
         let result = subscriber.parse_command("test/commands", payload);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("critical_low"));
+    }
+
+    #[test]
+    fn test_set_threshold_without_alarm_fields() {
+        // 4-level threshold command (no alarm_low/alarm_high)
+        let mut subscriber = MqttSubscriber::new(10, false);
+
+        let payload = br#"{
+            "command": "set_threshold",
+            "line": 2,
+            "thresholds": {
+                "critical_low": 18.0,
+                "warning_low": 27.0,
+                "warning_high": 38.5,
+                "critical_high": 41.0
+            }
+        }"#;
+
+        let result = subscriber.parse_command("test/commands", payload);
+        assert!(result.is_ok());
+
+        match result.unwrap() {
+            MqttCommand::SetSensorThreshold { line, critical_low, alarm_low, warning_low, warning_high, alarm_high, critical_high } => {
+                assert_eq!(line, 2);
+                assert_eq!(critical_low, 18.0);
+                assert_eq!(alarm_low, 0.0);  // default
+                assert_eq!(warning_low, 27.0);
+                assert_eq!(warning_high, 38.5);
+                assert_eq!(alarm_high, 100.0);  // default
+                assert_eq!(critical_high, 41.0);
+            }
+            _ => panic!("Wrong command type"),
+        }
     }
 
     #[test]

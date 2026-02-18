@@ -152,10 +152,10 @@ mod tests {
     fn default_thresholds() -> SensorAlarmConfig {
         SensorAlarmConfig {
             critical_low_celsius: 32.0,
-            low_alarm_celsius: 35.0,
+            low_alarm_celsius: 0.0,     // disabled - defaults
             warning_low_celsius: 34.0,
             warning_high_celsius: 39.0,
-            high_alarm_celsius: 38.0,
+            high_alarm_celsius: 100.0,  // disabled - defaults
             critical_high_celsius: 40.0,
         }
     }
@@ -176,9 +176,25 @@ mod tests {
 
     #[test]
     fn test_temperature_threshold_high_alarm() {
-        let thresholds = default_thresholds();
+        // Use custom thresholds with alarm zone enabled to test HighAlarm code path
+        let thresholds = SensorAlarmConfig {
+            critical_low_celsius: 32.0,
+            low_alarm_celsius: 35.0,
+            warning_low_celsius: 34.0,
+            warning_high_celsius: 39.0,
+            high_alarm_celsius: 38.0,
+            critical_high_celsius: 40.0,
+        };
         let threshold = SensorLineState::calculate_threshold_from_config(38.5, &thresholds);
         assert_eq!(threshold, SensorThreshold::HighAlarm);
+    }
+
+    #[test]
+    fn test_temperature_threshold_normal_with_disabled_alarm() {
+        // With disabled alarm thresholds, a value like 38.5 is Normal (not HighAlarm)
+        let thresholds = default_thresholds();
+        let threshold = SensorLineState::calculate_threshold_from_config(38.5, &thresholds);
+        assert_eq!(threshold, SensorThreshold::Normal);
     }
 
     #[test]

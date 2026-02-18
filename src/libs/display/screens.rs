@@ -1,12 +1,13 @@
 //! Screen rendering functions for display
 
 use embedded_graphics::{
-    mono_font::{iso_8859_1::FONT_6X10, MonoTextStyle},
+    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Text},
 };
+use profont::PROFONT_9_POINT;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,8 +31,8 @@ pub fn render_sensor_overview(
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-    let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let header_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw network connection icons on the left (aligned with top of FIBER text)
@@ -40,7 +41,7 @@ pub fn render_sensor_overview(
     // Draw header: "FIBER" centered, page/mode indicator right-aligned
     Text::with_alignment(
         "FIBER",
-        Point::new(64, 8),
+        Point::new(64, 9),
         header_style,
         Alignment::Center,
     )
@@ -55,7 +56,7 @@ pub fn render_sensor_overview(
     };
     Text::with_alignment(
         &mode_str,
-        Point::new(126, 8),
+        Point::new(126, 9),
         text_style,
         Alignment::Right,
     )
@@ -79,7 +80,7 @@ pub fn render_sensor_overview(
             break;
         }
 
-        let y = 20 + (row as i32 * 12);
+        let y = 23 + (row as i32 * 12);
 
         // Check if this row is selected (cursor position)
         let is_selected = selected_sensor == Some(sensor_idx);
@@ -92,7 +93,6 @@ pub fn render_sensor_overview(
                 AlarmState::Reconnecting => ("W", true),      // Reconnecting - show warning
                 AlarmState::Normal => ("N", false),           // Normal - no alarm
                 AlarmState::Warning => ("W", true),           // Warning - alarm
-                AlarmState::Alarm => ("A", true),             // Alarm - critical
                 AlarmState::Critical => ("C", true),          // Critical - critical
             };
             (ch, is_alm)
@@ -124,12 +124,12 @@ pub fn render_sensor_overview(
         // Draw background highlight for selected or alarm rows
         if is_selected {
             // Selection cursor highlight (inverted background)
-            Rectangle::new(Point::new(0, y - 8), Size::new(128, 11))
+            Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)
                 .ok();
 
-            let inverted_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
+            let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 
             // Draw cursor arrow
             Text::new(">", Point::new(1, y), inverted_style)
@@ -148,13 +148,13 @@ pub fn render_sensor_overview(
                 .draw(display)
                 .ok();
         } else if is_alarm {
-            Rectangle::new(Point::new(0, y - 8), Size::new(128, 11))
+            Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)
                 .ok();
 
             // Use inverted text style for alarm rows
-            let inverted_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
+            let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 
             Text::new(&label, Point::new(label_x, y), inverted_style)
                 .draw(display)
@@ -194,13 +194,13 @@ pub fn render_qr_code_screen(
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw title
     Text::with_alignment(
         "Scan WiFi Config",
-        Point::new(64, 8),
+        Point::new(64, 9),
         text_style,
         Alignment::Center,
     )
@@ -220,7 +220,7 @@ pub fn render_qr_code_screen(
         let qr_size = qr_matrix.len() as i32;
 
         // Calculate scaling factor to fit QR on display
-        // Available space: 128px width, 52px height (from y=12 to y=62)
+        // Available space: 128px width, 50px height (from y=12 to y=63)
         let available_width = 128i32;
         let available_height = 50i32;
 
@@ -233,7 +233,7 @@ pub fn render_qr_code_screen(
         let qr_pixel_width = qr_size * scale as i32;
         let qr_pixel_height = qr_size * scale as i32;
         let start_x = (128 - qr_pixel_width) / 2;
-        let start_y = 14 + (available_height - qr_pixel_height) / 2;
+        let start_y = 13 + (available_height - qr_pixel_height) / 2;
 
         // Draw QR code pixels
         for (row_idx, row) in qr_matrix.iter().enumerate() {
@@ -261,7 +261,7 @@ pub fn render_qr_code_screen(
         eprintln!("[Screen] Warning: QR matrix is empty!");
         Text::with_alignment(
             "QR Error",
-            Point::new(64, 32),
+            Point::new(64, 38),
             text_style,
             Alignment::Center,
         )
@@ -286,14 +286,14 @@ pub fn render_system_info(
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Header: "SYSTEM INFO" centered with page indicator
     let header = format!("SYSTEM INFO {}/3", page + 1);
     Text::with_alignment(
         &header,
-        Point::new(64, 8),
+        Point::new(64, 9),
         text_style,
         Alignment::Center,
     )
@@ -306,118 +306,85 @@ pub fn render_system_info(
         .draw(display)
         .ok();
 
+    // Data lines at 12px spacing: y=23, 35, 47, 59
     if page == 0 {
         // PAGE 1: Basic System Info
 
-        // Line 1 (y=22): ID: HOSTNAME
         let id_line = format!("ID:{}", hostname);
-        Text::new(&id_line, Point::new(2, 22), text_style)
+        Text::new(&id_line, Point::new(2, 23), text_style)
             .draw(display)
             .ok();
 
-        // Line 2 (y=32): Date
         let date_str = format!("Date:{}", format_date(timezone_offset_hours));
-        Text::new(&date_str, Point::new(2, 32), text_style)
+        Text::new(&date_str, Point::new(2, 35), text_style)
             .draw(display)
             .ok();
 
-        // Line 3 (y=42): Time
         let time_str = format!("Time:{}", format_time(timezone_offset_hours));
-        Text::new(&time_str, Point::new(2, 42), text_style)
+        Text::new(&time_str, Point::new(2, 47), text_style)
             .draw(display)
             .ok();
 
-        // Line 4 (y=52): Probes count and power
         let connected = count_connected_probes(sensor_state);
-
-        let probe_line = format!("Probes:{}/8 ", connected);
-        Text::new(&probe_line, Point::new(2, 52), text_style)
-            .draw(display)
-            .ok();
-
-        // Line 5 (y=62): Battery percentage (always show)
         let power_str = if power_status.on_dc_power { "PoE" } else { "Bat" };
-        let battery_line = format!("Battery:{}%, PWR:{}", power_status.battery_percent, power_str);
-        Text::new(&battery_line, Point::new(2, 62), text_style)
+        let status_line = format!("Probes:{}/8 PWR:{}", connected, power_str);
+        Text::new(&status_line, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
 
     } else if page == 1 {
-        // PAGE 2: Network & Version Info
+        // PAGE 2: Network & Power Info
 
-        // Line 1 (y=22): WiFi status
         let wifi = if network_status.wifi_connected { "On" } else { "Off" };
         let wifi_line = format!("WiFi:{}", wifi);
-        Text::new(&wifi_line, Point::new(2, 22), text_style)
+        Text::new(&wifi_line, Point::new(2, 23), text_style)
             .draw(display)
             .ok();
 
-        // Line 2 (y=32): Ethernet status
         let eth = if network_status.ethernet_connected { "On" } else { "Off" };
         let eth_line = format!("Ethernet:{}", eth);
-        Text::new(&eth_line, Point::new(2, 32), text_style)
+        Text::new(&eth_line, Point::new(2, 35), text_style)
             .draw(display)
             .ok();
 
-        // Line 3 (y=42): Last power alarm
+        let battery_line = format!("Battery:{}%", power_status.battery_percent);
+        Text::new(&battery_line, Point::new(2, 47), text_style)
+            .draw(display)
+            .ok();
+
         let alarm_str = format_last_alarm(power_status, timezone_offset_hours);
-        let alarm_line = format!("Last Alarm:{}", alarm_str);
-        Text::new(&alarm_line, Point::new(2, 42), text_style)
+        let alarm_line = format!("LastAlarm:{}", alarm_str);
+        Text::new(&alarm_line, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
 
-        // Line 4 (y=52): Firmware version
-        let fw_line = format!("Firmware:{}", app_version);
-        Text::new(&fw_line, Point::new(2, 52), text_style)
-            .draw(display)
-            .ok();
-
-        // Line 5 (y=62): Hardware version
-        Text::new("Hardware:N/A", Point::new(2, 62), text_style)
-            .draw(display)
-            .ok();
     } else {
-        // PAGE 3: Device Label & IP Address
+        // PAGE 3: Device Label, IPs & Version
 
-        // Line 1 (y=22): Device Label (truncate if too long)
         let label_display = if device_label.len() > 18 {
             format!("{}...", &device_label[..15])
         } else {
             device_label.to_string()
         };
         let label_line = format!("Label:{}", label_display);
-        Text::new(&label_line, Point::new(2, 22), text_style)
+        Text::new(&label_line, Point::new(2, 23), text_style)
             .draw(display)
             .ok();
 
-        // Line 2 (y=32): WiFi IP
         let wifi_ip = network_status.wifi_ip.as_deref().unwrap_or("N/A");
-        let wifi_ip_line = format!("WiFi IP:{}", wifi_ip);
-        Text::new(&wifi_ip_line, Point::new(2, 32), text_style)
+        let wifi_ip_line = format!("WiFi:{}", wifi_ip);
+        Text::new(&wifi_ip_line, Point::new(2, 35), text_style)
             .draw(display)
             .ok();
 
-        // Line 3 (y=42): Ethernet IP
         let eth_ip = network_status.ethernet_ip.as_deref().unwrap_or("N/A");
-        let eth_ip_line = format!("Eth IP:{}", eth_ip);
-        Text::new(&eth_ip_line, Point::new(2, 42), text_style)
+        let eth_ip_line = format!("Eth:{}", eth_ip);
+        Text::new(&eth_ip_line, Point::new(2, 47), text_style)
             .draw(display)
             .ok();
 
-        // Line 4 (y=52): WiFi Signal strength (if connected)
-        if network_status.wifi_connected {
-            let signal_line = format!("WiFi Signal:{}dBm", network_status.wifi_signal_strength);
-            Text::new(&signal_line, Point::new(2, 52), text_style)
-                .draw(display)
-                .ok();
-        } else {
-            Text::new("WiFi Signal:N/A", Point::new(2, 52), text_style)
-                .draw(display)
-                .ok();
-        }
-
-        // Line 5 (y=62): empty or reserved for future use
-        Text::new("", Point::new(2, 62), text_style)
+        let fw_line = format!("FW:{}", app_version);
+        Text::new(&fw_line, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
     }
@@ -492,13 +459,13 @@ pub fn render_pairing_screen(
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw title
     Text::with_alignment(
         "PAIRING MODE",
-        Point::new(64, 8),
+        Point::new(64, 9),
         text_style,
         Alignment::Center,
     )
@@ -514,7 +481,7 @@ pub fn render_pairing_screen(
     // Draw instruction text
     Text::with_alignment(
         "Enter code in Viewer:",
-        Point::new(64, 26),
+        Point::new(64, 25),
         text_style,
         Alignment::Center,
     )
@@ -522,7 +489,6 @@ pub fn render_pairing_screen(
     .ok();
 
     // Draw the pairing code prominently (larger space between chars)
-    // Code format: ABC123 displayed as "A B C 1 2 3" for readability
     let spaced_code: String = code.chars()
         .map(|c| c.to_string())
         .collect::<Vec<_>>()
@@ -538,7 +504,7 @@ pub fn render_pairing_screen(
     .ok();
 
     // Draw box around the code for emphasis
-    Rectangle::new(Point::new(20, 30), Size::new(88, 16))
+    Rectangle::new(Point::new(20, 29), Size::new(88, 16))
         .into_styled(line_style)
         .draw(display)
         .ok();
@@ -546,7 +512,7 @@ pub fn render_pairing_screen(
     // Draw expiry hint
     Text::with_alignment(
         "Code expires in 5 min",
-        Point::new(64, 56),
+        Point::new(64, 57),
         text_style,
         Alignment::Center,
     )
@@ -564,7 +530,7 @@ pub fn render_sensor_detail(
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Get sensor name (truncate to 16 chars for display)
@@ -578,7 +544,7 @@ pub fn render_sensor_detail(
     // Header: Sensor name centered
     Text::with_alignment(
         display_name,
-        Point::new(64, 8),
+        Point::new(64, 9),
         text_style,
         Alignment::Center,
     )
@@ -595,7 +561,7 @@ pub fn render_sensor_detail(
     let reading = sensor_state.readings[sensor_idx].as_ref();
     let threshold = &sensor_state.thresholds[sensor_idx];
 
-    // Line 1 (y=22): Current temperature and alarm state
+    // Line 1 (y=24): Current temperature and alarm state
     let (temp_str, state_str) = if let Some(r) = reading {
         let temp = if r.is_connected {
             format!("{:.1}C", r.temperature)
@@ -608,7 +574,6 @@ pub fn render_sensor_detail(
             AlarmState::Reconnecting => "W",
             AlarmState::Normal => "N",
             AlarmState::Warning => "W",
-            AlarmState::Alarm => "A",
             AlarmState::Critical => "C",
         };
         (temp, state)
@@ -616,25 +581,19 @@ pub fn render_sensor_detail(
         ("--.-C".to_string(), "?")
     };
     let now_line = format!("Now:{} [{}]", temp_str, state_str);
-    Text::new(&now_line, Point::new(2, 22), text_style)
+    Text::new(&now_line, Point::new(2, 24), text_style)
         .draw(display)
         .ok();
 
-    // Line 2 (y=34): Critical thresholds
+    // Line 2 (y=37): Critical thresholds
     let critical_line = format!("CL:{:.1} CH:{:.1}", threshold.critical_low_celsius, threshold.critical_high_celsius);
-    Text::new(&critical_line, Point::new(2, 34), text_style)
+    Text::new(&critical_line, Point::new(2, 37), text_style)
         .draw(display)
         .ok();
 
-    // Line 3 (y=46): Alarm thresholds
-    let alarm_line = format!("AL:{:.1} AH:{:.1}", threshold.low_alarm_celsius, threshold.high_alarm_celsius);
-    Text::new(&alarm_line, Point::new(2, 46), text_style)
-        .draw(display)
-        .ok();
-
-    // Line 4 (y=58): Warning thresholds
+    // Line 3 (y=50): Warning thresholds
     let warning_line = format!("WL:{:.1} WH:{:.1}", threshold.warning_low_celsius, threshold.warning_high_celsius);
-    Text::new(&warning_line, Point::new(2, 58), text_style)
+    Text::new(&warning_line, Point::new(2, 50), text_style)
         .draw(display)
         .ok();
 

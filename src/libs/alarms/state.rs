@@ -13,10 +13,8 @@ pub enum AlarmState {
     Reconnecting,
     /// Normal operating condition - all values within safe range
     Normal,
-    /// Warning condition - value between normal and alarm ranges
+    /// Warning condition - value between normal and critical ranges
     Warning,
-    /// Alarm condition - value outside normal range, needs attention
-    Alarm,
     /// Critical condition - value far outside safe range, urgent response needed
     Critical,
 }
@@ -29,7 +27,6 @@ impl fmt::Display for AlarmState {
             AlarmState::Reconnecting => write!(f, "RECONNECTING"),
             AlarmState::Normal => write!(f, "NORMAL"),
             AlarmState::Warning => write!(f, "WARNING"),
-            AlarmState::Alarm => write!(f, "ALARM"),
             AlarmState::Critical => write!(f, "CRITICAL"),
         }
     }
@@ -118,13 +115,13 @@ impl AlarmStateMachine {
 
     /// Update state based on threshold evaluation
     /// Should be called after a successful read to classify the temperature
+    /// Note: is_alarm range is absorbed into Warning (Alarm state was removed)
     pub fn update_from_threshold(&mut self, is_critical: bool, is_alarm: bool, is_warning: bool) {
-        // Priority: critical > alarm > warning > normal
+        // Priority: critical > alarm/warning > normal
+        // The old "Alarm" state was removed; alarm range now maps to Warning
         let new_state = if is_critical {
             AlarmState::Critical
-        } else if is_alarm {
-            AlarmState::Alarm
-        } else if is_warning {
+        } else if is_alarm || is_warning {
             AlarmState::Warning
         } else {
             AlarmState::Normal
@@ -158,7 +155,7 @@ impl AlarmStateMachine {
     /// Check if we just entered an alarm/critical state
     pub fn just_alarmed(&self) -> bool {
         self.state_changed()
-            && (self.current == AlarmState::Alarm || self.current == AlarmState::Critical)
+            && self.current == AlarmState::Critical
     }
 
     /// Check if we just entered a warning state
@@ -261,9 +258,6 @@ mod tests {
         sm.update_from_threshold(false, false, true);
         assert_eq!(sm.current, AlarmState::Warning);
 
-        sm.update_from_threshold(false, true, false);
-        assert_eq!(sm.current, AlarmState::Alarm);
-
         sm.update_from_threshold(true, false, false);
         assert_eq!(sm.current, AlarmState::Critical);
     }
@@ -283,11 +277,12 @@ mod tests {
         sm.current = AlarmState::Normal;
         sm.previous = AlarmState::Normal;
 
-        sm.update_from_threshold(false, true, false);
+        // just_alarmed() checks for Critical state transition
+        sm.update_from_threshold(true, false, false);
         assert!(sm.just_alarmed());
 
         sm.previous = sm.current; // Clear the transition
-        sm.update_from_threshold(false, true, false);
+        sm.update_from_threshold(true, false, false);
         assert!(!sm.just_alarmed());
     }
 

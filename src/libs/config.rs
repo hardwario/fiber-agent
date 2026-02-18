@@ -87,6 +87,7 @@ pub struct AlarmStatePattern {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlarmPatternsConfig {
     pub warning: AlarmStatePattern,
+    #[serde(default = "default_alarm_pattern")]
     pub alarm: AlarmStatePattern,
     pub critical: AlarmStatePattern,
     pub disconnected: AlarmStatePattern,
@@ -312,10 +313,10 @@ impl SensorFileConfig {
             alarm_patterns: Some(Self::default_alarm_patterns()),
             common_alarms: AlarmThreshold {
                 critical_low_celsius: 32.0,
-                low_alarm_celsius: 35.0,
-                warning_low_celsius: 34.0,
-                warning_high_celsius: 39.0,
-                high_alarm_celsius: 38.0,
+                low_alarm_celsius: 0.0,    // disabled - defaults
+                warning_low_celsius: 35.0,
+                warning_high_celsius: 38.0,
+                high_alarm_celsius: 100.0, // disabled - defaults
                 critical_high_celsius: 40.0,
             },
             lines: vec![
@@ -575,6 +576,14 @@ pub struct SystemConfig {
     /// Device label (user-friendly name, defaults to hostname)
     #[serde(default)]
     pub device_label: Option<String>,
+
+    /// LED brightness percentage (0-100), persisted across reboots
+    #[serde(default = "default_led_brightness")]
+    pub led_brightness: u8,
+
+    /// Screen brightness percentage (0-100), persisted across reboots
+    #[serde(default = "default_screen_brightness")]
+    pub screen_brightness: u8,
 }
 
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
@@ -748,6 +757,20 @@ pub struct MqttConfig {
     pub last_will: LastWillConfig,
 }
 
+// Default alarm pattern for backward compatibility (alarm level disabled)
+fn default_alarm_pattern() -> AlarmStatePattern {
+    AlarmStatePattern {
+        led_color: AlarmLedColor::Red,
+        led_blink: AlarmLedBlink::Steady,
+        buzzer_enabled: false,
+        buzzer_pattern: AlarmBuzzerPattern::None,
+    }
+}
+
+// Default value functions for system configuration
+fn default_led_brightness() -> u8 { 50 }
+fn default_screen_brightness() -> u8 { 100 }
+
 // Default value functions for MQTT configuration
 fn default_true() -> bool { true }
 fn default_qos_1() -> u8 { 1 }
@@ -894,6 +917,8 @@ impl Config {
                 app_version: "0.1.0".to_string(),
                 timezone_offset_hours: 0,
                 device_label: None, // Defaults to hostname at runtime
+                led_brightness: 50,
+                screen_brightness: 100,
             },
             mqtt: None,  // MQTT disabled by default
         }

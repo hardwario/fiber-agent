@@ -4,22 +4,22 @@ use serde::{Deserialize, Serialize};
 
 /// Threshold configuration for temperature-based alarms
 ///
-/// Defines 6 temperature thresholds that create different alarm states:
+/// Defines 4 primary temperature thresholds that create different alarm states:
 /// - Critical Low: Below this, state is Critical (blinking alert)
-/// - Low Alarm: Below this, state is Alarm (solid alert)
 /// - Warning Low: Below this, state is Warning
 /// - Warning High: Above this, state is Warning
-/// - High Alarm: Above this, state is Alarm (solid alert)
 /// - Critical High: Above this, state is Critical (blinking alert)
+///
+/// The alarm fields (low_alarm_celsius, high_alarm_celsius) are retained for
+/// backward compatibility but default to values that effectively disable the
+/// alarm zone (0.0 and 100.0 respectively).
 ///
 /// Example with defaults:
 /// ```text
 /// Critical Low (32°C) ----
-///                         Low Alarm (35°C) ----
-///                                             Warning Low (34°C) ----
-///     ============ NORMAL ZONE (34-39°C) ============
-///                                             Warning High (39°C) ----
-///                         High Alarm (38°C) ----
+///                         Warning Low (35°C) ----
+///     ============ NORMAL ZONE (35-38°C) ============
+///                         Warning High (38°C) ----
 /// Critical High (40°C) ----
 /// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -27,7 +27,8 @@ pub struct AlarmThreshold {
     /// Temperature below which state is Critical (blinking alert)
     pub critical_low_celsius: f32,
 
-    /// Temperature below which state is Alarm (solid alert)
+    /// Temperature below which state is Alarm (deprecated, kept for backward compatibility)
+    #[serde(default = "default_alarm_low")]
     pub low_alarm_celsius: f32,
 
     /// Temperature below which state is Warning
@@ -36,12 +37,16 @@ pub struct AlarmThreshold {
     /// Temperature above which state is Warning
     pub warning_high_celsius: f32,
 
-    /// Temperature above which state is Alarm (solid alert)
+    /// Temperature above which state is Alarm (deprecated, kept for backward compatibility)
+    #[serde(default = "default_alarm_high")]
     pub high_alarm_celsius: f32,
 
     /// Temperature above which state is Critical (blinking alert)
     pub critical_high_celsius: f32,
 }
+
+fn default_alarm_low() -> f32 { 0.0 }
+fn default_alarm_high() -> f32 { 100.0 }
 
 impl AlarmThreshold {
     /// Create thresholds with custom values
@@ -67,10 +72,10 @@ impl AlarmThreshold {
     pub fn default_medical() -> Self {
         Self {
             critical_low_celsius: 32.0,
-            low_alarm_celsius: 35.0,
+            low_alarm_celsius: 0.0,     // disabled - defaults
             warning_low_celsius: 34.0,
             warning_high_celsius: 39.0,
-            high_alarm_celsius: 38.0,
+            high_alarm_celsius: 100.0,  // disabled - defaults
             critical_high_celsius: 40.0,
         }
     }
@@ -104,10 +109,10 @@ mod tests {
     fn test_default_medical_thresholds() {
         let t = AlarmThreshold::default_medical();
         assert_eq!(t.critical_low_celsius, 32.0);
-        assert_eq!(t.low_alarm_celsius, 35.0);
+        assert_eq!(t.low_alarm_celsius, 0.0);     // disabled
         assert_eq!(t.warning_low_celsius, 34.0);
         assert_eq!(t.warning_high_celsius, 39.0);
-        assert_eq!(t.high_alarm_celsius, 38.0);
+        assert_eq!(t.high_alarm_celsius, 100.0);   // disabled
         assert_eq!(t.critical_high_celsius, 40.0);
     }
 
@@ -132,9 +137,13 @@ mod tests {
     #[test]
     fn test_is_alarm() {
         let t = AlarmThreshold::default_medical();
-        assert!(t.is_alarm(34.0)); // Below low alarm
-        assert!(t.is_alarm(39.0)); // Above high alarm
+        // With alarm thresholds disabled (0.0 and 100.0), is_alarm only triggers
+        // for temperatures below 0.0 or above 100.0
+        assert!(!t.is_alarm(34.0)); // Not below 0.0
+        assert!(!t.is_alarm(39.0)); // Not above 100.0
         assert!(!t.is_alarm(36.0)); // Normal
+        assert!(t.is_alarm(-1.0));  // Below 0.0
+        assert!(t.is_alarm(101.0)); // Above 100.0
     }
 
     #[test]

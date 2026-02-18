@@ -20,7 +20,7 @@ impl PowerController {
     /// Initialize power controller with current voltage readings from StmBridge
     pub fn new(stm: Arc<Mutex<StmBridge>>) -> io::Result<Self> {
         // Read current voltage to initialize status
-        let mut stm_guard = stm.lock().unwrap();
+        let mut stm_guard = stm.lock().unwrap_or_else(|e| e.into_inner());
         let (vin_opt, vbat_opt) = stm_guard.read_adc_data()?;
         drop(stm_guard);
 

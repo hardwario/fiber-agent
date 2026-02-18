@@ -4,28 +4,19 @@
 pub struct ConfigValidator;
 
 impl ConfigValidator {
-    /// Validate sensor threshold ordering
+    /// Validate sensor threshold ordering (4-level system)
     ///
-    /// Ensures: critical_low < alarm_low < warning_low < warning_high < alarm_high < critical_high
+    /// Ensures: critical_low < warning_low < warning_high < critical_high
     pub fn validate_threshold_ordering(
         critical_low: f32,
-        alarm_low: f32,
         warning_low: f32,
         warning_high: f32,
-        alarm_high: f32,
         critical_high: f32,
     ) -> Result<(), String> {
-        if critical_low >= alarm_low {
+        if critical_low >= warning_low {
             return Err(format!(
-                "critical_low ({}) must be less than alarm_low ({})",
-                critical_low, alarm_low
-            ));
-        }
-
-        if alarm_low >= warning_low {
-            return Err(format!(
-                "alarm_low ({}) must be less than warning_low ({})",
-                alarm_low, warning_low
+                "critical_low ({}) must be less than warning_low ({})",
+                critical_low, warning_low
             ));
         }
 
@@ -36,17 +27,10 @@ impl ConfigValidator {
             ));
         }
 
-        if warning_high >= alarm_high {
+        if warning_high >= critical_high {
             return Err(format!(
-                "warning_high ({}) must be less than alarm_high ({})",
-                warning_high, alarm_high
-            ));
-        }
-
-        if alarm_high >= critical_high {
-            return Err(format!(
-                "alarm_high ({}) must be less than critical_high ({})",
-                alarm_high, critical_high
+                "warning_high ({}) must be less than critical_high ({})",
+                warning_high, critical_high
             ));
         }
 
@@ -70,10 +54,8 @@ impl ConfigValidator {
     pub fn validate_sensor_thresholds(
         line: u8,
         critical_low: f32,
-        alarm_low: f32,
         warning_low: f32,
         warning_high: f32,
-        alarm_high: f32,
         critical_high: f32,
     ) -> Result<(), String> {
         // Validate line number
@@ -83,19 +65,15 @@ impl ConfigValidator {
 
         // Validate individual temperatures
         Self::validate_temperature_range(critical_low, "critical_low")?;
-        Self::validate_temperature_range(alarm_low, "alarm_low")?;
         Self::validate_temperature_range(warning_low, "warning_low")?;
         Self::validate_temperature_range(warning_high, "warning_high")?;
-        Self::validate_temperature_range(alarm_high, "alarm_high")?;
         Self::validate_temperature_range(critical_high, "critical_high")?;
 
         // Validate ordering
         Self::validate_threshold_ordering(
             critical_low,
-            alarm_low,
             warning_low,
             warning_high,
-            alarm_high,
             critical_high,
         )?;
 
@@ -156,16 +134,16 @@ mod tests {
     #[test]
     fn test_valid_threshold_ordering() {
         let result = ConfigValidator::validate_threshold_ordering(
-            32.0, 34.0, 35.0, 39.0, 40.0, 42.0,
+            32.0, 35.0, 39.0, 42.0,
         );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_invalid_threshold_ordering() {
-        // critical_low >= alarm_low
+        // critical_low >= warning_low
         let result = ConfigValidator::validate_threshold_ordering(
-            35.0, 34.0, 35.0, 39.0, 40.0, 42.0,
+            36.0, 35.0, 39.0, 42.0,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("critical_low"));
@@ -184,25 +162,25 @@ mod tests {
     fn test_sensor_thresholds_validation() {
         // Valid thresholds
         assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 34.0, 35.0, 39.0, 40.0, 42.0
+            0, 32.0, 35.0, 39.0, 42.0
         )
         .is_ok());
 
         // Invalid line number
         assert!(ConfigValidator::validate_sensor_thresholds(
-            99, 32.0, 34.0, 35.0, 39.0, 40.0, 42.0
+            99, 32.0, 35.0, 39.0, 42.0
         )
         .is_err());
 
         // Temperature out of range
         assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 34.0, 35.0, 39.0, 40.0, 150.0
+            0, 32.0, 35.0, 39.0, 150.0
         )
         .is_err());
 
         // Invalid ordering
         assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 34.0, 38.0, 36.0, 40.0, 42.0
+            0, 32.0, 38.0, 36.0, 42.0
         )
         .is_err());
     }

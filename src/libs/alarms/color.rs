@@ -85,7 +85,7 @@ mod tests {
     fn test_led_color_display() {
         assert_eq!(LedColor::Green.to_string(), "GREEN");
         assert_eq!(LedColor::Red.to_string(), "RED");
-        assert_eq!(LedColor::Yellow.to_string(), "ORANGE");
+        assert_eq!(LedColor::Yellow.to_string(), "YELLOW");
         assert_eq!(LedColor::Off.to_string(), "OFF");
     }
 

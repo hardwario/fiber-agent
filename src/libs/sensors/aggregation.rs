@@ -9,7 +9,6 @@ const MAX_BUFFERED_PERIODS: usize = 100; // 5 hours @ 3-min intervals
 pub struct AlarmStateCounts {
     pub normal: u32,
     pub warning: u32,
-    pub alarm: u32,
     pub critical: u32,
     pub disconnected: u32,
     pub reconnecting: u32,
@@ -20,7 +19,6 @@ impl AlarmStateCounts {
         Self {
             normal: 0,
             warning: 0,
-            alarm: 0,
             critical: 0,
             disconnected: 0,
             reconnecting: 0,
@@ -31,7 +29,6 @@ impl AlarmStateCounts {
         match state {
             AlarmState::Normal => self.normal += 1,
             AlarmState::Warning => self.warning += 1,
-            AlarmState::Alarm => self.alarm += 1,
             AlarmState::Critical => self.critical += 1,
             AlarmState::Disconnected => self.disconnected += 1,
             AlarmState::Reconnecting => self.reconnecting += 1,
@@ -43,8 +40,6 @@ impl AlarmStateCounts {
     pub fn dominant(&self) -> AlarmState {
         if self.critical > 0 {
             AlarmState::Critical
-        } else if self.alarm > 0 {
-            AlarmState::Alarm
         } else if self.warning > 0 {
             AlarmState::Warning
         } else if self.reconnecting > 0 {

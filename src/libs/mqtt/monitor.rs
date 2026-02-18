@@ -492,6 +492,13 @@ impl MqttMonitor {
             }
         };
 
+        // Track LED brightness (write-only to STM, so we track it here)
+        // Initialize from persisted config if available
+        let initial_led_brightness = crate::libs::config::Config::load_default()
+            .map(|c| c.system.led_brightness)
+            .unwrap_or(50);
+        let led_brightness_tracker = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(initial_led_brightness));
+
         // Track connection attempts for logging
         let mut connection_attempt: u32 = 0;
 
@@ -632,6 +639,16 @@ impl MqttMonitor {
                 // Publish online status
                 if let Err(e) = publisher.publish_online_status().await {
                     eprintln!("[MQTT Monitor] Failed to publish online status: {}", e);
+                }
+
+                // Publish current config state so viewer gets actual values
+                let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, led_br) {
+                    if let Err(e) = publisher.handle_message(config_msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                    } else {
+                        eprintln!("[MQTT Monitor] Published initial config state");
+                    }
                 }
 
                 eprintln!("[MQTT Monitor] Connection established, entering event loop");
@@ -846,8 +863,17 @@ impl MqttMonitor {
                                                                         &config_applier,
                                                                         &stm_bridge,
                                                                         &screen_brightness,
+                                                                        &led_brightness_tracker,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
+                                                                    } else {
+                                                                        // Publish updated config state after successful command
+                                                                        let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, led_br) {
+                                                                            if let Err(e) = publisher.handle_message(config_msg).await {
+                                                                                eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -1311,6 +1337,7 @@ impl MqttMonitor {
         config_applier: &Option<Arc<ConfigApplier>>,
         stm_bridge: &Option<SharedStmBridge>,
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
+        led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -1425,6 +1452,14 @@ impl MqttMonitor {
                         Ok(mut stm_guard) => {
                             match stm_guard.set_brightness(brightness) {
                                 Ok(_) => {
+                                    led_brightness_tracker.store(brightness, std::sync::atomic::Ordering::Relaxed);
+                                    // Persist to config YAML
+                                    if let Some(applier) = config_applier {
+                                        let result = applier.apply_led_brightness_change(brightness);
+                                        if !result.success {
+                                            eprintln!("[MQTT Monitor] Warning: Failed to persist LED brightness: {:?}", result.error_message);
+                                        }
+                                    }
                                     eprintln!("[MQTT Monitor] ✓ LED brightness set to {}%", brightness);
                                     Ok(())
                                 }
@@ -1444,6 +1479,13 @@ impl MqttMonitor {
             MqttCommand::SetScreenBrightness { brightness } => {
                 if let Some(sb) = screen_brightness {
                     sb.store(brightness, std::sync::atomic::Ordering::Relaxed);
+                    // Persist to config YAML
+                    if let Some(applier) = config_applier {
+                        let result = applier.apply_screen_brightness_change(brightness);
+                        if !result.success {
+                            eprintln!("[MQTT Monitor] Warning: Failed to persist screen brightness: {:?}", result.error_message);
+                        }
+                    }
                     eprintln!("[MQTT Monitor] ✓ Screen brightness set to {}%", brightness);
                     Ok(())
                 } else {
@@ -1480,6 +1522,60 @@ impl MqttMonitor {
                 Ok(())
             }
         }
+    }
+
+    /// Build a PublishConfigState message from current config files and runtime state
+    fn build_config_state_message(
+        screen_brightness: &Option<SharedScreenBrightnessHandle>,
+        led_brightness: u8,
+    ) -> Option<MqttMessage> {
+        let main_config = crate::libs::config::Config::load_default().ok()?;
+        let sensor_config = crate::libs::config::SensorFileConfig::load_default().ok()?;
+
+        let mut sensors = Vec::new();
+        for line in 0..8 {
+            let line_config = sensor_config.lines.iter().find(|l| l.line == line);
+            if let Some(lc) = line_config {
+                let thresholds = sensor_config.get_line_thresholds(line);
+                let has_override = lc.critical_low_celsius.is_some()
+                    || lc.low_alarm_celsius.is_some()
+                    || lc.warning_low_celsius.is_some()
+                    || lc.warning_high_celsius.is_some()
+                    || lc.high_alarm_celsius.is_some()
+                    || lc.critical_high_celsius.is_some();
+                sensors.push(super::messages::SensorConfigData {
+                    line,
+                    name: lc.name.clone(),
+                    enabled: lc.enabled,
+                    has_override,
+                    thresholds,
+                });
+            }
+        }
+
+        let screen_br = screen_brightness
+            .as_ref()
+            .map(|sb| sb.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(100);
+
+        let device_label = main_config.system.device_label
+            .unwrap_or_default();
+
+        let mqtt_config = main_config.mqtt.as_ref();
+        let system_info_interval_s = mqtt_config
+            .map(|m| m.publish.intervals.system_info_sec)
+            .unwrap_or(60);
+
+        Some(MqttMessage::PublishConfigState {
+            led_brightness,
+            screen_brightness: screen_br,
+            system_info_interval_s,
+            device_label,
+            sensors,
+            sample_interval_ms: main_config.sensors.sample_interval_ms,
+            aggregation_interval_ms: main_config.sensors.aggregation_interval_ms,
+            report_interval_ms: main_config.sensors.report_interval_ms,
+        })
     }
 
     /// Execute network configuration using nmcli

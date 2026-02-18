@@ -93,6 +93,18 @@ pub enum MqttMessage {
         report_interval_ms: u64,
     },
 
+    /// Publish full device config state (brightness, intervals, sensors, label)
+    PublishConfigState {
+        led_brightness: u8,
+        screen_brightness: u8,
+        system_info_interval_s: u64,
+        device_label: String,
+        sensors: Vec<SensorConfigData>,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 

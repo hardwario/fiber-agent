@@ -10,8 +10,6 @@ pub enum AlarmEvent {
     StateChanged { from: AlarmState, to: AlarmState },
     /// Entered warning state
     Warning { value: f32 },
-    /// Entered alarm state
-    Alarm { value: f32 },
     /// Entered critical state
     Critical { value: f32 },
     /// Reconnected after disconnection
@@ -27,7 +25,6 @@ impl fmt::Display for AlarmEvent {
                 write!(f, "State changed: {} → {}", from, to)
             }
             AlarmEvent::Warning { value } => write!(f, "Warning: {:.1}°C", value),
-            AlarmEvent::Alarm { value } => write!(f, "Alarm: {:.1}°C", value),
             AlarmEvent::Critical { value } => write!(f, "Critical: {:.1}°C", value),
             AlarmEvent::Reconnected => write!(f, "Sensor reconnected"),
             AlarmEvent::Disconnected => write!(f, "Sensor disconnected"),
@@ -74,7 +71,6 @@ pub struct FilteredLoggingCallback {
     prefix: String,
     log_state_changes: bool,
     log_warnings: bool,
-    log_alarms: bool,
     log_critical: bool,
     log_reconnect: bool,
     log_disconnect: bool,
@@ -87,7 +83,6 @@ impl FilteredLoggingCallback {
             prefix: prefix.to_string(),
             log_state_changes: true,
             log_warnings: true,
-            log_alarms: true,
             log_critical: true,
             log_reconnect: true,
             log_disconnect: true,
@@ -102,11 +97,6 @@ impl FilteredLoggingCallback {
 
     pub fn with_warnings(mut self, enabled: bool) -> Self {
         self.log_warnings = enabled;
-        self
-    }
-
-    pub fn with_alarms(mut self, enabled: bool) -> Self {
-        self.log_alarms = enabled;
         self
     }
 
@@ -131,7 +121,6 @@ impl AlarmCallback for FilteredLoggingCallback {
         let should_log = match &event {
             AlarmEvent::StateChanged { .. } => self.log_state_changes,
             AlarmEvent::Warning { .. } => self.log_warnings,
-            AlarmEvent::Alarm { .. } => self.log_alarms,
             AlarmEvent::Critical { .. } => self.log_critical,
             AlarmEvent::Reconnected => self.log_reconnect,
             AlarmEvent::Disconnected => self.log_disconnect,
@@ -253,9 +242,9 @@ mod tests {
     fn test_filtered_logging_callback() {
         let cb = FilteredLoggingCallback::new("[Test]")
             .with_warnings(false)
-            .with_alarms(true);
+            .with_critical(true);
         assert!(!cb.log_warnings);
-        assert!(cb.log_alarms);
+        assert!(cb.log_critical);
     }
 
     #[test]

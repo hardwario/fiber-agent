@@ -153,6 +153,29 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishConfigState {
+                led_brightness,
+                screen_brightness,
+                system_info_interval_s,
+                device_label,
+                sensors,
+                sample_interval_ms,
+                aggregation_interval_ms,
+                report_interval_ms,
+            } => {
+                self.publish_config_state(
+                    led_brightness,
+                    screen_brightness,
+                    system_info_interval_s,
+                    &device_label,
+                    sensors,
+                    sample_interval_ms,
+                    aggregation_interval_ms,
+                    report_interval_ms,
+                )
+                .await
+            }
+
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
@@ -198,7 +221,6 @@ impl MqttPublisher {
                     "alarm_counts": {
                         "normal": sensor.alarm_counts.normal,
                         "warning": sensor.alarm_counts.warning,
-                        "alarm": sensor.alarm_counts.alarm,
                         "critical": sensor.alarm_counts.critical,
                         "disconnected": sensor.alarm_counts.disconnected,
                         "reconnecting": sensor.alarm_counts.reconnecting,
@@ -506,6 +528,59 @@ impl MqttPublisher {
         let qos = QoS::AtLeastOnce; // QoS 1 for query responses
 
         self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish full device config state to config/state topic
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_config_state(
+        &self,
+        led_brightness: u8,
+        screen_brightness: u8,
+        system_info_interval_s: u64,
+        device_label: &str,
+        sensors: Vec<super::messages::SensorConfigData>,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    ) -> Result<(), String> {
+        let sensors_data: Vec<serde_json::Value> = sensors
+            .iter()
+            .map(|sensor| {
+                json!({
+                    "line": sensor.line,
+                    "name": sensor.name,
+                    "enabled": sensor.enabled,
+                    "has_override": sensor.has_override,
+                    "thresholds": {
+                        "critical_low_celsius": sensor.thresholds.critical_low_celsius,
+                        "low_alarm_celsius": sensor.thresholds.low_alarm_celsius,
+                        "warning_low_celsius": sensor.thresholds.warning_low_celsius,
+                        "warning_high_celsius": sensor.thresholds.warning_high_celsius,
+                        "high_alarm_celsius": sensor.thresholds.high_alarm_celsius,
+                        "critical_high_celsius": sensor.thresholds.critical_high_celsius,
+                    },
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "led_brightness": led_brightness,
+            "screen_brightness": screen_brightness,
+            "system_info_interval_s": system_info_interval_s,
+            "device_label": device_label,
+            "sensors": sensors_data,
+            "intervals": {
+                "sample_interval_ms": sample_interval_ms,
+                "aggregation_interval_ms": aggregation_interval_ms,
+                "report_interval_ms": report_interval_ms,
+            },
+        });
+
+        let topic = self.topics.config_state();
+        let qos = QoS::AtLeastOnce;
+
+        self.publish(topic, payload.to_string(), qos, true).await
     }
 
     /// Publish pairing response (success)

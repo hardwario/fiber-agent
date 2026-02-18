@@ -67,14 +67,12 @@ impl ConfigApplier {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        // 1. Validate thresholds
+        // 1. Validate thresholds (4-level system)
         if let Err(e) = ConfigValidator::validate_sensor_thresholds(
             line,
             critical_low,
-            alarm_low,
             warning_low,
             warning_high,
-            alarm_high,
             critical_high,
         ) {
             return ApplyResult {
@@ -181,8 +179,8 @@ impl ConfigApplier {
         }
 
         eprintln!(
-            "[ConfigApplier] ✓ Thresholds updated for line {}: {}°C < {}°C < {}°C < {}°C < {}°C < {}°C",
-            line, critical_low, alarm_low, warning_low, warning_high, alarm_high, critical_high
+            "[ConfigApplier] ✓ Thresholds updated for line {}: {}°C < {}°C < {}°C < {}°C",
+            line, critical_low, warning_low, warning_high, critical_high
         );
 
         ApplyResult {
@@ -855,6 +853,119 @@ impl ConfigApplier {
         );
 
         Ok(())
+    }
+
+    /// Apply LED brightness change to main configuration
+    pub fn apply_led_brightness_change(&self, brightness: u8) -> ApplyResult {
+        self.apply_system_field_u8_change("led_brightness", brightness, "LED brightness")
+    }
+
+    /// Apply screen brightness change to main configuration
+    pub fn apply_screen_brightness_change(&self, brightness: u8) -> ApplyResult {
+        self.apply_system_field_u8_change("screen_brightness", brightness, "Screen brightness")
+    }
+
+    /// Generic helper to update a u8 field in the system section of main config
+    fn apply_system_field_u8_change(&self, field_name: &str, value: u8, display_name: &str) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // Update field in system section
+        if let Some(system) = config
+            .get_mut("system")
+            .and_then(|v| v.as_mapping_mut())
+        {
+            system.insert(
+                Value::String(field_name.to_string()),
+                Value::Number(serde_yaml::Number::from(value as u64)),
+            );
+        } else {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some("Missing 'system' section in config".to_string()),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!("[ConfigApplier] ✓ {} updated: {}%", display_name, value);
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
     }
 
     /// Update device label in the system section of main config

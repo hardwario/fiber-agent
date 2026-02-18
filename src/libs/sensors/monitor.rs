@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::drivers::StmBridge;
 use crate::libs::config::{Config, SensorConfig, SensorFileConfig};
-use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCallback};
+use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCallback, MqttAlarmCallback};
 use crate::libs::buzzer::{BuzzerController, BuzzerPattern, BuzzerPriorityManager};
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::mqtt::MqttHandle;
@@ -67,6 +67,9 @@ impl SensorMonitor {
         let reader = W1DeviceReader::new(W1_BASE_PATH);
 
         // Create alarm controllers for each sensor line
+        // Also create MQTT callbacks to track state for temperature updates
+        let mut mqtt_callbacks: Vec<Arc<MqttAlarmCallback>> = Vec::new();
+
         let mut alarm_controllers: [AlarmController; 8] = (0..8)
             .map(|idx| {
                 let thresholds = sensor_file_config.get_line_thresholds(idx as u8);
@@ -79,6 +82,20 @@ impl SensorMonitor {
                 // Register buzzer callback for disconnected and critical states
                 let buzzer = Arc::new(BuzzerCallback::new(&format!("[Sensor {} Buzzer]", idx)));
                 controller.register_callback(buzzer);
+
+                // Register MQTT callback for publishing alarm state transitions
+                if let Some(ref mqtt) = mqtt_handle {
+                    let name = sensor_file_config.lines.get(idx)
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| format!("Sensor {}", idx + 1));
+                    let mqtt_callback = Arc::new(MqttAlarmCallback::new(
+                        mqtt.clone(),
+                        idx as u8,
+                        name,
+                    ));
+                    controller.register_callback(mqtt_callback.clone());
+                    mqtt_callbacks.push(mqtt_callback);
+                }
 
                 controller
             })
@@ -228,8 +245,15 @@ impl SensorMonitor {
                             .unwrap();
 
                         if let Ok(mut state) = sensor_state.write() {
-                            state.set_names(names);
+                            state.set_names(names.clone());
                             state.set_thresholds(thresholds);
+                        }
+
+                        // Update MQTT callback names
+                        for (idx, name) in names.iter().enumerate() {
+                            if let Some(mqtt_cb) = mqtt_callbacks.get(idx) {
+                                mqtt_cb.set_name(name.clone());
+                            }
                         }
 
                         eprintln!("[SensorMonitor] Sensor configuration reloaded successfully");
@@ -330,7 +354,7 @@ impl SensorMonitor {
                     if let Some(last_state) = last_sensor_states[idx] {
                         if last_state == AlarmState::Disconnected || last_state == AlarmState::Reconnecting {
                             match current_state {
-                                AlarmState::Normal | AlarmState::Warning | AlarmState::Alarm => {
+                                AlarmState::Normal | AlarmState::Warning | AlarmState::Critical => {
                                     // Successfully reconnected to a valid measurement state
                                     has_just_reconnected = true;
                                 }
@@ -445,6 +469,13 @@ impl SensorMonitor {
                             Ok(temp) => {
                                 // Successful read - update alarm controller and reset failure counter
                                 let _was_disconnected = consecutive_failures[sensor_idx] >= failure_debounce_count;
+
+                                // Update MQTT callback temperature BEFORE updating alarm controller
+                                // so that state change events have the correct temperature
+                                if let Some(mqtt_cb) = mqtt_callbacks.get(sensor_idx) {
+                                    mqtt_cb.set_temperature(temp);
+                                }
+
                                 alarm_controllers[sensor_idx].update(temp);
                                 consecutive_failures[sensor_idx] = 0;
 

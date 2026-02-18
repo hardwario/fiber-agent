@@ -112,13 +112,13 @@ impl SharedLedStateWithNotify {
 
     /// Get current LED state
     pub fn read(&self) -> SharedLedState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Update line LED and notify monitor
     pub fn set_line_led(&self, line_idx: u8, led_state: AlarmLedState) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.set_line_led(line_idx, led_state);
         }
         self.notify.notify_one();
@@ -127,7 +127,7 @@ impl SharedLedStateWithNotify {
     /// Update power LED and notify monitor
     pub fn set_power_leds(&self, color: PowerLedColor, blink: bool) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.set_power_leds(color, blink);
         }
         self.notify.notify_one();
@@ -136,7 +136,7 @@ impl SharedLedStateWithNotify {
     /// Wait for LED state change notification (with timeout for periodic updates)
     pub fn wait_for_change(&self, timeout: std::time::Duration) {
         let _ = self.notify.wait_timeout(
-            self.state.lock().unwrap(),
+            self.state.lock().unwrap_or_else(|e| e.into_inner()),
             timeout
         );
     }

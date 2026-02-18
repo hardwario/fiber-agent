@@ -69,13 +69,13 @@ impl SharedBuzzerState {
 
     /// Get a copy of the current pattern and timing info
     pub fn read(&self) -> BuzzerStateInner {
-        self.state.lock().unwrap().clone()
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Update pattern and notify the buzzer thread
     pub fn set_pattern(&self, pattern: BuzzerPattern) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.pattern = pattern;
             state.pattern_start_time = Instant::now();
         }
@@ -86,7 +86,7 @@ impl SharedBuzzerState {
     /// If a pattern is active, use a timeout for periodic timing updates
     /// If no pattern is active, wait indefinitely for the next pattern
     pub fn wait_for_event(&self) {
-        let guard = self.state.lock().unwrap();
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
         // If buzzer is off, wait indefinitely for next pattern change
         // Otherwise, use 50ms timeout to check pattern timing

@@ -183,7 +183,7 @@ impl AuthorizationManager {
         );
 
         // 5. Add to registry
-        let mut registry = self.challenges.lock().unwrap();
+        let mut registry = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
         registry
             .add_challenge(challenge)
             .map_err(|e| AuthError::RegistryFull(e))?;
@@ -233,7 +233,7 @@ impl AuthorizationManager {
         certificate: &UserCertificate,
     ) -> AuthResult<(MqttMessage, Option<MqttCommand>)> {
         // 1. Get challenge from registry
-        let mut registry = self.challenges.lock().unwrap();
+        let mut registry = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
         let challenge = registry
             .get_challenge_mut(&challenge_id)
             .ok_or_else(|| AuthError::ChallengeNotFound(challenge_id.clone()))?;
@@ -333,7 +333,7 @@ impl AuthorizationManager {
 
         // 8. Remove from registry
         drop(registry);
-        let mut registry = self.challenges.lock().unwrap();
+        let mut registry = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
         registry.remove_challenge(&challenge_id);
 
         Ok((response_msg, command_to_execute))
@@ -341,7 +341,7 @@ impl AuthorizationManager {
 
     /// Cleanup expired challenges
     pub fn cleanup_expired_challenges(&self) -> usize {
-        let mut registry = self.challenges.lock().unwrap();
+        let mut registry = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
         let expired = registry.cleanup_expired();
         let count = expired.len();
 
@@ -360,7 +360,7 @@ impl AuthorizationManager {
 
     /// Get active challenge count
     pub fn active_challenge_count(&self) -> usize {
-        self.challenges.lock().unwrap().active_count()
+        self.challenges.lock().unwrap_or_else(|e| e.into_inner()).active_count()
     }
 
     /// Reload CA registry from disk
@@ -547,10 +547,10 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetSensorThreshold {
                     line,
                     critical_low: thresholds["critical_low"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_low: thresholds["alarm_low"].as_f64().unwrap_or(0.0) as f32,
+                    alarm_low: thresholds.get("alarm_low").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
                     warning_low: thresholds["warning_low"].as_f64().unwrap_or(0.0) as f32,
                     warning_high: thresholds["warning_high"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_high: thresholds["alarm_high"].as_f64().unwrap_or(0.0) as f32,
+                    alarm_high: thresholds.get("alarm_high").and_then(|v| v.as_f64()).unwrap_or(100.0) as f32,
                     critical_high: thresholds["critical_high"].as_f64().unwrap_or(0.0) as f32,
                 })
             }

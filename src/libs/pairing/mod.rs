@@ -189,7 +189,7 @@ impl PairingMonitor {
 
             // Check for expired pairing code
             {
-                let mut state_lock = state.lock().unwrap();
+                let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
                 if state_lock.check_expiration() {
                     // Update display to exit pairing screen
                     if let Ok(mut display) = display_state.lock() {
@@ -236,7 +236,7 @@ impl PairingMonitor {
 
         // Update state machine
         {
-            let mut state_lock = state.lock().unwrap();
+            let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
             state_lock.start_pairing(code.clone());
         }
 
@@ -255,7 +255,7 @@ impl PairingMonitor {
 
         // Update state machine
         {
-            let mut state_lock = state.lock().unwrap();
+            let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
             state_lock.cancel();
         }
 
@@ -280,7 +280,7 @@ impl PairingMonitor {
 
         // Try to begin processing
         let pairing_code = {
-            let mut state_lock = state.lock().unwrap();
+            let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
 
             // Check if expired first
             if state_lock.is_expired() {
@@ -317,7 +317,7 @@ impl PairingMonitor {
             Ok(e) => e,
             Err(e) => {
                 eprintln!("[PairingMonitor] Encryption failed: {}", e);
-                let mut state_lock = state.lock().unwrap();
+                let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
                 state_lock.complete();
                 let error = PairingError::new(request.request_id, "Internal error: encryption failed");
                 let _ = result_tx.send(PairingResult::Error(error));
@@ -340,7 +340,7 @@ impl PairingMonitor {
 
         // Complete pairing
         {
-            let mut state_lock = state.lock().unwrap();
+            let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
             state_lock.complete();
         }
 

@@ -65,8 +65,8 @@ impl AlarmController {
         self.state_machine
             .update_from_threshold(is_critical, is_alarm, is_warning);
 
-        // Fire callbacks
-        self.fire_callbacks();
+        // Fire callbacks with actual temperature value
+        self.fire_callbacks(Some(value));
 
         // Return LED state for this reading
         self.get_led_state()
@@ -78,8 +78,8 @@ impl AlarmController {
         self.state_machine
             .update_from_read_result(false, self.failure_threshold);
 
-        // Fire callbacks if state changed
-        self.fire_callbacks();
+        // Fire callbacks if state changed (no temperature value on failure)
+        self.fire_callbacks(None);
 
         self.get_led_state()
     }
@@ -129,10 +129,6 @@ impl AlarmController {
                 // Warning: blinking yellow (slow blink) - LEDG + LEDR combined
                 LedState::new(LedColor::Yellow, BlinkPattern::BlinkSlow)
             }
-            crate::libs::alarms::state::AlarmState::Alarm => {
-                // Alarm: steady red
-                LedState::new(LedColor::Red, BlinkPattern::Steady)
-            }
             crate::libs::alarms::state::AlarmState::Critical => {
                 // Critical: blinking red (fast blink)
                 LedState::new(LedColor::Red, BlinkPattern::BlinkFast)
@@ -156,7 +152,8 @@ impl AlarmController {
     }
 
     /// Fire callbacks for state changes
-    fn fire_callbacks(&self) {
+    /// `value` is the actual temperature reading (None for read failures)
+    fn fire_callbacks(&self, value: Option<f32>) {
         if self.state_machine.state_changed() {
             // State changed event
             let event = AlarmEvent::StateChanged {
@@ -168,22 +165,18 @@ impl AlarmController {
                 callback.on_event(event.clone());
             }
 
+            let temp = value.unwrap_or(0.0);
+
             // Also fire specific events for easier filtering
             match self.state_machine.current {
                 crate::libs::alarms::state::AlarmState::Warning => {
-                    let event = AlarmEvent::Warning { value: 0.0 };
-                    for callback in &self.callbacks {
-                        callback.on_event(event.clone());
-                    }
-                }
-                crate::libs::alarms::state::AlarmState::Alarm => {
-                    let event = AlarmEvent::Alarm { value: 0.0 };
+                    let event = AlarmEvent::Warning { value: temp };
                     for callback in &self.callbacks {
                         callback.on_event(event.clone());
                     }
                 }
                 crate::libs::alarms::state::AlarmState::Critical => {
-                    let event = AlarmEvent::Critical { value: 0.0 };
+                    let event = AlarmEvent::Critical { value: temp };
                     for callback in &self.callbacks {
                         callback.on_event(event.clone());
                     }
@@ -231,20 +224,35 @@ mod tests {
     }
 
     #[test]
-    fn test_high_temperature_alarm() {
+    fn test_high_temperature_warning() {
+        // 39.5°C is above warning_high (39.0) but below critical_high (40.0)
+        // In the 4-level system, this is Warning (yellow, slow blink)
         let mut controller =
             AlarmController::new(AlarmThreshold::default_medical(), 3, 5);
-        let led_state = controller.update(38.5); // Above high_alarm (38.0)
-        assert_eq!(led_state.color, LedColor::Red);
-        assert_eq!(led_state.pattern, BlinkPattern::Steady);
+        let led_state = controller.update(39.5);
+        assert_eq!(led_state.color, LedColor::Yellow);
+        assert_eq!(led_state.pattern, BlinkPattern::BlinkSlow);
     }
 
     #[test]
-    fn test_alarm_temperature_returns_red() {
+    fn test_low_temperature_warning() {
+        // 33.0°C is below warning_low (34.0) but above critical_low (32.0)
+        // In the 4-level system, this is Warning (yellow, slow blink)
         let mut controller =
             AlarmController::new(AlarmThreshold::default_medical(), 3, 5);
-        let led_state = controller.update(34.0); // Below low_alarm (35.0), above critical_low (32.0)
-        assert_eq!(led_state.color, LedColor::Red);
+        let led_state = controller.update(33.0);
+        assert_eq!(led_state.color, LedColor::Yellow);
+        assert_eq!(led_state.pattern, BlinkPattern::BlinkSlow);
+    }
+
+    #[test]
+    fn test_former_alarm_zone_now_normal() {
+        // With alarm thresholds disabled (0.0/100.0), temperatures like 38.5
+        // that were previously in the alarm zone are now Normal
+        let mut controller =
+            AlarmController::new(AlarmThreshold::default_medical(), 3, 5);
+        let led_state = controller.update(38.5);
+        assert_eq!(led_state.color, LedColor::Green);
         assert_eq!(led_state.pattern, BlinkPattern::Steady);
     }
 
@@ -327,20 +335,17 @@ mod tests {
     }
 
     #[test]
-    fn test_33_5_celsius_triggers_alarm_red_led() {
-        // 33.5°C is ALARM (below low_alarm 35°C)
-        // Even though it's also below warning_low (34°C), alarm takes priority
-        // This should show red steady
+    fn test_33_5_celsius_triggers_warning() {
+        // 33.5°C is below warning_low (34°C), so it's Warning
         let mut controller =
             AlarmController::new(AlarmThreshold::default_medical(), 3, 5);
         let led_state = controller.update(33.5);
 
-        // 33.5°C < low_alarm (35°C), so it's alarm (priority over warning)
         assert_eq!(
             controller.state(),
-            crate::libs::alarms::state::AlarmState::Alarm
+            crate::libs::alarms::state::AlarmState::Warning
         );
-        assert_eq!(led_state.color, LedColor::Red);
-        assert_eq!(led_state.pattern, BlinkPattern::Steady);
+        assert_eq!(led_state.color, LedColor::Yellow);
+        assert_eq!(led_state.pattern, BlinkPattern::BlinkSlow);
     }
 }

@@ -66,7 +66,7 @@ impl BuzzerPriorityManager {
     pub fn set_battery_critical(&self, is_critical: bool) {
         // Decide what pattern to use - lock state only briefly
         let pattern_to_set = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.battery_critical_active = is_critical;
             eprintln!(
                 "[BuzzerPriority] Battery critical: {}",
@@ -85,7 +85,7 @@ impl BuzzerPriorityManager {
     pub fn set_sensor_critical(&self, is_critical: bool) {
         // Decide what pattern to use - lock state only briefly
         let pattern_to_set = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.sensor_critical_active = is_critical;
             eprintln!(
                 "[BuzzerPriority] Sensor critical: {}",
@@ -151,7 +151,7 @@ impl BuzzerPriorityManager {
             Some(pattern_source) => {
                 // Check if this is actually a change from what we last set
                 let should_update = {
-                    let state = self.state.lock().unwrap();
+                    let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     state.last_set_pattern != Some(pattern_source)
                 }; // Release state lock
 

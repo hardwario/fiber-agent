@@ -85,6 +85,7 @@ impl ButtonMonitor {
         let poll_interval = Duration::from_millis(50);
         const COUNTDOWN_DURATION: Duration = Duration::from_secs(5);
         const SELECTION_TIMEOUT: Duration = Duration::from_secs(15);
+        const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
 
         // Button monitor state machine
         let mut state = ButtonMonitorState::Idle;
@@ -92,6 +93,7 @@ impl ButtonMonitor {
         let mut down_hold_start = Instant::now();
         let mut up_hold_start = Instant::now();
         let mut selection_activity = Instant::now(); // Track last activity in selection/detail mode
+        let mut last_enter_click: Option<Instant> = None; // Track last ENTER click for double-click detection
 
         // Main button monitoring loop
         loop {
@@ -339,53 +341,104 @@ impl ButtonMonitor {
                             ButtonMonitorState::ShowingPairing => {
                                 // Already handled above
                             }
-                            ButtonMonitorState::SelectionMode => {
-                                // In selection mode - enter detail view
-                                if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.enter_detail_view();
-                                    eprintln!("[ButtonMonitor] Entering sensor detail view");
-                                }
-                                state = ButtonMonitorState::ShowingDetail;
-                                selection_activity = Instant::now(); // Reset inactivity timer
-                            }
-                            ButtonMonitorState::ShowingDetail => {
-                                // In detail view - exit back to selection mode
-                                if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.exit_detail_view();
-                                    eprintln!("[ButtonMonitor] Exiting sensor detail view");
-                                }
-                                state = ButtonMonitorState::SelectionMode;
-                                selection_activity = Instant::now(); // Reset inactivity timer
+                            ButtonMonitorState::SelectionMode | ButtonMonitorState::ShowingDetail => {
+                                // Actions handled on release for double-click detection
+                                selection_activity = Instant::now();
                             }
                         }
                     }
                     ButtonEvent::Release(Button::Enter) => {
-                        // Handle Enter release for entering selection mode
-                        if state == ButtonMonitorState::CountdownActive {
-                            let elapsed = countdown_start.elapsed();
-                            if elapsed < COUNTDOWN_DURATION {
-                                // Released early - check if on sensor overview to enter selection mode
-                                let on_sensor_overview = if let Ok(display_state_lock) = display_state.lock() {
-                                    display_state_lock.current_screen.is_sensor_overview()
-                                } else {
-                                    false
-                                };
+                        match state {
+                            ButtonMonitorState::CountdownActive => {
+                                let elapsed = countdown_start.elapsed();
+                                if elapsed < COUNTDOWN_DURATION {
+                                    // Released early - check for double-click to enter selection mode
+                                    let on_sensor_overview = if let Ok(display_state_lock) = display_state.lock() {
+                                        display_state_lock.current_screen.is_sensor_overview()
+                                    } else {
+                                        false
+                                    };
 
-                                if on_sensor_overview {
-                                    // Enter selection mode
-                                    if let Ok(mut display_state_lock) = display_state.lock() {
-                                        display_state_lock.enter_selection_mode();
-                                        eprintln!("[ButtonMonitor] ENTER released early ({:.1}s) - entering selection mode", elapsed.as_secs_f32());
+                                    if on_sensor_overview {
+                                        // Check if this is a double-click
+                                        let is_double_click = last_enter_click
+                                            .map(|last| last.elapsed() < DOUBLE_CLICK_THRESHOLD)
+                                            .unwrap_or(false);
+
+                                        if is_double_click {
+                                            // Double-click detected - enter selection mode
+                                            if let Ok(mut display_state_lock) = display_state.lock() {
+                                                display_state_lock.enter_selection_mode();
+                                                eprintln!("[ButtonMonitor] Double-click detected - entering selection mode");
+                                            }
+                                            state = ButtonMonitorState::SelectionMode;
+                                            selection_activity = Instant::now();
+                                            last_enter_click = None;
+                                        } else {
+                                            // First click - record time and wait for second click
+                                            last_enter_click = Some(Instant::now());
+                                            eprintln!("[ButtonMonitor] ENTER click recorded - waiting for double-click");
+                                            state = ButtonMonitorState::Idle;
+                                        }
+                                    } else {
+                                        // Not on sensor overview - just cancel countdown
+                                        eprintln!("[ButtonMonitor] ENTER released early ({:.1}s) - countdown cancelled", elapsed.as_secs_f32());
+                                        state = ButtonMonitorState::Idle;
                                     }
-                                    state = ButtonMonitorState::SelectionMode;
-                                    selection_activity = Instant::now(); // Start inactivity timer
-                                } else {
-                                    // Not on sensor overview - just cancel countdown
-                                    eprintln!("[ButtonMonitor] ENTER released early ({:.1}s) - countdown cancelled", elapsed.as_secs_f32());
+                                }
+                                // If >= 5 seconds, already transitioned to ShowingQr
+                            }
+                            ButtonMonitorState::SelectionMode => {
+                                // In selection mode - check for double-click to exit
+                                let is_double_click = last_enter_click
+                                    .map(|last| last.elapsed() < DOUBLE_CLICK_THRESHOLD)
+                                    .unwrap_or(false);
+
+                                if is_double_click {
+                                    // Double-click detected - exit selection mode
+                                    if let Ok(mut display_state_lock) = display_state.lock() {
+                                        display_state_lock.show_sensor_overview();
+                                        eprintln!("[ButtonMonitor] Double-click detected - exiting selection mode");
+                                    }
                                     state = ButtonMonitorState::Idle;
+                                    last_enter_click = None;
+                                } else {
+                                    // Single click - enter detail view
+                                    if let Ok(mut display_state_lock) = display_state.lock() {
+                                        display_state_lock.enter_detail_view();
+                                        eprintln!("[ButtonMonitor] Entering sensor detail view");
+                                    }
+                                    state = ButtonMonitorState::ShowingDetail;
+                                    selection_activity = Instant::now();
+                                    last_enter_click = Some(Instant::now());
                                 }
                             }
-                            // If >= 5 seconds, already transitioned to ShowingQr
+                            ButtonMonitorState::ShowingDetail => {
+                                // In detail view - check for double-click to exit completely
+                                let is_double_click = last_enter_click
+                                    .map(|last| last.elapsed() < DOUBLE_CLICK_THRESHOLD)
+                                    .unwrap_or(false);
+
+                                if is_double_click {
+                                    // Double-click - exit to sensor overview
+                                    if let Ok(mut display_state_lock) = display_state.lock() {
+                                        display_state_lock.show_sensor_overview();
+                                        eprintln!("[ButtonMonitor] Double-click detected - exiting to sensor overview");
+                                    }
+                                    state = ButtonMonitorState::Idle;
+                                    last_enter_click = None;
+                                } else {
+                                    // Single click - exit to selection mode
+                                    if let Ok(mut display_state_lock) = display_state.lock() {
+                                        display_state_lock.exit_detail_view();
+                                        eprintln!("[ButtonMonitor] Exiting sensor detail view to selection mode");
+                                    }
+                                    state = ButtonMonitorState::SelectionMode;
+                                    selection_activity = Instant::now();
+                                    last_enter_click = Some(Instant::now());
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
