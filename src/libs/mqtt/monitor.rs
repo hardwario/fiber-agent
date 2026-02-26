@@ -230,6 +230,8 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
 #[derive(Clone)]
 pub struct MqttHandle {
     sender: Sender<MqttMessage>,
+    /// Flag set to true when MQTT reconnects, so sensor monitor can flush immediately
+    pub reconnected_flag: Arc<AtomicBool>,
 }
 
 impl MqttHandle {
@@ -356,8 +358,11 @@ impl MqttMonitor {
         let pairing_handle: SharedPairingHandle = Arc::new(Mutex::new(None));
         let pairing_handle_clone = pairing_handle.clone();
 
+        // Create shared reconnect flag
+        let reconnected_flag = Arc::new(AtomicBool::new(false));
+
         // Create handle for sending messages
-        let handle = MqttHandle { sender };
+        let handle = MqttHandle { sender, reconnected_flag: reconnected_flag.clone() };
         let handle_clone = handle.clone();
 
         // Clone STM bridge for monitor thread
@@ -365,6 +370,9 @@ impl MqttMonitor {
 
         // Clone screen brightness for monitor thread
         let screen_brightness_clone = screen_brightness.clone();
+
+        // Clone reconnect flag for monitor thread
+        let reconnected_flag_clone = reconnected_flag.clone();
 
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
@@ -378,6 +386,7 @@ impl MqttMonitor {
                 power_status,
                 stm_bridge_clone,
                 screen_brightness_clone,
+                reconnected_flag_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -425,6 +434,7 @@ impl MqttMonitor {
         power_status: crate::libs::power::status::SharedPowerStatus,
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
+        reconnected_flag: Arc<AtomicBool>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -706,6 +716,10 @@ impl MqttMonitor {
                                     state.record_reconnection();
                                     state.set_state(ConnectionState::Connected);
                                 }
+
+                                // Signal sensor monitor to flush buffered data immediately
+                                reconnected_flag.store(true, Ordering::Release);
+                                eprintln!("[MQTT Monitor] Reconnect flag set - sensor monitor will flush buffered data");
 
                                 // Re-subscribe to command topics (required after reconnection)
                                 // Always re-subscribe as the broker may have lost our subscriptions

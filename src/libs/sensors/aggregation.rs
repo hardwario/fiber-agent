@@ -1,11 +1,13 @@
 use crate::libs::alarms::AlarmState;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_BUFFERED_PERIODS: usize = 100; // 5 hours @ 3-min intervals
 
 /// Count of samples in each alarm state during an aggregation window
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AlarmStateCounts {
     pub normal: u32,
     pub warning: u32,
@@ -53,7 +55,7 @@ impl AlarmStateCounts {
 }
 
 /// Per-sensor statistics for one aggregation window
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorAggregation {
     pub line: u8,
     pub sample_count: u32,
@@ -137,7 +139,7 @@ impl SensorAggregation {
 }
 
 /// Completed aggregation period for all 8 sensors
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationPeriod {
     pub sensors: [SensorAggregation; 8],
     pub period_start_ts: u64,
@@ -300,6 +302,56 @@ impl AggregationState {
             eprintln!("[Aggregation] Taking {} periods for MQTT publishing", periods.len());
         }
         periods
+    }
+
+    /// Save completed periods to a JSON file for crash recovery
+    pub fn save_pending(&self, path: &Path) -> Result<(), std::io::Error> {
+        let periods: Vec<_> = self.completed_periods.iter().cloned().collect();
+        if periods.is_empty() {
+            // Nothing to save, remove stale file if it exists
+            let _ = std::fs::remove_file(path);
+            return Ok(());
+        }
+        let data = serde_json::to_string(&periods)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, data)?;
+        eprintln!("[Aggregation] Saved {} pending periods to {:?}", periods.len(), path);
+        Ok(())
+    }
+
+    /// Load previously saved periods on startup
+    pub fn load_pending(path: &Path) -> Vec<AggregationPeriod> {
+        match std::fs::read_to_string(path) {
+            Ok(data) => {
+                let _ = std::fs::remove_file(path); // Consume on load
+                match serde_json::from_str::<Vec<AggregationPeriod>>(&data) {
+                    Ok(periods) => {
+                        eprintln!("[Aggregation] Loaded {} pending periods from {:?}", periods.len(), path);
+                        periods
+                    }
+                    Err(e) => {
+                        eprintln!("[Aggregation] Warning: Failed to parse pending periods: {}", e);
+                        Vec::new()
+                    }
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Prepend previously saved periods to the front of the queue
+    pub fn prepend_periods(&mut self, periods: Vec<AggregationPeriod>) {
+        if periods.is_empty() {
+            return;
+        }
+        eprintln!("[Aggregation] Prepending {} recovered periods to queue", periods.len());
+        for period in periods.into_iter().rev() {
+            self.completed_periods.push_front(period);
+        }
+        // Cap at max
+        while self.completed_periods.len() > MAX_BUFFERED_PERIODS {
+            self.completed_periods.pop_front();
+        }
     }
 
     /// Get current UNIX timestamp in seconds

@@ -137,11 +137,23 @@ impl SensorMonitor {
         let failure_debounce_count = 2;  // Require 2 consecutive failures before marking sensor as failed
 
         // Initialize aggregation state for MQTT reporting
+        let pending_path = std::path::Path::new("/data/fiber/pending_aggregations.json");
         let aggregation_state = Arc::new(RwLock::new(
             AggregationState::new(Duration::from_millis(config.aggregation_interval_ms))
         ));
+
+        // Load any pending periods saved from a previous run
+        let recovered_periods = AggregationState::load_pending(pending_path);
+        if !recovered_periods.is_empty() {
+            if let Ok(mut agg) = aggregation_state.write() {
+                agg.prepend_periods(recovered_periods);
+            }
+        }
+
         let mut last_aggregation_report = Instant::now();
         let mut aggregation_report_interval = Duration::from_millis(config.report_interval_ms);
+        let mut last_pending_save = Instant::now();
+        let pending_save_interval = Duration::from_secs(60); // Save pending every 60s
 
         // Track current interval values for hot-reload comparison
         let mut current_sample_interval_ms = config.sample_interval_ms;
@@ -203,7 +215,13 @@ impl SensorMonitor {
 
             // Check for shutdown signal
             if shutdown_flag.load(Ordering::Relaxed) {
-                eprintln!("[SensorMonitor] Shutdown signal received, exiting monitor thread");
+                eprintln!("[SensorMonitor] Shutdown signal received, saving pending aggregations...");
+                if let Ok(agg) = aggregation_state.read() {
+                    if let Err(e) = agg.save_pending(pending_path) {
+                        eprintln!("[SensorMonitor] Warning: Failed to save pending periods on shutdown: {}", e);
+                    }
+                }
+                eprintln!("[SensorMonitor] Exiting monitor thread");
                 break;
             }
 
@@ -305,8 +323,16 @@ impl SensorMonitor {
                 }
             }
 
-            // Check if it's time to report aggregated data (global timer, all sensors together)
-            if last_aggregation_report.elapsed() >= aggregation_report_interval {
+            // Check for MQTT reconnect flag (immediate flush) or regular timer
+            let force_flush = mqtt_handle.as_ref()
+                .map(|mqtt| mqtt.reconnected_flag.swap(false, Ordering::AcqRel))
+                .unwrap_or(false);
+
+            if force_flush {
+                eprintln!("[SensorMonitor] MQTT reconnected - flushing buffered aggregation data immediately");
+            }
+
+            if force_flush || last_aggregation_report.elapsed() >= aggregation_report_interval {
                 last_aggregation_report = Instant::now();
 
                 let periods = if let Ok(mut agg_state) = aggregation_state.write() {
@@ -325,8 +351,26 @@ impl SensorMonitor {
                             "Sensor 5".to_string(), "Sensor 6".to_string(),
                             "Sensor 7".to_string(), "Sensor 8".to_string(),
                         ]);
+                    if force_flush && !periods.is_empty() {
+                        eprintln!("[SensorMonitor] Flushing {} buffered periods after reconnect", periods.len());
+                    }
+                    let published_count = periods.len();
                     for period in periods {
-                        mqtt.send_aggregated_sensor_data(period, names.clone());  // Send all 8 sensors in one message
+                        mqtt.send_aggregated_sensor_data(period, names.clone());
+                    }
+                    // Clear pending file after successful publish
+                    if published_count > 0 {
+                        let _ = std::fs::remove_file(pending_path);
+                    }
+                }
+            }
+
+            // Periodically save pending aggregation periods for crash recovery
+            if last_pending_save.elapsed() >= pending_save_interval {
+                last_pending_save = Instant::now();
+                if let Ok(agg) = aggregation_state.read() {
+                    if let Err(e) = agg.save_pending(pending_path) {
+                        eprintln!("[SensorMonitor] Warning: Failed to save pending periods: {}", e);
                     }
                 }
             }

@@ -1,9 +1,10 @@
 //! Alarm state machine implementation
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Alarm state - represents the current condition of a monitored value
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlarmState {
     /// Sensor has never been successfully connected (no alarm on startup)
     NeverConnected,
