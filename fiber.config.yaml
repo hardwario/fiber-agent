@@ -69,7 +69,7 @@ system:
   app_name: FIBER Medical Thermometer
   app_version: 0.1.0
   timezone_offset_hours: 0
-  device_label: ENZO
+  device_label: PROXIMOS
   led_brightness: 25
   screen_brightness: 50
 mqtt:
