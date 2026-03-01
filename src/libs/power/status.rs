@@ -91,7 +91,7 @@ impl PowerStatus {
     /// Get LED control state for power indicator (PWRLEDG / PWRLEDY)
     /// Returns (color, blink) using PowerLedColor enum
     /// - DC Power: GREEN (steady)
-    /// - Battery OK (>3200mV): LIME (steady)
+    /// - Battery OK (>3200mV): YELLOW (blinking)
     /// - Battery Low (3100-3200mV): YELLOW (steady)
     /// - Battery Critical (<3100mV): YELLOW (blinking)
     pub fn get_pwr_led_state(&self) -> (crate::libs::leds::state::PowerLedColor, bool) {
@@ -107,8 +107,8 @@ impl PowerStatus {
             // Battery low: YELLOW (steady)
             (PowerLedColor::Yellow, false)
         } else if self.is_normal_battery() {
-            // Battery OK on battery power: LIME (steady)
-            (PowerLedColor::Lime, false)
+            // Battery OK on battery power: YELLOW (blinking) - immediate PoE loss indicator
+            (PowerLedColor::Yellow, true)
         } else {
             // Fallback
             (PowerLedColor::Off, false)
@@ -177,11 +177,11 @@ mod tests {
     #[test]
     fn test_pwr_led_battery_ok() {
         use crate::libs::leds::state::PowerLedColor;
-        // Battery mode, not low: LIME steady
+        // Battery mode, not low: YELLOW blinking (PoE loss indicator)
         let battery_ok = PowerStatus::new(3300, 5000);
         let (color, blink) = battery_ok.get_pwr_led_state();
-        assert_eq!(color, PowerLedColor::Lime, "Battery OK should be LIME");
-        assert!(!blink, "Battery OK should not blink");
+        assert_eq!(color, PowerLedColor::Yellow, "Battery OK should be YELLOW");
+        assert!(blink, "Battery OK should blink to indicate PoE loss");
     }
 
     #[test]
