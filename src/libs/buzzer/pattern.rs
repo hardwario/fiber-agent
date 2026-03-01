@@ -1,6 +1,7 @@
 //! Buzzer pattern definitions and types
 
 use crate::libs::config::BuzzerTiming;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
@@ -50,20 +51,36 @@ impl Default for BuzzerStateInner {
     }
 }
 
+/// Shared buzzer volume handle for thread-safe volume control
+pub type SharedBuzzerVolume = std::sync::Arc<AtomicU8>;
+
 /// Shared buzzer state with notification (wrapper for thread coordination)
 pub struct SharedBuzzerState {
     /// Internal state protected by mutex
     state: Mutex<BuzzerStateInner>,
     /// Condition variable for notifying the buzzer thread of pattern changes
     notify: Condvar,
+    /// Buzzer volume (0 = muted, 1-100 = active). Shared with external consumers.
+    volume: SharedBuzzerVolume,
 }
 
 impl SharedBuzzerState {
-    /// Create new buzzer state with Off pattern
+    /// Create new buzzer state with Off pattern and default volume (100%)
     pub fn new() -> Self {
         Self {
             state: Mutex::new(BuzzerStateInner::new()),
             notify: Condvar::new(),
+            volume: std::sync::Arc::new(AtomicU8::new(100)),
+        }
+    }
+
+    /// Create new buzzer state with an externally-shared volume handle.
+    /// This allows the MQTT monitor to update the volume without direct access to the buzzer state.
+    pub fn new_with_volume(volume: SharedBuzzerVolume) -> Self {
+        Self {
+            state: Mutex::new(BuzzerStateInner::new()),
+            notify: Condvar::new(),
+            volume,
         }
     }
 
@@ -97,6 +114,19 @@ impl SharedBuzzerState {
         };
 
         let _ = self.notify.wait_timeout(guard, timeout);
+    }
+
+    /// Get the current buzzer volume (0 = muted, 1-100 = active)
+    pub fn get_volume(&self) -> u8 {
+        self.volume.load(Ordering::Relaxed)
+    }
+
+    /// Set the buzzer volume (0 = muted, 1-100 = active)
+    /// Wakes the buzzer thread so it can apply the new volume immediately.
+    pub fn set_volume(&self, volume: u8) {
+        let clamped = volume.min(100);
+        self.volume.store(clamped, Ordering::Relaxed);
+        self.notify.notify_one();
     }
 }
 

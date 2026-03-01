@@ -34,6 +34,9 @@ pub type SharedStmBridge = Arc<Mutex<crate::drivers::StmBridge>>;
 /// Shared screen brightness handle for display backlight control
 pub type SharedScreenBrightnessHandle = std::sync::Arc<std::sync::atomic::AtomicU8>;
 
+/// Shared buzzer volume handle (0 = muted, 1-100 = active)
+pub type SharedBuzzerVolumeHandle = std::sync::Arc<std::sync::atomic::AtomicU8>;
+
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
 enum ErrorCategory {
@@ -319,12 +322,13 @@ pub struct MqttMonitor {
     pairing_handle: SharedPairingHandle,
     stm_bridge: Option<SharedStmBridge>,
     screen_brightness: Option<SharedScreenBrightnessHandle>,
+    buzzer_volume: Option<SharedBuzzerVolumeHandle>,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, power_status, None, None)
+        Self::new_with_stm(config, hostname, power_status, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -334,6 +338,7 @@ impl MqttMonitor {
         power_status: crate::libs::power::status::SharedPowerStatus,
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
+        buzzer_volume: Option<SharedBuzzerVolumeHandle>,
     ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
@@ -342,6 +347,9 @@ impl MqttMonitor {
         }
         if screen_brightness.is_some() {
             eprintln!("[MQTT Monitor] Screen brightness control available");
+        }
+        if buzzer_volume.is_some() {
+            eprintln!("[MQTT Monitor] Buzzer volume control available");
         }
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -371,6 +379,9 @@ impl MqttMonitor {
         // Clone screen brightness for monitor thread
         let screen_brightness_clone = screen_brightness.clone();
 
+        // Clone buzzer volume for monitor thread
+        let buzzer_volume_clone = buzzer_volume.clone();
+
         // Clone reconnect flag for monitor thread
         let reconnected_flag_clone = reconnected_flag.clone();
 
@@ -386,6 +397,7 @@ impl MqttMonitor {
                 power_status,
                 stm_bridge_clone,
                 screen_brightness_clone,
+                buzzer_volume_clone,
                 reconnected_flag_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
@@ -402,6 +414,7 @@ impl MqttMonitor {
             pairing_handle,
             stm_bridge,
             screen_brightness,
+            buzzer_volume,
         })
     }
 
@@ -434,6 +447,7 @@ impl MqttMonitor {
         power_status: crate::libs::power::status::SharedPowerStatus,
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
+        buzzer_volume: Option<SharedBuzzerVolumeHandle>,
         reconnected_flag: Arc<AtomicBool>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
@@ -653,7 +667,7 @@ impl MqttMonitor {
 
                 // Publish current config state so viewer gets actual values
                 let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
-                if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, led_br) {
+                if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
                     if let Err(e) = publisher.handle_message(config_msg).await {
                         eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
                     } else {
@@ -877,13 +891,14 @@ impl MqttMonitor {
                                                                         &config_applier,
                                                                         &stm_bridge,
                                                                         &screen_brightness,
+                                                                        &buzzer_volume,
                                                                         &led_brightness_tracker,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
                                                                         // Publish updated config state after successful command
                                                                         let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, led_br) {
+                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
                                                                             if let Err(e) = publisher.handle_message(config_msg).await {
                                                                                 eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
                                                                             }
@@ -1351,6 +1366,7 @@ impl MqttMonitor {
         config_applier: &Option<Arc<ConfigApplier>>,
         stm_bridge: &Option<SharedStmBridge>,
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
+        buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
     ) -> Result<(), String> {
         match cmd {
@@ -1506,6 +1522,22 @@ impl MqttMonitor {
                     Err("Screen brightness control not available".to_string())
                 }
             }
+            MqttCommand::SetBuzzerVolume { volume } => {
+                if let Some(bv) = buzzer_volume {
+                    bv.store(volume, std::sync::atomic::Ordering::Relaxed);
+                    // Persist to config YAML
+                    if let Some(applier) = config_applier {
+                        let result = applier.apply_buzzer_volume_change(volume);
+                        if !result.success {
+                            eprintln!("[MQTT Monitor] Warning: Failed to persist buzzer volume: {:?}", result.error_message);
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ Buzzer volume set to {}%", volume);
+                    Ok(())
+                } else {
+                    Err("Buzzer volume control not available".to_string())
+                }
+            }
             MqttCommand::SetNetworkConfig {
                 interface,
                 config_type,
@@ -1541,6 +1573,7 @@ impl MqttMonitor {
     /// Build a PublishConfigState message from current config files and runtime state
     fn build_config_state_message(
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
+        buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
         led_brightness: u8,
     ) -> Option<MqttMessage> {
         let main_config = crate::libs::config::Config::load_default().ok()?;
@@ -1572,6 +1605,11 @@ impl MqttMonitor {
             .map(|sb| sb.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(100);
 
+        let buzzer_vol = buzzer_volume
+            .as_ref()
+            .map(|bv| bv.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(main_config.system.buzzer_volume);
+
         let device_label = main_config.system.device_label
             .unwrap_or_default();
 
@@ -1583,6 +1621,7 @@ impl MqttMonitor {
         Some(MqttMessage::PublishConfigState {
             led_brightness,
             screen_brightness: screen_br,
+            buzzer_volume: buzzer_vol,
             system_info_interval_s,
             device_label,
             sensors,

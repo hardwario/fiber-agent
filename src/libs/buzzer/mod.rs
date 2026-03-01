@@ -32,5 +32,5 @@ pub mod priority;
 mod thread;
 
 pub use controller::BuzzerController;
-pub use pattern::{BuzzerPattern, SharedBuzzerState};
+pub use pattern::{BuzzerPattern, SharedBuzzerState, SharedBuzzerVolume};
 pub use priority::BuzzerPriorityManager;

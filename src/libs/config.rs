@@ -584,6 +584,10 @@ pub struct SystemConfig {
     /// Screen brightness percentage (0-100), persisted across reboots
     #[serde(default = "default_screen_brightness")]
     pub screen_brightness: u8,
+
+    /// Buzzer volume percentage (0 = muted, 1-100 = active). Default 100.
+    #[serde(default = "default_buzzer_volume")]
+    pub buzzer_volume: u8,
 }
 
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
@@ -770,6 +774,7 @@ fn default_alarm_pattern() -> AlarmStatePattern {
 // Default value functions for system configuration
 fn default_led_brightness() -> u8 { 50 }
 fn default_screen_brightness() -> u8 { 100 }
+fn default_buzzer_volume() -> u8 { 100 }
 
 // Default value functions for MQTT configuration
 fn default_true() -> bool { true }
@@ -919,6 +924,7 @@ impl Config {
                 device_label: None, // Defaults to hostname at runtime
                 led_brightness: 50,
                 screen_brightness: 100,
+                buzzer_volume: 100,
             },
             mqtt: None,  // MQTT disabled by default
         }

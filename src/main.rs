@@ -190,9 +190,14 @@ fn main() -> io::Result<()> {
     let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None)?;
     eprintln!("[main] Button monitor started");
 
-    // Create buzzer controller for power monitoring alerts
+    // Create shared buzzer volume (0 = muted, 1-100 = active)
+    // Initialize from persisted config if available
+    let buzzer_volume = Arc::new(AtomicU8::new(config.system.buzzer_volume));
+    eprintln!("[main] Buzzer volume initialized at {}%", config.system.buzzer_volume);
+
+    // Create buzzer controller for power monitoring alerts (with shared volume)
     eprintln!("[main] Initializing buzzer for power management...");
-    let power_buzzer = Arc::new(Mutex::new(BuzzerController::new(gpio.clone())?));
+    let power_buzzer = Arc::new(Mutex::new(BuzzerController::new_with_volume(gpio.clone(), buzzer_volume.clone())?));
 
     // Create buzzer priority manager for coordinating battery and sensor critical alarms
     eprintln!("[main] Initializing buzzer priority manager...");
@@ -248,9 +253,10 @@ fn main() -> io::Result<()> {
             power_status.clone(),
             Some(stm_guard.clone()),
             Some(screen_brightness.clone()),
+            Some(buzzer_volume.clone()),
         ) {
             Ok(monitor) => {
-                eprintln!("[main] MQTT monitor started with STM bridge and screen brightness control");
+                eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
                 let handle = monitor.handle();
                 (Some(handle), Some(monitor))
             }

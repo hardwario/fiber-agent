@@ -865,6 +865,11 @@ impl ConfigApplier {
         self.apply_system_field_u8_change("screen_brightness", brightness, "Screen brightness")
     }
 
+    /// Apply buzzer volume change to main configuration
+    pub fn apply_buzzer_volume_change(&self, volume: u8) -> ApplyResult {
+        self.apply_system_field_u8_change("buzzer_volume", volume, "Buzzer volume")
+    }
+
     /// Generic helper to update a u8 field in the system section of main config
     fn apply_system_field_u8_change(&self, field_name: &str, value: u8, display_name: &str) -> ApplyResult {
         let applied_at = SystemTime::now()

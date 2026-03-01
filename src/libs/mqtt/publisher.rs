@@ -156,6 +156,7 @@ impl MqttPublisher {
             MqttMessage::PublishConfigState {
                 led_brightness,
                 screen_brightness,
+                buzzer_volume,
                 system_info_interval_s,
                 device_label,
                 sensors,
@@ -166,6 +167,7 @@ impl MqttPublisher {
                 self.publish_config_state(
                     led_brightness,
                     screen_brightness,
+                    buzzer_volume,
                     system_info_interval_s,
                     &device_label,
                     sensors,
@@ -536,6 +538,7 @@ impl MqttPublisher {
         &self,
         led_brightness: u8,
         screen_brightness: u8,
+        buzzer_volume: u8,
         system_info_interval_s: u64,
         device_label: &str,
         sensors: Vec<super::messages::SensorConfigData>,
@@ -567,6 +570,7 @@ impl MqttPublisher {
             "timestamp": Self::timestamp(),
             "led_brightness": led_brightness,
             "screen_brightness": screen_brightness,
+            "buzzer_volume": buzzer_volume,
             "system_info_interval_s": system_info_interval_s,
             "device_label": device_label,
             "sensors": sensors_data,

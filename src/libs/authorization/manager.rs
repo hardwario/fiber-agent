@@ -460,6 +460,7 @@ impl AuthorizationManager {
             "set_device_label" => "set_device_label",
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
+            "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
@@ -523,6 +524,10 @@ impl AuthorizationManager {
             "set_screen_brightness" => {
                 let brightness = params.get("brightness").and_then(|v| v.as_u64()).unwrap_or(50);
                 format!("Set screen brightness to {}%", brightness)
+            }
+            "set_buzzer_volume" => {
+                let volume = params.get("volume").and_then(|v| v.as_u64()).unwrap_or(100);
+                format!("Set buzzer volume to {}%", volume)
             }
             "set_network_config" => {
                 let iface = params.get("interface").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -657,6 +662,19 @@ impl AuthorizationManager {
                 }
 
                 Ok(MqttCommand::SetScreenBrightness { brightness })
+            }
+            "set_buzzer_volume" => {
+                let volume = challenge.params.get("volume")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing volume".to_string()))?
+                    as u8;
+
+                // Validate range
+                if volume > 100 {
+                    return Err(AuthError::InvalidCommand("Volume must be 0-100".to_string()));
+                }
+
+                Ok(MqttCommand::SetBuzzerVolume { volume })
             }
             "set_network_config" => {
                 let interface = challenge.params.get("interface")

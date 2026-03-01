@@ -124,9 +124,10 @@ fn buzzer_control_loop(shutdown_flag: Arc<AtomicBool>, buzzer_state: Arc<SharedB
                     }
                 };
 
-                // Set buzzer pin state
+                // Set buzzer pin state (volume-aware: 0 = muted)
+                let volume = buzzer_state.get_volume();
                 if let Some(ref mut bz) = buzzer {
-                    bz.set_state(should_beep);
+                    bz.set_state_with_volume(should_beep, volume);
 
                     // Log state transitions
                     if should_beep && !buzzer_is_on {

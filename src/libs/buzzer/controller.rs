@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use super::pattern::{BuzzerPattern, SharedBuzzerState};
+use super::pattern::{BuzzerPattern, SharedBuzzerState, SharedBuzzerVolume};
 use super::thread::spawn_buzzer_thread;
 
 /// Controller for managing buzzer patterns and thread
@@ -23,6 +23,26 @@ impl BuzzerController {
     pub fn new(gpio: Arc<Gpio>) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let buzzer_state = Arc::new(SharedBuzzerState::new());
+
+        let shutdown_flag_clone = shutdown_flag.clone();
+        let buzzer_state_clone = buzzer_state.clone();
+        let gpio_clone = gpio.clone();
+
+        let buzzer_thread_handle = spawn_buzzer_thread(shutdown_flag_clone, buzzer_state_clone, gpio_clone);
+
+        Ok(Self {
+            shutdown_flag,
+            buzzer_state,
+            buzzer_thread_handle: Some(buzzer_thread_handle),
+        })
+    }
+
+    /// Create and initialize a new buzzer controller with an externally-shared volume handle.
+    /// The shared volume allows other components (e.g., MQTT monitor) to adjust volume
+    /// without direct access to the buzzer controller.
+    pub fn new_with_volume(gpio: Arc<Gpio>, volume: SharedBuzzerVolume) -> io::Result<Self> {
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let buzzer_state = Arc::new(SharedBuzzerState::new_with_volume(volume));
 
         let shutdown_flag_clone = shutdown_flag.clone();
         let buzzer_state_clone = buzzer_state.clone();
@@ -55,6 +75,16 @@ impl BuzzerController {
     pub fn stop(&self) {
         eprintln!("[BuzzerController] Buzzer stopped");
         self.buzzer_state.set_pattern(BuzzerPattern::Off);
+    }
+
+    /// Set buzzer volume (0 = muted, 1-100 = active)
+    pub fn set_volume(&self, volume: u8) {
+        self.buzzer_state.set_volume(volume);
+    }
+
+    /// Get current buzzer volume (0 = muted, 1-100 = active)
+    pub fn get_volume(&self) -> u8 {
+        self.buzzer_state.get_volume()
     }
 
     /// Gracefully shutdown the controller and buzzer thread

@@ -39,6 +39,18 @@ impl Buzzer {
         }
     }
 
+    /// Set buzzer state with volume control.
+    /// volume 0 = muted (always off), volume 1-100 = active (full on when on=true).
+    /// True PWM volume control on a GPIO piezo buzzer is unreliable,
+    /// so this implements: 0 = muted, 1-100 = active at full volume.
+    pub fn set_state_with_volume(&mut self, on: bool, volume: u8) {
+        if !on || volume == 0 {
+            self.pin.set_high(); // OFF (inactive)
+        } else {
+            self.pin.set_low();  // ON (active-low)
+        }
+    }
+
     /// Generate PWM (Pulse Width Modulation) beeping pattern
     /// Creates rapid toggling at specified frequency to produce audible beeping
     ///
