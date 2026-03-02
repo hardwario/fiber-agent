@@ -7,9 +7,10 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Text},
 };
-use profont::PROFONT_9_POINT;
+use super::font::PROFONT_9_POINT;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
+use chrono::Local;
 
 use crate::drivers::display::St7920;
 use crate::libs::alarms::AlarmState;
@@ -28,6 +29,7 @@ pub fn render_sensor_overview(
     sensor_state: &SharedSensorState,
     network_status: &NetworkStatus,
     selected_sensor: Option<usize>,
+    device_label: &str,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -38,9 +40,14 @@ pub fn render_sensor_overview(
     // Draw network connection icons on the left (aligned with top of FIBER text)
     icons::draw_network_status(display, 2, 0, network_status);
 
-    // Draw header: "FIBER" centered, page/mode indicator right-aligned
+    // Draw header: device label centered, page/mode indicator right-aligned
+    let header_label = if device_label.len() > 14 {
+        format!("{}...", &device_label[..11])
+    } else {
+        device_label.to_string()
+    };
     Text::with_alignment(
-        "FIBER",
+        &header_label,
         Point::new(64, 9),
         header_style,
         Alignment::Center,
@@ -282,7 +289,6 @@ pub fn render_system_info(
     hostname: &str,
     device_label: &str,
     app_version: &str,
-    timezone_offset_hours: i8,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -315,12 +321,12 @@ pub fn render_system_info(
             .draw(display)
             .ok();
 
-        let date_str = format!("Date:{}", format_date(timezone_offset_hours));
+        let date_str = format!("Date:{}", format_date());
         Text::new(&date_str, Point::new(2, 35), text_style)
             .draw(display)
             .ok();
 
-        let time_str = format!("Time:{}", format_time(timezone_offset_hours));
+        let time_str = format!("Time:{}", format_time());
         Text::new(&time_str, Point::new(2, 47), text_style)
             .draw(display)
             .ok();
@@ -352,7 +358,7 @@ pub fn render_system_info(
             .draw(display)
             .ok();
 
-        let alarm_str = format_last_alarm(power_status, timezone_offset_hours);
+        let alarm_str = format_last_alarm(power_status);
         let alarm_line = format!("LastAlarm:{}", alarm_str);
         Text::new(&alarm_line, Point::new(2, 59), text_style)
             .draw(display)
@@ -392,41 +398,14 @@ pub fn render_system_info(
     display.flush()
 }
 
-/// Format current date as YYYY-MM-DD
-fn format_date(offset_hours: i8) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-
-    let total_secs = now.as_secs() as i64 + (offset_hours as i64 * 3600);
-    let days_since_epoch = total_secs / 86400;
-
-    // Approximate year (365.25 days per year)
-    let year = 1970 + (days_since_epoch as f64 / 365.25) as i32;
-
-    // Approximate day of year
-    let day_of_year = days_since_epoch % 365;
-
-    // Approximate month and day (simple 30-day month approximation)
-    let month = 1 + (day_of_year / 30).min(11);
-    let day = 1 + (day_of_year % 30);
-
-    format!("{:04}-{:02}-{:02}", year, month, day)
+/// Format current date as YYYY-MM-DD using Linux system local time
+fn format_date() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// Format current time as HH:MM:SS
-fn format_time(offset_hours: i8) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-
-    let total_secs = now.as_secs() as i64 + (offset_hours as i64 * 3600);
-
-    let hours = ((total_secs / 3600) % 24) as u32;
-    let minutes = ((total_secs / 60) % 60) as u32;
-    let seconds = (total_secs % 60) as u32;
-
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+/// Format current time as HH:MM:SS using Linux system local time
+fn format_time() -> String {
+    Local::now().format("%H:%M:%S").to_string()
 }
 
 /// Count number of connected probes
@@ -436,17 +415,16 @@ fn count_connected_probes(sensor_state: &SharedSensorState) -> usize {
         .count()
 }
 
-/// Format last power alarm timestamp
-fn format_last_alarm(power_status: &PowerStatus, offset_hours: i8) -> String {
+/// Format last power alarm timestamp using Linux system local time
+fn format_last_alarm(power_status: &PowerStatus) -> String {
     if let Some(alarm_time) = power_status.last_dc_loss_time {
         let duration = alarm_time.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let total_secs = duration.as_secs() as i64 + (offset_hours as i64 * 3600);
-
-        let hours = ((total_secs / 3600) % 24) as u32;
-        let minutes = ((total_secs / 60) % 60) as u32;
-        let seconds = (total_secs % 60) as u32;
-
-        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        let dt = chrono::DateTime::from_timestamp(duration.as_secs() as i64, 0)
+            .map(|utc| utc.with_timezone(&chrono::Local));
+        match dt {
+            Some(local) => local.format("%H:%M:%S").to_string(),
+            None => "Error".to_string(),
+        }
     } else {
         "None".to_string()
     }

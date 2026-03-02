@@ -25,9 +25,9 @@ pub fn display_loop(
     sensor_state: SharedSensorStateHandle,
     power_status: SharedPowerStatus,
     hostname: String,
-    device_label: String,
+    _device_label: String,
     app_version: String,
-    timezone_offset_hours: i8,
+    _timezone_offset_hours: i8,
     screen_brightness: Arc<AtomicU8>,
 ) {
     // Initialize display
@@ -100,8 +100,14 @@ pub fn display_loop(
                         sensor_state.read().unwrap()
                     });
 
+                    // Read device_label fresh from config for hot-reload support
+                    let current_device_label = crate::libs::config::Config::load_default()
+                        .ok()
+                        .and_then(|cfg| cfg.system.device_label)
+                        .unwrap_or_else(|| hostname.clone());
+
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }
@@ -158,7 +164,6 @@ pub fn display_loop(
                         &hostname,
                         &current_device_label,
                         &app_version,
-                        timezone_offset_hours,
                     ) {
                         eprintln!("[DisplayMonitor] Error rendering system info display: {}", e);
                     }

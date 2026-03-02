@@ -19,6 +19,7 @@ use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 /// Type alias for shared screen brightness handle (0-100%)
 pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
 
+pub mod font;
 pub mod monitor;
 pub mod screens;
 pub mod buttons;
