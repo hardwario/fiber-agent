@@ -281,12 +281,6 @@ impl AggregationState {
         }
         self.completed_periods.push_back(period);
 
-        eprintln!(
-            "[Aggregation] Finalized window: {} samples (sensor 0), {} periods queued",
-            self.current_windows[0].sample_count,
-            self.completed_periods.len()
-        );
-
         // Reset for new window
         let window_start_ts = Self::unix_timestamp();
         for sensor in &mut self.current_windows {

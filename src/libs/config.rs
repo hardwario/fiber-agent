@@ -438,6 +438,11 @@ pub struct SensorConfig {
 
     /// Number of consecutive failed reads before marking sensor as offline
     pub failure_threshold: u8,
+
+    /// Number of consecutive successful reads before a sensor exits NeverConnected state.
+    /// Prevents false alarms from lucky single reads during OneWire bus stabilization at boot.
+    #[serde(default = "default_warmup_threshold")]
+    pub warmup_threshold: u8,
 }
 
 /// Temperature threshold configuration
@@ -771,6 +776,9 @@ fn default_alarm_pattern() -> AlarmStatePattern {
     }
 }
 
+// Default value functions for sensor configuration
+fn default_warmup_threshold() -> u8 { 3 }
+
 // Default value functions for system configuration
 fn default_led_brightness() -> u8 { 50 }
 fn default_screen_brightness() -> u8 { 100 }
@@ -866,6 +874,7 @@ impl Config {
                 aggregation_interval_ms: 60000,
                 report_interval_ms: 120000,
                 failure_threshold: 3,
+                warmup_threshold: 3,
             },
             display: DisplayConfig {
                 update_interval_ms: 1000,

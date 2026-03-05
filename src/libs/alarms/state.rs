@@ -47,6 +47,9 @@ pub struct AlarmStateMachine {
 
     /// Reconnect animation counter (0-N, incremented each cycle)
     pub reconnect_cycle: u8,
+
+    /// Number of consecutive successful reads while in NeverConnected (warmup counter)
+    pub warmup_success_count: u8,
 }
 
 impl AlarmStateMachine {
@@ -57,12 +60,16 @@ impl AlarmStateMachine {
             previous: AlarmState::NeverConnected,
             failure_count: 0,
             reconnect_cycle: 0,
+            warmup_success_count: 0,
         }
     }
 
     /// Update state based on read success/failure
+    /// `warmup_threshold` controls how many consecutive successful reads are needed
+    /// before a sensor exits `NeverConnected` state (prevents false alarms from
+    /// lucky single reads during OneWire bus stabilization at boot).
     /// Returns true if state changed
-    pub fn update_from_read_result(&mut self, success: bool, failure_threshold: u8) -> bool {
+    pub fn update_from_read_result(&mut self, success: bool, failure_threshold: u8, warmup_threshold: u8) -> bool {
         let old_state = self.current;
 
         if success {
@@ -77,9 +84,12 @@ impl AlarmStateMachine {
                     self.reconnect_cycle = 0;
                 }
                 AlarmState::NeverConnected => {
-                    // First successful connection - go directly to reconnecting animation
-                    self.current = AlarmState::Reconnecting;
-                    self.reconnect_cycle = 0;
+                    // Increment warmup counter; only transition after enough consecutive successes
+                    self.warmup_success_count = self.warmup_success_count.saturating_add(1);
+                    if self.warmup_success_count >= warmup_threshold {
+                        self.current = AlarmState::Reconnecting;
+                        self.reconnect_cycle = 0;
+                    }
                 }
                 _ => {
                     // Already in a normal state, no change needed
@@ -88,6 +98,11 @@ impl AlarmStateMachine {
         } else {
             // Failed read - increment failure counter
             self.failure_count += 1;
+
+            // Reset warmup counter on failure (sensor not yet stable)
+            if self.current == AlarmState::NeverConnected {
+                self.warmup_success_count = 0;
+            }
 
             // If we've exceeded threshold and we're not already disconnected
             if self.failure_count >= failure_threshold {
@@ -198,11 +213,11 @@ mod tests {
         assert_eq!(sm.current, AlarmState::NeverConnected);
 
         // Multiple failures in NeverConnected state
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 1);
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 2);
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 3);
 
         // Should still be NeverConnected, NOT Disconnected (no alarm on startup)
@@ -213,15 +228,15 @@ mod tests {
     fn test_failure_count_accumulates() {
         let mut sm = AlarmStateMachine::new();
         // Transition out of NeverConnected first
-        sm.update_from_read_result(true, 3);
+        sm.update_from_read_result(true, 3, 1);
         assert_eq!(sm.current, AlarmState::Reconnecting);
 
         sm.previous = sm.current;
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 1);
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 2);
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 3);
         assert_eq!(sm.current, AlarmState::Disconnected);
     }
@@ -229,11 +244,11 @@ mod tests {
     #[test]
     fn test_success_resets_failures() {
         let mut sm = AlarmStateMachine::new();
-        sm.update_from_read_result(false, 3);
-        sm.update_from_read_result(false, 3);
+        sm.update_from_read_result(false, 3, 1);
+        sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.failure_count, 2);
 
-        sm.update_from_read_result(true, 3);
+        sm.update_from_read_result(true, 3, 1);
         assert_eq!(sm.failure_count, 0);
     }
 
@@ -243,9 +258,70 @@ mod tests {
         // Start NeverConnected
         assert_eq!(sm.current, AlarmState::NeverConnected);
 
-        // Successful read triggers reconnecting animation
-        sm.update_from_read_result(true, 3);
+        // Successful read triggers reconnecting animation (warmup_threshold=1)
+        sm.update_from_read_result(true, 3, 1);
         assert_eq!(sm.current, AlarmState::Reconnecting);
+    }
+
+    #[test]
+    fn test_warmup_threshold_delays_transition() {
+        let mut sm = AlarmStateMachine::new();
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+
+        // With warmup_threshold=3, first two successes stay in NeverConnected
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+        assert_eq!(sm.warmup_success_count, 1);
+
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+        assert_eq!(sm.warmup_success_count, 2);
+
+        // Third success meets threshold → transitions to Reconnecting
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.current, AlarmState::Reconnecting);
+        assert_eq!(sm.warmup_success_count, 3);
+    }
+
+    #[test]
+    fn test_warmup_resets_on_failure() {
+        let mut sm = AlarmStateMachine::new();
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+
+        // Two successful reads build up warmup count
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.warmup_success_count, 1);
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.warmup_success_count, 2);
+
+        // A failure resets the warmup counter
+        sm.update_from_read_result(false, 3, 3);
+        assert_eq!(sm.warmup_success_count, 0);
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+
+        // Must start over: need 3 consecutive successes again
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.warmup_success_count, 1);
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+
+        sm.update_from_read_result(true, 3, 3);
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.current, AlarmState::Reconnecting);
+    }
+
+    #[test]
+    fn test_warmup_lucky_read_scenario() {
+        // Simulates the race condition: one lucky read then failures
+        let mut sm = AlarmStateMachine::new();
+
+        // One lucky read during bus instability
+        sm.update_from_read_result(true, 3, 3);
+        assert_eq!(sm.current, AlarmState::NeverConnected); // Still warming up
+
+        // Bus becomes unstable again
+        sm.update_from_read_result(false, 3, 3);
+        assert_eq!(sm.current, AlarmState::NeverConnected); // No false alarm!
+        assert_eq!(sm.warmup_success_count, 0); // Counter reset
     }
 
     #[test]

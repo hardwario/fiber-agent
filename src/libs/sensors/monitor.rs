@@ -73,7 +73,7 @@ impl SensorMonitor {
         let mut alarm_controllers: [AlarmController; 8] = (0..8)
             .map(|idx| {
                 let thresholds = sensor_file_config.get_line_thresholds(idx as u8);
-                let mut controller = AlarmController::new(thresholds, config.failure_threshold, 5);
+                let mut controller = AlarmController::new(thresholds, config.failure_threshold, 5, config.warmup_threshold);
 
                 // Register logging callback for this sensor
                 let logger = Arc::new(LoggingCallback::new(&format!("[Sensor {}]", idx)));
@@ -274,7 +274,6 @@ impl SensorMonitor {
                             }
                         }
 
-                        eprintln!("[SensorMonitor] Sensor configuration reloaded successfully");
                     }
                     Err(e) => {
                         eprintln!("[SensorMonitor] Warning: Failed to reload sensor config: {}", e);
@@ -645,7 +644,6 @@ impl SensorMonitor {
             // The set_line_led() method automatically notifies the LED monitor of changes
             for (idx, controller) in alarm_controllers.iter().enumerate() {
                 let led = controller.get_led_state();
-                eprintln!("[SensorMonitor] DEBUG: Setting LED {} to color={:?} pattern={:?}", idx, led.color, led.pattern);
                 led_state.set_line_led(idx as u8, led);
             }
 

@@ -22,6 +22,7 @@ sensors:
   aggregation_interval_ms: 15000
   report_interval_ms: 60000
   failure_threshold: 3
+  warmup_threshold: 3
 display:
   update_interval_ms: 500
   refresh_rate_hz: 1

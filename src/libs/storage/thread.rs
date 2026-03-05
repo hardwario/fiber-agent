@@ -190,7 +190,6 @@ impl StorageThread {
                     if pending_writes > 0 && last_flush.elapsed() > flush_interval {
                         if let Ok(conn) = db.connect() {
                             let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
-                            eprintln!("STORAGE THREAD: Auto-flushed {} pending writes", pending_writes);
                             pending_writes = 0;
                             last_flush = std::time::Instant::now();
                         }
@@ -273,7 +272,6 @@ impl StorageThread {
                     StorageMessage::Flush => {
                         if let Ok(conn) = db.connect() {
                             let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
-                            eprintln!("STORAGE THREAD: Manual flush of {} pending writes", pending_writes);
                             pending_writes = 0;
                             last_flush = std::time::Instant::now();
                         }
@@ -330,9 +328,6 @@ impl StorageThread {
                 if pending_writes > flush_threshold || last_flush.elapsed() > flush_interval {
                     if let Ok(conn) = db.connect() {
                         let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
-                        if pending_writes > 0 {
-                            eprintln!("STORAGE THREAD: Flushed {} pending writes", pending_writes);
-                        }
                         pending_writes = 0;
                         last_flush = std::time::Instant::now();
                     }

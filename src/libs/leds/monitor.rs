@@ -84,14 +84,6 @@ impl LedMonitor {
             // Read current shared LED state
             let led_state = shared_state.read();
 
-            // Debug: print current state
-            let active_lines: Vec<usize> = led_state.lines.iter().enumerate()
-                .filter_map(|(i, opt)| opt.as_ref().map(|_| i))
-                .collect();
-            if !active_lines.is_empty() {
-                eprintln!("[LedMonitor] DEBUG: Active lines: {:?}", active_lines);
-            }
-
             // Acquire lock to send commands
             if let Ok(mut stm_guard) = stm.lock() {
                 // Update line LEDs - only send if state changed
