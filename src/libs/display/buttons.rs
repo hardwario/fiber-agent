@@ -15,15 +15,15 @@ use super::SharedDisplayStateHandle;
 enum ButtonMonitorState {
     /// Normal operation - waiting for button input
     Idle,
-    /// ENTER button pressed, counting down for 5 seconds
+    /// ENTER button pressed, counting down for 2.5 seconds
     CountdownActive,
     /// QR code screen is displayed
     ShowingQr,
-    /// DOWN button being held, counting down for 5 seconds
+    /// DOWN button being held, counting down for 2.5 seconds
     DownHoldActive,
     /// System info screen is displayed
     ShowingSystem,
-    /// UP button being held, counting down for 5 seconds for pairing
+    /// UP button being held, counting down for 2.5 seconds for pairing
     UpHoldActive,
     /// Pairing screen is displayed
     ShowingPairing,
@@ -44,7 +44,7 @@ impl ButtonMonitor {
     ///
     /// The thread will continuously monitor button input and update the display page
     /// when UP/DOWN buttons are pressed. The ENTER button is reserved for future use.
-    /// If a pairing_handle is provided, UP held for 5 seconds triggers pairing mode.
+    /// If a pairing_handle is provided, UP held for 2.5 seconds triggers pairing mode.
     pub fn new(
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
@@ -83,7 +83,7 @@ impl ButtonMonitor {
         eprintln!("[ButtonMonitor] Started button monitoring with 50ms poll interval");
 
         let poll_interval = Duration::from_millis(50);
-        const COUNTDOWN_DURATION: Duration = Duration::from_secs(5);
+        const COUNTDOWN_DURATION: Duration = Duration::from_millis(2500);
         const SELECTION_TIMEOUT: Duration = Duration::from_secs(15);
         const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
 
@@ -141,7 +141,7 @@ impl ButtonMonitor {
                                     // Start UP hold countdown (for pairing if handle available)
                                     state = ButtonMonitorState::UpHoldActive;
                                     up_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] UP hold started - counting 5 seconds for pairing");
+                                    eprintln!("[ButtonMonitor] UP hold started - counting 2.5 seconds for pairing");
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
@@ -192,7 +192,7 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
-                            // If >= 5 seconds, already transitioned to ShowingPairing
+                            // If >= 2.5 seconds, already transitioned to ShowingPairing
                         }
                     }
                     ButtonEvent::Press(Button::Down) => {
@@ -227,7 +227,7 @@ impl ButtonMonitor {
                                     // Start DOWN hold countdown
                                     state = ButtonMonitorState::DownHoldActive;
                                     down_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 5 seconds");
+                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 2.5 seconds");
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
@@ -276,7 +276,7 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
-                            // If >= 5 seconds, already transitioned to ShowingSystem
+                            // If >= 2.5 seconds, already transitioned to ShowingSystem
                         }
                     }
                     ButtonEvent::Press(Button::Enter) => {
@@ -300,7 +300,7 @@ impl ButtonMonitor {
                                 // Start countdown
                                 state = ButtonMonitorState::CountdownActive;
                                 countdown_start = Instant::now();
-                                eprintln!("[ButtonMonitor] Starting 5-second countdown to QR code screen");
+                                eprintln!("[ButtonMonitor] Starting 2.5-second countdown to QR code screen");
                             }
                             ButtonMonitorState::CountdownActive => {
                                 // ENTER pressed again during countdown - restart
@@ -386,7 +386,7 @@ impl ButtonMonitor {
                                         state = ButtonMonitorState::Idle;
                                     }
                                 }
-                                // If >= 5 seconds, already transitioned to ShowingQr
+                                // If >= 2.5 seconds, already transitioned to ShowingQr
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - check for double-click to exit
@@ -466,7 +466,7 @@ impl ButtonMonitor {
                     // Transition to system info screen
                     if let Ok(mut display_state_lock) = display_state.lock() {
                         display_state_lock.show_system_info();
-                        eprintln!("[ButtonMonitor] DOWN hold complete (5s) - transitioning to system info screen");
+                        eprintln!("[ButtonMonitor] DOWN hold complete (2.5s) - transitioning to system info screen");
                     }
                     state = ButtonMonitorState::ShowingSystem;
                 }
@@ -478,10 +478,10 @@ impl ButtonMonitor {
                     // Trigger pairing mode if handle available
                     if let Some(ref ph) = pairing_handle {
                         ph.start_pairing();
-                        eprintln!("[ButtonMonitor] UP hold complete (5s) - triggering pairing mode");
+                        eprintln!("[ButtonMonitor] UP hold complete (2.5s) - triggering pairing mode");
                         state = ButtonMonitorState::ShowingPairing;
                     } else {
-                        eprintln!("[ButtonMonitor] UP hold complete (5s) - pairing not available (MQTT disabled)");
+                        eprintln!("[ButtonMonitor] UP hold complete (2.5s) - pairing not available (MQTT disabled)");
                         state = ButtonMonitorState::Idle;
                     }
                 }
