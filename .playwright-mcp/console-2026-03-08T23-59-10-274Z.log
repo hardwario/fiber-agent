@@ -1,0 +1,33 @@
+[      26ms] Error: Minified React error #418; visit https://react.dev/errors/418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at t5 (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:24673)
+    at iZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:120538)
+    at ia (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:95165)
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91091
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91098
+    at oZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91203)
+    at MessagePort.M (http://192.168.0.25:8000/_next/static/chunks/2117-ee2f64c40e9fd682.js:1:85166)
+[      26ms] Error: Minified React error #418; visit https://react.dev/errors/418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at t5 (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:24673)
+    at iZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:120538)
+    at ia (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:95165)
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91091
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91098
+    at oZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91203)
+    at MessagePort.M (http://192.168.0.25:8000/_next/static/chunks/2117-ee2f64c40e9fd682.js:1:85166)
+[      27ms] Error: Minified React error #418; visit https://react.dev/errors/418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at t5 (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:24673)
+    at iZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:120538)
+    at ia (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:95165)
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91091
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91098
+    at oZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91203)
+    at MessagePort.M (http://192.168.0.25:8000/_next/static/chunks/2117-ee2f64c40e9fd682.js:1:85166)
+[      27ms] Error: Minified React error #423; visit https://react.dev/errors/423 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at iZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:118352)
+    at ia (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:95165)
+    at http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:94987
+    at il (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:94994)
+    at oJ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:92350)
+    at oZ (http://192.168.0.25:8000/_next/static/chunks/fd9d1056-aa431a5b11d07789.js:1:91769)
+    at MessagePort.M (http://192.168.0.25:8000/_next/static/chunks/2117-ee2f64c40e9fd682.js:1:85166)
+[   54670ms] [WARNING] Unknown message type: storage_update @ http://192.168.0.25:8000/_next/static/chunks/7955-09016cc6108b70c6.js:0
