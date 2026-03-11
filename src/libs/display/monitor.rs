@@ -78,13 +78,13 @@ pub fn display_loop(
             let network_status = get_network_status();
 
             // Get current display state (screen and page)
-            let (current_screen, qr_generator) = {
+            let (current_screen, qr_generator, lorawan_gateway_present) = {
                 if let Ok(mut state) = display_state.lock() {
                     // Update network status in display state
                     state.network_status = network_status.clone();
-                    (state.current_screen.clone(), state.qr_generator.clone())
+                    (state.current_screen.clone(), state.qr_generator.clone(), state.lorawan_gateway_present)
                 } else {
-                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None)
+                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false)
                 }
             };
 
@@ -107,7 +107,7 @@ pub fn display_loop(
                         .unwrap_or_else(|| hostname.clone());
 
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }

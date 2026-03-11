@@ -195,6 +195,26 @@ where
     draw_ethernet_bitmap(display, x, y+1, &ETHERNET_BITMAP);
 }
 
+// LORAWAN RADIO TOWER BITMAP – 11x7 matching other icon dimensions
+const LORAWAN_BITMAP: [[u8; 11]; 7] = [
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0],
+    [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+];
+
+/// Draw LoRaWAN radio tower icon
+pub fn draw_lorawan<D>(display: &mut D, x: i32, y: i32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+    D::Error: core::fmt::Debug,
+{
+    draw_wifi_bitmap(display, x, y, &LORAWAN_BITMAP);
+}
+
 fn draw_ethernet_bitmap<D>(
     display: &mut D,
     x: i32,

@@ -5,10 +5,11 @@ use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
+use fiber_app::libs::config::LoRaWANConfig;
 
 /// Read BLE PIN from /data/ble/pin.txt
 fn read_pin_from_file() -> io::Result<String> {
@@ -327,6 +328,40 @@ fn main() -> io::Result<()> {
             eprintln!("[main] Warning: Failed to initialize sensor monitor: {}", e);
             None
         }
+    };
+
+    // Create and spawn LoRaWAN monitor if MQTT is available
+    let _lorawan_monitor = if let Some(ref handle) = mqtt_handle {
+        let lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
+            // Auto-enable if gateway hardware is detected
+            let mut cfg = LoRaWANConfig::default();
+            cfg.enabled = true;
+            cfg
+        });
+
+        eprintln!("[main] Starting LoRaWAN monitor...");
+        match LoRaWANMonitor::new(lorawan_config, handle.sender(), hostname.clone()) {
+            Ok(monitor) => {
+                // Set LoRaWAN gateway flag in display state
+                let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
+                if gateway_present {
+                    if let Ok(mut state) = _display_monitor.display_state.lock() {
+                        state.lorawan_gateway_present = true;
+                    }
+                    eprintln!("[main] LoRaWAN monitor started (gateway detected)");
+                } else {
+                    eprintln!("[main] LoRaWAN monitor started (no gateway detected)");
+                }
+                Some(monitor)
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to start LoRaWAN monitor: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] LoRaWAN monitor disabled (MQTT not enabled)");
+        None
     };
 
     // Application is now running with background monitoring

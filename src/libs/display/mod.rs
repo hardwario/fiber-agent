@@ -118,6 +118,8 @@ pub struct DisplayState {
     pub qr_generator: Option<Arc<QrCodeGenerator>>,
     /// Current network connection status
     pub network_status: NetworkStatus,
+    /// Whether a LoRaWAN gateway is present (set from main after detection)
+    pub lorawan_gateway_present: bool,
 }
 
 impl DisplayState {
@@ -127,6 +129,7 @@ impl DisplayState {
             should_update: true,
             qr_generator: None,
             network_status: NetworkStatus::disconnected(),
+            lorawan_gateway_present: false,
         }
     }
 

@@ -629,6 +629,47 @@ pub struct StorageConfig {
     pub audit_enabled: bool,
 }
 
+/// LoRaWAN gateway configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoRaWANConfig {
+    /// Enable LoRaWAN gateway integration
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// ChirpStack local MQTT broker host
+    #[serde(default = "default_chirpstack_mqtt_host")]
+    pub chirpstack_mqtt_host: String,
+
+    /// ChirpStack local MQTT broker port
+    #[serde(default = "default_chirpstack_mqtt_port")]
+    pub chirpstack_mqtt_port: u16,
+
+    /// Publish interval for LoRaWAN sensor data (seconds)
+    #[serde(default = "default_lorawan_publish_interval")]
+    pub publish_interval_s: u64,
+
+    /// Sensor timeout in seconds (mark as disconnected after this)
+    #[serde(default = "default_lorawan_sensor_timeout")]
+    pub sensor_timeout_s: u64,
+}
+
+impl Default for LoRaWANConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chirpstack_mqtt_host: "localhost".to_string(),
+            chirpstack_mqtt_port: 1883,
+            publish_interval_s: 30,
+            sensor_timeout_s: 900, // 15 minutes
+        }
+    }
+}
+
+fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
+fn default_chirpstack_mqtt_port() -> u16 { 1883 }
+fn default_lorawan_publish_interval() -> u64 { 30 }
+fn default_lorawan_sensor_timeout() -> u64 { 900 }
+
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerConfig {
@@ -834,6 +875,10 @@ pub struct Config {
     /// MQTT client settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt: Option<MqttConfig>,
+
+    /// LoRaWAN gateway settings
+    #[serde(default)]
+    pub lorawan: Option<LoRaWANConfig>,
 }
 
 impl Config {
@@ -936,6 +981,7 @@ impl Config {
                 buzzer_volume: 100,
             },
             mqtt: None,  // MQTT disabled by default
+            lorawan: None,  // LoRaWAN disabled by default
         }
     }
 }

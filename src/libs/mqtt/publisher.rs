@@ -83,6 +83,10 @@ impl MqttPublisher {
                 storage_total_bytes,
                 storage_available_bytes,
                 storage_used_percent,
+                lorawan_gateway_present,
+                lorawan_concentratord_running,
+                lorawan_chirpstack_running,
+                lorawan_sensor_count,
             } => {
                 self.publish_system_status(
                     &hostname,
@@ -102,6 +106,10 @@ impl MqttPublisher {
                     storage_total_bytes,
                     storage_available_bytes,
                     storage_used_percent,
+                    lorawan_gateway_present,
+                    lorawan_concentratord_running,
+                    lorawan_chirpstack_running,
+                    lorawan_sensor_count,
                 )
                 .await
             }
@@ -176,6 +184,10 @@ impl MqttPublisher {
                     report_interval_ms,
                 )
                 .await
+            }
+
+            MqttMessage::PublishLoRaWANSensorData { sensors } => {
+                self.publish_lorawan_sensors(sensors).await
             }
 
             MqttMessage::PublishPairingResponse(response) => {
@@ -276,7 +288,7 @@ impl MqttPublisher {
         self.publish(topic, payload.to_string(), qos, false).await
     }
 
-    /// Publish combined system status (power, network, storage, uptime)
+    /// Publish combined system status (power, network, storage, uptime, lorawan)
     #[allow(clippy::too_many_arguments)]
     async fn publish_system_status(
         &self,
@@ -297,6 +309,10 @@ impl MqttPublisher {
         storage_total_bytes: u64,
         storage_available_bytes: u64,
         storage_used_percent: u8,
+        lorawan_gateway_present: bool,
+        lorawan_concentratord_running: bool,
+        lorawan_chirpstack_running: bool,
+        lorawan_sensor_count: usize,
     ) -> Result<(), String> {
         // Format uptime in human-readable form
         let days = uptime_seconds / 86400;
@@ -365,6 +381,12 @@ impl MqttPublisher {
                     "available_bytes": storage_available_bytes,
                     "used_percent": storage_used_percent,
                 },
+            },
+            "lorawan": {
+                "gateway_present": lorawan_gateway_present,
+                "concentratord_running": lorawan_concentratord_running,
+                "chirpstack_running": lorawan_chirpstack_running,
+                "sensor_count": lorawan_sensor_count,
             },
         });
 
@@ -585,6 +607,44 @@ impl MqttPublisher {
         let qos = QoS::AtLeastOnce;
 
         self.publish(topic, payload.to_string(), qos, true).await
+    }
+
+    /// Publish LoRaWAN sensor data
+    async fn publish_lorawan_sensors(
+        &self,
+        sensors: Vec<super::messages::LoRaWANSensorPayload>,
+    ) -> Result<(), String> {
+        let sensors_data: Vec<serde_json::Value> = sensors
+            .iter()
+            .map(|s| {
+                json!({
+                    "dev_eui": s.dev_eui,
+                    "name": s.name,
+                    "temperature": s.temperature,
+                    "humidity": s.humidity,
+                    "voltage": s.voltage,
+                    "ext_temperature_1": s.ext_temperature_1,
+                    "ext_temperature_2": s.ext_temperature_2,
+                    "illuminance": s.illuminance,
+                    "motion_count": s.motion_count,
+                    "orientation": s.orientation,
+                    "rssi": s.rssi,
+                    "snr": s.snr,
+                    "last_seen": s.last_seen,
+                    "alarm_state": s.alarm_state,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "sensors": sensors_data,
+        });
+
+        let topic = self.topics.lorawan_sensors();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
     }
 
     /// Publish pairing response (success)

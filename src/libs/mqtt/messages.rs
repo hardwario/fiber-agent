@@ -60,6 +60,14 @@ pub enum MqttMessage {
         storage_available_bytes: u64,
         /// Storage used percent
         storage_used_percent: u8,
+        /// LoRaWAN gateway present
+        lorawan_gateway_present: bool,
+        /// LoRaWAN concentratord running
+        lorawan_concentratord_running: bool,
+        /// LoRaWAN chirpstack running
+        lorawan_chirpstack_running: bool,
+        /// LoRaWAN sensor count
+        lorawan_sensor_count: usize,
     },
 
     /// Publish configuration challenge (preview of changes)
@@ -106,6 +114,11 @@ pub enum MqttMessage {
         report_interval_ms: u64,
     },
 
+    /// Publish LoRaWAN sensor data
+    PublishLoRaWANSensorData {
+        sensors: Vec<LoRaWANSensorPayload>,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 
@@ -117,6 +130,25 @@ pub enum MqttMessage {
 
     /// Graceful shutdown signal
     Shutdown,
+}
+
+/// LoRaWAN sensor data payload for MQTT publishing
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorPayload {
+    pub dev_eui: String,
+    pub name: String,
+    pub temperature: Option<f32>,
+    pub humidity: Option<f32>,
+    pub voltage: Option<f32>,
+    pub ext_temperature_1: Option<f32>,
+    pub ext_temperature_2: Option<f32>,
+    pub illuminance: Option<u32>,
+    pub motion_count: Option<u32>,
+    pub orientation: Option<u8>,
+    pub rssi: Option<i32>,
+    pub snr: Option<f32>,
+    pub last_seen: Option<String>,
+    pub alarm_state: String,
 }
 
 /// Sensor configuration data for query response
