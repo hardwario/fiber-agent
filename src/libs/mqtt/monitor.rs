@@ -1614,6 +1614,47 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::AddLoRaWANSticker {
+                dev_eui,
+                name,
+                serial_number,
+                devaddr,
+                nwkskey,
+                appskey,
+            } => {
+                // Step 1: Provision in ChirpStack (create device + ABP activate)
+                eprintln!("[MQTT Monitor] Provisioning sticker {} in ChirpStack...", dev_eui);
+                match crate::libs::lorawan::provisioning::provision_sticker(
+                    &dev_eui, &name, &serial_number, &devaddr, &nwkskey, &appskey,
+                ) {
+                    Ok(()) => {
+                        eprintln!("[MQTT Monitor] ✓ Sticker {} provisioned in ChirpStack", dev_eui);
+                    }
+                    Err(e) => {
+                        // Log but continue - ChirpStack may be down or device may already exist
+                        eprintln!("[MQTT Monitor] ⚠ ChirpStack provisioning for {}: {}", dev_eui, e);
+                    }
+                }
+
+                // Step 2: Save sensor config to YAML (always, even if ChirpStack failed)
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_lorawan_sensor_config(
+                        dev_eui.clone(),
+                        Some(name),
+                        Some(serial_number),
+                        None, None, None, None,  // temp thresholds: use defaults
+                        None, None, None, None,  // humidity thresholds: use defaults
+                    );
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} config saved", dev_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
             | MqttCommand::RemoveSigner { .. }

@@ -279,6 +279,16 @@ pub enum MqttCommand {
         humidity_critical_high: Option<f32>,
     },
 
+    /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
+    AddLoRaWANSticker {
+        dev_eui: String,
+        name: String,
+        serial_number: String,
+        devaddr: String,
+        nwkskey: String,
+        appskey: String,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -344,6 +354,7 @@ impl MqttCommand {
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
+            MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",

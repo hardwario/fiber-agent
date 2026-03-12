@@ -463,6 +463,7 @@ impl AuthorizationManager {
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
+            "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -539,6 +540,11 @@ impl AuthorizationManager {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Configure LoRaWAN sensor {} (name: \"{}\")", dev_eui, name)
+            }
+            "add_lorawan_sticker" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Add HARDWARIO STICKER {} (name: \"{}\")", dev_eui, name)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -758,6 +764,46 @@ impl AuthorizationManager {
                     humidity_warning_low,
                     humidity_warning_high,
                     humidity_critical_high,
+                })
+            }
+            "add_lorawan_sticker" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
+                    .to_string();
+
+                let serial_number = challenge.params.get("serial_number")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing serial_number".to_string()))?
+                    .to_string();
+
+                let devaddr = challenge.params.get("devaddr")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr".to_string()))?
+                    .to_string();
+
+                let nwkskey = challenge.params.get("nwkskey")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey".to_string()))?
+                    .to_string();
+
+                let appskey = challenge.params.get("appskey")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing appskey".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::AddLoRaWANSticker {
+                    dev_eui,
+                    name,
+                    serial_number,
+                    devaddr,
+                    nwkskey,
+                    appskey,
                 })
             }
             _ => Err(AuthError::InvalidCommand(format!(
