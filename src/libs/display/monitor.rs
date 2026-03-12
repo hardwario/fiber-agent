@@ -12,9 +12,10 @@ use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
+use crate::libs::lorawan::LoRaWANSensorState;
 
 use super::{SharedDisplayStateHandle, Screen};
-use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen, render_sensor_detail};
+use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail};
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -78,13 +79,14 @@ pub fn display_loop(
             let network_status = get_network_status();
 
             // Get current display state (screen and page)
-            let (current_screen, qr_generator, lorawan_gateway_present) = {
+            let (current_screen, qr_generator, lorawan_gateway_present, total_pages) = {
                 if let Ok(mut state) = display_state.lock() {
                     // Update network status in display state
                     state.network_status = network_status.clone();
-                    (state.current_screen.clone(), state.qr_generator.clone(), state.lorawan_gateway_present)
+                    let tp = state.total_pages();
+                    (state.current_screen.clone(), state.qr_generator.clone(), state.lorawan_gateway_present, tp)
                 } else {
-                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false)
+                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2)
                 }
             };
 
@@ -106,8 +108,22 @@ pub fn display_loop(
                         .and_then(|cfg| cfg.system.device_label)
                         .unwrap_or_else(|| hostname.clone());
 
+                    // Read LoRaWAN sensor state (sorted by dev_eui for consistent ordering)
+                    let lorawan_sensors: Vec<LoRaWANSensorState> = if let Ok(ds) = display_state.lock() {
+                        ds.lorawan_state.as_ref()
+                            .and_then(|s| s.read().ok())
+                            .map(|s| {
+                                let mut sensors: Vec<LoRaWANSensorState> = s.sensors.values().cloned().collect();
+                                sensors.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
+                                sensors
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, total_pages) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }
@@ -121,6 +137,22 @@ pub fn display_loop(
                     // Render the sensor detail screen with thresholds
                     if let Err(e) = render_sensor_detail(&mut display, sensor_idx, &sensor_snapshot) {
                         eprintln!("[DisplayMonitor] Error rendering sensor detail display: {}", e);
+                    }
+                }
+                Screen::LoRaWANSensorDetail { dev_eui } => {
+                    // Read LoRaWAN sensor state for the specific sensor
+                    let lorawan_sensor = if let Ok(ds) = display_state.lock() {
+                        ds.lorawan_state.as_ref()
+                            .and_then(|s| s.read().ok())
+                            .and_then(|s| s.sensors.get(&dev_eui).cloned())
+                    } else {
+                        None
+                    };
+
+                    if let Some(sensor) = lorawan_sensor {
+                        if let Err(e) = render_lorawan_sensor_detail(&mut display, &sensor) {
+                            eprintln!("[DisplayMonitor] Error rendering LoRaWAN detail display: {}", e);
+                        }
                     }
                 }
                 Screen::QrCodeConfig => {
