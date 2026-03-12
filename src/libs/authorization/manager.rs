@@ -462,6 +462,7 @@ impl AuthorizationManager {
             "set_screen_brightness" => "set_screen_brightness",
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
+            "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -533,6 +534,11 @@ impl AuthorizationManager {
                 let iface = params.get("interface").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let cfg_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Configure {} network to {}", iface, cfg_type)
+            }
+            "set_lorawan_sensor_config" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Configure LoRaWAN sensor {} (name: \"{}\")", dev_eui, name)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -715,6 +721,43 @@ impl AuthorizationManager {
                     gateway,
                     dns_primary,
                     dns_secondary,
+                })
+            }
+            "set_lorawan_sensor_config" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let serial_number = challenge.params.get("serial_number")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let temp_critical_low = challenge.params.get("temp_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_warning_low = challenge.params.get("temp_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_warning_high = challenge.params.get("temp_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_critical_high = challenge.params.get("temp_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_critical_low = challenge.params.get("humidity_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_warning_low = challenge.params.get("humidity_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_warning_high = challenge.params.get("humidity_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_critical_high = challenge.params.get("humidity_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+
+                Ok(MqttCommand::SetLoRaWANSensorConfig {
+                    dev_eui,
+                    name,
+                    serial_number,
+                    temp_critical_low,
+                    temp_warning_low,
+                    temp_warning_high,
+                    temp_critical_high,
+                    humidity_critical_low,
+                    humidity_warning_low,
+                    humidity_warning_high,
+                    humidity_critical_high,
                 })
             }
             _ => Err(AuthError::InvalidCommand(format!(

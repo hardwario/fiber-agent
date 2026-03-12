@@ -1577,6 +1577,43 @@ impl MqttMonitor {
                     dns_secondary,
                 )
             }
+            MqttCommand::SetLoRaWANSensorConfig {
+                dev_eui,
+                name,
+                serial_number,
+                temp_critical_low,
+                temp_warning_low,
+                temp_warning_high,
+                temp_critical_high,
+                humidity_critical_low,
+                humidity_warning_low,
+                humidity_warning_high,
+                humidity_critical_high,
+            } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_lorawan_sensor_config(
+                        dev_eui.clone(),
+                        name,
+                        serial_number,
+                        temp_critical_low,
+                        temp_warning_low,
+                        temp_warning_high,
+                        temp_critical_high,
+                        humidity_critical_low,
+                        humidity_warning_low,
+                        humidity_warning_high,
+                        humidity_critical_high,
+                    );
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ LoRaWAN sensor config updated for {}", dev_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
             | MqttCommand::RemoveSigner { .. }
@@ -1638,6 +1675,31 @@ impl MqttMonitor {
             .map(|m| m.publish.intervals.system_info_sec)
             .unwrap_or(60);
 
+        // Build LoRaWAN sensor configs
+        let lorawan_sensors: Vec<super::messages::LoRaWANSensorConfigData> = main_config
+            .lorawan
+            .as_ref()
+            .map(|lw| {
+                lw.sensors
+                    .iter()
+                    .map(|s| super::messages::LoRaWANSensorConfigData {
+                        dev_eui: s.dev_eui.clone(),
+                        name: s.name.clone(),
+                        serial_number: s.serial_number.clone(),
+                        enabled: s.enabled,
+                        temp_critical_low: s.temp_critical_low,
+                        temp_warning_low: s.temp_warning_low,
+                        temp_warning_high: s.temp_warning_high,
+                        temp_critical_high: s.temp_critical_high,
+                        humidity_critical_low: s.humidity_critical_low,
+                        humidity_warning_low: s.humidity_warning_low,
+                        humidity_warning_high: s.humidity_warning_high,
+                        humidity_critical_high: s.humidity_critical_high,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Some(MqttMessage::PublishConfigState {
             led_brightness,
             screen_brightness: screen_br,
@@ -1645,6 +1707,7 @@ impl MqttMonitor {
             system_info_interval_s,
             device_label,
             sensors,
+            lorawan_sensors,
             sample_interval_ms: main_config.sensors.sample_interval_ms,
             aggregation_interval_ms: main_config.sensors.aggregation_interval_ms,
             report_interval_ms: main_config.sensors.report_interval_ms,

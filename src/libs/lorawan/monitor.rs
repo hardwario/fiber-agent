@@ -209,9 +209,10 @@ fn lorawan_loop(
                     }
                 }
 
-                // Check sensor timeouts
+                // Check sensor timeouts and evaluate alarms
                 if let Ok(mut s) = state.write() {
                     s.check_timeouts(timeout_secs);
+                    s.evaluate_alarms(&config.sensors);
                 }
 
                 // Publish sensor data periodically
@@ -249,6 +250,7 @@ fn publish_lorawan_sensors(
         .map(|s| crate::libs::mqtt::messages::LoRaWANSensorPayload {
             dev_eui: s.dev_eui.clone(),
             name: s.name.clone(),
+            serial_number: s.serial_number.clone(),
             temperature: s.temperature,
             humidity: s.humidity,
             voltage: s.voltage,
@@ -261,6 +263,8 @@ fn publish_lorawan_sensors(
             snr: s.snr,
             last_seen: s.last_seen.clone(),
             alarm_state: s.alarm_state.to_string(),
+            temp_alarm_state: s.temp_alarm_state.to_string(),
+            humidity_alarm_state: s.humidity_alarm_state.to_string(),
         })
         .collect();
 

@@ -629,6 +629,45 @@ pub struct StorageConfig {
     pub audit_enabled: bool,
 }
 
+/// Per-sensor LoRaWAN configuration (mirrors SensorLineConfig pattern)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoRaWANSensorConfig {
+    /// Device EUI (unique identifier)
+    pub dev_eui: String,
+
+    /// Sensor name/label override
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Serial number (user-assigned)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+
+    /// Enable this sensor
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    // Temperature thresholds (4-level, same as DS18B20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_critical_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_warning_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_warning_high: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_critical_high: Option<f32>,
+
+    // Humidity thresholds (4-level, same pattern)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_critical_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_warning_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_warning_high: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_critical_high: Option<f32>,
+}
+
 /// LoRaWAN gateway configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANConfig {
@@ -651,6 +690,17 @@ pub struct LoRaWANConfig {
     /// Sensor timeout in seconds (mark as disconnected after this)
     #[serde(default = "default_lorawan_sensor_timeout")]
     pub sensor_timeout_s: u64,
+
+    /// Per-sensor configurations
+    #[serde(default)]
+    pub sensors: Vec<LoRaWANSensorConfig>,
+}
+
+impl LoRaWANConfig {
+    /// Get sensor config for a specific dev_eui
+    pub fn get_sensor_config(&self, dev_eui: &str) -> Option<&LoRaWANSensorConfig> {
+        self.sensors.iter().find(|s| s.dev_eui == dev_eui)
+    }
 }
 
 impl Default for LoRaWANConfig {
@@ -661,6 +711,7 @@ impl Default for LoRaWANConfig {
             chirpstack_mqtt_port: 1883,
             publish_interval_s: 30,
             sensor_timeout_s: 900, // 15 minutes
+            sensors: Vec::new(),
         }
     }
 }

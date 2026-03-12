@@ -168,6 +168,7 @@ impl MqttPublisher {
                 system_info_interval_s,
                 device_label,
                 sensors,
+                lorawan_sensors,
                 sample_interval_ms,
                 aggregation_interval_ms,
                 report_interval_ms,
@@ -179,6 +180,7 @@ impl MqttPublisher {
                     system_info_interval_s,
                     &device_label,
                     sensors,
+                    lorawan_sensors,
                     sample_interval_ms,
                     aggregation_interval_ms,
                     report_interval_ms,
@@ -564,6 +566,7 @@ impl MqttPublisher {
         system_info_interval_s: u64,
         device_label: &str,
         sensors: Vec<super::messages::SensorConfigData>,
+        lorawan_sensors: Vec<super::messages::LoRaWANSensorConfigData>,
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
@@ -588,6 +591,26 @@ impl MqttPublisher {
             })
             .collect();
 
+        let lorawan_sensors_data: Vec<serde_json::Value> = lorawan_sensors
+            .iter()
+            .map(|s| {
+                json!({
+                    "dev_eui": s.dev_eui,
+                    "name": s.name,
+                    "serial_number": s.serial_number,
+                    "enabled": s.enabled,
+                    "temp_critical_low": s.temp_critical_low,
+                    "temp_warning_low": s.temp_warning_low,
+                    "temp_warning_high": s.temp_warning_high,
+                    "temp_critical_high": s.temp_critical_high,
+                    "humidity_critical_low": s.humidity_critical_low,
+                    "humidity_warning_low": s.humidity_warning_low,
+                    "humidity_warning_high": s.humidity_warning_high,
+                    "humidity_critical_high": s.humidity_critical_high,
+                })
+            })
+            .collect();
+
         let payload = json!({
             "timestamp": Self::timestamp(),
             "led_brightness": led_brightness,
@@ -596,6 +619,7 @@ impl MqttPublisher {
             "system_info_interval_s": system_info_interval_s,
             "device_label": device_label,
             "sensors": sensors_data,
+            "lorawan_sensors": lorawan_sensors_data,
             "intervals": {
                 "sample_interval_ms": sample_interval_ms,
                 "aggregation_interval_ms": aggregation_interval_ms,
@@ -620,6 +644,7 @@ impl MqttPublisher {
                 json!({
                     "dev_eui": s.dev_eui,
                     "name": s.name,
+                    "serial_number": s.serial_number,
                     "temperature": s.temperature,
                     "humidity": s.humidity,
                     "voltage": s.voltage,
@@ -632,6 +657,8 @@ impl MqttPublisher {
                     "snr": s.snr,
                     "last_seen": s.last_seen,
                     "alarm_state": s.alarm_state,
+                    "temp_alarm_state": s.temp_alarm_state,
+                    "humidity_alarm_state": s.humidity_alarm_state,
                 })
             })
             .collect();

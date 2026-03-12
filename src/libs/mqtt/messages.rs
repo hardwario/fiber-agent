@@ -109,6 +109,7 @@ pub enum MqttMessage {
         system_info_interval_s: u64,
         device_label: String,
         sensors: Vec<SensorConfigData>,
+        lorawan_sensors: Vec<LoRaWANSensorConfigData>,
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
@@ -137,6 +138,7 @@ pub enum MqttMessage {
 pub struct LoRaWANSensorPayload {
     pub dev_eui: String,
     pub name: String,
+    pub serial_number: Option<String>,
     pub temperature: Option<f32>,
     pub humidity: Option<f32>,
     pub voltage: Option<f32>,
@@ -149,6 +151,8 @@ pub struct LoRaWANSensorPayload {
     pub snr: Option<f32>,
     pub last_seen: Option<String>,
     pub alarm_state: String,
+    pub temp_alarm_state: String,
+    pub humidity_alarm_state: String,
 }
 
 /// Sensor configuration data for query response
@@ -159,6 +163,23 @@ pub struct SensorConfigData {
     pub enabled: bool,
     pub has_override: bool, // true if using per-line thresholds, false if using common defaults
     pub thresholds: AlarmThreshold,
+}
+
+/// LoRaWAN sensor configuration data for config state publishing
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorConfigData {
+    pub dev_eui: String,
+    pub name: Option<String>,
+    pub serial_number: Option<String>,
+    pub enabled: bool,
+    pub temp_critical_low: Option<f32>,
+    pub temp_warning_low: Option<f32>,
+    pub temp_warning_high: Option<f32>,
+    pub temp_critical_high: Option<f32>,
+    pub humidity_critical_low: Option<f32>,
+    pub humidity_warning_low: Option<f32>,
+    pub humidity_warning_high: Option<f32>,
+    pub humidity_critical_high: Option<f32>,
 }
 
 /// Commands received from MQTT broker
@@ -243,6 +264,21 @@ pub enum MqttCommand {
         dns_secondary: Option<String>,
     },
 
+    /// Set LoRaWAN sensor configuration (signed via ConfigRequest)
+    SetLoRaWANSensorConfig {
+        dev_eui: String,
+        name: Option<String>,
+        serial_number: Option<String>,
+        temp_critical_low: Option<f32>,
+        temp_warning_low: Option<f32>,
+        temp_warning_high: Option<f32>,
+        temp_critical_high: Option<f32>,
+        humidity_critical_low: Option<f32>,
+        humidity_warning_low: Option<f32>,
+        humidity_warning_high: Option<f32>,
+        humidity_critical_high: Option<f32>,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -307,6 +343,7 @@ impl MqttCommand {
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
+            MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",
