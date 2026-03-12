@@ -1204,10 +1204,8 @@ impl MqttMonitor {
                                 .and_then(|cfg| cfg.system.device_label)
                                 .unwrap_or_else(|| hostname.clone());
 
-                            // Check LoRaWAN gateway status
+                            // Check LoRaWAN gateway status (checks running services, not just installed)
                             let lorawan_detection = crate::libs::lorawan::detector::detect_gateway();
-                            let lorawan_concentratord = crate::libs::lorawan::detector::is_service_running("chirpstack-concentratord");
-                            let lorawan_chirpstack = crate::libs::lorawan::detector::is_service_running("chirpstack");
 
                             if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemStatus {
                                 hostname: hostname.clone(),
@@ -1228,8 +1226,8 @@ impl MqttMonitor {
                                 storage_available_bytes: storage_usage.available_bytes,
                                 storage_used_percent: storage_usage.used_percent,
                                 lorawan_gateway_present: lorawan_detection.is_present(),
-                                lorawan_concentratord_running: lorawan_concentratord,
-                                lorawan_chirpstack_running: lorawan_chirpstack,
+                                lorawan_concentratord_running: lorawan_detection.concentratord_running,
+                                lorawan_chirpstack_running: lorawan_detection.chirpstack_running,
                                 lorawan_sensor_count: 0, // Sensor count updated by LoRaWAN monitor
                             }).await {
                                 eprintln!("[MQTT Monitor] Failed to publish system status: {}", e);
