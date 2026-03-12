@@ -710,7 +710,7 @@ impl Default for LoRaWANConfig {
             chirpstack_mqtt_host: "localhost".to_string(),
             chirpstack_mqtt_port: 1883,
             publish_interval_s: 30,
-            sensor_timeout_s: 900, // 15 minutes
+            sensor_timeout_s: 3600, // 1 hour
             sensors: Vec::new(),
         }
     }
@@ -719,7 +719,7 @@ impl Default for LoRaWANConfig {
 fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
 fn default_chirpstack_mqtt_port() -> u16 { 1883 }
 fn default_lorawan_publish_interval() -> u64 { 30 }
-fn default_lorawan_sensor_timeout() -> u64 { 900 }
+fn default_lorawan_sensor_timeout() -> u64 { 3600 }
 
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
