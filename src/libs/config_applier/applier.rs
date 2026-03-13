@@ -832,6 +832,150 @@ impl ConfigApplier {
         }
     }
 
+    /// Remove a LoRaWAN sensor configuration from main config by dev_eui
+    pub fn remove_lorawan_sensor_config(&self, dev_eui: String) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Validate dev_eui
+        if dev_eui.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("dev_eui cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // Remove sensor from lorawan.sensors array
+        let removed = (|| -> Result<bool, String> {
+            let lorawan = config
+                .get_mut("lorawan")
+                .and_then(|v| v.as_mapping_mut())
+                .ok_or_else(|| "Missing 'lorawan' section in config".to_string())?;
+
+            let sensors_key = Value::String("sensors".to_string());
+            let sensors = lorawan
+                .get_mut(&sensors_key)
+                .and_then(|v| v.as_sequence_mut())
+                .ok_or_else(|| "Missing 'lorawan.sensors' array in config".to_string())?;
+
+            let original_len = sensors.len();
+            sensors.retain(|s| {
+                s.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .map(|e| e != dev_eui)
+                    .unwrap_or(true)
+            });
+
+            Ok(sensors.len() < original_len)
+        })();
+
+        match removed {
+            Ok(false) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Sensor with dev_eui '{}' not found", dev_eui)),
+                    applied_at,
+                };
+            }
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(e),
+                    applied_at,
+                };
+            }
+            Ok(true) => {} // Successfully removed, continue to save
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ LoRaWAN sensor config removed for {}",
+            dev_eui
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     // --- Private helper methods ---
 
     /// Update thresholds for a specific sensor line in the YAML structure

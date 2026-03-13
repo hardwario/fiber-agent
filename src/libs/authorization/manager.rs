@@ -464,6 +464,7 @@ impl AuthorizationManager {
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -545,6 +546,10 @@ impl AuthorizationManager {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Add HARDWARIO STICKER {} (name: \"{}\")", dev_eui, name)
+            }
+            "remove_lorawan_sticker" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove HARDWARIO STICKER {}", dev_eui)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -805,6 +810,14 @@ impl AuthorizationManager {
                     nwkskey,
                     appskey,
                 })
+            }
+            "remove_lorawan_sticker" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",

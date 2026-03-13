@@ -1655,6 +1655,20 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::RemoveLoRaWANSticker { dev_eui } => {
+                eprintln!("[MQTT Monitor] Removing sticker {} ...", dev_eui);
+                if let Some(applier) = config_applier {
+                    let result = applier.remove_lorawan_sensor_config(dev_eui.clone());
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
             | MqttCommand::RemoveSigner { .. }

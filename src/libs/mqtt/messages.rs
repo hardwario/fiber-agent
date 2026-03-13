@@ -289,6 +289,11 @@ pub enum MqttCommand {
         appskey: String,
     },
 
+    /// Remove LoRaWAN sticker: remove sensor config (signed via ConfigRequest)
+    RemoveLoRaWANSticker {
+        dev_eui: String,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -355,6 +360,7 @@ impl MqttCommand {
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
+            MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",
