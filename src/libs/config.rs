@@ -165,6 +165,10 @@ pub struct SensorLineConfig {
     /// Sensor name/label
     pub name: String,
 
+    /// Sensor probe location (e.g., "Cold room A, shelf 3")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+
     /// Critical low temperature override (None = use common)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_low_celsius: Option<f32>,
@@ -331,6 +335,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 1,
@@ -343,6 +348,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 2,
@@ -355,6 +361,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 3,
@@ -367,6 +374,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 4,
@@ -379,6 +387,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 5,
@@ -391,6 +400,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 6,
@@ -403,6 +413,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 7,
@@ -415,6 +426,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
             ],
         }

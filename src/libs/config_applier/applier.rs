@@ -320,6 +320,123 @@ impl ConfigApplier {
         }
     }
 
+    /// Apply sensor location change
+    pub fn apply_location_change(&self, line: u8, location: String) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        if line > 7 {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some(format!("Invalid line number: {} (must be 0-7)", line)),
+                applied_at,
+            };
+        }
+
+        if location.len() > 128 {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("Location must be 0-128 characters".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.sensors.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.update_line_location(&mut config, line, &location) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to update location: {}", e)),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ Sensor location updated for line {}: \"{}\"",
+            line, location
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     /// Apply sensor interval changes to main configuration
     pub fn apply_interval_change(
         &self,
@@ -1072,6 +1189,41 @@ impl ConfigApplier {
             Value::String("name".to_string()),
             Value::String(name.to_string()),
         );
+
+        Ok(())
+    }
+
+    /// Update location for a specific sensor line in the YAML structure
+    fn update_line_location(&self, config: &mut Value, line: u8, location: &str) -> Result<(), String> {
+        let lines = config
+            .get_mut("lines")
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(|| "Missing 'lines' array in config".to_string())?;
+
+        let line_entry = lines
+            .iter_mut()
+            .find(|entry| {
+                entry
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .map(|l| l == line as u64)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| format!("Line {} not found in config", line))?;
+
+        let line_map = line_entry
+            .as_mapping_mut()
+            .ok_or_else(|| "Line entry is not a mapping".to_string())?;
+
+        if location.is_empty() {
+            // Remove location field if empty
+            line_map.remove(&Value::String("location".to_string()));
+        } else {
+            line_map.insert(
+                Value::String("location".to_string()),
+                Value::String(location.to_string()),
+            );
+        }
 
         Ok(())
     }

@@ -446,6 +446,7 @@ impl AuthorizationManager {
         let permission = match command_type {
             "set_threshold" => "set_threshold",
             "set_sensor_name" => "set_sensor_name",
+            "set_sensor_location" => "set_sensor_location",
             "set_alarm_pattern" => "set_alarm_pattern",
             "set_screen" => "set_screen",
             "flush_storage" => "flush_storage",
@@ -495,6 +496,11 @@ impl AuthorizationManager {
                 let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Change sensor line {} name to \"{}\"", line, name)
+            }
+            "set_sensor_location" => {
+                let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                let location = params.get("location").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Change sensor line {} location to \"{}\"", line, location)
             }
             "restart_application" => "Reboot the device".to_string(),
             "set_interval" => {
@@ -587,6 +593,18 @@ impl AuthorizationManager {
                     .to_string();
 
                 Ok(MqttCommand::SetSensorName { line, name })
+            }
+            "set_sensor_location" => {
+                let line = challenge.params.get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))? as u8;
+
+                let location = challenge.params.get("location")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing location".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::SetSensorLocation { line, location })
             }
             "restart_application" => {
                 let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());

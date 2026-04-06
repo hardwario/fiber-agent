@@ -114,8 +114,8 @@ impl MqttPublisher {
                 .await
             }
 
-            MqttMessage::PublishAggregatedSensorData { period, names } => {
-                self.publish_aggregated_sensor_data(period, &names).await
+            MqttMessage::PublishAggregatedSensorData { period, names, locations } => {
+                self.publish_aggregated_sensor_data(period, &names, &locations).await
             }
 
             MqttMessage::PublishConfigChallenge {
@@ -210,6 +210,7 @@ impl MqttPublisher {
         &self,
         period: crate::libs::sensors::aggregation::AggregationPeriod,
         names: &[String; 8],
+        locations: &[Option<String>; 8],
     ) -> Result<(), String> {
         // Build JSON payload with all 8 sensors
         let sensors_data: Vec<serde_json::Value> = period.sensors.iter()
@@ -225,12 +226,14 @@ impl MqttPublisher {
                     serde_json::Value::Null
                 };
 
-                // Get sensor name
+                // Get sensor name and location
                 let name = &names[sensor.line as usize];
+                let location = &locations[sensor.line as usize];
 
                 json!({
                     "line": sensor.line,
                     "name": name,
+                    "location": location,
                     "sample_count": sensor.sample_count,
                     "disconnected_count": sensor.disconnected_count,
                     "temperature": temp_data,
@@ -509,6 +512,7 @@ impl MqttPublisher {
                 json!({
                     "line": sensor.line,
                     "name": sensor.name,
+                    "location": sensor.location,
                     "enabled": sensor.enabled,
                     "has_override": sensor.has_override,
                     "thresholds": {
@@ -577,6 +581,7 @@ impl MqttPublisher {
                 json!({
                     "line": sensor.line,
                     "name": sensor.name,
+                    "location": sensor.location,
                     "enabled": sensor.enabled,
                     "has_override": sensor.has_override,
                     "thresholds": {

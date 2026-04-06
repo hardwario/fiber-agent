@@ -165,7 +165,7 @@ impl SensorMonitor {
         let config_check_interval = Duration::from_secs(10);
         let mut current_sensor_file_config = sensor_file_config.clone();
 
-        // Initialize sensor names and thresholds from config
+        // Initialize sensor names, locations and thresholds from config
         {
             let names: [String; 8] = sensor_file_config.lines.iter()
                 .take(8)
@@ -181,6 +181,15 @@ impl SensorMonitor {
                     "Sensor 7".to_string(), "Sensor 8".to_string(),
                 ]);
 
+            let locations: [Option<String>; 8] = sensor_file_config.lines.iter()
+                .take(8)
+                .map(|l| l.location.clone())
+                .chain(std::iter::repeat(None))
+                .take(8)
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+
             // Collect thresholds for each sensor
             let thresholds: [crate::libs::alarms::AlarmThreshold; 8] = (0..8)
                 .map(|idx| sensor_file_config.get_line_thresholds(idx as u8))
@@ -190,6 +199,7 @@ impl SensorMonitor {
 
             if let Ok(mut state) = sensor_state.write() {
                 state.set_names(names);
+                state.set_locations(locations);
                 state.set_thresholds(thresholds);
             }
         }
@@ -255,6 +265,15 @@ impl SensorMonitor {
                                 "Sensor 7".to_string(), "Sensor 8".to_string(),
                             ]);
 
+                        let locations: [Option<String>; 8] = new_config.lines.iter()
+                            .take(8)
+                            .map(|l| l.location.clone())
+                            .chain(std::iter::repeat(None))
+                            .take(8)
+                            .collect::<Vec<_>>()
+                            .try_into()
+                            .unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+
                         // Update thresholds for display
                         let thresholds: [crate::libs::alarms::AlarmThreshold; 8] = (0..8)
                             .map(|idx| new_config.get_line_thresholds(idx as u8))
@@ -264,6 +283,7 @@ impl SensorMonitor {
 
                         if let Ok(mut state) = sensor_state.write() {
                             state.set_names(names.clone());
+                            state.set_locations(locations);
                             state.set_thresholds(thresholds);
                         }
 
@@ -341,21 +361,21 @@ impl SensorMonitor {
                 };
 
                 if let Some(ref mqtt) = mqtt_handle {
-                    // Get sensor names from shared state
-                    let names = sensor_state.read()
-                        .map(|s| s.names.clone())
-                        .unwrap_or_else(|_| [
+                    // Get sensor names and locations from shared state
+                    let (names, locations) = sensor_state.read()
+                        .map(|s| (s.names.clone(), s.locations.clone()))
+                        .unwrap_or_else(|_| ([
                             "Sensor 1".to_string(), "Sensor 2".to_string(),
                             "Sensor 3".to_string(), "Sensor 4".to_string(),
                             "Sensor 5".to_string(), "Sensor 6".to_string(),
                             "Sensor 7".to_string(), "Sensor 8".to_string(),
-                        ]);
+                        ], [None, None, None, None, None, None, None, None]));
                     if force_flush && !periods.is_empty() {
                         eprintln!("[SensorMonitor] Flushing {} buffered periods after reconnect", periods.len());
                     }
                     let published_count = periods.len();
                     for period in periods {
-                        mqtt.send_aggregated_sensor_data(period, names.clone());
+                        mqtt.send_aggregated_sensor_data(period, names.clone(), locations.clone());
                     }
                     // Clear pending file after successful publish
                     if published_count > 0 {

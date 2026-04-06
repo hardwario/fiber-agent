@@ -787,5 +787,15 @@ pub fn render_sensor_detail(
         .draw(display)
         .ok();
 
+    // Line 4 (y=63): Location (if set)
+    if let Some(location) = sensor_state.get_location(sensor_idx as u8) {
+        if !location.is_empty() {
+            let loc_line = format!("Loc:{}", if location.len() > 12 { &location[..12] } else { location });
+            Text::new(&loc_line, Point::new(2, 63), text_style)
+                .draw(display)
+                .ok();
+        }
+    }
+
     display.flush()
 }

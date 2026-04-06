@@ -270,8 +270,8 @@ impl MqttHandle {
     }
 
     /// Send aggregated sensor data
-    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod, names: [String; 8]) {
-        self.send(MqttMessage::PublishAggregatedSensorData { period, names });
+    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod, names: [String; 8], locations: [Option<String>; 8]) {
+        self.send(MqttMessage::PublishAggregatedSensorData { period, names, locations });
     }
 
     /// Send combined system status (power, network, storage, uptime, lorawan)
@@ -957,6 +957,7 @@ impl MqttMonitor {
                                                                     sensors.push(super::messages::SensorConfigData {
                                                                         line,
                                                                         name: lc.name.clone(),
+                                                                        location: lc.location.clone(),
                                                                         enabled: lc.enabled,
                                                                         has_override,
                                                                         thresholds,
@@ -1442,6 +1443,24 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetSensorLocation { line, location } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_location_change(line, location);
+
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ Sensor location changed successfully");
+                        eprintln!("[MQTT Monitor]   File: {}", result.file_path);
+                        if let Some(backup) = result.backup_path {
+                            eprintln!("[MQTT Monitor]   Backup: {}", backup);
+                        }
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             MqttCommand::RestartApplication { reason } => {
                 eprintln!("[MQTT Monitor] Device reboot requested: {}", reason);
                 std::process::Command::new("reboot")
@@ -1705,6 +1724,7 @@ impl MqttMonitor {
                 sensors.push(super::messages::SensorConfigData {
                     line,
                     name: lc.name.clone(),
+                    location: lc.location.clone(),
                     enabled: lc.enabled,
                     has_override,
                     thresholds,

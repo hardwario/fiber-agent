@@ -13,6 +13,7 @@ pub enum MqttMessage {
     PublishAggregatedSensorData {
         period: AggregationPeriod,
         names: [String; 8],
+        locations: [Option<String>; 8],
     },
 
     /// Publish an alarm state transition event
@@ -160,6 +161,7 @@ pub struct LoRaWANSensorPayload {
 pub struct SensorConfigData {
     pub line: u8,
     pub name: String,
+    pub location: Option<String>,
     pub enabled: bool,
     pub has_override: bool, // true if using per-line thresholds, false if using common defaults
     pub thresholds: AlarmThreshold,
@@ -213,6 +215,9 @@ pub enum MqttCommand {
 
     /// Set sensor name (signed via ConfigRequest)
     SetSensorName { line: u8, name: String },
+
+    /// Set sensor probe location (signed via ConfigRequest)
+    SetSensorLocation { line: u8, location: String },
 
     /// Restart application
     RestartApplication { reason: String },
@@ -349,6 +354,7 @@ impl MqttCommand {
             MqttCommand::GetDeviceInfo => "get_device_info",
             MqttCommand::GetSensorConfig => "get_sensor_config",
             MqttCommand::SetSensorName { .. } => "set_sensor_name",
+            MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
             MqttCommand::RestartApplication { .. } => "restart_application",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",

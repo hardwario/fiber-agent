@@ -38,6 +38,8 @@ pub struct SharedSensorState {
     pub readings: [Option<SensorReading>; 8],
     /// Sensor names from config (hot-reloaded)
     pub names: [String; 8],
+    /// Sensor probe locations from config (hot-reloaded)
+    pub locations: [Option<String>; 8],
     /// Alarm thresholds per sensor (for detail display)
     pub thresholds: [AlarmThreshold; 8],
 }
@@ -57,6 +59,7 @@ impl SharedSensorState {
                 "Sensor 7".to_string(),
                 "Sensor 8".to_string(),
             ],
+            locations: [None, None, None, None, None, None, None, None],
             thresholds: [
                 AlarmThreshold::default_medical(),
                 AlarmThreshold::default_medical(),
@@ -81,6 +84,20 @@ impl SharedSensorState {
             &self.names[sensor_idx as usize]
         } else {
             "Unknown"
+        }
+    }
+
+    /// Update sensor locations from config
+    pub fn set_locations(&mut self, locations: [Option<String>; 8]) {
+        self.locations = locations;
+    }
+
+    /// Get sensor location
+    pub fn get_location(&self, sensor_idx: u8) -> Option<&str> {
+        if (sensor_idx as usize) < 8 {
+            self.locations[sensor_idx as usize].as_deref()
+        } else {
+            None
         }
     }
 
