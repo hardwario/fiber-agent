@@ -1,3 +1,4 @@
+use rppal::gpio::Gpio;
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::io::{self, Write};
 use std::thread::sleep;
@@ -5,6 +6,7 @@ use std::time::{Duration, Instant};
 
 const PORT_PATH: &str = "/dev/ttyAMA4";
 const BAUD_RATE: u32 = 115_200;
+const STM_RESET_GPIO: u8 = 7;
 
 /// Holds the complete data set returned by the STM32 ADC command
 #[derive(Debug, Clone, Copy)]
@@ -20,6 +22,28 @@ pub struct StmBridge {
 
 impl StmBridge {
     pub fn new() -> io::Result<Self> {
+        // Hardware reset STM32 via GPIO7 to ensure clean state
+        eprintln!("[stm] Resetting STM32 via GPIO{}...", STM_RESET_GPIO);
+        match Gpio::new() {
+            Ok(gpio) => match gpio.get(STM_RESET_GPIO) {
+                Ok(pin) => {
+                    let mut reset_pin = pin.into_output_low();
+                    sleep(Duration::from_millis(50));
+                    reset_pin.set_high();
+                    // STM32 firmware runs a 1.625s startup LED animation before
+                    // printing its boot banner and accepting commands
+                    eprintln!("[stm] STM32 reset released, waiting for boot (~2s)...");
+                    sleep(Duration::from_millis(2000));
+                }
+                Err(e) => {
+                    eprintln!("[stm] Warning: failed to get GPIO{}: {}", STM_RESET_GPIO, e);
+                }
+            },
+            Err(e) => {
+                eprintln!("[stm] Warning: failed to init GPIO for STM reset: {}", e);
+            }
+        }
+
         eprintln!("Opening serial port {} at {} baud...", PORT_PATH, BAUD_RATE);
 
         let builder = serialport::new(PORT_PATH, BAUD_RATE)
