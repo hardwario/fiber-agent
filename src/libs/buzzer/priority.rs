@@ -22,6 +22,8 @@ struct BuzzerPriorityState {
     sensor_critical_active: bool,
     /// Is battery in critical state?
     battery_critical_active: bool,
+    /// Buzzer silenced by ACK (resets on next NEW alarm transition)
+    silenced: bool,
     /// Which pattern is currently playing?
     current_pattern_source: PatternSource,
     /// When did we switch to the current pattern?
@@ -44,6 +46,7 @@ impl BuzzerPriorityState {
         Self {
             sensor_critical_active: false,
             battery_critical_active: false,
+            silenced: false,
             current_pattern_source: PatternSource::None,
             pattern_switch_time: Instant::now(),
             pattern_duration: Duration::from_secs(2),
@@ -86,7 +89,12 @@ impl BuzzerPriorityManager {
         // Decide what pattern to use - lock state only briefly
         let pattern_to_set = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let was_critical = state.sensor_critical_active;
             state.sensor_critical_active = is_critical;
+            // New alarm transition (off→on) clears silence
+            if is_critical && !was_critical {
+                state.silenced = false;
+            }
             eprintln!(
                 "[BuzzerPriority] Sensor critical: {}",
                 if is_critical { "ON" } else { "OFF" }
@@ -99,9 +107,28 @@ impl BuzzerPriorityManager {
         self.apply_pattern(pattern_to_set);
     }
 
+    /// Silence the buzzer (from alarm ACK). Stops current pattern but re-arms
+    /// for new alarms. The silence is cleared when a new alarm triggers.
+    pub fn silence(&self) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.silenced = true;
+            state.last_set_pattern = Some(PatternSource::None);
+            eprintln!("[BuzzerPriority] Buzzer silenced by ACK");
+        }
+        if let Ok(buzzer) = self.buzzer.lock() {
+            buzzer.stop();
+        }
+    }
+
     /// Compute which pattern should be playing based on current state
     /// This function does NOT lock anything - it's read-only logic
     fn compute_pattern(&self, state: &BuzzerPriorityState) -> Option<PatternSource> {
+        // If silenced by ACK, don't play any pattern
+        if state.silenced {
+            return Some(PatternSource::None);
+        }
+
         let new_pattern_source = match (
             state.sensor_critical_active,
             state.battery_critical_active,

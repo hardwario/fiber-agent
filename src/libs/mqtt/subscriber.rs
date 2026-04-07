@@ -84,6 +84,7 @@ impl MqttSubscriber {
             "flush_storage" => Ok(MqttCommand::FlushStorage),
             "get_info" => Ok(MqttCommand::GetDeviceInfo),
             "get_sensor_config" => Ok(MqttCommand::GetSensorConfig),
+            "silence_buzzer" => Ok(MqttCommand::SilenceBuzzer),
             "restart" => self.parse_restart(&json),
             "set_interval" => self.parse_set_interval(&json),
             "get_interval" => Ok(MqttCommand::GetInterval),

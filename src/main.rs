@@ -255,6 +255,7 @@ fn main() -> io::Result<()> {
             Some(stm_guard.clone()),
             Some(screen_brightness.clone()),
             Some(buzzer_volume.clone()),
+            Some(buzzer_priority_manager.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");

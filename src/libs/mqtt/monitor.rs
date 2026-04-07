@@ -336,12 +336,13 @@ pub struct MqttMonitor {
     stm_bridge: Option<SharedStmBridge>,
     screen_brightness: Option<SharedScreenBrightnessHandle>,
     buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+    buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, power_status, None, None, None)
+        Self::new_with_stm(config, hostname, power_status, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -352,6 +353,7 @@ impl MqttMonitor {
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
     ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
@@ -392,8 +394,9 @@ impl MqttMonitor {
         // Clone screen brightness for monitor thread
         let screen_brightness_clone = screen_brightness.clone();
 
-        // Clone buzzer volume for monitor thread
+        // Clone buzzer volume and priority for monitor thread
         let buzzer_volume_clone = buzzer_volume.clone();
+        let buzzer_priority_clone = buzzer_priority.clone();
 
         // Clone reconnect flag for monitor thread
         let reconnected_flag_clone = reconnected_flag.clone();
@@ -411,6 +414,7 @@ impl MqttMonitor {
                 stm_bridge_clone,
                 screen_brightness_clone,
                 buzzer_volume_clone,
+                buzzer_priority_clone,
                 reconnected_flag_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
@@ -428,6 +432,7 @@ impl MqttMonitor {
             stm_bridge,
             screen_brightness,
             buzzer_volume,
+            buzzer_priority,
         })
     }
 
@@ -461,6 +466,7 @@ impl MqttMonitor {
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         reconnected_flag: Arc<AtomicBool>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
@@ -905,6 +911,7 @@ impl MqttMonitor {
                                                                         &stm_bridge,
                                                                         &screen_brightness,
                                                                         &buzzer_volume,
+                                                                        &buzzer_priority,
                                                                         &led_brightness_tracker,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
@@ -1010,6 +1017,13 @@ impl MqttMonitor {
                                                                 eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
                                                             }
                                                         }
+                                                    }
+                                                }
+
+                                                MqttCommand::SilenceBuzzer => {
+                                                    if let Some(bp) = &buzzer_priority {
+                                                        bp.silence();
+                                                        eprintln!("[MQTT Monitor] ✓ Buzzer silenced by alarm ACK");
                                                     }
                                                 }
 
@@ -1388,6 +1402,7 @@ impl MqttMonitor {
         stm_bridge: &Option<SharedStmBridge>,
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
     ) -> Result<(), String> {
         match cmd {
@@ -1575,6 +1590,15 @@ impl MqttMonitor {
                     Ok(())
                 } else {
                     Err("Buzzer volume control not available".to_string())
+                }
+            }
+            MqttCommand::SilenceBuzzer => {
+                if let Some(bp) = &buzzer_priority {
+                    bp.silence();
+                    eprintln!("[MQTT Monitor] ✓ Buzzer silenced by alarm ACK");
+                    Ok(())
+                } else {
+                    Err("Buzzer priority manager not available".to_string())
                 }
             }
             MqttCommand::SetNetworkConfig {

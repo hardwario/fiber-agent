@@ -258,6 +258,10 @@ pub enum MqttCommand {
         volume: u8,
     },
 
+    /// Silence buzzer (from alarm acknowledgment)
+    /// Stops current pattern but re-arms for new alarms
+    SilenceBuzzer,
+
     /// Set network configuration (signed via ConfigRequest)
     SetNetworkConfig {
         interface: String,      // "ethernet" or "wifi"
@@ -363,6 +367,7 @@ impl MqttCommand {
             MqttCommand::SetLedBrightness { .. } => "set_led_brightness",
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
+            MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
