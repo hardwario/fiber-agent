@@ -44,11 +44,11 @@ pub fn render_sensor_overview(
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw network connection icons on the left (aligned with top of FIBER text)
-    let net_icon_width = icons::draw_network_status(display, 2, 0, network_status);
+    let net_icon_width = icons::draw_network_status(display, 2, 2, network_status);
 
     // Draw LoRaWAN icon next to network icon when gateway is present
     if lorawan_gateway_present {
-        icons::draw_lorawan(display, 2 + net_icon_width as i32 + 1, 0);
+        icons::draw_lorawan(display, 2 + net_icon_width as i32 + 1, 2);
     }
 
     // Draw mute icon next to status icons when sensor silence is active
@@ -58,7 +58,7 @@ pub fn render_sensor_overview(
         } else {
             2 + net_icon_width as i32 + 2
         };
-        icons::draw_mute(display, mute_x, 1);
+        icons::draw_mute(display, mute_x, 3);
     }
 
     // Draw header: device label centered (or "LORAWAN" for LoRaWAN pages), page/mode indicator right-aligned
