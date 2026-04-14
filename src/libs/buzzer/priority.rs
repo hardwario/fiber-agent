@@ -11,10 +11,18 @@ use super::pattern::BuzzerPattern;
 use super::controller::BuzzerController;
 use crate::libs::config::BuzzerTiming;
 
+/// Injectable clock for testing. Returns the current Instant.
+type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+fn default_clock() -> Clock {
+    Arc::new(|| Instant::now())
+}
+
 /// Manages buzzer pattern priority between multiple alarm sources
 pub struct BuzzerPriorityManager {
     state: Arc<Mutex<BuzzerPriorityState>>,
     buzzer: Arc<Mutex<BuzzerController>>,
+    clock: Clock,
 }
 
 struct BuzzerPriorityState {
@@ -32,6 +40,8 @@ struct BuzzerPriorityState {
     pattern_duration: Duration,
     /// Last pattern we set to avoid redundant updates
     last_set_pattern: Option<PatternSource>,
+    /// Button silence deadline (sensor only). None = not silenced by button.
+    sensor_silenced_until: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +61,7 @@ impl BuzzerPriorityState {
             pattern_switch_time: Instant::now(),
             pattern_duration: Duration::from_secs(2),
             last_set_pattern: None,
+            sensor_silenced_until: None,
         }
     }
 }
@@ -61,6 +72,16 @@ impl BuzzerPriorityManager {
         Self {
             state: Arc::new(Mutex::new(BuzzerPriorityState::new())),
             buzzer,
+            clock: default_clock(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_clock(buzzer: Arc<Mutex<BuzzerController>>, clock: Clock) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(BuzzerPriorityState::new())),
+            buzzer,
+            clock,
         }
     }
 
@@ -145,7 +166,7 @@ impl BuzzerPriorityManager {
             }
             // Both critical: alternate between patterns every 2 seconds
             (true, true) => {
-                let elapsed = Instant::now().duration_since(state.pattern_switch_time);
+                let elapsed = (self.clock)().duration_since(state.pattern_switch_time);
                 if elapsed > state.pattern_duration {
                     // Time to switch patterns
                     let next = if state.current_pattern_source == PatternSource::SensorCritical {
@@ -210,7 +231,7 @@ impl BuzzerPriorityManager {
                     if let Ok(mut state) = self.state.lock() {
                         state.last_set_pattern = Some(pattern_source);
                         state.current_pattern_source = pattern_source;
-                        state.pattern_switch_time = Instant::now();
+                        state.pattern_switch_time = (self.clock)();
                     }
                 }
             }
