@@ -437,6 +437,17 @@ impl SensorMonitor {
                         _ => {}
                     }
 
+                    // Detect per-sensor transition into critical/disconnected
+                    // to bust button silence when a NEW sensor alarms
+                    if let Some(last_state) = last_sensor_states[idx] {
+                        let was_critical_like = matches!(last_state, AlarmState::Critical | AlarmState::Disconnected);
+                        let is_critical_like = matches!(current_state, AlarmState::Critical | AlarmState::Disconnected);
+                        if !was_critical_like && is_critical_like {
+                            priority_manager.on_new_sensor_alarm();
+                            eprintln!("[SensorMonitor] New sensor alarm detected (sensor {}), button silence cleared", idx);
+                        }
+                    }
+
                     // Update last state for this sensor
                     last_sensor_states[idx] = Some(current_state);
                 }
