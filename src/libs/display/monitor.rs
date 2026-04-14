@@ -122,8 +122,17 @@ pub fn display_loop(
                         Vec::new()
                     };
 
+                    // Read button silence state for mute icon
+                    let sensor_silenced = if let Ok(ds) = display_state.lock() {
+                        ds.buzzer_priority.as_ref()
+                            .map(|bp| bp.is_button_silenced())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, total_pages) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, total_pages, sensor_silenced) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }

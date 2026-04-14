@@ -35,6 +35,7 @@ pub fn render_sensor_overview(
     lorawan_gateway_present: bool,
     lorawan_sensors: &[LoRaWANSensorState],
     total_pages: usize,
+    sensor_silenced: bool,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -48,6 +49,16 @@ pub fn render_sensor_overview(
     // Draw LoRaWAN icon next to network icon when gateway is present
     if lorawan_gateway_present {
         icons::draw_lorawan(display, 2 + net_icon_width as i32 + 1, 0);
+    }
+
+    // Draw mute icon next to status icons when sensor silence is active
+    if sensor_silenced {
+        let mute_x = if lorawan_gateway_present {
+            2 + net_icon_width as i32 + 1 + 11 + 2
+        } else {
+            2 + net_icon_width as i32 + 2
+        };
+        icons::draw_mute(display, mute_x, 1);
     }
 
     // Draw header: device label centered (or "LORAWAN" for LoRaWAN pages), page/mode indicator right-aligned

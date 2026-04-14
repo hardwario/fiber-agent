@@ -16,6 +16,7 @@ use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 use crate::libs::lorawan::SharedLoRaWANState;
+use crate::libs::buzzer::BuzzerPriorityManager;
 
 /// Type alias for shared screen brightness handle (0-100%)
 pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
@@ -126,6 +127,8 @@ pub struct DisplayState {
     pub lorawan_gateway_present: bool,
     /// Shared LoRaWAN state for display rendering
     pub lorawan_state: Option<SharedLoRaWANState>,
+    /// Buzzer priority manager for checking mute state
+    pub buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
 }
 
 impl DisplayState {
@@ -137,6 +140,7 @@ impl DisplayState {
             network_status: NetworkStatus::disconnected(),
             lorawan_gateway_present: false,
             lorawan_state: None,
+            buzzer_priority: None,
         }
     }
 
@@ -370,6 +374,14 @@ impl DisplayMonitor {
             shutdown_flag,
             display_state,
         })
+    }
+
+    /// Set the buzzer priority manager for mute icon display.
+    /// Called after both display and buzzer are initialized.
+    pub fn set_buzzer_priority(&self, bp: Arc<BuzzerPriorityManager>) {
+        if let Ok(mut ds) = self.display_state.lock() {
+            ds.buzzer_priority = Some(bp);
+        }
     }
 
     /// Gracefully shutdown the display monitor thread

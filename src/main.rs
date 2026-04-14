@@ -203,6 +203,7 @@ fn main() -> io::Result<()> {
     // Create buzzer priority manager for coordinating battery and sensor critical alarms
     eprintln!("[main] Initializing buzzer priority manager...");
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
+    _display_monitor.set_buzzer_priority(buzzer_priority_manager.clone());
 
     // Create and spawn accelerometer monitoring thread if enabled
     let _accel_monitor = if config.accelerometer.enabled {
