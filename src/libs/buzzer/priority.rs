@@ -142,6 +142,68 @@ impl BuzzerPriorityManager {
         }
     }
 
+    /// Silence sensor beep for 30 minutes via physical button.
+    /// Only suppresses SensorCritical pattern; battery continues.
+    /// Cleared by timer expiry or `on_new_sensor_alarm()`.
+    pub fn silence_sensor_30min(&self) {
+        let pattern_to_set = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let deadline = (self.clock)() + Duration::from_secs(30 * 60);
+            state.sensor_silenced_until = Some(deadline);
+            state.last_set_pattern = None; // Force re-evaluation
+            eprintln!("[BuzzerPriority] Sensor buzzer silenced by button for 30 min");
+            self.compute_pattern(&state)
+        };
+        self.apply_pattern(pattern_to_set);
+    }
+
+    /// Called when a specific sensor transitions into critical/disconnected.
+    /// Clears the button silence so the user hears the new alarm.
+    /// Does NOT clear MQTT ACK silence (`silenced` field).
+    pub fn on_new_sensor_alarm(&self) {
+        let pattern_to_set = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.sensor_silenced_until.is_some() {
+                state.sensor_silenced_until = None;
+                state.last_set_pattern = None; // Force re-evaluation
+                eprintln!("[BuzzerPriority] Button silence cleared — new sensor alarm");
+                self.compute_pattern(&state)
+            } else {
+                None // No change needed
+            }
+        };
+        self.apply_pattern(pattern_to_set);
+    }
+
+    /// Returns true if the sensor-critical pattern is currently audible.
+    /// Used by the button handler to decide whether to consume a press.
+    pub fn is_sensor_beeping(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.sensor_critical_active {
+            return false;
+        }
+        if state.silenced {
+            return false;
+        }
+        if let Some(deadline) = state.sensor_silenced_until {
+            if (self.clock)() < deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns true if the button-triggered sensor silence is active.
+    /// Used by the display renderer to show the mute icon.
+    pub fn is_button_silenced(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(deadline) = state.sensor_silenced_until {
+            (self.clock)() < deadline
+        } else {
+            false
+        }
+    }
+
     /// Compute which pattern should be playing based on current state
     /// This function does NOT lock anything - it's read-only logic
     fn compute_pattern(&self, state: &BuzzerPriorityState) -> Option<PatternSource> {
@@ -150,8 +212,19 @@ impl BuzzerPriorityManager {
             return Some(PatternSource::None);
         }
 
+        // Check button silence (sensor-only, time-limited)
+        let sensor_active = if let Some(deadline) = state.sensor_silenced_until {
+            if (self.clock)() >= deadline {
+                state.sensor_critical_active
+            } else {
+                false // Sensor suppressed by button silence
+            }
+        } else {
+            state.sensor_critical_active
+        };
+
         let new_pattern_source = match (
-            state.sensor_critical_active,
+            sensor_active,
             state.battery_critical_active,
         ) {
             // Only sensor critical: play sensor pattern
