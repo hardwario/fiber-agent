@@ -188,7 +188,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None)?;
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None)?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -303,7 +303,11 @@ fn main() -> io::Result<()> {
     // Update button monitor with pairing handle
     eprintln!("[main] Restarting button monitor with pairing support...");
     drop(_button_monitor);
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), pairing_handle.clone())?;
+    let _button_monitor = ButtonMonitor::new(
+        _display_monitor.display_state.clone(),
+        pairing_handle.clone(),
+        Some(buzzer_priority_manager.clone()),
+    )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 
     // Create and spawn power monitoring thread with configured interval
