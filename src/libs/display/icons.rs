@@ -261,3 +261,26 @@ fn draw_ethernet_bitmap<D>(
         }
     }
 }
+
+// MUTE ICON BITMAP – 11x7 matching other icon dimensions
+// Speaker with X overlay, user-designed pixel art
+const MUTE_BITMAP: [[u8; 11]; 7] = [
+    [0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1],
+    [0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+    [1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1],
+];
+
+/// Draw mute icon (speaker with X)
+/// Returns the width of the drawn icon for layout calculations
+pub fn draw_mute<D>(display: &mut D, x: i32, y: i32) -> u32
+where
+    D: DrawTarget<Color = BinaryColor>,
+    D::Error: core::fmt::Debug,
+{
+    draw_wifi_bitmap(display, x, y, &MUTE_BITMAP);
+    11
+}
