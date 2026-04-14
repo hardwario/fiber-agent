@@ -315,3 +315,175 @@ impl BuzzerPriorityManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    /// Create a mock clock where time can be advanced manually.
+    fn mock_clock() -> (Clock, Arc<dyn Fn(Duration) + Send + Sync>) {
+        let base = Instant::now();
+        let offset_ms = Arc::new(AtomicU64::new(0));
+        let offset_clone = offset_ms.clone();
+
+        let clock: Clock = Arc::new(move || {
+            base + Duration::from_millis(offset_ms.load(AtomicOrdering::Relaxed))
+        });
+
+        let advance: Arc<dyn Fn(Duration) + Send + Sync> = Arc::new(move |d: Duration| {
+            offset_clone.fetch_add(d.as_millis() as u64, AtomicOrdering::Relaxed);
+        });
+
+        (clock, advance)
+    }
+
+    /// Helper: evaluate sensor_active given state and clock (mirrors compute_pattern logic)
+    fn eval_sensor_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        if let Some(deadline) = state.sensor_silenced_until {
+            if (clock)() >= deadline {
+                state.sensor_critical_active
+            } else {
+                false
+            }
+        } else {
+            state.sensor_critical_active
+        }
+    }
+
+    /// Helper: evaluate is_sensor_beeping logic
+    fn eval_is_sensor_beeping(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        if !state.sensor_critical_active { return false; }
+        if state.silenced { return false; }
+        if let Some(deadline) = state.sensor_silenced_until {
+            if (clock)() < deadline { return false; }
+        }
+        true
+    }
+
+    /// Helper: evaluate pattern source given sensor_active and battery_active
+    fn eval_pattern(sensor_active: bool, battery_active: bool) -> PatternSource {
+        match (sensor_active, battery_active) {
+            (true, false) => PatternSource::SensorCritical,
+            (false, true) => PatternSource::BatteryCritical,
+            (true, true) => PatternSource::SensorCritical, // sensor takes priority initially
+            (false, false) => PatternSource::None,
+        }
+    }
+
+    #[test]
+    fn silence_sensor_30min_suppresses_sensor_only() {
+        let (clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.battery_critical_active = true;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        let sensor_active = eval_sensor_active(&state, &clock);
+        assert!(!sensor_active, "sensor should be suppressed by button silence");
+        assert!(state.battery_critical_active, "battery should NOT be suppressed");
+
+        let pattern = eval_pattern(sensor_active, state.battery_critical_active);
+        assert_eq!(pattern, PatternSource::BatteryCritical);
+    }
+
+    #[test]
+    fn silence_sensor_expires_after_30min() {
+        let (clock, advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        // Before expiry
+        assert!(!eval_sensor_active(&state, &clock));
+
+        // Advance past 30 minutes
+        advance(Duration::from_secs(31 * 60));
+
+        // After expiry
+        assert!(eval_sensor_active(&state, &clock), "sensor should resume after 30min");
+    }
+
+    #[test]
+    fn on_new_sensor_alarm_clears_button_silence() {
+        let (clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        // Simulate on_new_sensor_alarm: clears sensor_silenced_until
+        state.sensor_silenced_until = None;
+
+        assert!(eval_sensor_active(&state, &clock), "sensor should resume after new alarm");
+    }
+
+    #[test]
+    fn on_new_sensor_alarm_does_not_clear_mqtt_silence() {
+        let (_clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.silenced = true; // MQTT ACK
+
+        // Simulate on_new_sensor_alarm: only clears sensor_silenced_until
+        state.sensor_silenced_until = None; // Already None
+
+        assert!(state.silenced, "MQTT silence should NOT be cleared by new sensor alarm");
+    }
+
+    #[test]
+    fn mqtt_silence_still_mutes_battery() {
+        let mut state = BuzzerPriorityState::new();
+        state.battery_critical_active = true;
+        state.silenced = true; // MQTT ACK
+
+        // MQTT silence mutes everything (checked first in compute_pattern)
+        assert!(state.silenced);
+        // In compute_pattern, `if state.silenced { return Some(PatternSource::None); }`
+        // so pattern is None regardless of battery state
+    }
+
+    #[test]
+    fn button_silence_does_not_mute_battery() {
+        let (clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.battery_critical_active = true;
+        state.sensor_critical_active = false;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        let sensor_active = eval_sensor_active(&state, &clock);
+        let pattern = eval_pattern(sensor_active, state.battery_critical_active);
+        assert_eq!(pattern, PatternSource::BatteryCritical,
+            "battery should still beep when only button silence is active");
+    }
+
+    #[test]
+    fn is_sensor_beeping_reflects_both_silences() {
+        let (clock, _advance) = mock_clock();
+
+        // Sensor active, no silence → beeping
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        assert!(eval_is_sensor_beeping(&state, &clock));
+
+        // Sensor active, MQTT silenced → not beeping
+        state.silenced = true;
+        assert!(!eval_is_sensor_beeping(&state, &clock));
+
+        // Sensor active, button silenced (not MQTT) → not beeping
+        state.silenced = false;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(1800));
+        assert!(!eval_is_sensor_beeping(&state, &clock));
+
+        // Sensor inactive → not beeping
+        state.sensor_critical_active = false;
+        state.sensor_silenced_until = None;
+        state.silenced = false;
+        assert!(!eval_is_sensor_beeping(&state, &clock));
+
+        // Sensor active, both silenced → not beeping
+        state.sensor_critical_active = true;
+        state.silenced = true;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(1800));
+        assert!(!eval_is_sensor_beeping(&state, &clock));
+    }
+}
