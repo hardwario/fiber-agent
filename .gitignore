@@ -3,5 +3,5 @@
 .claude/
 docs/*
 !docs/superpowers/
-!docs/superpowers/**/*.md
+!docs/superpowers/**
 target/
