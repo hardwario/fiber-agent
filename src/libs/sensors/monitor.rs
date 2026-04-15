@@ -482,6 +482,9 @@ impl SensorMonitor {
                             new_alarm_type = AlarmType::Disconnected;
                         }
 
+                        // Check if button silence has expired — resume beeping if so
+                        priority_manager.check_silence_expiry();
+
                         // Only update shared state when alarm type actually changes
                         // This prevents resets from sensor state oscillations (NORMAL ↔ DISCONNECTED)
                         if new_alarm_type != current_alarm_type {

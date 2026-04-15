@@ -157,6 +157,27 @@ impl BuzzerPriorityManager {
         self.apply_pattern(pattern_to_set);
     }
 
+    /// Check if the button silence deadline has expired and resume beeping.
+    /// Should be called periodically from the sensor monitor loop.
+    pub fn check_silence_expiry(&self) {
+        let pattern_to_set = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(deadline) = state.sensor_silenced_until {
+                if (self.clock)() >= deadline {
+                    state.sensor_silenced_until = None;
+                    state.last_set_pattern = None; // Force re-evaluation
+                    eprintln!("[BuzzerPriority] Button silence expired — resuming alarm");
+                    self.compute_pattern(&state)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        self.apply_pattern(pattern_to_set);
+    }
+
     /// Called when a specific sensor transitions into critical/disconnected.
     /// Clears the button silence so the user hears the new alarm.
     /// Does NOT clear MQTT ACK silence (`silenced` field).
