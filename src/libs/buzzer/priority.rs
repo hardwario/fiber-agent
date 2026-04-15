@@ -179,15 +179,20 @@ impl BuzzerPriorityManager {
     }
 
     /// Called when a specific sensor transitions into critical/disconnected.
-    /// Clears the button silence so the user hears the new alarm.
-    /// Does NOT clear MQTT ACK silence (`silenced` field).
+    /// Clears both button silence and ACK silence so the user hears the new alarm.
     pub fn on_new_sensor_alarm(&self) {
         let pattern_to_set = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.sensor_silenced_until.is_some() {
+            let had_button_silence = state.sensor_silenced_until.is_some();
+            let had_ack_silence = state.silenced;
+            if had_button_silence || had_ack_silence {
                 state.sensor_silenced_until = None;
+                state.silenced = false;
                 state.last_set_pattern = None; // Force re-evaluation
-                eprintln!("[BuzzerPriority] Button silence cleared — new sensor alarm");
+                eprintln!(
+                    "[BuzzerPriority] Silence cleared by new sensor alarm (button={}, ack={})",
+                    had_button_silence, had_ack_silence
+                );
                 self.compute_pattern(&state)
             } else {
                 None // No change needed
@@ -439,16 +444,17 @@ mod tests {
     }
 
     #[test]
-    fn on_new_sensor_alarm_does_not_clear_mqtt_silence() {
+    fn on_new_sensor_alarm_clears_ack_silence() {
         let (_clock, _advance) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.sensor_critical_active = true;
         state.silenced = true; // MQTT ACK
 
-        // Simulate on_new_sensor_alarm: only clears sensor_silenced_until
-        state.sensor_silenced_until = None; // Already None
+        // Simulate on_new_sensor_alarm: clears both silences
+        state.silenced = false;
+        state.sensor_silenced_until = None;
 
-        assert!(state.silenced, "MQTT silence should NOT be cleared by new sensor alarm");
+        assert!(!state.silenced, "MQTT silence SHOULD be cleared by new sensor alarm");
     }
 
     #[test]

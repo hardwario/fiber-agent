@@ -434,7 +434,7 @@ impl SensorMonitor {
                         let is_critical_like = matches!(current_state, AlarmState::Critical | AlarmState::Disconnected);
                         if !was_critical_like && is_critical_like {
                             priority_manager.on_new_sensor_alarm();
-                            eprintln!("[SensorMonitor] New sensor alarm detected (sensor {}), button silence cleared", idx);
+                            eprintln!("[SensorMonitor] New sensor alarm detected (sensor {}), silence cleared", idx);
                         }
                     }
 
@@ -444,7 +444,6 @@ impl SensorMonitor {
                     match current_state {
                         AlarmState::Critical => {
                             has_critical = true;
-                            break;  // Critical takes priority
                         }
                         AlarmState::Disconnected => {
                             has_disconnected = true;
