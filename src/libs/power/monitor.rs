@@ -12,6 +12,8 @@ use crate::libs::buzzer::{BuzzerController, BuzzerPriorityManager};
 use crate::libs::buzzer::pattern::BuzzerPattern;
 use crate::libs::config::BuzzerTiming;
 use crate::libs::logging::get_timestamp_str;
+use crate::libs::mqtt::messages::MqttMessage;
+use crossbeam::channel::Sender;
 use super::controller::PowerController;
 use super::status::SharedPowerStatus;
 
@@ -34,12 +36,13 @@ impl PowerMonitor {
         buzzer: Arc<Mutex<BuzzerController>>,
         priority_manager: Arc<BuzzerPriorityManager>,
         power_status: SharedPowerStatus,
+        mqtt_sender: Option<Sender<MqttMessage>>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(stm, shutdown_flag_clone, update_interval_ms, led_state, buzzer, priority_manager, power_status);
+            Self::monitor_loop(stm, shutdown_flag_clone, update_interval_ms, led_state, buzzer, priority_manager, power_status, mqtt_sender);
         });
 
         Ok(Self {
@@ -57,6 +60,7 @@ impl PowerMonitor {
         buzzer: Arc<Mutex<BuzzerController>>,
         priority_manager: Arc<BuzzerPriorityManager>,
         power_status: SharedPowerStatus,
+        mqtt_sender: Option<Sender<MqttMessage>>,
     ) {
         // Create power controller
         let mut controller = match PowerController::new(stm) {
@@ -124,6 +128,17 @@ impl PowerMonitor {
                         if let Ok(bz) = buzzer.lock() {
                             bz.play_once(BuzzerPattern::ReconnectionHappy { frequency_hz: 150 });
                         }
+
+                        // Send power restored alarm event (clears active alarm)
+                        if let Some(ref sender) = mqtt_sender {
+                            let _ = sender.try_send(MqttMessage::PublishSystemAlarmEvent {
+                                alarm_type: "POWER_DISCONNECT".to_string(),
+                                name: "Power Supply".to_string(),
+                                from_state: "CRITICAL".to_string(),
+                                to_state: "NORMAL".to_string(),
+                                message: "DC power restored".to_string(),
+                            });
+                        }
                     } else if !current_vin_status && previous_vin_status {
                         // VIN just disconnected (lost AC power, switched to battery)
                         eprintln!("[{}] [PowerMonitor] DC power lost - switched to battery", get_timestamp_str());
@@ -140,6 +155,17 @@ impl PowerMonitor {
                                 off_ms: 0,
                             };
                             bz.play_once(BuzzerPattern::VinDisconnectBeep(vin_disconnect_timing));
+                        }
+
+                        // Send power disconnect alarm event
+                        if let Some(ref sender) = mqtt_sender {
+                            let _ = sender.try_send(MqttMessage::PublishSystemAlarmEvent {
+                                alarm_type: "POWER_DISCONNECT".to_string(),
+                                name: "Power Supply".to_string(),
+                                from_state: "NORMAL".to_string(),
+                                to_state: "CRITICAL".to_string(),
+                                message: "DC power disconnected".to_string(),
+                            });
                         }
                     }
 

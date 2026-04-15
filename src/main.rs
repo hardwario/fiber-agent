@@ -313,6 +313,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn power monitoring thread with configured interval
     eprintln!("[main] Starting power monitor...");
+    let mqtt_sender = mqtt_handle.as_ref().map(|h| h.sender());
     let _power_monitor = PowerMonitor::new(
         stm_guard.clone(),
         config.power.update_interval_ms,
@@ -320,6 +321,7 @@ fn main() -> io::Result<()> {
         power_buzzer.clone(),
         buzzer_priority_manager.clone(),
         power_status.clone(),
+        mqtt_sender,
     )?;
     eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
 

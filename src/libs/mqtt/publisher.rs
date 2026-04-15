@@ -65,6 +65,17 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishSystemAlarmEvent {
+                alarm_type,
+                name,
+                from_state,
+                to_state,
+                message,
+            } => {
+                self.publish_system_alarm_event(&alarm_type, &name, &from_state, &to_state, &message)
+                    .await
+            }
+
             MqttMessage::PublishSystemStatus {
                 hostname,
                 device_label,
@@ -285,6 +296,33 @@ impl MqttPublisher {
             "to_state": format!("{:?}", to_state).to_uppercase(),
             "temperature_celsius": temperature,
             "event_type": "alarm_transition",
+        });
+
+        let topic = self.topics.alarms_events();
+        let qos = Self::qos_from_u8(self.qos_overrides.alarm_events);
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish system-level alarm event (power, wifi, ethernet)
+    async fn publish_system_alarm_event(
+        &self,
+        alarm_type: &str,
+        name: &str,
+        from_state: &str,
+        to_state: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "line": 0,
+            "name": name,
+            "from_state": from_state,
+            "to_state": to_state,
+            "temperature_celsius": null,
+            "event_type": "system_alarm",
+            "alarm_type": alarm_type,
+            "message": message,
         });
 
         let topic = self.topics.alarms_events();

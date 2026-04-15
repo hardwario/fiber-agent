@@ -1150,6 +1150,32 @@ impl MqttMonitor {
                                 eprintln!("[MQTT Monitor]   Ethernet: {} -> {}",
                                     last_known_network.ethernet_connected, current_network.ethernet_connected);
 
+                                // Send WiFi disconnect alarm event
+                                if last_known_network.wifi_connected && !current_network.wifi_connected {
+                                    if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemAlarmEvent {
+                                        alarm_type: "WIFI_DISCONNECT".to_string(),
+                                        name: "WiFi".to_string(),
+                                        from_state: "NORMAL".to_string(),
+                                        to_state: "WARNING".to_string(),
+                                        message: "WiFi connection lost".to_string(),
+                                    }).await {
+                                        eprintln!("[MQTT Monitor] Failed to publish WiFi disconnect alarm: {}", e);
+                                    }
+                                }
+
+                                // Send Ethernet disconnect alarm event
+                                if last_known_network.ethernet_connected && !current_network.ethernet_connected {
+                                    if let Err(e) = publisher.handle_message(MqttMessage::PublishSystemAlarmEvent {
+                                        alarm_type: "ETHERNET_DISCONNECT".to_string(),
+                                        name: "Ethernet".to_string(),
+                                        from_state: "NORMAL".to_string(),
+                                        to_state: "WARNING".to_string(),
+                                        message: "Ethernet connection lost".to_string(),
+                                    }).await {
+                                        eprintln!("[MQTT Monitor] Failed to publish Ethernet disconnect alarm: {}", e);
+                                    }
+                                }
+
                                 // If network came back up and we're not connected, log it
                                 if (current_network.wifi_connected || current_network.ethernet_connected) &&
                                    (!last_known_network.wifi_connected && !last_known_network.ethernet_connected) {

@@ -25,6 +25,15 @@ pub enum MqttMessage {
         temperature: f32,
     },
 
+    /// Publish a system-level alarm event (power, wifi, ethernet)
+    PublishSystemAlarmEvent {
+        alarm_type: String,     // "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT"
+        name: String,           // "Power Supply", "WiFi", "Ethernet"
+        from_state: String,     // "NORMAL" or "CRITICAL"
+        to_state: String,       // "CRITICAL" or "NORMAL"
+        message: String,        // Human-readable message
+    },
+
     /// Publish combined system status (power, network, storage, uptime)
     PublishSystemStatus {
         /// Hostname
