@@ -29,7 +29,21 @@ fn read_hostname_from_file() -> io::Result<String> {
     Ok(hostname.trim().to_uppercase())
 }
 
+/// Returns true when compiled with the dev-platform feature flag
+pub fn is_dev_platform() -> bool {
+    cfg!(feature = "dev-platform")
+}
+
 fn main() -> io::Result<()> {
+    #[cfg(feature = "dev-platform")]
+    {
+        eprintln!("╔══════════════════════════════════════════════════════════╗");
+        eprintln!("║  WARNING: FIBER DEV PLATFORM - NOT FOR MEDICAL USE      ║");
+        eprintln!("║  Authorization and cryptographic verification DISABLED   ║");
+        eprintln!("║  This build is for educational/development purposes only ║");
+        eprintln!("╚══════════════════════════════════════════════════════════╝");
+    }
+
     eprintln!("[main] Starting FIBER application");
 
     // Load configuration from /data/fiber/config/fiber.config.yaml
@@ -47,9 +61,14 @@ fn main() -> io::Result<()> {
     };
 
     // Display configuration info
+    let display_version = if cfg!(feature = "dev-platform") {
+        format!("{}-dev", config.system.app_version)
+    } else {
+        config.system.app_version.clone()
+    };
     eprintln!(
         "[main] Config: {} v{}",
-        config.system.app_name, config.system.app_version
+        config.system.app_name, display_version
     );
     eprintln!(
         "[main] Power update interval: {}ms",

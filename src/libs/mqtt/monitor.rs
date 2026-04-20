@@ -508,6 +508,12 @@ impl MqttMonitor {
         eprintln!("[MQTT Monitor] Tokio runtime created successfully");
 
         // Initialize components that persist across reconnections
+        #[cfg(feature = "dev-platform")]
+        let auth_manager: Option<Arc<AuthorizationManager>> = {
+            eprintln!("[MQTT Monitor] DEV-PLATFORM: Authorization manager DISABLED");
+            None
+        };
+        #[cfg(not(feature = "dev-platform"))]
         let auth_manager = if config.subscribe.enabled {
             match Self::init_authorization_manager(&config) {
                 Ok(manager) => {
@@ -844,6 +850,71 @@ impl MqttMonitor {
                                                     nonce,
                                                     certificate,
                                                 } => {
+                                                    #[cfg(feature = "dev-platform")]
+                                                    {
+                                                        // DEV-PLATFORM: Skip signature verification,
+                                                        // directly execute the command without challenge-response
+                                                        eprintln!("[MQTT Monitor] DEV-PLATFORM: Bypassing auth for {} from {}",
+                                                            command_type, signer_id);
+
+                                                        // Build command directly from params
+                                                        let direct_cmd = Self::build_dev_command(&command_type, &params, &reason);
+                                                        match direct_cmd {
+                                                            Ok(execute_cmd) => {
+                                                                if let Err(e) = Self::execute_config_command(
+                                                                    execute_cmd,
+                                                                    &config_applier,
+                                                                    &stm_bridge,
+                                                                    &screen_brightness,
+                                                                    &buzzer_volume,
+                                                                    &buzzer_priority,
+                                                                    &led_brightness_tracker,
+                                                                ) {
+                                                                    eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
+                                                                    if let Err(publish_err) = publisher.publish_error(
+                                                                        &command_type, "execution_failed", &format!("{}", e),
+                                                                    ).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                                    }
+                                                                } else {
+                                                                    eprintln!("[MQTT Monitor] DEV-PLATFORM: {} executed successfully", command_type);
+                                                                    // Publish success response
+                                                                    let applied_at = std::time::SystemTime::now()
+                                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                                        .unwrap_or_default()
+                                                                        .as_secs() as i64;
+                                                                    let response = MqttMessage::PublishConfigResponse {
+                                                                        challenge_id: "dev-platform".to_string(),
+                                                                        request_id: request_id.clone(),
+                                                                        status: "SUCCESS".to_string(),
+                                                                        applied_at: Some(applied_at),
+                                                                        effective_at: Some(applied_at),
+                                                                        message: format!("DEV-PLATFORM: {} applied (no auth)", command_type),
+                                                                    };
+                                                                    if let Err(e) = publisher.handle_message(response).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                    }
+                                                                    // Publish updated config state
+                                                                    let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                                                                    if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
+                                                                        if let Err(e) = publisher.handle_message(config_msg).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                eprintln!("[MQTT Monitor] DEV-PLATFORM: Invalid command: {}", e);
+                                                                if let Err(publish_err) = publisher.publish_error(
+                                                                    &command_type, "invalid_command", &e,
+                                                                ).await {
+                                                                    eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    #[cfg(not(feature = "dev-platform"))]
+                                                    {
                                                     if let Some(ref auth) = auth_manager {
                                                         match auth.process_config_request(
                                                             request_id,
@@ -876,6 +947,7 @@ impl MqttMonitor {
                                                     } else {
                                                         eprintln!("[MQTT Monitor] ConfigRequest received but authorization is disabled");
                                                     }
+                                                    }
                                                 }
 
                                                 MqttCommand::ConfigConfirm {
@@ -887,6 +959,12 @@ impl MqttMonitor {
                                                     nonce,
                                                     certificate,
                                                 } => {
+                                                    #[cfg(feature = "dev-platform")]
+                                                    {
+                                                        eprintln!("[MQTT Monitor] DEV-PLATFORM: ConfigConfirm ignored (no challenge-response needed)");
+                                                    }
+                                                    #[cfg(not(feature = "dev-platform"))]
+                                                    {
                                                     if let Some(ref auth) = auth_manager {
                                                         match auth.process_config_confirm(
                                                             challenge_id,
@@ -939,6 +1017,7 @@ impl MqttMonitor {
                                                         }
                                                     } else {
                                                         eprintln!("[MQTT Monitor] ConfigConfirm received but authorization is disabled");
+                                                    }
                                                     }
                                                 }
 
@@ -1344,6 +1423,7 @@ impl MqttMonitor {
     }
 
     /// Initialize authorization manager with crypto components
+    #[cfg_attr(feature = "dev-platform", allow(dead_code))]
     fn init_authorization_manager(_config: &MqttConfig) -> Result<AuthorizationManager, String> {
         use std::path::Path;
         use crate::libs::crypto::CertificateAuthority;
@@ -1417,6 +1497,83 @@ impl MqttMonitor {
         );
 
         Ok(manager)
+    }
+
+    /// Build a command directly from params (dev-platform mode, no auth)
+    #[cfg(feature = "dev-platform")]
+    fn build_dev_command(
+        command_type: &str,
+        params: &serde_json::Value,
+        reason: &Option<String>,
+    ) -> Result<MqttCommand, String> {
+        match command_type {
+            "set_threshold" => {
+                let line = params.get("line").and_then(|v| v.as_u64())
+                    .ok_or("Missing line")? as u8;
+                let thresholds = params.get("thresholds").ok_or("Missing thresholds")?;
+                Ok(MqttCommand::SetSensorThreshold {
+                    line,
+                    critical_low: thresholds["critical_low"].as_f64().unwrap_or(0.0) as f32,
+                    alarm_low: thresholds.get("alarm_low").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    warning_low: thresholds["warning_low"].as_f64().unwrap_or(0.0) as f32,
+                    warning_high: thresholds["warning_high"].as_f64().unwrap_or(0.0) as f32,
+                    alarm_high: thresholds.get("alarm_high").and_then(|v| v.as_f64()).unwrap_or(100.0) as f32,
+                    critical_high: thresholds["critical_high"].as_f64().unwrap_or(0.0) as f32,
+                })
+            }
+            "set_sensor_name" => {
+                let line = params.get("line").and_then(|v| v.as_u64()).ok_or("Missing line")? as u8;
+                let name = params.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?.to_string();
+                Ok(MqttCommand::SetSensorName { line, name })
+            }
+            "set_sensor_location" => {
+                let line = params.get("line").and_then(|v| v.as_u64()).ok_or("Missing line")? as u8;
+                let location = params.get("location").and_then(|v| v.as_str()).ok_or("Missing location")?.to_string();
+                Ok(MqttCommand::SetSensorLocation { line, location })
+            }
+            "restart_application" => {
+                let r = reason.clone().unwrap_or_else(|| "Dev platform command".to_string());
+                Ok(MqttCommand::RestartApplication { reason: r })
+            }
+            "set_interval" => {
+                let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing sample_interval_ms")?;
+                let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing aggregation_interval_ms")?;
+                let report = params.get("report_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing report_interval_ms")?;
+                Ok(MqttCommand::SetInterval { sample_interval_ms: sample, aggregation_interval_ms: aggregation, report_interval_ms: report })
+            }
+            "set_system_info_interval" => {
+                let interval = params.get("interval_seconds").and_then(|v| v.as_u64()).ok_or("Missing interval_seconds")?;
+                Ok(MqttCommand::SetSystemInfoInterval { interval_seconds: interval })
+            }
+            "set_device_label" => {
+                let label = params.get("label").and_then(|v| v.as_str()).ok_or("Missing label")?.to_string();
+                Ok(MqttCommand::SetDeviceLabel { label })
+            }
+            "set_led_brightness" => {
+                let brightness = params.get("brightness").and_then(|v| v.as_u64()).ok_or("Missing brightness")? as u8;
+                Ok(MqttCommand::SetLedBrightness { brightness })
+            }
+            "set_screen_brightness" => {
+                let brightness = params.get("brightness").and_then(|v| v.as_u64()).ok_or("Missing brightness")? as u8;
+                Ok(MqttCommand::SetScreenBrightness { brightness })
+            }
+            "set_buzzer_volume" => {
+                let volume = params.get("volume").and_then(|v| v.as_u64()).ok_or("Missing volume")? as u8;
+                Ok(MqttCommand::SetBuzzerVolume { volume })
+            }
+            "set_network_config" => {
+                Ok(MqttCommand::SetNetworkConfig {
+                    interface: params.get("interface").and_then(|v| v.as_str()).unwrap_or("ethernet").to_string(),
+                    config_type: params.get("type").and_then(|v| v.as_str()).unwrap_or("dhcp").to_string(),
+                    ip_address: params.get("ip_address").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    subnet_mask: params.get("subnet_mask").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    gateway: params.get("gateway").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    dns_primary: params.get("dns_primary").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    dns_secondary: params.get("dns_secondary").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                })
+            }
+            _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
+        }
     }
 
     /// Execute an approved configuration command

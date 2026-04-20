@@ -88,7 +88,16 @@ impl MqttSubscriber {
             "restart" => self.parse_restart(&json),
             "set_interval" => self.parse_set_interval(&json),
             "get_interval" => Ok(MqttCommand::GetInterval),
-            "config_request" => self.parse_config_request(&json),
+            "config_request" => {
+                #[cfg(feature = "dev-platform")]
+                {
+                    self.parse_config_request_dev(&json)
+                }
+                #[cfg(not(feature = "dev-platform"))]
+                {
+                    self.parse_config_request(&json)
+                }
+            }
             "config_confirm" => self.parse_config_confirm(&json),
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
@@ -293,7 +302,71 @@ impl MqttSubscriber {
         Ok(MqttCommand::SetSystemInfoInterval { interval_seconds })
     }
 
+    /// Parse config_request command in dev-platform mode (no signature required)
+    /// Accepts a simplified JSON format:
+    /// { "command": "config_request", "command_type": "set_threshold", "params": {...} }
+    #[cfg(feature = "dev-platform")]
+    fn parse_config_request_dev(&self, json: &Value) -> Result<MqttCommand, String> {
+        let request_id = json.get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("dev-request")
+            .to_string();
+
+        let command_type = json.get("command_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'command_type' field".to_string())?
+            .to_string();
+
+        let params = json.get("params")
+            .ok_or_else(|| "Missing 'params' field".to_string())?
+            .clone();
+
+        let reason = json.get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let signer_id = json.get("signer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("dev-student")
+            .to_string();
+
+        let timestamp = json.get("timestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            });
+
+        // Use dummy values for fields not needed in dev mode
+        let dummy_cert = UserCertificate {
+            signer_id: signer_id.clone(),
+            full_name: "Dev Student".to_string(),
+            role: "developer".to_string(),
+            public_key_ed25519: "0".repeat(64),
+            permissions: vec!["*".to_string()],
+            issued_at: "2020-01-01T00:00:00Z".to_string(),
+            expires_at: "2099-12-31T23:59:59Z".to_string(),
+            issuer: "dev-platform".to_string(),
+            certificate_signature: "dev-platform-no-signature".to_string(),
+        };
+
+        Ok(MqttCommand::ConfigRequest {
+            request_id,
+            command_type,
+            params,
+            reason,
+            signer_id,
+            signature: "dev-platform-no-signature".to_string(),
+            timestamp,
+            nonce: format!("dev-{}", uuid::Uuid::new_v4()),
+            certificate: dummy_cert,
+        })
+    }
+
     /// Parse config_request command (signed with Ed25519)
+    #[cfg_attr(feature = "dev-platform", allow(dead_code))]
     fn parse_config_request(&self, json: &Value) -> Result<MqttCommand, String> {
         let request_id = json
             .get("request_id")

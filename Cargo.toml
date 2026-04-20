@@ -41,6 +41,10 @@ aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
 
+[features]
+default = []
+dev-platform = []
+
 [[bin]]
 name = "fiber_app"
 path = "src/main.rs"

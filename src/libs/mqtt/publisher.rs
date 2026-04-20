@@ -387,11 +387,18 @@ impl MqttPublisher {
                 .map(|dt| dt.to_rfc3339())
         });
 
+        let firmware_version_str = if cfg!(feature = "dev-platform") {
+            format!("{}-dev", version)
+        } else {
+            version.to_string()
+        };
+
         let payload = json!({
             "timestamp": Self::timestamp(),
             "hostname": hostname,
             "device_label": device_label,
-            "firmware_version": version,
+            "firmware_version": firmware_version_str,
+            "dev_mode": cfg!(feature = "dev-platform"),
             "uptime_seconds": uptime_seconds,
             "uptime_human": uptime_human,
             "power": {
@@ -444,6 +451,7 @@ impl MqttPublisher {
         let payload = json!({
             "status": "online",
             "timestamp": Self::timestamp(),
+            "dev_mode": cfg!(feature = "dev-platform"),
         });
 
         let topic = self.topics.status();

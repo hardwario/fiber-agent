@@ -197,3 +197,5 @@ mod tests {
 ```
 
 echo ds2482 0x18 | sudo tee /sys/bus/i2c/devices/i2c-10/new_device
+
+ cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform
