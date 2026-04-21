@@ -764,6 +764,18 @@ pub struct TlsConfig {
     pub insecure_skip_verify: bool,
 }
 
+impl TlsConfig {
+    /// Validate TLS configuration for production safety.
+    /// Blocks insecure_skip_verify in non-dev builds (EU MDR Annex I, 17.2).
+    pub fn validate(&mut self) {
+        #[cfg(not(feature = "dev-platform"))]
+        if self.insecure_skip_verify {
+            eprintln!("SECURITY: insecure_skip_verify is not allowed in production builds. Forcing to false.");
+            self.insecure_skip_verify = false;
+        }
+    }
+}
+
 /// QoS overrides by message type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QosOverrides {
@@ -958,7 +970,15 @@ impl Config {
     /// Load configuration from a YAML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+
+        // Validate TLS config for production safety (EU MDR Annex I, 17.2)
+        if let Some(ref mut mqtt) = config.mqtt {
+            if let Some(ref mut tls) = mqtt.tls {
+                tls.validate();
+            }
+        }
+
         Ok(config)
     }
 
