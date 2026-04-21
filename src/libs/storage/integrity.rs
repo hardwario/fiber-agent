@@ -25,26 +25,47 @@ pub fn compute_audit_record_hash(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(timestamp.to_le_bytes());
+
+    // Length-prefix variable-length fields to prevent boundary ambiguity
+    hasher.update(&(operation.len() as u64).to_le_bytes());
     hasher.update(operation.as_bytes());
-    hasher.update(table_name.unwrap_or("").as_bytes());
+
+    let tn = table_name.unwrap_or("");
+    hasher.update(&(tn.len() as u64).to_le_bytes());
+    hasher.update(tn.as_bytes());
+
     hasher.update(record_count.unwrap_or(0).to_le_bytes());
     hasher.update(duration_ms.unwrap_or(0).to_le_bytes());
+
+    hasher.update(&(thread_id.len() as u64).to_le_bytes());
     hasher.update(thread_id.as_bytes());
-    hasher.update(details.unwrap_or("").as_bytes());
-    hasher.update(error_msg.unwrap_or("").as_bytes());
-    hasher.update(previous_hash.unwrap_or("GENESIS").as_bytes());
+
+    let det = details.unwrap_or("");
+    hasher.update(&(det.len() as u64).to_le_bytes());
+    hasher.update(det.as_bytes());
+
+    let err = error_msg.unwrap_or("");
+    hasher.update(&(err.len() as u64).to_le_bytes());
+    hasher.update(err.as_bytes());
+
+    let prev = previous_hash.unwrap_or("GENESIS");
+    hasher.update(&(prev.len() as u64).to_le_bytes());
+    hasher.update(prev.as_bytes());
+
     hex::encode(hasher.finalize())
 }
 
 /// Get the hash of the most recent audit log entry (the chain tip)
 pub fn get_latest_audit_hash(conn: &Connection) -> StorageResult<Option<String>> {
+    use rusqlite::OptionalExtension;
     let result: Option<String> = conn
         .query_row(
             "SELECT record_hash FROM audit_log WHERE record_hash IS NOT NULL ORDER BY id DESC LIMIT 1",
             [],
             |row| row.get(0),
         )
-        .ok();
+        .optional()
+        .map_err(|e| StorageError::QueryError(format!("Failed to get latest audit hash: {}", e)))?;
 
     Ok(result)
 }
@@ -87,6 +108,16 @@ pub fn verify_audit_chain(conn: &Connection) -> StorageResult<i64> {
             = row_result.map_err(|e| StorageError::QueryError(format!("Row error: {}", e)))?;
 
         // Verify previous_hash matches our expectation
+        if expected_previous.is_none() {
+            // First record: previous_hash must be "GENESIS"
+            let actual_prev = previous_hash.as_deref().unwrap_or("GENESIS");
+            if actual_prev != "GENESIS" {
+                return Err(StorageError::IntegrityError(
+                    format!("First audit record (id={}) has unexpected previous_hash='{}', expected 'GENESIS'", id, actual_prev)
+                ));
+            }
+        }
+
         if let Some(ref expected) = expected_previous {
             let actual_prev = previous_hash.as_deref().unwrap_or("GENESIS");
             if actual_prev != expected {
@@ -139,11 +170,12 @@ pub fn compute_reading_hmac(
     mac.update(&[sensor_line]);
     mac.update(&temperature_c.to_le_bytes());
     mac.update(&[if is_connected { 1u8 } else { 0u8 }]);
+    mac.update(&(alarm_state.len() as u64).to_le_bytes());
     mac.update(alarm_state.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// Verify HMAC of a sensor reading
+/// Verify HMAC of a sensor reading using constant-time comparison
 pub fn verify_reading_hmac(
     secret: &[u8],
     timestamp: i64,
@@ -153,8 +185,16 @@ pub fn verify_reading_hmac(
     alarm_state: &str,
     expected_hmac: &str,
 ) -> bool {
-    let computed = compute_reading_hmac(secret, timestamp, sensor_line, temperature_c, is_connected, alarm_state);
-    computed == expected_hmac
+    let mut mac = HmacSha256::new_from_slice(secret)
+        .expect("HMAC accepts any key length");
+    mac.update(&timestamp.to_le_bytes());
+    mac.update(&[sensor_line]);
+    mac.update(&temperature_c.to_le_bytes());
+    mac.update(&[if is_connected { 1u8 } else { 0u8 }]);
+    mac.update(&(alarm_state.len() as u64).to_le_bytes());
+    mac.update(alarm_state.as_bytes());
+    let expected_bytes = hex::decode(expected_hmac).unwrap_or_default();
+    mac.verify_slice(&expected_bytes).is_ok()
 }
 
 #[cfg(test)]
