@@ -184,20 +184,11 @@ fn check_broker_reachable(host: &str, port: u16) -> bool {
 
 /// Create MQTT client options with all configured parameters
 fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> MqttOptions {
-    // Determine effective port: use 8883 when TLS is enabled and port is still the
-    // plaintext default (1883), otherwise honour the configured port.
-    let effective_port = match &config.tls {
-        Some(tls) if tls.enabled && config.broker.port == 1883 => {
-            eprintln!("[MQTT Monitor] TLS enabled — overriding default port 1883 -> 8883");
-            8883
-        }
-        _ => config.broker.port,
-    };
-
+    // Start with configured port — may be overridden to 8883 if TLS succeeds
     let mut mqttoptions = MqttOptions::new(
         client_id,
         config.broker.host.clone(),
-        effective_port,
+        config.broker.port,
     );
 
     // Set connection parameters
@@ -212,25 +203,29 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
 
     // Configure TLS transport when the tls config section is present and enabled.
     // Falls back to plain TCP when TLS is absent or explicitly disabled.
+    // If TLS succeeds and port is default 1883, recreate options with 8883.
     if let Some(ref tls) = config.tls {
         if tls.enabled {
             match configure_tls_transport(tls) {
                 Ok(transport) => {
+                    if config.broker.port == 1883 {
+                        // Recreate with TLS port (MqttOptions has no set_port)
+                        mqttoptions = MqttOptions::new(client_id, config.broker.host.clone(), 8883);
+                        mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
+                        mqttoptions.set_clean_session(config.connection.clean_session);
+                        if let (Some(u), Some(p)) = (&config.broker.username, &config.broker.password) {
+                            mqttoptions.set_credentials(u, p);
+                        }
+                        eprintln!("[MQTT Monitor] TLS enabled — port overridden 1883 -> 8883");
+                    }
                     mqttoptions.set_transport(transport);
                     eprintln!("[MQTT Monitor] TLS transport configured successfully");
                 }
                 Err(e) => {
                     let err_str = e.to_string();
                     if err_str.contains("No such file") || err_str.contains("not found") {
-                        // CA cert not deployed — fall back to plaintext for local broker
                         eprintln!("[MQTT Monitor] WARNING: TLS cert not found, falling back to plaintext: {}", e);
-                        // Revert port override if we changed it
-                        if config.broker.port == 8883 {
-                            mqttoptions.set_port(1883);
-                            eprintln!("[MQTT Monitor] Reverting port from 8883 to 1883 (plaintext fallback)");
-                        }
                     } else {
-                        // Real TLS error (bad cert, invalid format) — refuse plaintext
                         eprintln!("[MQTT Monitor] FATAL: Failed to configure TLS transport: {}", e);
                         eprintln!("[MQTT Monitor] Refusing to connect over plaintext when TLS is enabled");
                     }
