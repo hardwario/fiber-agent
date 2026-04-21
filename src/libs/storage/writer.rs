@@ -13,15 +13,28 @@ pub struct StorageWriter;
 impl StorageWriter {
     /// Write a sensor reading to the database
     /// Non-blocking: returns immediately
+    /// If hmac_secret is provided, computes HMAC-SHA256 over reading data (EU MDR IEC 62304 §5.5.3)
     pub fn write_sensor_reading(
         conn: &Connection,
         reading: &SensorReading,
+        hmac_secret: Option<&[u8]>,
     ) -> StorageResult<i64> {
         let start = std::time::Instant::now();
 
+        let data_hmac = hmac_secret.map(|secret| {
+            crate::libs::storage::integrity::compute_reading_hmac(
+                secret,
+                reading.timestamp,
+                reading.sensor_line,
+                reading.temperature_c,
+                reading.is_connected,
+                &reading.alarm_state,
+            )
+        });
+
         let result = conn.execute(
-            "INSERT INTO sensor_readings (timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sensor_readings (timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at, data_hmac)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 reading.timestamp,
                 reading.sensor_line,
@@ -29,6 +42,7 @@ impl StorageWriter {
                 if reading.is_connected { 1 } else { 0 },
                 reading.alarm_state,
                 reading.created_at,
+                data_hmac,
             ],
         );
 
@@ -54,9 +68,11 @@ impl StorageWriter {
 
     /// Write a batch of sensor readings
     /// More efficient than individual writes (wrapped in single transaction)
+    /// If hmac_secret is provided, computes HMAC-SHA256 per reading (EU MDR IEC 62304 §5.5.3)
     pub fn write_sensor_readings_batch(
         conn: &mut Connection,
         readings: &[SensorReading],
+        hmac_secret: Option<&[u8]>,
     ) -> StorageResult<i64> {
         if readings.is_empty() {
             return Ok(0);
@@ -71,9 +87,20 @@ impl StorageWriter {
         let mut inserted_count = 0i64;
 
         for reading in readings {
+            let data_hmac = hmac_secret.map(|secret| {
+                crate::libs::storage::integrity::compute_reading_hmac(
+                    secret,
+                    reading.timestamp,
+                    reading.sensor_line,
+                    reading.temperature_c,
+                    reading.is_connected,
+                    &reading.alarm_state,
+                )
+            });
+
             tx.execute(
-                "INSERT INTO sensor_readings (timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO sensor_readings (timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at, data_hmac)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![
                     reading.timestamp,
                     reading.sensor_line,
@@ -81,6 +108,7 @@ impl StorageWriter {
                     if reading.is_connected { 1 } else { 0 },
                     reading.alarm_state,
                     reading.created_at,
+                    data_hmac,
                 ],
             )
             .map_err(|e| StorageError::InsertError(format!("Failed to insert batch reading: {}", e)))?;
@@ -226,7 +254,7 @@ mod tests {
         let conn = db.connect().expect("Failed to connect");
 
         let reading = SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal);
-        let result = StorageWriter::write_sensor_reading(&conn, &reading);
+        let result = StorageWriter::write_sensor_reading(&conn, &reading, None);
 
         assert!(result.is_ok());
         let count = StorageWriter::get_sensor_reading_count(&conn).expect("Failed to count");
@@ -261,7 +289,7 @@ mod tests {
             SensorReading::new(1002, 2, 36.7, true, AlarmState::Normal),
         ];
 
-        let result = StorageWriter::write_sensor_readings_batch(&mut conn, &readings);
+        let result = StorageWriter::write_sensor_readings_batch(&mut conn, &readings, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 3);
 
@@ -269,5 +297,117 @@ mod tests {
         assert_eq!(count, 3);
 
         let _ = std::fs::remove_file("/tmp/test_batch.db");
+    }
+
+    #[test]
+    fn test_write_sensor_reading_with_hmac() {
+        let db = Database::new("/tmp/test_write_hmac.db", 5).expect("Failed to create test DB");
+        let conn = db.connect().expect("Failed to connect");
+
+        let secret = b"test_hmac_secret_key_for_eu_mdr";
+        let reading = SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal);
+        let result = StorageWriter::write_sensor_reading(&conn, &reading, Some(secret));
+        assert!(result.is_ok());
+
+        // Verify HMAC was stored in the database
+        let stored_hmac: Option<String> = conn
+            .query_row(
+                "SELECT data_hmac FROM sensor_readings WHERE id = ?",
+                [result.unwrap()],
+                |row| row.get(0),
+            )
+            .expect("Failed to query HMAC");
+
+        assert!(stored_hmac.is_some(), "HMAC should be stored when secret is provided");
+        let hmac_value = stored_hmac.unwrap();
+        assert_eq!(hmac_value.len(), 64, "HMAC-SHA256 hex digest should be 64 chars");
+
+        // Verify the stored HMAC matches what we'd compute independently
+        let expected_hmac = crate::libs::storage::integrity::compute_reading_hmac(
+            secret,
+            reading.timestamp,
+            reading.sensor_line,
+            reading.temperature_c,
+            reading.is_connected,
+            &reading.alarm_state,
+        );
+        assert_eq!(hmac_value, expected_hmac, "Stored HMAC should match computed HMAC");
+
+        // Verify using the verify function for constant-time comparison
+        assert!(crate::libs::storage::integrity::verify_reading_hmac(
+            secret,
+            reading.timestamp,
+            reading.sensor_line,
+            reading.temperature_c,
+            reading.is_connected,
+            &reading.alarm_state,
+            &hmac_value,
+        ));
+
+        let _ = std::fs::remove_file("/tmp/test_write_hmac.db");
+    }
+
+    #[test]
+    fn test_write_sensor_reading_without_hmac() {
+        let db = Database::new("/tmp/test_write_no_hmac.db", 5).expect("Failed to create test DB");
+        let conn = db.connect().expect("Failed to connect");
+
+        let reading = SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal);
+        let result = StorageWriter::write_sensor_reading(&conn, &reading, None);
+        assert!(result.is_ok());
+
+        // Verify no HMAC was stored
+        let stored_hmac: Option<String> = conn
+            .query_row(
+                "SELECT data_hmac FROM sensor_readings WHERE id = ?",
+                [result.unwrap()],
+                |row| row.get(0),
+            )
+            .expect("Failed to query HMAC");
+
+        assert!(stored_hmac.is_none(), "HMAC should be None when no secret is provided");
+
+        let _ = std::fs::remove_file("/tmp/test_write_no_hmac.db");
+    }
+
+    #[test]
+    fn test_batch_write_with_hmac() {
+        let db = Database::new("/tmp/test_batch_hmac.db", 5).expect("Failed to create test DB");
+        let mut conn = db.connect().expect("Failed to connect");
+
+        let secret = b"batch_test_secret";
+        let readings = vec![
+            SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal),
+            SensorReading::new(1001, 1, 36.6, true, AlarmState::Warning),
+            SensorReading::new(1002, 2, 36.7, false, AlarmState::Disconnected),
+        ];
+
+        let result = StorageWriter::write_sensor_readings_batch(&mut conn, &readings, Some(secret));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3);
+
+        // Verify all readings have HMACs
+        let hmac_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sensor_readings WHERE data_hmac IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("Failed to count HMACs");
+        assert_eq!(hmac_count, 3, "All batch readings should have HMACs");
+
+        // Verify each HMAC is unique (different reading data = different HMAC)
+        let hmacs: Vec<String> = conn
+            .prepare("SELECT data_hmac FROM sensor_readings ORDER BY id")
+            .expect("Failed to prepare")
+            .query_map([], |row| row.get(0))
+            .expect("Failed to query")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(hmacs.len(), 3);
+        assert_ne!(hmacs[0], hmacs[1], "Different readings should have different HMACs");
+        assert_ne!(hmacs[1], hmacs[2], "Different readings should have different HMACs");
+
+        let _ = std::fs::remove_file("/tmp/test_batch_hmac.db");
     }
 }

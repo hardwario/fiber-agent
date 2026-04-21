@@ -141,7 +141,32 @@ pub struct StorageThread;
 impl StorageThread {
     /// Spawn the background storage thread
     pub fn spawn(db_path: &str, max_size_gb: i32) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
+        Self::spawn_with_hmac(db_path, max_size_gb, None)
+    }
+
+    /// Spawn the background storage thread with optional HMAC secret path
+    /// If hmac_secret_path is provided, loads the HMAC key for sensor reading integrity (EU MDR)
+    pub fn spawn_with_hmac(db_path: &str, max_size_gb: i32, hmac_secret_path: Option<&str>) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         let db_path = db_path.to_string();
+
+        // Load HMAC secret at startup (graceful degradation if missing)
+        let hmac_secret: Option<Vec<u8>> = hmac_secret_path.and_then(|path| {
+            match std::fs::read(path) {
+                Ok(key) => {
+                    if key.is_empty() {
+                        eprintln!("STORAGE THREAD: HMAC key file {} is empty, integrity tags disabled", path);
+                        None
+                    } else {
+                        eprintln!("STORAGE THREAD: HMAC secret loaded from {} ({} bytes)", path, key.len());
+                        Some(key)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("STORAGE THREAD: WARNING - Could not load HMAC secret from {}: {} — sensor reading integrity tags disabled", path, e);
+                    None
+                }
+            }
+        });
 
         // Create bounded channel (buffer 10,000 messages max = ~5MB)
         let (sender, receiver) = bounded::<StorageMessage>(10000);
@@ -151,7 +176,7 @@ impl StorageThread {
         let thread_handle = thread::Builder::new()
             .name("fiber-storage".to_string())
             .spawn(move || {
-                Self::run(&db_path, max_size_gb, receiver);
+                Self::run(&db_path, max_size_gb, receiver, hmac_secret.as_deref());
             })
             .expect("Failed to spawn storage thread");
 
@@ -159,7 +184,7 @@ impl StorageThread {
     }
 
     /// Main storage thread loop
-    fn run(db_path: &str, max_size_gb: i32, receiver: Receiver<StorageMessage>) {
+    fn run(db_path: &str, max_size_gb: i32, receiver: Receiver<StorageMessage>, hmac_secret: Option<&[u8]>) {
         // Initialize database
         let db = match Database::new(db_path, max_size_gb) {
             Ok(d) => d,
@@ -220,7 +245,7 @@ impl StorageThread {
                                 alarm_state,
                             );
 
-                            match StorageWriter::write_sensor_reading(&conn, &reading) {
+                            match StorageWriter::write_sensor_reading(&conn, &reading, hmac_secret) {
                                 Ok(_) => {
                                     pending_writes += 1;
                                     message_count += 1;
@@ -234,7 +259,7 @@ impl StorageThread {
 
                     StorageMessage::WriteSensorReadingsBatch { readings } => {
                         if let Ok(mut conn) = db.connect() {
-                            match StorageWriter::write_sensor_readings_batch(&mut conn, &readings) {
+                            match StorageWriter::write_sensor_readings_batch(&mut conn, &readings, hmac_secret) {
                                 Ok(count) => {
                                     pending_writes += count as usize;
                                     message_count += count as u64;

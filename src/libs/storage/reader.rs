@@ -306,8 +306,8 @@ mod tests {
         let reading1 = SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal);
         let reading2 = SensorReading::new(1001, 0, 36.6, true, AlarmState::Normal);
 
-        StorageWriter::write_sensor_reading(&conn, &reading1).expect("Failed to write");
-        StorageWriter::write_sensor_reading(&conn, &reading2).expect("Failed to write");
+        StorageWriter::write_sensor_reading(&conn, &reading1, None).expect("Failed to write");
+        StorageWriter::write_sensor_reading(&conn, &reading2, None).expect("Failed to write");
 
         let results = StorageReader::get_last_readings(&conn, 0, 10).expect("Failed to read");
         assert_eq!(results.len(), 2);
@@ -325,9 +325,9 @@ mod tests {
         let reading2 = SensorReading::new(1500, 0, 36.6, true, AlarmState::Normal);
         let reading3 = SensorReading::new(2000, 0, 36.7, true, AlarmState::Normal);
 
-        StorageWriter::write_sensor_reading(&conn, &reading1).expect("Failed to write");
-        StorageWriter::write_sensor_reading(&conn, &reading2).expect("Failed to write");
-        StorageWriter::write_sensor_reading(&conn, &reading3).expect("Failed to write");
+        StorageWriter::write_sensor_reading(&conn, &reading1, None).expect("Failed to write");
+        StorageWriter::write_sensor_reading(&conn, &reading2, None).expect("Failed to write");
+        StorageWriter::write_sensor_reading(&conn, &reading3, None).expect("Failed to write");
 
         let results = StorageReader::get_readings_in_range(&conn, 0, 1200, 1800).expect("Failed to read");
         assert_eq!(results.len(), 1);

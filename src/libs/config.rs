@@ -639,6 +639,10 @@ pub struct StorageConfig {
 
     /// Enable audit trail logging
     pub audit_enabled: bool,
+
+    /// Path to HMAC secret key file for sensor reading integrity (EU MDR)
+    #[serde(default = "default_hmac_secret_path")]
+    pub hmac_secret_path: String,
 }
 
 /// Per-sensor LoRaWAN configuration (mirrors SensorLineConfig pattern)
@@ -881,6 +885,11 @@ fn default_alarm_pattern() -> AlarmStatePattern {
     }
 }
 
+// Default value functions for storage configuration
+fn default_hmac_secret_path() -> String {
+    "/data/fiber/config/hmac.key".to_string()
+}
+
 // Default value functions for sensor configuration
 fn default_warmup_threshold() -> u8 { 3 }
 
@@ -1033,6 +1042,7 @@ impl Config {
                 backup_enabled: true,
                 backup_path: "/data/backups/".to_string(),
                 audit_enabled: true,
+                hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {
                 debug_mode: false,

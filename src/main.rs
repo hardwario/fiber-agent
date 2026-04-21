@@ -248,7 +248,7 @@ fn main() -> io::Result<()> {
 
     // Initialize storage thread for medical data persistence
     eprintln!("[main] Starting storage thread...");
-    let (storage_handle, _storage_thread) = match StorageThread::spawn(&config.storage.db_path, config.storage.max_size_gb) {
+    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_hmac(&config.storage.db_path, config.storage.max_size_gb, Some(&config.storage.hmac_secret_path)) {
         Ok((handle, thread)) => {
             eprintln!(
                 "[main] Storage thread started - database: {}, max size: {}GB",
