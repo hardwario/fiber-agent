@@ -18,7 +18,7 @@ impl StorageReader {
     ) -> StorageResult<Vec<SensorReading>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at
+                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at, data_hmac
                  FROM sensor_readings
                  WHERE sensor_line = ?
                  ORDER BY timestamp DESC
@@ -36,7 +36,7 @@ impl StorageReader {
                     is_connected: row.get::<_, i32>(4)? != 0,
                     alarm_state: row.get(5)?,
                     created_at: row.get(6)?,
-                    data_hmac: None,
+                    data_hmac: row.get(7)?,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query: {}", e)))?
@@ -55,7 +55,7 @@ impl StorageReader {
     ) -> StorageResult<Vec<SensorReading>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at
+                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at, data_hmac
                  FROM sensor_readings
                  WHERE sensor_line = ? AND timestamp >= ? AND timestamp <= ?
                  ORDER BY timestamp DESC",
@@ -74,7 +74,7 @@ impl StorageReader {
                         is_connected: row.get::<_, i32>(4)? != 0,
                         alarm_state: row.get(5)?,
                         created_at: row.get(6)?,
-                        data_hmac: None,
+                        data_hmac: row.get(7)?,
                     })
                 },
             )
@@ -89,7 +89,7 @@ impl StorageReader {
     pub fn get_latest_readings_all_sensors(conn: &Connection) -> StorageResult<Vec<SensorReading>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at
+                "SELECT id, timestamp, sensor_line, temperature_c, is_connected, alarm_state, created_at, data_hmac
                  FROM sensor_readings
                  WHERE (sensor_line, timestamp) IN (
                      SELECT sensor_line, MAX(timestamp) FROM sensor_readings GROUP BY sensor_line
@@ -108,7 +108,7 @@ impl StorageReader {
                     is_connected: row.get::<_, i32>(4)? != 0,
                     alarm_state: row.get(5)?,
                     created_at: row.get(6)?,
-                    data_hmac: None,
+                    data_hmac: row.get(7)?,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query: {}", e)))?
