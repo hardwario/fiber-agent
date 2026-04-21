@@ -37,6 +37,27 @@ impl Database {
             max_size_bytes,
         };
 
+        // Generate DB encryption key if it doesn't exist
+        let key_path = std::path::Path::new("/data/fiber/config/db_encryption.key");
+        if !key_path.exists() {
+            use rand::Rng;
+            let key: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen()).collect();
+            let hex_key = hex::encode(&key);
+            if let Some(parent) = key_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(key_path, &hex_key);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    key_path,
+                    std::fs::Permissions::from_mode(0o600),
+                );
+            }
+            eprintln!("Generated new database encryption key");
+        }
+
         // Initialize the database with schema
         db.init_connection()?;
 
@@ -74,10 +95,22 @@ impl Database {
     }
 
     /// Configure SQLite pragmas for medical device compliance
+    /// - Encryption key (SQLCipher) — must be first pragma
     /// - WAL mode: Write-Ahead Logging for crash recovery
     /// - Foreign keys: Referential integrity
     /// - Synchronous: Balance safety and performance
     fn configure_pragmas(&self, conn: &Connection) -> StorageResult<()> {
+        // Encryption key (SQLCipher) — must be first pragma
+        if let Ok(key) = std::fs::read_to_string("/data/fiber/config/db_encryption.key") {
+            let key = key.trim();
+            if !key.is_empty() {
+                conn.execute_batch(&format!("PRAGMA key = '{}';", key))
+                    .map_err(|e| StorageError::DatabaseInitError(
+                        format!("Failed to set encryption key: {}", e),
+                    ))?;
+            }
+        }
+
         // Enable WAL mode for crash-safe operation (required for medical devices)
         // Note: PRAGMA journal_mode returns the mode, so use query_row
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
