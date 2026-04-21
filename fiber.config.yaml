@@ -81,12 +81,10 @@ mqtt:
     client_id: ''
     username: fiber
     password: '123456789'
-  # TLS disabled: app connects to local broker on same device (localhost:1883)
-  # External clients use mosquitto's TLS listener on port 8883
-  # tls:
-  #   enabled: true
-  #   ca_cert_path: "/data/tls/server.crt"
-  #   insecure_skip_verify: false
+  tls:
+    enabled: true
+    ca_cert_path: "/data/tls/server.crt"
+    insecure_skip_verify: false
   publish:
     topic_prefix: fiber
     include_hostname: true

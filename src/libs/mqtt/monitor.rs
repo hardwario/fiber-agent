@@ -220,12 +220,20 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
                     eprintln!("[MQTT Monitor] TLS transport configured successfully");
                 }
                 Err(e) => {
-                    // TLS was requested but we failed to set it up — this is a hard error
-                    // that we surface loudly rather than silently falling back to plaintext.
-                    eprintln!("[MQTT Monitor] FATAL: Failed to configure TLS transport: {}", e);
-                    eprintln!("[MQTT Monitor] Refusing to connect over plaintext when TLS is enabled");
-                    // We still return the options — the connection will fail at the TLS
-                    // handshake level, which is better than silent plaintext downgrade.
+                    let err_str = e.to_string();
+                    if err_str.contains("No such file") || err_str.contains("not found") {
+                        // CA cert not deployed — fall back to plaintext for local broker
+                        eprintln!("[MQTT Monitor] WARNING: TLS cert not found, falling back to plaintext: {}", e);
+                        // Revert port override if we changed it
+                        if config.broker.port == 8883 {
+                            mqttoptions.set_port(1883);
+                            eprintln!("[MQTT Monitor] Reverting port from 8883 to 1883 (plaintext fallback)");
+                        }
+                    } else {
+                        // Real TLS error (bad cert, invalid format) — refuse plaintext
+                        eprintln!("[MQTT Monitor] FATAL: Failed to configure TLS transport: {}", e);
+                        eprintln!("[MQTT Monitor] Refusing to connect over plaintext when TLS is enabled");
+                    }
                 }
             }
         }
