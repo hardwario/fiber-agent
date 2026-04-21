@@ -331,13 +331,81 @@ fn configure_tls_transport(
         }
     };
 
-    let transport = Transport::tls_with_config(TlsConfiguration::Simple {
-        ca,
-        alpn: None,
-        client_auth,
-    });
+    let transport = if tls.insecure_skip_verify {
+        eprintln!("[MQTT TLS] WARNING: insecure_skip_verify=true — skipping certificate validation");
+        // Build a rustls ClientConfig that skips cert verification
+        use rumqttc::tokio_rustls::rustls;
+
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
+            .with_no_client_auth();
+
+        transport_from_rustls_config(config)
+    } else {
+        Transport::tls_with_config(TlsConfiguration::Simple {
+            ca,
+            alpn: None,
+            client_auth,
+        })
+    };
 
     Ok(transport)
+}
+
+/// Certificate verifier that accepts any certificate (insecure_skip_verify mode)
+/// Used for device-to-device TLS on local medical networks with self-signed certs
+#[derive(Debug)]
+struct NoCertVerifier;
+
+impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rumqttc::tokio_rustls::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rumqttc::tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified, rumqttc::tokio_rustls::rustls::Error> {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid, rumqttc::tokio_rustls::rustls::Error> {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid, rumqttc::tokio_rustls::rustls::Error> {
+        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rumqttc::tokio_rustls::rustls::SignatureScheme> {
+        use rumqttc::tokio_rustls::rustls::SignatureScheme;
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ED25519,
+        ]
+    }
+}
+
+fn transport_from_rustls_config(config: rumqttc::tokio_rustls::rustls::ClientConfig) -> Transport {
+    Transport::tls_with_config(TlsConfiguration::Rustls(Arc::new(config)))
 }
 
 /// MQTT monitor handle for sending messages
