@@ -495,6 +495,20 @@ impl MqttMonitor {
             eprintln!("[MQTT Monitor]   Last Will: enabled");
         }
 
+        // Log TLS status and warn if disabled (EU MDR Annex I, 17.2)
+        match &config.tls {
+            Some(tls_config) if tls_config.enabled => {
+                eprintln!("[MQTT Monitor]   TLS: enabled (ca_cert: {})", tls_config.ca_cert_path);
+            }
+            Some(tls_config) if !tls_config.enabled => {
+                eprintln!("[MQTT Monitor] WARNING: MQTT TLS is disabled. Data transmitted in plaintext. Not recommended for EU MDR compliance.");
+            }
+            None => {
+                eprintln!("[MQTT Monitor] WARNING: MQTT TLS is not configured. Data transmitted in plaintext. Not recommended for EU MDR compliance.");
+            }
+            _ => {}
+        }
+
         // Create async runtime for rumqttc (multi-threaded required for AsyncClient)
         eprintln!("[MQTT Monitor] Creating Tokio multi-threaded runtime...");
         let runtime = tokio::runtime::Builder::new_multi_thread()

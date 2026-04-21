@@ -749,6 +749,7 @@ pub struct BrokerConfig {
 /// TLS/SSL configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub ca_cert_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]

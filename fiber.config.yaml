@@ -81,6 +81,12 @@ mqtt:
     client_id: ''
     username: fiber
     password: '123456789'
+  tls:
+    enabled: true
+    ca_cert_path: "/data/fiber/config/ca.crt"
+    # client_cert_path: "/data/fiber/config/client.crt"
+    # client_key_path: "/data/fiber/config/client.key"
+    insecure_skip_verify: false
   publish:
     topic_prefix: fiber
     include_hostname: true
