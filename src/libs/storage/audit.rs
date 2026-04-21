@@ -197,6 +197,8 @@ impl AuditLogger {
                     thread_id: row.get(6)?,
                     details: row.get(7)?,
                     error_msg: row.get(8)?,
+                    record_hash: None,
+                    previous_hash: None,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query logs: {}", e)))?
@@ -235,6 +237,8 @@ impl AuditLogger {
                     thread_id: row.get(6)?,
                     details: row.get(7)?,
                     error_msg: row.get(8)?,
+                    record_hash: None,
+                    previous_hash: None,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query errors: {}", e)))?

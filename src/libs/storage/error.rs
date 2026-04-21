@@ -37,6 +37,9 @@ pub enum StorageError {
 
     /// Invalid operation (e.g., query on uninitialized database)
     InvalidOperation(String),
+
+    /// Data integrity verification failed (hash chain broken or HMAC mismatch)
+    IntegrityError(String),
 }
 
 impl fmt::Display for StorageError {
@@ -53,6 +56,7 @@ impl fmt::Display for StorageError {
             StorageError::MigrationError(msg) => write!(f, "Migration failed: {}", msg),
             StorageError::AuditError(msg) => write!(f, "Audit error: {}", msg),
             StorageError::InvalidOperation(msg) => write!(f, "Invalid operation: {}", msg),
+            StorageError::IntegrityError(msg) => write!(f, "Integrity error: {}", msg),
         }
     }
 }

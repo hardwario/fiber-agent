@@ -29,6 +29,9 @@ pub struct SensorReading {
 
     /// Unix timestamp when this record was inserted into the database
     pub created_at: i64,
+
+    /// HMAC-SHA256 of reading data for integrity verification (EU MDR)
+    pub data_hmac: Option<String>,
 }
 
 impl SensorReading {
@@ -53,6 +56,7 @@ impl SensorReading {
             is_connected,
             alarm_state: alarm_state.to_string(),
             created_at: now,
+            data_hmac: None,
         }
     }
 }
@@ -140,6 +144,12 @@ pub struct AuditLogEntry {
 
     /// Error message if the operation failed, None if successful
     pub error_msg: Option<String>,
+
+    /// SHA-256 hash of this record's content (tamper detection)
+    pub record_hash: Option<String>,
+
+    /// SHA-256 hash of previous audit record (chain integrity)
+    pub previous_hash: Option<String>,
 }
 
 impl AuditLogEntry {
@@ -160,6 +170,8 @@ impl AuditLogEntry {
             thread_id: None,
             details: None,
             error_msg: None,
+            record_hash: None,
+            previous_hash: None,
         }
     }
 

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::libs::storage::error::{StorageError, StorageResult};
 
 /// Current schema version for migrations
-pub const CURRENT_SCHEMA_VERSION: i32 = 1;
+pub const CURRENT_SCHEMA_VERSION: i32 = 2;
 
 /// SQLite database manager
 pub struct Database {
@@ -134,7 +134,8 @@ impl Database {
                 temperature_c REAL NOT NULL,
                 is_connected INTEGER NOT NULL,
                 alarm_state TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                data_hmac TEXT
             )",
         )
         .map_err(|e| StorageError::DatabaseInitError(
@@ -168,7 +169,9 @@ impl Database {
                 duration_ms INTEGER,
                 thread_id TEXT,
                 details TEXT,
-                error_msg TEXT
+                error_msg TEXT,
+                record_hash TEXT,
+                previous_hash TEXT
             )",
         )
         .map_err(|e| StorageError::DatabaseInitError(
@@ -213,6 +216,8 @@ impl Database {
              ON audit_log(timestamp DESC);
              CREATE INDEX IF NOT EXISTS idx_audit_log_operation
              ON audit_log(operation);
+             CREATE INDEX IF NOT EXISTS idx_audit_log_hash
+             ON audit_log(record_hash);
              CREATE INDEX IF NOT EXISTS idx_config_changes_timestamp
              ON config_changes(timestamp DESC);
              CREATE INDEX IF NOT EXISTS idx_config_changes_signer
@@ -247,12 +252,21 @@ impl Database {
                 // Schema is up to date
                 Ok(())
             }
-            Some(v) => {
-                // Schema version mismatch (future migration path)
+            Some(v) if v < CURRENT_SCHEMA_VERSION => {
+                if v < 2 {
+                    self.migrate_v1_to_v2(&conn)?;
+                }
+                Ok(())
+            }
+            Some(v) if v > CURRENT_SCHEMA_VERSION => {
                 Err(StorageError::MigrationError(
-                    format!("Database schema version {} incompatible with current version {}",
+                    format!("Database schema version {} is newer than application version {}",
                         v, CURRENT_SCHEMA_VERSION)
                 ))
+            }
+            Some(_) => {
+                // v == CURRENT_SCHEMA_VERSION already handled above; unreachable
+                Ok(())
             }
             None => {
                 // First time initialization - insert schema version
@@ -267,7 +281,7 @@ impl Database {
                     rusqlite::params![
                         CURRENT_SCHEMA_VERSION,
                         now,
-                        "Initial schema: sensor_readings, alarm_events, audit_log"
+                        "Initial schema v2: sensor_readings (with HMAC), alarm_events, audit_log (with hash-chain)"
                     ],
                 )
                 .map_err(|e| StorageError::DatabaseInitError(
@@ -277,6 +291,56 @@ impl Database {
                 Ok(())
             }
         }
+    }
+
+    /// Migrate database schema from v1 to v2
+    /// Adds tamper-evidence columns for EU MDR 2017/745 Annex I, 17.1 compliance
+    fn migrate_v1_to_v2(&self, conn: &Connection) -> StorageResult<()> {
+        use crate::libs::storage::audit::AuditLogger;
+
+        conn.execute_batch(
+            "ALTER TABLE audit_log ADD COLUMN record_hash TEXT;
+             ALTER TABLE audit_log ADD COLUMN previous_hash TEXT;"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to add hash columns to audit_log: {}", e),
+        ))?;
+
+        conn.execute_batch(
+            "ALTER TABLE sensor_readings ADD COLUMN data_hmac TEXT;"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to add HMAC column to sensor_readings: {}", e),
+        ))?;
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_hash ON audit_log(record_hash);"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to create hash index: {}", e),
+        ))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+            rusqlite::params![
+                2,
+                now,
+                "Add hash-chain (audit_log.record_hash, previous_hash) and HMAC (sensor_readings.data_hmac) for EU MDR tamper-evidence"
+            ],
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to record migration: {}", e),
+        ))?;
+
+        AuditLogger::log_schema_change(conn, "Migration v1\u{2192}v2: added tamper-evidence columns")?;
+
+        eprintln!("MIGRATION: Schema upgraded from v1 to v2 (tamper-evident audit trail)");
+        Ok(())
     }
 
     /// Get the database file path

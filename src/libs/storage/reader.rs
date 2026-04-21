@@ -36,6 +36,7 @@ impl StorageReader {
                     is_connected: row.get::<_, i32>(4)? != 0,
                     alarm_state: row.get(5)?,
                     created_at: row.get(6)?,
+                    data_hmac: None,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query: {}", e)))?
@@ -73,6 +74,7 @@ impl StorageReader {
                         is_connected: row.get::<_, i32>(4)? != 0,
                         alarm_state: row.get(5)?,
                         created_at: row.get(6)?,
+                        data_hmac: None,
                     })
                 },
             )
@@ -106,6 +108,7 @@ impl StorageReader {
                     is_connected: row.get::<_, i32>(4)? != 0,
                     alarm_state: row.get(5)?,
                     created_at: row.get(6)?,
+                    data_hmac: None,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query: {}", e)))?
