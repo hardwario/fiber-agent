@@ -149,7 +149,7 @@ impl StorageThread {
     pub fn spawn_with_hmac(db_path: &str, max_size_gb: i32, hmac_secret_path: Option<&str>) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         let db_path = db_path.to_string();
 
-        // Load HMAC secret at startup (graceful degradation if missing)
+        // Load HMAC secret at startup; auto-generate if missing (EU MDR requires integrity tags)
         let hmac_secret: Option<Vec<u8>> = hmac_secret_path.and_then(|path| {
             match std::fs::read(path) {
                 Ok(key) => {
@@ -161,9 +161,41 @@ impl StorageThread {
                         Some(key)
                     }
                 }
-                Err(e) => {
-                    eprintln!("STORAGE THREAD: WARNING - Could not load HMAC secret from {}: {} — sensor reading integrity tags disabled", path, e);
-                    None
+                Err(_) => {
+                    // Auto-generate a 32-byte random HMAC key on first boot
+                    eprintln!("STORAGE THREAD: HMAC key file {} not found, generating new 32-byte key", path);
+                    use rand::Rng;
+                    let key: Vec<u8> = {
+                        let mut rng = rand::thread_rng();
+                        let mut buf = vec![0u8; 32];
+                        rng.fill(&mut buf[..]);
+                        buf
+                    };
+
+                    // Ensure parent directory exists
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    match std::fs::write(path, &key) {
+                        Ok(()) => {
+                            // Set file permissions to owner-only read/write (0o600)
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let perms = std::fs::Permissions::from_mode(0o600);
+                                if let Err(e) = std::fs::set_permissions(path, perms) {
+                                    eprintln!("STORAGE THREAD: WARNING - Could not set permissions on {}: {}", path, e);
+                                }
+                            }
+                            eprintln!("STORAGE THREAD: Generated new HMAC key and saved to {} (32 bytes, mode 0600)", path);
+                            Some(key)
+                        }
+                        Err(e) => {
+                            eprintln!("STORAGE THREAD: ERROR - Failed to write generated HMAC key to {}: {} — sensor reading integrity tags disabled", path, e);
+                            None
+                        }
+                    }
                 }
             }
         });
