@@ -1,9 +1,11 @@
 //! Audit trail logging for EU MDR 2017/745 compliance
 //! Tracks all database operations, errors, and system events for regulatory compliance
+//! All entries are SHA-256 hash-chained for tamper detection
 
 use rusqlite::Connection;
 
 use crate::libs::storage::error::{StorageError, StorageResult};
+use crate::libs::storage::integrity;
 use crate::libs::storage::models::AuditLogEntry;
 
 /// Audit logger for tracking all storage operations
@@ -11,6 +13,7 @@ pub struct AuditLogger;
 
 impl AuditLogger {
     /// Log a successful operation to the audit trail
+    /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_operation(
         conn: &Connection,
         operation: &str,
@@ -28,9 +31,22 @@ impl AuditLogger {
             .unwrap_or_default()
             .as_secs() as i64;
 
+        let previous_hash = integrity::get_latest_audit_hash(conn)?;
+        let record_hash = integrity::compute_audit_record_hash(
+            now,
+            operation,
+            table_name,
+            record_count,
+            duration_ms,
+            &thread_id,
+            None,  // details
+            None,  // error_msg
+            previous_hash.as_deref(),
+        );
+
         conn.execute(
-            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg, record_hash, previous_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 now,
                 operation,
@@ -40,6 +56,8 @@ impl AuditLogger {
                 thread_id,
                 None::<String>,  // details
                 None::<String>,  // error_msg (None = success)
+                record_hash,
+                previous_hash,
             ],
         )
         .map_err(|e| StorageError::AuditError(format!("Failed to log operation: {}", e)))?;
@@ -48,6 +66,7 @@ impl AuditLogger {
     }
 
     /// Log a failed operation to the audit trail (with error details)
+    /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_error(
         conn: &Connection,
         operation: &str,
@@ -65,10 +84,23 @@ impl AuditLogger {
             .unwrap_or_default()
             .as_secs() as i64;
 
+        let previous_hash = integrity::get_latest_audit_hash(conn)?;
+        let record_hash = integrity::compute_audit_record_hash(
+            now,
+            operation,
+            table_name,
+            None,  // record_count
+            duration_ms,
+            &thread_id,
+            None,  // details
+            Some(error_msg),
+            previous_hash.as_deref(),
+        );
+
         conn.execute(
-            "INSERT INTO audit_log (timestamp, operation, table_name, duration_ms, thread_id, error_msg)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            rusqlite::params![now, operation, table_name, duration_ms, thread_id, error_msg,],
+            "INSERT INTO audit_log (timestamp, operation, table_name, duration_ms, thread_id, error_msg, record_hash, previous_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![now, operation, table_name, duration_ms, thread_id, error_msg, record_hash, previous_hash],
         )
         .map_err(|e| StorageError::AuditError(format!("Failed to log error: {}", e)))?;
 
@@ -90,6 +122,7 @@ impl AuditLogger {
     }
 
     /// Log a data export (for compliance reporting)
+    /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_export(
         conn: &Connection,
         export_format: &str,
@@ -108,9 +141,22 @@ impl AuditLogger {
             .unwrap_or_default()
             .as_secs() as i64;
 
+        let previous_hash = integrity::get_latest_audit_hash(conn)?;
+        let record_hash = integrity::compute_audit_record_hash(
+            now,
+            "EXPORT",
+            None,
+            Some(record_count),
+            Some(duration_ms),
+            &thread_id,
+            Some(&details),
+            None,  // error_msg
+            previous_hash.as_deref(),
+        );
+
         conn.execute(
-            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, record_hash, previous_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 now,
                 "EXPORT",
@@ -119,6 +165,8 @@ impl AuditLogger {
                 duration_ms,
                 thread_id,
                 details,
+                record_hash,
+                previous_hash,
             ],
         )
         .map_err(|e| StorageError::AuditError(format!("Failed to log export: {}", e)))?;
@@ -127,6 +175,7 @@ impl AuditLogger {
     }
 
     /// Log retention policy enforcement (deletion of old data)
+    /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_retention_cleanup(
         conn: &Connection,
         deleted_count: i64,
@@ -148,9 +197,22 @@ impl AuditLogger {
             .unwrap_or_default()
             .as_secs() as i64;
 
+        let previous_hash = integrity::get_latest_audit_hash(conn)?;
+        let record_hash = integrity::compute_audit_record_hash(
+            now,
+            "DELETE",
+            Some("sensor_readings"),
+            Some(deleted_count),
+            Some(duration_ms),
+            &thread_id,
+            Some(&details),
+            None,  // error_msg
+            previous_hash.as_deref(),
+        );
+
         conn.execute(
-            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, record_hash, previous_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
                 now,
                 "DELETE",
@@ -159,6 +221,8 @@ impl AuditLogger {
                 duration_ms,
                 thread_id,
                 details,
+                record_hash,
+                previous_hash,
             ],
         )
         .map_err(|e| StorageError::AuditError(
@@ -177,7 +241,7 @@ impl AuditLogger {
     ) -> StorageResult<Vec<AuditLogEntry>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg
+                "SELECT id, timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg, record_hash, previous_hash
                  FROM audit_log
                  WHERE timestamp >= ? AND timestamp <= ?
                  ORDER BY timestamp DESC
@@ -197,8 +261,8 @@ impl AuditLogger {
                     thread_id: row.get(6)?,
                     details: row.get(7)?,
                     error_msg: row.get(8)?,
-                    record_hash: None,
-                    previous_hash: None,
+                    record_hash: row.get(9)?,
+                    previous_hash: row.get(10)?,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query logs: {}", e)))?
@@ -217,7 +281,7 @@ impl AuditLogger {
     ) -> StorageResult<Vec<AuditLogEntry>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg
+                "SELECT id, timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg, record_hash, previous_hash
                  FROM audit_log
                  WHERE timestamp >= ? AND timestamp <= ? AND error_msg IS NOT NULL
                  ORDER BY timestamp DESC
@@ -237,8 +301,8 @@ impl AuditLogger {
                     thread_id: row.get(6)?,
                     details: row.get(7)?,
                     error_msg: row.get(8)?,
-                    record_hash: None,
-                    previous_hash: None,
+                    record_hash: row.get(9)?,
+                    previous_hash: row.get(10)?,
                 })
             })
             .map_err(|e| StorageError::QueryError(format!("Failed to query errors: {}", e)))?

@@ -40,6 +40,7 @@ lru = "0.12"
 aes-gcm = "0.10"
 pbkdf2 = "0.12"
 sha2 = "0.10"
+hmac = "0.12"
 
 [features]
 default = []
