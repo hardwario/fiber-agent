@@ -37,11 +37,15 @@ pub fn is_dev_platform() -> bool {
 fn main() -> io::Result<()> {
     #[cfg(feature = "dev-platform")]
     {
-        eprintln!("╔══════════════════════════════════════════════════════════╗");
-        eprintln!("║  WARNING: FIBER DEV PLATFORM - NOT FOR MEDICAL USE      ║");
-        eprintln!("║  Authorization and cryptographic verification DISABLED   ║");
-        eprintln!("║  This build is for educational/development purposes only ║");
-        eprintln!("╚══════════════════════════════════════════════════════════╝");
+        let dev_mode_file = std::path::Path::new("/data/fiber/config/DEV_MODE_ENABLED");
+        if !dev_mode_file.exists() {
+            eprintln!("FATAL: dev-platform build detected but /data/fiber/config/DEV_MODE_ENABLED file not found.");
+            eprintln!("This build bypasses cryptographic verification and MUST NOT be used in production.");
+            eprintln!("To acknowledge dev mode, create the file: touch /data/fiber/config/DEV_MODE_ENABLED");
+            std::process::exit(1);
+        }
+        eprintln!("WARNING: Running in DEV-PLATFORM mode. Cryptographic verification is DISABLED.");
+        eprintln!("WARNING: This build is NOT suitable for medical use or EU MDR compliance.");
     }
 
     eprintln!("[main] Starting FIBER application");
