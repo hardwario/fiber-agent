@@ -95,7 +95,7 @@ impl SignatureVerifier {
         // 3. Get user's public key from certificate
         let user_public_key = certificate.get_verifying_key()?;
 
-        // 4. Validate timestamp (±5 minutes by default)
+        // 4. Validate timestamp (±60 seconds by default)
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

@@ -1498,7 +1498,7 @@ impl MqttMonitor {
         let verifier = Arc::new(SignatureVerifier::new(
             ca_registry,
             nonce_tracker,
-            300, // ±5 minutes timestamp drift
+            60, // ±60 seconds timestamp drift (tightened from 300s per EU MDR hardening)
         ));
 
         // Create authorization manager
