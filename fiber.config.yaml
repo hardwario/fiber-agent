@@ -81,8 +81,10 @@ mqtt:
     client_id: ''
     username: fiber
     password: '123456789'
+  # TLS: disabled by default (app connects to local broker on same device)
+  # Enable and set ca_cert_path when connecting to a remote broker
   tls:
-    enabled: true
+    enabled: false
     ca_cert_path: "/data/tls/server.crt"
     insecure_skip_verify: false
   publish:
