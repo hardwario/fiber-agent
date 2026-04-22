@@ -29,27 +29,6 @@ pub struct CertificateAuthority {
     pub description: Option<String>,
 }
 
-impl CertificateAuthority {
-    /// Get the CA's public key as bytes
-    pub fn get_public_key_bytes(&self) -> Result<[u8; 32], CryptoError> {
-        let key_bytes = hex::decode(&self.ca_public_key_ed25519).map_err(|e| {
-            CryptoError::InvalidPublicKey(format!("Failed to decode CA public key hex: {}", e))
-        })?;
-
-        if key_bytes.len() != 32 {
-            return Err(CryptoError::InvalidPublicKey(format!(
-                "CA public key must be 32 bytes, got {}",
-                key_bytes.len()
-            )));
-        }
-
-        key_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| CryptoError::InvalidPublicKey("Failed to convert to array".into()))
-    }
-}
-
 /// Registry file format (authorized_signers.yaml)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CARegistryFile {
@@ -170,19 +149,6 @@ impl CARegistry {
         self.authorities.get(ca_id).filter(|ca| ca.enabled)
     }
 
-    /// Get CA public key by ID (if CA is enabled)
-    pub fn get_ca_public_key(&self, ca_id: &str) -> Option<&str> {
-        self.get_enabled_ca(ca_id)
-            .map(|ca| ca.ca_public_key_ed25519.as_str())
-    }
-
-    /// Find CA by public key (for when issuer is not specified)
-    pub fn find_ca_by_public_key(&self, public_key_hex: &str) -> Option<&CertificateAuthority> {
-        self.authorities
-            .values()
-            .find(|ca| ca.enabled && ca.ca_public_key_ed25519 == public_key_hex)
-    }
-
     /// Get all enabled CAs (for trying all when verifying)
     pub fn get_all_enabled_cas(&self) -> Vec<&CertificateAuthority> {
         self.authorities.values().filter(|ca| ca.enabled).collect()
@@ -205,11 +171,6 @@ impl CARegistry {
             ca.ca_id, ca.enabled
         );
         self.authorities.insert(ca.ca_id.clone(), ca);
-    }
-
-    /// Check if a CA is registered
-    pub fn has_ca(&self, ca_id: &str) -> bool {
-        self.authorities.contains_key(ca_id)
     }
 }
 

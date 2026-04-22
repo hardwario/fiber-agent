@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 rppal = "0.22.1"
 embedded-graphics = "0.8.1"
-profont = "0.7.0"
 i2cdev = "0.6"
 serialport = { version = "4", default-features = false }
 anyhow = "1.0"
@@ -14,7 +13,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 qrcode = "0.14"
 rusqlite = { version = "0.30", features = ["bundled-sqlcipher", "chrono"] }
-time = "0.3"
 crossbeam = "0.8"
 
 # MQTT dependencies
@@ -26,7 +24,6 @@ rand = "0.8"
 
 # Cryptography dependencies (Ed25519 signatures for EU MDR compliance)
 ed25519-dalek = { version = "2.1", features = ["std", "rand_core"] }
-signature = "2.2"
 base64 = "0.21"
 hex = "0.4"
 

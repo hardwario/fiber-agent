@@ -4,8 +4,8 @@ use std::io::{self, Write};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-const PORT_PATH: &str = "/dev/ttyAMA4";
-const BAUD_RATE: u32 = 115_200;
+const DEFAULT_PORT_PATH: &str = "/dev/ttyAMA4";
+const DEFAULT_BAUD_RATE: u32 = 115_200;
 const STM_RESET_GPIO: u8 = 7;
 
 /// Holds the complete data set returned by the STM32 ADC command
@@ -21,7 +21,14 @@ pub struct StmBridge {
 }
 
 impl StmBridge {
+    /// Create a new StmBridge with default serial port path and baud rate.
     pub fn new() -> io::Result<Self> {
+        Self::new_with_config(DEFAULT_PORT_PATH, DEFAULT_BAUD_RATE)
+    }
+
+    /// Create a new StmBridge with configurable serial port path and baud rate.
+    /// Values come from fiber.config.yaml serial.port and serial.baud_rate.
+    pub fn new_with_config(port_path: &str, baud_rate: u32) -> io::Result<Self> {
         // Hardware reset STM32 via GPIO7 to ensure clean state
         eprintln!("[stm] Resetting STM32 via GPIO{}...", STM_RESET_GPIO);
         match Gpio::new() {
@@ -44,9 +51,9 @@ impl StmBridge {
             }
         }
 
-        eprintln!("Opening serial port {} at {} baud...", PORT_PATH, BAUD_RATE);
+        eprintln!("Opening serial port {} at {} baud...", port_path, baud_rate);
 
-        let builder = serialport::new(PORT_PATH, BAUD_RATE)
+        let builder = serialport::new(port_path, baud_rate)
             .data_bits(DataBits::Eight)
             .stop_bits(StopBits::One)
             .parity(Parity::None)
@@ -54,7 +61,7 @@ impl StmBridge {
             .timeout(Duration::from_millis(100));
 
         let mut port = builder.open().map_err(|e| {
-            eprintln!("Failed to open {}: {}", PORT_PATH, e);
+            eprintln!("Failed to open {}: {}", port_path, e);
             e
         })?;
 
