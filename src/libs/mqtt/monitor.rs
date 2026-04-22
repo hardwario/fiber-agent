@@ -224,10 +224,29 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
                 Err(e) => {
                     let err_str = e.to_string();
                     if err_str.contains("No such file") || err_str.contains("not found") {
+                        // Cert not deployed yet — fall back to plaintext for local broker
                         eprintln!("[MQTT Monitor] WARNING: TLS cert not found, falling back to plaintext: {}", e);
                     } else {
+                        // Real TLS error — in production, set transport to a broken state
+                        // so the connection fails at TLS handshake, not plaintext fallback
                         eprintln!("[MQTT Monitor] FATAL: Failed to configure TLS transport: {}", e);
-                        eprintln!("[MQTT Monitor] Refusing to connect over plaintext when TLS is enabled");
+                        #[cfg(not(feature = "dev-platform"))]
+                        {
+                            eprintln!("[MQTT Monitor] Production build: TLS failure is fatal, connection will fail");
+                            // Set a TLS transport with empty/invalid config — connection will
+                            // fail at handshake rather than silently falling back to plaintext
+                            mqttoptions.set_transport(Transport::tls_with_config(
+                                TlsConfiguration::Simple {
+                                    ca: vec![],
+                                    alpn: None,
+                                    client_auth: None,
+                                },
+                            ));
+                        }
+                        #[cfg(feature = "dev-platform")]
+                        {
+                            eprintln!("[MQTT Monitor] DEV-PLATFORM: TLS failed, falling back to plaintext: {}", e);
+                        }
                     }
                 }
             }

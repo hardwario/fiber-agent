@@ -892,7 +892,7 @@ impl Config {
                 logging_enabled: true,
             },
             storage: StorageConfig {
-                db_path: "/data/fiber_medical.db".to_string(),
+                db_path: "/data/fiber/fiber_medical.db".to_string(),
                 max_size_gb: 5,
                 hmac_secret_path: default_hmac_secret_path(),
             },
