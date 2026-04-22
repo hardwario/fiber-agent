@@ -91,9 +91,9 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Initialize STM32 bridge for hardware communication
+    // Initialize STM32 bridge for hardware communication using config values
     eprintln!("[main] Initializing STM32 bridge...");
-    let stm = StmBridge::new()?;
+    let stm = StmBridge::new_with_config(&config.serial.port, config.serial.baud_rate)?;
     eprintln!("[main] STM32 bridge initialized successfully");
 
     // Initialize sensor power lines
