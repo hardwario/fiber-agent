@@ -107,11 +107,6 @@ impl AlarmEvent {
         }
     }
 
-    /// Add contextual details as JSON
-    pub fn with_details(mut self, details: String) -> Self {
-        self.details = Some(details);
-        self
-    }
 }
 
 /// Audit trail entry for system operations

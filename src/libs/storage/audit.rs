@@ -121,59 +121,6 @@ impl AuditLogger {
         Ok(())
     }
 
-    /// Log a data export (for compliance reporting)
-    /// Computes SHA-256 hash-chain linking this entry to the previous one
-    pub fn log_export(
-        conn: &Connection,
-        export_format: &str,
-        record_count: i64,
-        duration_ms: i64,
-    ) -> StorageResult<()> {
-        let details = format!(r#"{{"format": "{}"}}"#, export_format);
-
-        let thread_id = std::thread::current()
-            .name()
-            .unwrap_or("unknown")
-            .to_string();
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let previous_hash = integrity::get_latest_audit_hash(conn)?;
-        let record_hash = integrity::compute_audit_record_hash(
-            now,
-            "EXPORT",
-            None,
-            Some(record_count),
-            Some(duration_ms),
-            &thread_id,
-            Some(&details),
-            None,  // error_msg
-            previous_hash.as_deref(),
-        );
-
-        conn.execute(
-            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, record_hash, previous_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rusqlite::params![
-                now,
-                "EXPORT",
-                None::<String>,
-                record_count,
-                duration_ms,
-                thread_id,
-                details,
-                record_hash,
-                previous_hash,
-            ],
-        )
-        .map_err(|e| StorageError::AuditError(format!("Failed to log export: {}", e)))?;
-
-        Ok(())
-    }
-
     /// Log retention policy enforcement (deletion of old data)
     /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_retention_cleanup(

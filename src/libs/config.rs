@@ -263,15 +263,6 @@ impl SensorFileConfig {
         }
     }
 
-    /// Get effective report interval for a sensor line
-    pub fn get_line_report_interval(&self, line: u8, default_ms: u64) -> u64 {
-        self.lines
-            .iter()
-            .find(|l| l.line == line)
-            .and_then(|l| l.report_interval_ms)
-            .unwrap_or(default_ms)
-    }
-
     /// Get default alarm patterns
     fn default_alarm_patterns() -> AlarmPatternsConfig {
         AlarmPatternsConfig {
@@ -600,13 +591,6 @@ pub struct LoRaWANConfig {
     /// Per-sensor configurations
     #[serde(default)]
     pub sensors: Vec<LoRaWANSensorConfig>,
-}
-
-impl LoRaWANConfig {
-    /// Get sensor config for a specific dev_eui
-    pub fn get_sensor_config(&self, dev_eui: &str) -> Option<&LoRaWANSensorConfig> {
-        self.sensors.iter().find(|s| s.dev_eui == dev_eui)
-    }
 }
 
 impl Default for LoRaWANConfig {
