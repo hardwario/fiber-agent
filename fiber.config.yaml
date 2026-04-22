@@ -23,30 +23,9 @@ sensors:
   report_interval_ms: 60000
   failure_threshold: 3
   warmup_threshold: 3
-display:
-  update_interval_ms: 500
-  refresh_rate_hz: 1
-  backlight_enabled: true
-  rotation_degrees: 180
-ui:
-  button_debounce_ms: 50
-  menu_idle_timeout_sec: 30
-  buzzer:
-    enabled: true
-    beep_duration_ms: 100
-    alert_interval_ms: 500
-logging:
-  enabled: true
-  log_file: data/sensor_log.csv
-  interval_ms: 60000
-  max_file_size_mb: 10
-  max_backup_files: 10
-  verbosity: info
 serial:
   port: /dev/ttyAMA4
   baud_rate: 115200
-  timeout_ms: 1000
-  max_retries: 3
 accelerometer:
   enabled: true
   i2c_path: /dev/i2c-10
@@ -55,16 +34,8 @@ accelerometer:
   debounce_samples: 5
   logging_enabled: true
 storage:
-  enabled: true
-  db_path: /data/fiber_medical.db
+  db_path: /data/fiber/fiber_medical.db
   max_size_gb: 5
-  retention_days: 1095
-  cleanup_threshold_percent: 90
-  flush_interval_ms: 100
-  flush_threshold_messages: 1000
-  backup_enabled: true
-  backup_path: /data/backups/
-  audit_enabled: true
 system:
   debug_mode: false
   app_name: FIBER Medical Thermometer
@@ -81,6 +52,12 @@ mqtt:
     client_id: ''
     username: fiber
     password: '123456789'
+  # TLS: disabled by default (app connects to local broker on same device)
+  # Enable and set ca_cert_path when connecting to a remote broker
+  tls:
+    enabled: false
+    ca_cert_path: "/data/tls/server.crt"
+    insecure_skip_verify: false
   publish:
     topic_prefix: fiber
     include_hostname: true

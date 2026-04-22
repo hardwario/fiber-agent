@@ -1,5 +1,7 @@
 *.md
 !README.md
 .claude/
-docs/
+docs/*
+!docs/superpowers/
+!docs/superpowers/**
 target/

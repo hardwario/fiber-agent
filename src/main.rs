@@ -5,10 +5,11 @@ use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
+use fiber_app::libs::config::LoRaWANConfig;
 
 /// Read BLE PIN from /data/ble/pin.txt
 fn read_pin_from_file() -> io::Result<String> {
@@ -29,6 +30,19 @@ fn read_hostname_from_file() -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
+    #[cfg(feature = "dev-platform")]
+    {
+        let dev_mode_file = std::path::Path::new("/data/fiber/config/DEV_MODE_ENABLED");
+        if !dev_mode_file.exists() {
+            eprintln!("FATAL: dev-platform build detected but /data/fiber/config/DEV_MODE_ENABLED file not found.");
+            eprintln!("This build bypasses cryptographic verification and MUST NOT be used in production.");
+            eprintln!("To acknowledge dev mode, create the file: touch /data/fiber/config/DEV_MODE_ENABLED");
+            std::process::exit(1);
+        }
+        eprintln!("WARNING: Running in DEV-PLATFORM mode. Cryptographic verification is DISABLED.");
+        eprintln!("WARNING: This build is NOT suitable for medical use or EU MDR compliance.");
+    }
+
     eprintln!("[main] Starting FIBER application");
 
     // Load configuration from /data/fiber/config/fiber.config.yaml
@@ -46,9 +60,14 @@ fn main() -> io::Result<()> {
     };
 
     // Display configuration info
+    let display_version = if cfg!(feature = "dev-platform") {
+        format!("{}-dev", config.system.app_version)
+    } else {
+        config.system.app_version.clone()
+    };
     eprintln!(
         "[main] Config: {} v{}",
-        config.system.app_name, config.system.app_version
+        config.system.app_name, display_version
     );
     eprintln!(
         "[main] Power update interval: {}ms",
@@ -72,9 +91,9 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Initialize STM32 bridge for hardware communication
+    // Initialize STM32 bridge for hardware communication using config values
     eprintln!("[main] Initializing STM32 bridge...");
-    let stm = StmBridge::new()?;
+    let stm = StmBridge::new_with_config(&config.serial.port, config.serial.baud_rate)?;
     eprintln!("[main] STM32 bridge initialized successfully");
 
     // Initialize sensor power lines
@@ -187,7 +206,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None)?;
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None)?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -202,6 +221,7 @@ fn main() -> io::Result<()> {
     // Create buzzer priority manager for coordinating battery and sensor critical alarms
     eprintln!("[main] Initializing buzzer priority manager...");
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
+    _display_monitor.set_buzzer_priority(buzzer_priority_manager.clone());
 
     // Create and spawn accelerometer monitoring thread if enabled
     let _accel_monitor = if config.accelerometer.enabled {
@@ -223,7 +243,7 @@ fn main() -> io::Result<()> {
 
     // Initialize storage thread for medical data persistence
     eprintln!("[main] Starting storage thread...");
-    let (storage_handle, _storage_thread) = match StorageThread::spawn(&config.storage.db_path, config.storage.max_size_gb) {
+    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_hmac(&config.storage.db_path, config.storage.max_size_gb, Some(&config.storage.hmac_secret_path)) {
         Ok((handle, thread)) => {
             eprintln!(
                 "[main] Storage thread started - database: {}, max size: {}GB",
@@ -254,6 +274,7 @@ fn main() -> io::Result<()> {
             Some(stm_guard.clone()),
             Some(screen_brightness.clone()),
             Some(buzzer_volume.clone()),
+            Some(buzzer_priority_manager.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
@@ -301,11 +322,16 @@ fn main() -> io::Result<()> {
     // Update button monitor with pairing handle
     eprintln!("[main] Restarting button monitor with pairing support...");
     drop(_button_monitor);
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), pairing_handle.clone())?;
+    let _button_monitor = ButtonMonitor::new(
+        _display_monitor.display_state.clone(),
+        pairing_handle.clone(),
+        Some(buzzer_priority_manager.clone()),
+    )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 
     // Create and spawn power monitoring thread with configured interval
     eprintln!("[main] Starting power monitor...");
+    let mqtt_sender = mqtt_handle.as_ref().map(|h| h.sender());
     let _power_monitor = PowerMonitor::new(
         stm_guard.clone(),
         config.power.update_interval_ms,
@@ -313,6 +339,7 @@ fn main() -> io::Result<()> {
         power_buzzer.clone(),
         buzzer_priority_manager.clone(),
         power_status.clone(),
+        mqtt_sender,
     )?;
     eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
 
@@ -327,6 +354,43 @@ fn main() -> io::Result<()> {
             eprintln!("[main] Warning: Failed to initialize sensor monitor: {}", e);
             None
         }
+    };
+
+    // Create and spawn LoRaWAN monitor if MQTT is available
+    let _lorawan_monitor = if let Some(ref handle) = mqtt_handle {
+        let lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
+            // Auto-enable if gateway hardware is detected
+            let mut cfg = LoRaWANConfig::default();
+            cfg.enabled = true;
+            cfg
+        });
+
+        eprintln!("[main] Starting LoRaWAN monitor...");
+        match LoRaWANMonitor::new(lorawan_config, handle.sender(), hostname.clone()) {
+            Ok(monitor) => {
+                // Set LoRaWAN gateway flag and shared state in display state
+                let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
+                if let Ok(mut state) = _display_monitor.display_state.lock() {
+                    state.lorawan_state = Some(monitor.state.clone());
+                    if gateway_present {
+                        state.lorawan_gateway_present = true;
+                    }
+                }
+                if gateway_present {
+                    eprintln!("[main] LoRaWAN monitor started (gateway detected)");
+                } else {
+                    eprintln!("[main] LoRaWAN monitor started (no gateway detected)");
+                }
+                Some(monitor)
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to start LoRaWAN monitor: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] LoRaWAN monitor disabled (MQTT not enabled)");
+        None
     };
 
     // Application is now running with background monitoring

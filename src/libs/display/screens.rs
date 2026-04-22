@@ -19,8 +19,10 @@ use crate::libs::sensors::state::SharedSensorState;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 use crate::libs::display::icons;
 use crate::libs::power::PowerStatus;
+use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
 
-/// Render the sensor overview screen showing all 8 sensors across 2 pages
+/// Render the sensor overview screen showing sensors across multiple pages
+/// Pages 0-1: DS18B20 sensors (4 per page), Pages 2+: LoRaWAN sensors (4 per page)
 /// When selected_sensor is Some, shows cursor at that sensor position (selection mode)
 pub fn render_sensor_overview(
     display: &mut St7920,
@@ -30,6 +32,10 @@ pub fn render_sensor_overview(
     network_status: &NetworkStatus,
     selected_sensor: Option<usize>,
     device_label: &str,
+    lorawan_gateway_present: bool,
+    lorawan_sensors: &[LoRaWANSensorState],
+    total_pages: usize,
+    sensor_silenced: bool,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -38,10 +44,34 @@ pub fn render_sensor_overview(
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw network connection icons on the left (aligned with top of FIBER text)
-    icons::draw_network_status(display, 2, 0, network_status);
+    let net_icon_width = icons::draw_network_status(display, 2, 2, network_status);
 
-    // Draw header: device label centered, page/mode indicator right-aligned
-    let header_label = if device_label.len() > 14 {
+    // Draw LoRaWAN icon next to network icon when gateway is present
+    if lorawan_gateway_present {
+        icons::draw_lorawan(display, 2 + net_icon_width as i32 + 1, 2);
+    }
+
+    // Draw mute icon next to status icons when sensor silence is active
+    if sensor_silenced {
+        let mute_x = if lorawan_gateway_present {
+            2 + net_icon_width as i32 + 1 + 11 + 2
+        } else {
+            2 + net_icon_width as i32 + 2
+        };
+        icons::draw_mute(display, mute_x, 3);
+    }
+
+    // In dev-platform mode, show "DEV" indicator before device label
+    let header_label = if page >= 2 {
+        "LORAWAN".to_string()
+    } else if cfg!(feature = "dev-platform") {
+        let max_len = 11;
+        if device_label.len() > max_len {
+            format!("*{}..", &device_label[..max_len - 2])
+        } else {
+            format!("*{}", device_label)
+        }
+    } else if device_label.len() > 14 {
         format!("{}...", &device_label[..11])
     } else {
         device_label.to_string()
@@ -59,7 +89,7 @@ pub fn render_sensor_overview(
     let mode_str = if selected_sensor.is_some() {
         "SEL".to_string()
     } else {
-        format!("{}/2", page + 1)
+        format!("{}/{}", page + 1, total_pages)
     };
     Text::with_alignment(
         &mode_str,
@@ -79,118 +109,318 @@ pub fn render_sensor_overview(
     // Calculate x offset for labels (make room for cursor in selection mode)
     let label_x = if selected_sensor.is_some() { 8 } else { 2 };
 
-    // Draw 4 sensors for this page
-    let start_sensor = page * 4;
-    for row in 0..4 {
-        let sensor_idx = start_sensor + row;
-        if sensor_idx >= 8 {
-            break;
-        }
+    if page < 2 {
+        // DS18B20 pages (0-1): 4 sensors per page
+        let start_sensor = page * 4;
+        for row in 0..4 {
+            let sensor_idx = start_sensor + row;
+            if sensor_idx >= 8 {
+                break;
+            }
 
-        let y = 23 + (row as i32 * 12);
+            let y = 23 + (row as i32 * 12);
 
-        // Check if this row is selected (cursor position)
-        let is_selected = selected_sensor == Some(sensor_idx);
+            // Check if this row is selected (cursor position)
+            let is_selected = selected_sensor == Some(sensor_idx);
 
-        // Get sensor reading to determine status from AlarmState
-        let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
-            let (ch, is_alm) = match reading.alarm_state {
-                AlarmState::NeverConnected => ("-", false),   // Never connected - no alarm
-                AlarmState::Disconnected => ("E", true),      // Disconnected - alarm
-                AlarmState::Reconnecting => ("W", true),      // Reconnecting - show warning
-                AlarmState::Normal => ("N", false),           // Normal - no alarm
-                AlarmState::Warning => ("W", true),           // Warning - alarm
-                AlarmState::Critical => ("C", true),          // Critical - critical
+            // Get sensor reading to determine status from AlarmState
+            let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
+                let (ch, is_alm) = match reading.alarm_state {
+                    AlarmState::NeverConnected => ("-", false),
+                    AlarmState::Disconnected => ("E", true),
+                    AlarmState::Reconnecting => ("W", true),
+                    AlarmState::Normal => ("N", false),
+                    AlarmState::Warning => ("W", true),
+                    AlarmState::Critical => ("C", true),
+                };
+                (ch, is_alm)
+            } else {
+                ("?", false)
             };
-            (ch, is_alm)
-        } else {
-            ("?", false)                                       // Unknown state
-        };
 
-        // Format sensor line: "NAME  XX.X°C  STATUS"
-        // Get name from shared state (truncate to 7 chars in selection mode, 8 otherwise)
-        let name = &sensor_state.names[sensor_idx];
-        let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
-        let label = if name.len() > max_name_len {
-            format!("{}  ", &name[..max_name_len])
-        } else {
-            format!("{:width$}  ", name, width = max_name_len)
-        };
+            // Get name from shared state (truncate to 7 chars in selection mode, 8 otherwise)
+            let name = &sensor_state.names[sensor_idx];
+            let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
+            let label = if name.len() > max_name_len {
+                format!("{}  ", &name[..max_name_len])
+            } else {
+                format!("{:width$}  ", name, width = max_name_len)
+            };
 
-        // Get temperature from sensor state
-        let temp_str = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
-            if reading.is_connected {
-                format!("{:.1}°C", reading.temperature)
+            // Get temperature from sensor state
+            let temp_str = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
+                if reading.is_connected {
+                    format!("{:.1}°C", reading.temperature)
+                } else {
+                    "--.-°C".to_string()
+                }
             } else {
                 "--.-°C".to_string()
+            };
+
+            draw_sensor_row(display, y, label_x, is_selected, is_alarm, &label, &temp_str, status_char, &text_style);
+        }
+    } else {
+        // LoRaWAN pages (2+): 4 sensors per page
+        let lrw_page = page - 2;
+        let start = lrw_page * 4;
+        for row in 0..4 {
+            let lrw_idx = start + row;
+            if lrw_idx >= lorawan_sensors.len() {
+                break;
             }
-        } else {
-            "--.-°C".to_string()
-        };
 
-        // Draw background highlight for selected or alarm rows
-        if is_selected {
-            // Selection cursor highlight (inverted background)
-            Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(display)
-                .ok();
+            let sensor = &lorawan_sensors[lrw_idx];
+            let global_idx = 8 + lrw_idx; // Global sensor index
+            let y = 23 + (row as i32 * 12);
 
-            let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+            let is_selected = selected_sensor == Some(global_idx);
 
-            // Draw cursor arrow
-            Text::new(">", Point::new(1, y), inverted_style)
-                .draw(display)
-                .ok();
+            // Alarm status char from overall alarm_state
+            let (status_char, is_alarm) = match sensor.alarm_state {
+                LoRaWANAlarmState::Normal => ("N", false),
+                LoRaWANAlarmState::Warning => ("W", true),
+                LoRaWANAlarmState::Critical => ("C", true),
+                LoRaWANAlarmState::Disconnected => ("E", true),
+            };
 
-            Text::new(&label, Point::new(label_x, y), inverted_style)
-                .draw(display)
-                .ok();
+            // Name truncated to 6 chars to fit temp+humidity
+            let name = if sensor.name.len() > 6 {
+                &sensor.name[..6]
+            } else {
+                &sensor.name
+            };
 
-            Text::with_alignment(&temp_str, Point::new(70, y), inverted_style, Alignment::Left)
-                .draw(display)
-                .ok();
+            // Format: "NAME  XX.X° XX% S"
+            let temp_str = sensor.temperature
+                .map(|t| format!("{:.1}", t))
+                .unwrap_or_else(|| "--.-".to_string());
+            let hum_str = sensor.humidity
+                .map(|h| format!("{:.0}%", h))
+                .unwrap_or_else(|| "--%".to_string());
 
-            Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-                .draw(display)
-                .ok();
-        } else if is_alarm {
-            Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(display)
-                .ok();
+            let label = format!("{:6} {}° {}", name, temp_str, hum_str);
 
-            // Use inverted text style for alarm rows
-            let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
-
-            Text::new(&label, Point::new(label_x, y), inverted_style)
-                .draw(display)
-                .ok();
-
-            Text::with_alignment(&temp_str, Point::new(70, y), inverted_style, Alignment::Left)
-                .draw(display)
-                .ok();
-
-            Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-                .draw(display)
-                .ok();
-        } else {
-            // Normal text style for non-alarm, non-selected rows
-            Text::new(&label, Point::new(label_x, y), text_style)
-                .draw(display)
-                .ok();
-
-            Text::with_alignment(&temp_str, Point::new(70, y), text_style, Alignment::Left)
-                .draw(display)
-                .ok();
-
-            Text::with_alignment(status_char, Point::new(126, y), text_style, Alignment::Right)
-                .draw(display)
-                .ok();
+            draw_sensor_row_wide(display, y, label_x, is_selected, is_alarm, &label, status_char, &text_style);
         }
     }
 
     display.flush()
+}
+
+/// Render the LoRaWAN sensor detail screen
+pub fn render_lorawan_sensor_detail(
+    display: &mut St7920,
+    sensor: &LoRaWANSensorState,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // Header: sensor name (truncate to 16 chars)
+    let display_name = if sensor.name.len() > 16 {
+        &sensor.name[..16]
+    } else {
+        &sensor.name
+    };
+
+    Text::with_alignment(
+        display_name,
+        Point::new(64, 9),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    // Separator line
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    // Line 1 (y=24): Temperature and alarm state
+    let temp_str = sensor.temperature
+        .map(|t| format!("{:.1}C", t))
+        .unwrap_or_else(|| "--.-C".to_string());
+    let temp_alarm = match sensor.temp_alarm_state {
+        LoRaWANAlarmState::Normal => "N",
+        LoRaWANAlarmState::Warning => "W",
+        LoRaWANAlarmState::Critical => "C",
+        LoRaWANAlarmState::Disconnected => "E",
+    };
+    let temp_line = format!("Temp:{} [{}]", temp_str, temp_alarm);
+    Text::new(&temp_line, Point::new(2, 24), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 2 (y=37): Humidity and alarm state
+    let hum_str = sensor.humidity
+        .map(|h| format!("{:.1}%", h))
+        .unwrap_or_else(|| "--.--%".to_string());
+    let hum_alarm = match sensor.humidity_alarm_state {
+        LoRaWANAlarmState::Normal => "N",
+        LoRaWANAlarmState::Warning => "W",
+        LoRaWANAlarmState::Critical => "C",
+        LoRaWANAlarmState::Disconnected => "E",
+    };
+    let hum_line = format!("Hum:{} [{}]", hum_str, hum_alarm);
+    Text::new(&hum_line, Point::new(2, 37), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 3 (y=50): RSSI
+    let rssi_str = sensor.rssi
+        .map(|r| format!("{}dBm", r))
+        .unwrap_or_else(|| "N/A".to_string());
+    let rssi_line = format!("RSSI:{}", rssi_str);
+    Text::new(&rssi_line, Point::new(2, 50), text_style)
+        .draw(display)
+        .ok();
+
+    // Line 4 (y=63): Serial number or last seen
+    let info_line = if let Some(ref serial) = sensor.serial_number {
+        let s = if serial.len() > 18 { &serial[..18] } else { serial.as_str() };
+        format!("SN:{}", s)
+    } else if let Some(ref last_seen) = sensor.last_seen {
+        // Show just time portion if possible
+        let time_part = if last_seen.len() > 10 { &last_seen[11..] } else { last_seen.as_str() };
+        let time_display = if time_part.len() > 8 { &time_part[..8] } else { time_part };
+        format!("Seen:{}", time_display)
+    } else {
+        "No data".to_string()
+    };
+    Text::new(&info_line, Point::new(2, 63), text_style)
+        .draw(display)
+        .ok();
+
+    display.flush()
+}
+
+/// Draw a DS18B20 sensor row with label, temperature, and status
+fn draw_sensor_row(
+    display: &mut St7920,
+    y: i32,
+    label_x: i32,
+    is_selected: bool,
+    is_alarm: bool,
+    label: &str,
+    temp_str: &str,
+    status_char: &str,
+    text_style: &MonoTextStyle<'_, BinaryColor>,
+) {
+    if is_selected {
+        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+
+        let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+
+        Text::new(">", Point::new(1, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::new(label, Point::new(label_x, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(temp_str, Point::new(70, y), inverted_style, Alignment::Left)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    } else if is_alarm {
+        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+
+        let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+
+        Text::new(label, Point::new(label_x, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(temp_str, Point::new(70, y), inverted_style, Alignment::Left)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    } else {
+        Text::new(label, Point::new(label_x, y), *text_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(temp_str, Point::new(70, y), *text_style, Alignment::Left)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), *text_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    }
+}
+
+/// Draw a LoRaWAN sensor row with combined label (name+temp+humidity) and status
+fn draw_sensor_row_wide(
+    display: &mut St7920,
+    y: i32,
+    label_x: i32,
+    is_selected: bool,
+    is_alarm: bool,
+    label: &str,
+    status_char: &str,
+    text_style: &MonoTextStyle<'_, BinaryColor>,
+) {
+    if is_selected {
+        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+
+        let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+
+        Text::new(">", Point::new(1, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::new(label, Point::new(label_x, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    } else if is_alarm {
+        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+
+        let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+
+        Text::new(label, Point::new(label_x, y), inverted_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    } else {
+        Text::new(label, Point::new(label_x, y), *text_style)
+            .draw(display)
+            .ok();
+
+        Text::with_alignment(status_char, Point::new(126, y), *text_style, Alignment::Right)
+            .draw(display)
+            .ok();
+    }
 }
 
 /// Render the QR code configuration screen
@@ -296,7 +526,11 @@ pub fn render_system_info(
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Header: "SYSTEM INFO" centered with page indicator
-    let header = format!("SYSTEM INFO {}/3", page + 1);
+    let header = if cfg!(feature = "dev-platform") {
+        format!("*DEV INFO {}/3", page + 1)
+    } else {
+        format!("SYSTEM INFO {}/3", page + 1)
+    };
     Text::with_alignment(
         &header,
         Point::new(64, 9),
@@ -389,8 +623,12 @@ pub fn render_system_info(
             .draw(display)
             .ok();
 
-        let fw_line = format!("FW:{}", app_version);
-        Text::new(&fw_line, Point::new(2, 59), text_style)
+        let fw_version = if cfg!(feature = "dev-platform") {
+            format!("FW:{}-dev", app_version)
+        } else {
+            format!("FW:{}", app_version)
+        };
+        Text::new(&fw_version, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
     }
@@ -574,6 +812,16 @@ pub fn render_sensor_detail(
     Text::new(&warning_line, Point::new(2, 50), text_style)
         .draw(display)
         .ok();
+
+    // Line 4 (y=63): Location (if set)
+    if let Some(location) = sensor_state.get_location(sensor_idx as u8) {
+        if !location.is_empty() {
+            let loc_line = format!("Loc:{}", if location.len() > 12 { &location[..12] } else { location });
+            Text::new(&loc_line, Point::new(2, 63), text_style)
+                .draw(display)
+                .ok();
+        }
+    }
 
     display.flush()
 }

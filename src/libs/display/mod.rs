@@ -15,6 +15,8 @@ use rppal::gpio::Gpio;
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
+use crate::libs::lorawan::SharedLoRaWANState;
+use crate::libs::buzzer::BuzzerPriorityManager;
 
 /// Type alias for shared screen brightness handle (0-100%)
 pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
@@ -39,6 +41,8 @@ pub enum Screen {
     },
     /// Sensor detail view showing thresholds for a specific sensor
     SensorDetail { sensor_idx: usize },
+    /// LoRaWAN sensor detail view
+    LoRaWANSensorDetail { dev_eui: String },
     /// QR code configuration screen for Bluetooth/WiFi setup
     QrCodeConfig,
     /// System information screen with pagination
@@ -56,6 +60,7 @@ impl Screen {
             Screen::SystemInfo { page } => Some(*page),
             Screen::Pairing { .. } => None,
             Screen::SensorDetail { .. } => None,
+            Screen::LoRaWANSensorDetail { .. } => None,
         }
     }
 
@@ -94,9 +99,9 @@ impl Screen {
         matches!(self, Screen::SensorOverview { selected_sensor: Some(_), .. })
     }
 
-    /// Check if this is a sensor detail screen
+    /// Check if this is a sensor detail screen (DS18B20 or LoRaWAN)
     pub fn is_sensor_detail(&self) -> bool {
-        matches!(self, Screen::SensorDetail { .. })
+        matches!(self, Screen::SensorDetail { .. } | Screen::LoRaWANSensorDetail { .. })
     }
 
     /// Get selected sensor index if in selection mode
@@ -118,6 +123,12 @@ pub struct DisplayState {
     pub qr_generator: Option<Arc<QrCodeGenerator>>,
     /// Current network connection status
     pub network_status: NetworkStatus,
+    /// Whether a LoRaWAN gateway is present (set from main after detection)
+    pub lorawan_gateway_present: bool,
+    /// Shared LoRaWAN state for display rendering
+    pub lorawan_state: Option<SharedLoRaWANState>,
+    /// Buzzer priority manager for checking mute state
+    pub buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
 }
 
 impl DisplayState {
@@ -127,7 +138,41 @@ impl DisplayState {
             should_update: true,
             qr_generator: None,
             network_status: NetworkStatus::disconnected(),
+            lorawan_gateway_present: false,
+            lorawan_state: None,
+            buzzer_priority: None,
         }
+    }
+
+    /// Get the number of LoRaWAN sensors currently known
+    pub fn lorawan_sensor_count(&self) -> usize {
+        self.lorawan_state.as_ref()
+            .and_then(|s| s.read().ok())
+            .map(|s| s.sensors.len())
+            .unwrap_or(0)
+    }
+
+    /// Total sensor count: 8 DS18B20 + N LoRaWAN
+    pub fn total_sensor_count(&self) -> usize {
+        8 + self.lorawan_sensor_count()
+    }
+
+    /// Total number of overview pages: 2 DS18B20 + ceil(lorawan_count / 4)
+    pub fn total_pages(&self) -> usize {
+        let lrw_count = self.lorawan_sensor_count();
+        2 + (lrw_count + 3) / 4
+    }
+
+    /// Get sorted LoRaWAN dev_euis for consistent indexing
+    pub fn sorted_lorawan_dev_euis(&self) -> Vec<String> {
+        self.lorawan_state.as_ref()
+            .and_then(|s| s.read().ok())
+            .map(|s| {
+                let mut euis: Vec<String> = s.sensors.keys().cloned().collect();
+                euis.sort();
+                euis
+            })
+            .unwrap_or_default()
     }
 
     /// Set the QR code generator
@@ -139,9 +184,10 @@ impl DisplayState {
     pub fn next_page(&mut self) {
         match self.current_screen {
             Screen::SensorOverview { page, selected_sensor: None } => {
-                // Only page navigation when not in selection mode
+                // Dynamic page count: 2 DS18B20 + ceil(lorawan_count / 4)
+                let total = self.total_pages();
                 self.current_screen = Screen::SensorOverview {
-                    page: if page == 0 { 1 } else { 0 },
+                    page: (page + 1) % total,
                     selected_sensor: None,
                 };
             }
@@ -198,10 +244,11 @@ impl DisplayState {
         }
     }
 
-    /// Move selection cursor up (wraps within all 8 sensors)
+    /// Move selection cursor up (wraps within all sensors: 8 DS18B20 + N LoRaWAN)
     pub fn selection_up(&mut self) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let new_idx = if idx == 0 { 7 } else { idx - 1 };
+            let total = self.total_sensor_count();
+            let new_idx = if idx == 0 { total - 1 } else { idx - 1 };
             let new_page = new_idx / 4;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
@@ -211,10 +258,11 @@ impl DisplayState {
         }
     }
 
-    /// Move selection cursor down (wraps within all 8 sensors)
+    /// Move selection cursor down (wraps within all sensors: 8 DS18B20 + N LoRaWAN)
     pub fn selection_down(&mut self) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let new_idx = if idx >= 7 { 0 } else { idx + 1 };
+            let total = self.total_sensor_count();
+            let new_idx = if idx >= total - 1 { 0 } else { idx + 1 };
             let new_page = new_idx / 4;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
@@ -227,20 +275,46 @@ impl DisplayState {
     /// Enter detail view for selected sensor
     pub fn enter_detail_view(&mut self) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            self.current_screen = Screen::SensorDetail { sensor_idx: idx };
-            self.should_update = true;
+            if idx >= 8 {
+                // LoRaWAN sensor - find dev_eui by sorted index
+                let lorawan_idx = idx - 8;
+                let dev_euis = self.sorted_lorawan_dev_euis();
+                if let Some(dev_eui) = dev_euis.get(lorawan_idx) {
+                    self.current_screen = Screen::LoRaWANSensorDetail { dev_eui: dev_eui.clone() };
+                    self.should_update = true;
+                }
+            } else {
+                self.current_screen = Screen::SensorDetail { sensor_idx: idx };
+                self.should_update = true;
+            }
         }
     }
 
     /// Exit detail view back to selection mode
     pub fn exit_detail_view(&mut self) {
-        if let Screen::SensorDetail { sensor_idx } = self.current_screen {
-            let page = sensor_idx / 4;
-            self.current_screen = Screen::SensorOverview {
-                page,
-                selected_sensor: Some(sensor_idx),
-            };
-            self.should_update = true;
+        match &self.current_screen {
+            Screen::SensorDetail { sensor_idx } => {
+                let idx = *sensor_idx;
+                let page = idx / 4;
+                self.current_screen = Screen::SensorOverview {
+                    page,
+                    selected_sensor: Some(idx),
+                };
+                self.should_update = true;
+            }
+            Screen::LoRaWANSensorDetail { dev_eui } => {
+                // Find the global index of this LoRaWAN sensor
+                let dev_euis = self.sorted_lorawan_dev_euis();
+                let lorawan_idx = dev_euis.iter().position(|e| e == dev_eui).unwrap_or(0);
+                let idx = 8 + lorawan_idx;
+                let page = idx / 4;
+                self.current_screen = Screen::SensorOverview {
+                    page,
+                    selected_sensor: Some(idx),
+                };
+                self.should_update = true;
+            }
+            _ => {}
         }
     }
 }
@@ -300,6 +374,14 @@ impl DisplayMonitor {
             shutdown_flag,
             display_state,
         })
+    }
+
+    /// Set the buzzer priority manager for mute icon display.
+    /// Called after both display and buzzer are initialized.
+    pub fn set_buzzer_priority(&self, bp: Arc<BuzzerPriorityManager>) {
+        if let Ok(mut ds) = self.display_state.lock() {
+            ds.buzzer_priority = Some(bp);
+        }
     }
 
     /// Gracefully shutdown the display monitor thread

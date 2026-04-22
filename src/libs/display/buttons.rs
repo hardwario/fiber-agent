@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
 use crate::libs::pairing::PairingHandle;
+use crate::libs::buzzer::BuzzerPriorityManager;
 use super::SharedDisplayStateHandle;
 
 /// Button monitor state machine for handling ENTER button countdown and DOWN button hold
@@ -48,12 +49,13 @@ impl ButtonMonitor {
     pub fn new(
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
+        buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle);
+            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority);
         });
 
         Ok(Self {
@@ -67,6 +69,7 @@ impl ButtonMonitor {
         shutdown_flag: Arc<AtomicBool>,
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
+        buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -108,6 +111,17 @@ impl ButtonMonitor {
 
             // Process button events
             for event in events {
+                // Any button PRESS silences sensor beep (consumes the event)
+                if let ButtonEvent::Press(_) = &event {
+                    if let Some(ref bp) = buzzer_priority {
+                        if bp.is_sensor_beeping() {
+                            bp.silence_sensor_30min();
+                            eprintln!("[ButtonMonitor] Sensor beep silenced by button press (30 min)");
+                            continue;
+                        }
+                    }
+                }
+
                 match event {
                     ButtonEvent::Press(Button::Up) => {
                         eprintln!("[ButtonMonitor] UP button pressed");

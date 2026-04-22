@@ -44,12 +44,12 @@ where
 // WIFI BITMAPS – EXACT STYLE FROM YOUR IMAGE
 
 const WIFI_STRONG_BITMAP: [[u8; 11]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    [1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1],
     [0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0],
-    [0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0],
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
 ];
 
@@ -57,10 +57,10 @@ const WIFI_STRONG_BITMAP: [[u8; 11]; 7] = [
 const WIFI_MEDIUM_BITMAP: [[u8; 11]; 7] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0],
     [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
 ];
 
@@ -70,7 +70,7 @@ const WIFI_WEAK_BITMAP: [[u8; 11]; 7] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
 ];
@@ -195,6 +195,26 @@ where
     draw_ethernet_bitmap(display, x, y+1, &ETHERNET_BITMAP);
 }
 
+// LORAWAN RADIO TOWER BITMAP – 11x7 matching other icon dimensions
+const LORAWAN_BITMAP: [[u8; 11]; 7] = [
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0],
+    [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+];
+
+/// Draw LoRaWAN radio tower icon
+pub fn draw_lorawan<D>(display: &mut D, x: i32, y: i32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+    D::Error: core::fmt::Debug,
+{
+    draw_wifi_bitmap(display, x, y, &LORAWAN_BITMAP);
+}
+
 fn draw_ethernet_bitmap<D>(
     display: &mut D,
     x: i32,
@@ -240,4 +260,27 @@ fn draw_ethernet_bitmap<D>(
                 .draw(display);
         }
     }
+}
+
+// MUTE ICON BITMAP – 11x7 matching other icon dimensions
+// Speaker with X overlay, user-designed pixel art
+const MUTE_BITMAP: [[u8; 11]; 7] = [
+    [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1],
+    [1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+    [1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0],
+    [0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1],
+    [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// Draw mute icon (speaker with X)
+/// Returns the width of the drawn icon for layout calculations
+pub fn draw_mute<D>(display: &mut D, x: i32, y: i32) -> u32
+where
+    D: DrawTarget<Color = BinaryColor>,
+    D::Error: core::fmt::Debug,
+{
+    draw_wifi_bitmap(display, x, y, &MUTE_BITMAP);
+    11
 }

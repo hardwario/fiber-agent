@@ -65,6 +65,17 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishSystemAlarmEvent {
+                alarm_type,
+                name,
+                from_state,
+                to_state,
+                message,
+            } => {
+                self.publish_system_alarm_event(&alarm_type, &name, &from_state, &to_state, &message)
+                    .await
+            }
+
             MqttMessage::PublishSystemStatus {
                 hostname,
                 device_label,
@@ -83,6 +94,10 @@ impl MqttPublisher {
                 storage_total_bytes,
                 storage_available_bytes,
                 storage_used_percent,
+                lorawan_gateway_present,
+                lorawan_concentratord_running,
+                lorawan_chirpstack_running,
+                lorawan_sensor_count,
             } => {
                 self.publish_system_status(
                     &hostname,
@@ -102,12 +117,16 @@ impl MqttPublisher {
                     storage_total_bytes,
                     storage_available_bytes,
                     storage_used_percent,
+                    lorawan_gateway_present,
+                    lorawan_concentratord_running,
+                    lorawan_chirpstack_running,
+                    lorawan_sensor_count,
                 )
                 .await
             }
 
-            MqttMessage::PublishAggregatedSensorData { period, names } => {
-                self.publish_aggregated_sensor_data(period, &names).await
+            MqttMessage::PublishAggregatedSensorData { period, names, locations } => {
+                self.publish_aggregated_sensor_data(period, &names, &locations).await
             }
 
             MqttMessage::PublishConfigChallenge {
@@ -160,6 +179,7 @@ impl MqttPublisher {
                 system_info_interval_s,
                 device_label,
                 sensors,
+                lorawan_sensors,
                 sample_interval_ms,
                 aggregation_interval_ms,
                 report_interval_ms,
@@ -171,11 +191,16 @@ impl MqttPublisher {
                     system_info_interval_s,
                     &device_label,
                     sensors,
+                    lorawan_sensors,
                     sample_interval_ms,
                     aggregation_interval_ms,
                     report_interval_ms,
                 )
                 .await
+            }
+
+            MqttMessage::PublishLoRaWANSensorData { sensors } => {
+                self.publish_lorawan_sensors(sensors).await
             }
 
             MqttMessage::PublishPairingResponse(response) => {
@@ -196,6 +221,7 @@ impl MqttPublisher {
         &self,
         period: crate::libs::sensors::aggregation::AggregationPeriod,
         names: &[String; 8],
+        locations: &[Option<String>; 8],
     ) -> Result<(), String> {
         // Build JSON payload with all 8 sensors
         let sensors_data: Vec<serde_json::Value> = period.sensors.iter()
@@ -211,12 +237,14 @@ impl MqttPublisher {
                     serde_json::Value::Null
                 };
 
-                // Get sensor name
+                // Get sensor name and location
                 let name = &names[sensor.line as usize];
+                let location = &locations[sensor.line as usize];
 
                 json!({
                     "line": sensor.line,
                     "name": name,
+                    "location": location,
                     "sample_count": sensor.sample_count,
                     "disconnected_count": sensor.disconnected_count,
                     "temperature": temp_data,
@@ -276,7 +304,34 @@ impl MqttPublisher {
         self.publish(topic, payload.to_string(), qos, false).await
     }
 
-    /// Publish combined system status (power, network, storage, uptime)
+    /// Publish system-level alarm event (power, wifi, ethernet)
+    async fn publish_system_alarm_event(
+        &self,
+        alarm_type: &str,
+        name: &str,
+        from_state: &str,
+        to_state: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "line": 0,
+            "name": name,
+            "from_state": from_state,
+            "to_state": to_state,
+            "temperature_celsius": null,
+            "event_type": "system_alarm",
+            "alarm_type": alarm_type,
+            "message": message,
+        });
+
+        let topic = self.topics.alarms_events();
+        let qos = Self::qos_from_u8(self.qos_overrides.alarm_events);
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish combined system status (power, network, storage, uptime, lorawan)
     #[allow(clippy::too_many_arguments)]
     async fn publish_system_status(
         &self,
@@ -297,6 +352,10 @@ impl MqttPublisher {
         storage_total_bytes: u64,
         storage_available_bytes: u64,
         storage_used_percent: u8,
+        lorawan_gateway_present: bool,
+        lorawan_concentratord_running: bool,
+        lorawan_chirpstack_running: bool,
+        lorawan_sensor_count: usize,
     ) -> Result<(), String> {
         // Format uptime in human-readable form
         let days = uptime_seconds / 86400;
@@ -328,11 +387,18 @@ impl MqttPublisher {
                 .map(|dt| dt.to_rfc3339())
         });
 
+        let firmware_version_str = if cfg!(feature = "dev-platform") {
+            format!("{}-dev", version)
+        } else {
+            version.to_string()
+        };
+
         let payload = json!({
             "timestamp": Self::timestamp(),
             "hostname": hostname,
             "device_label": device_label,
-            "firmware_version": version,
+            "firmware_version": firmware_version_str,
+            "dev_mode": cfg!(feature = "dev-platform"),
             "uptime_seconds": uptime_seconds,
             "uptime_human": uptime_human,
             "power": {
@@ -366,6 +432,12 @@ impl MqttPublisher {
                     "used_percent": storage_used_percent,
                 },
             },
+            "lorawan": {
+                "gateway_present": lorawan_gateway_present,
+                "concentratord_running": lorawan_concentratord_running,
+                "chirpstack_running": lorawan_chirpstack_running,
+                "sensor_count": lorawan_sensor_count,
+            },
         });
 
         let topic = self.topics.system_info();
@@ -379,6 +451,7 @@ impl MqttPublisher {
         let payload = json!({
             "status": "online",
             "timestamp": Self::timestamp(),
+            "dev_mode": cfg!(feature = "dev-platform"),
         });
 
         let topic = self.topics.status();
@@ -485,6 +558,7 @@ impl MqttPublisher {
                 json!({
                     "line": sensor.line,
                     "name": sensor.name,
+                    "location": sensor.location,
                     "enabled": sensor.enabled,
                     "has_override": sensor.has_override,
                     "thresholds": {
@@ -542,6 +616,7 @@ impl MqttPublisher {
         system_info_interval_s: u64,
         device_label: &str,
         sensors: Vec<super::messages::SensorConfigData>,
+        lorawan_sensors: Vec<super::messages::LoRaWANSensorConfigData>,
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
@@ -552,6 +627,7 @@ impl MqttPublisher {
                 json!({
                     "line": sensor.line,
                     "name": sensor.name,
+                    "location": sensor.location,
                     "enabled": sensor.enabled,
                     "has_override": sensor.has_override,
                     "thresholds": {
@@ -566,6 +642,26 @@ impl MqttPublisher {
             })
             .collect();
 
+        let lorawan_sensors_data: Vec<serde_json::Value> = lorawan_sensors
+            .iter()
+            .map(|s| {
+                json!({
+                    "dev_eui": s.dev_eui,
+                    "name": s.name,
+                    "serial_number": s.serial_number,
+                    "enabled": s.enabled,
+                    "temp_critical_low": s.temp_critical_low,
+                    "temp_warning_low": s.temp_warning_low,
+                    "temp_warning_high": s.temp_warning_high,
+                    "temp_critical_high": s.temp_critical_high,
+                    "humidity_critical_low": s.humidity_critical_low,
+                    "humidity_warning_low": s.humidity_warning_low,
+                    "humidity_warning_high": s.humidity_warning_high,
+                    "humidity_critical_high": s.humidity_critical_high,
+                })
+            })
+            .collect();
+
         let payload = json!({
             "timestamp": Self::timestamp(),
             "led_brightness": led_brightness,
@@ -574,6 +670,7 @@ impl MqttPublisher {
             "system_info_interval_s": system_info_interval_s,
             "device_label": device_label,
             "sensors": sensors_data,
+            "lorawan_sensors": lorawan_sensors_data,
             "intervals": {
                 "sample_interval_ms": sample_interval_ms,
                 "aggregation_interval_ms": aggregation_interval_ms,
@@ -585,6 +682,47 @@ impl MqttPublisher {
         let qos = QoS::AtLeastOnce;
 
         self.publish(topic, payload.to_string(), qos, true).await
+    }
+
+    /// Publish LoRaWAN sensor data
+    async fn publish_lorawan_sensors(
+        &self,
+        sensors: Vec<super::messages::LoRaWANSensorPayload>,
+    ) -> Result<(), String> {
+        let sensors_data: Vec<serde_json::Value> = sensors
+            .iter()
+            .map(|s| {
+                json!({
+                    "dev_eui": s.dev_eui,
+                    "name": s.name,
+                    "serial_number": s.serial_number,
+                    "temperature": s.temperature,
+                    "humidity": s.humidity,
+                    "voltage": s.voltage,
+                    "ext_temperature_1": s.ext_temperature_1,
+                    "ext_temperature_2": s.ext_temperature_2,
+                    "illuminance": s.illuminance,
+                    "motion_count": s.motion_count,
+                    "orientation": s.orientation,
+                    "rssi": s.rssi,
+                    "snr": s.snr,
+                    "last_seen": s.last_seen,
+                    "alarm_state": s.alarm_state,
+                    "temp_alarm_state": s.temp_alarm_state,
+                    "humidity_alarm_state": s.humidity_alarm_state,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "sensors": sensors_data,
+        });
+
+        let topic = self.topics.lorawan_sensors();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
     }
 
     /// Publish pairing response (success)

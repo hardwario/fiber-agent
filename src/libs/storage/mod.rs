@@ -38,6 +38,7 @@ pub mod audit;
 pub mod db;
 pub mod disk;
 pub mod error;
+pub mod integrity;
 pub mod models;
 pub mod reader;
 pub mod retention;

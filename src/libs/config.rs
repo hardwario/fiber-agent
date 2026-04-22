@@ -165,6 +165,10 @@ pub struct SensorLineConfig {
     /// Sensor name/label
     pub name: String,
 
+    /// Sensor probe location (e.g., "Cold room A, shelf 3")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+
     /// Critical low temperature override (None = use common)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_low_celsius: Option<f32>,
@@ -259,15 +263,6 @@ impl SensorFileConfig {
         }
     }
 
-    /// Get effective report interval for a sensor line
-    pub fn get_line_report_interval(&self, line: u8, default_ms: u64) -> u64 {
-        self.lines
-            .iter()
-            .find(|l| l.line == line)
-            .and_then(|l| l.report_interval_ms)
-            .unwrap_or(default_ms)
-    }
-
     /// Get default alarm patterns
     fn default_alarm_patterns() -> AlarmPatternsConfig {
         AlarmPatternsConfig {
@@ -331,6 +326,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 1,
@@ -343,6 +339,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 2,
@@ -355,6 +352,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 3,
@@ -367,6 +365,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 4,
@@ -379,6 +378,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 5,
@@ -391,6 +391,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 6,
@@ -403,6 +404,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
                 SensorLineConfig {
                     line: 7,
@@ -415,6 +417,7 @@ impl SensorFileConfig {
                     high_alarm_celsius: None,
                     critical_high_celsius: None,
                     report_interval_ms: None,
+                    location: None,
                 },
             ],
         }
@@ -445,86 +448,6 @@ pub struct SensorConfig {
     pub warmup_threshold: u8,
 }
 
-/// Temperature threshold configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemperatureThresholds {
-    /// High temperature alarm threshold (Celsius)
-    pub high_alarm_celsius: f32,
-
-    /// Low temperature alarm threshold (Celsius)
-    pub low_alarm_celsius: f32,
-
-    /// Critical high temperature alarm (Celsius)
-    pub critical_high_celsius: f32,
-
-    /// Critical low temperature alarm (Celsius)
-    pub critical_low_celsius: f32,
-}
-
-/// Display configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisplayConfig {
-    /// Display update interval in milliseconds
-    pub update_interval_ms: u64,
-
-    /// Display refresh rate (updates per second)
-    pub refresh_rate_hz: u8,
-
-    /// Backlight control enabled
-    pub backlight_enabled: bool,
-
-    /// Rotation in degrees (0, 90, 180, 270)
-    pub rotation_degrees: u16,
-}
-
-/// User interface configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UiConfig {
-    /// Button debounce time in milliseconds
-    pub button_debounce_ms: u64,
-
-    /// Menu idle timeout in seconds (0 = no timeout)
-    pub menu_idle_timeout_sec: u64,
-
-    /// Buzzer configuration
-    pub buzzer: BuzzerConfig,
-}
-
-/// Buzzer feedback configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuzzerConfig {
-    /// Enable buzzer feedback
-    pub enabled: bool,
-
-    /// Beep duration in milliseconds
-    pub beep_duration_ms: u64,
-
-    /// Beep interval for alerts in milliseconds
-    pub alert_interval_ms: u64,
-}
-
-/// Data logging configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggingConfig {
-    /// Enable data logging
-    pub enabled: bool,
-
-    /// Log file path
-    pub log_file: String,
-
-    /// Log interval in milliseconds
-    pub interval_ms: u64,
-
-    /// Maximum log file size in MB
-    pub max_file_size_mb: u64,
-
-    /// Number of historical log files to keep
-    pub max_backup_files: u32,
-
-    /// Log verbosity level
-    pub verbosity: String,
-}
-
 /// Serial communication configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerialConfig {
@@ -533,12 +456,6 @@ pub struct SerialConfig {
 
     /// Baud rate
     pub baud_rate: u32,
-
-    /// Serial port timeout in milliseconds
-    pub timeout_ms: u64,
-
-    /// Maximum retries for failed commands
-    pub max_retries: u8,
 }
 
 /// Accelerometer motion detection configuration
@@ -598,36 +515,101 @@ pub struct SystemConfig {
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// Enable storage system
-    pub enabled: bool,
-
     /// Path to SQLite database file
     pub db_path: String,
 
     /// Maximum database size in gigabytes
     pub max_size_gb: i32,
 
-    /// Minimum data retention in days
-    pub retention_days: i32,
-
-    /// Cleanup threshold percentage (e.g., 90 = cleanup at 90% capacity)
-    pub cleanup_threshold_percent: f32,
-
-    /// Auto-flush interval in milliseconds
-    pub flush_interval_ms: u64,
-
-    /// Auto-flush threshold (number of messages)
-    pub flush_threshold_messages: usize,
-
-    /// Enable backup functionality
-    pub backup_enabled: bool,
-
-    /// Path for database backups
-    pub backup_path: String,
-
-    /// Enable audit trail logging
-    pub audit_enabled: bool,
+    /// Path to HMAC secret key file for sensor reading integrity (EU MDR)
+    #[serde(default = "default_hmac_secret_path")]
+    pub hmac_secret_path: String,
 }
+
+/// Per-sensor LoRaWAN configuration (mirrors SensorLineConfig pattern)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoRaWANSensorConfig {
+    /// Device EUI (unique identifier)
+    pub dev_eui: String,
+
+    /// Sensor name/label override
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Serial number (user-assigned)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+
+    /// Enable this sensor
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    // Temperature thresholds (4-level, same as DS18B20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_critical_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_warning_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_warning_high: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_critical_high: Option<f32>,
+
+    // Humidity thresholds (4-level, same pattern)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_critical_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_warning_low: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_warning_high: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_critical_high: Option<f32>,
+}
+
+/// LoRaWAN gateway configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoRaWANConfig {
+    /// Enable LoRaWAN gateway integration
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// ChirpStack local MQTT broker host
+    #[serde(default = "default_chirpstack_mqtt_host")]
+    pub chirpstack_mqtt_host: String,
+
+    /// ChirpStack local MQTT broker port
+    #[serde(default = "default_chirpstack_mqtt_port")]
+    pub chirpstack_mqtt_port: u16,
+
+    /// Publish interval for LoRaWAN sensor data (seconds)
+    #[serde(default = "default_lorawan_publish_interval")]
+    pub publish_interval_s: u64,
+
+    /// Sensor timeout in seconds (mark as disconnected after this)
+    #[serde(default = "default_lorawan_sensor_timeout")]
+    pub sensor_timeout_s: u64,
+
+    /// Per-sensor configurations
+    #[serde(default)]
+    pub sensors: Vec<LoRaWANSensorConfig>,
+}
+
+impl Default for LoRaWANConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chirpstack_mqtt_host: "localhost".to_string(),
+            chirpstack_mqtt_port: 1883,
+            publish_interval_s: 30,
+            sensor_timeout_s: 3600, // 1 hour
+            sensors: Vec::new(),
+        }
+    }
+}
+
+fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
+fn default_chirpstack_mqtt_port() -> u16 { 1883 }
+fn default_lorawan_publish_interval() -> u64 { 30 }
+fn default_lorawan_sensor_timeout() -> u64 { 3600 }
 
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,6 +627,7 @@ pub struct BrokerConfig {
 /// TLS/SSL configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub ca_cert_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -653,6 +636,18 @@ pub struct TlsConfig {
     pub client_key_path: Option<String>,
     #[serde(default)]
     pub insecure_skip_verify: bool,
+}
+
+impl TlsConfig {
+    /// Validate TLS configuration for production safety.
+    /// Blocks insecure_skip_verify in non-dev builds (EU MDR Annex I, 17.2).
+    pub fn validate(&mut self) {
+        #[cfg(not(feature = "dev-platform"))]
+        if self.insecure_skip_verify {
+            eprintln!("SECURITY: insecure_skip_verify is not allowed in production builds. Forcing to false.");
+            self.insecure_skip_verify = false;
+        }
+    }
 }
 
 /// QoS overrides by message type
@@ -776,6 +771,11 @@ fn default_alarm_pattern() -> AlarmStatePattern {
     }
 }
 
+// Default value functions for storage configuration
+fn default_hmac_secret_path() -> String {
+    "/data/fiber/config/hmac.key".to_string()
+}
+
 // Default value functions for sensor configuration
 fn default_warmup_threshold() -> u8 { 3 }
 
@@ -810,15 +810,6 @@ pub struct Config {
     /// Temperature sensor settings
     pub sensors: SensorConfig,
 
-    /// Display settings
-    pub display: DisplayConfig,
-
-    /// User interface settings
-    pub ui: UiConfig,
-
-    /// Data logging settings
-    pub logging: LoggingConfig,
-
     /// Serial communication settings
     pub serial: SerialConfig,
 
@@ -834,13 +825,25 @@ pub struct Config {
     /// MQTT client settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt: Option<MqttConfig>,
+
+    /// LoRaWAN gateway settings
+    #[serde(default)]
+    pub lorawan: Option<LoRaWANConfig>,
 }
 
 impl Config {
     /// Load configuration from a YAML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+
+        // Validate TLS config for production safety (EU MDR Annex I, 17.2)
+        if let Some(ref mut mqtt) = config.mqtt {
+            if let Some(ref mut tls) = mqtt.tls {
+                tls.validate();
+            }
+        }
+
         Ok(config)
     }
 
@@ -876,34 +879,9 @@ impl Config {
                 failure_threshold: 3,
                 warmup_threshold: 3,
             },
-            display: DisplayConfig {
-                update_interval_ms: 1000,
-                refresh_rate_hz: 1,
-                backlight_enabled: true,
-                rotation_degrees: 180,
-            },
-            ui: UiConfig {
-                button_debounce_ms: 50,
-                menu_idle_timeout_sec: 30,
-                buzzer: BuzzerConfig {
-                    enabled: true,
-                    beep_duration_ms: 100,
-                    alert_interval_ms: 500,
-                },
-            },
-            logging: LoggingConfig {
-                enabled: true,
-                log_file: "data/sensor_log.csv".to_string(),
-                interval_ms: 60000,
-                max_file_size_mb: 10,
-                max_backup_files: 10,
-                verbosity: "info".to_string(),
-            },
             serial: SerialConfig {
                 port: "/dev/ttyAMA4".to_string(),
                 baud_rate: 115200,
-                timeout_ms: 1000,
-                max_retries: 3,
             },
             accelerometer: AccelerometerConfig {
                 enabled: true,
@@ -914,16 +892,9 @@ impl Config {
                 logging_enabled: true,
             },
             storage: StorageConfig {
-                enabled: true,
                 db_path: "/data/fiber_medical.db".to_string(),
                 max_size_gb: 5,
-                retention_days: 1095, // 3 years
-                cleanup_threshold_percent: 90.0,
-                flush_interval_ms: 100,
-                flush_threshold_messages: 1000,
-                backup_enabled: true,
-                backup_path: "/data/backups/".to_string(),
-                audit_enabled: true,
+                hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {
                 debug_mode: false,
@@ -936,6 +907,7 @@ impl Config {
                 buzzer_volume: 100,
             },
             mqtt: None,  // MQTT disabled by default
+            lorawan: None,  // LoRaWAN disabled by default
         }
     }
 }
@@ -965,6 +937,6 @@ mod tests {
     fn test_serial_config() {
         let config = Config::default_config();
         assert_eq!(config.serial.port, "/dev/ttyAMA4");
-        assert_eq!(config.serial.baud_rate, 115200);
+        assert_eq!(config.serial.baud_rate, 115200u32);
     }
 }

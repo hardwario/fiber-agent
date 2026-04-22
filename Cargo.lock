@@ -459,6 +459,7 @@ dependencies = [
  "ed25519-dalek",
  "embedded-graphics",
  "hex",
+ "hmac",
  "i2cdev",
  "lru",
  "pbkdf2",

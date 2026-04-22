@@ -13,6 +13,7 @@ pub enum MqttMessage {
     PublishAggregatedSensorData {
         period: AggregationPeriod,
         names: [String; 8],
+        locations: [Option<String>; 8],
     },
 
     /// Publish an alarm state transition event
@@ -22,6 +23,15 @@ pub enum MqttMessage {
         from_state: AlarmState,
         to_state: AlarmState,
         temperature: f32,
+    },
+
+    /// Publish a system-level alarm event (power, wifi, ethernet)
+    PublishSystemAlarmEvent {
+        alarm_type: String,     // "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT"
+        name: String,           // "Power Supply", "WiFi", "Ethernet"
+        from_state: String,     // "NORMAL" or "CRITICAL"
+        to_state: String,       // "CRITICAL" or "NORMAL"
+        message: String,        // Human-readable message
     },
 
     /// Publish combined system status (power, network, storage, uptime)
@@ -60,6 +70,14 @@ pub enum MqttMessage {
         storage_available_bytes: u64,
         /// Storage used percent
         storage_used_percent: u8,
+        /// LoRaWAN gateway present
+        lorawan_gateway_present: bool,
+        /// LoRaWAN concentratord running
+        lorawan_concentratord_running: bool,
+        /// LoRaWAN chirpstack running
+        lorawan_chirpstack_running: bool,
+        /// LoRaWAN sensor count
+        lorawan_sensor_count: usize,
     },
 
     /// Publish configuration challenge (preview of changes)
@@ -101,9 +119,15 @@ pub enum MqttMessage {
         system_info_interval_s: u64,
         device_label: String,
         sensors: Vec<SensorConfigData>,
+        lorawan_sensors: Vec<LoRaWANSensorConfigData>,
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
+    },
+
+    /// Publish LoRaWAN sensor data
+    PublishLoRaWANSensorData {
+        sensors: Vec<LoRaWANSensorPayload>,
     },
 
     /// Publish successful pairing response
@@ -119,14 +143,54 @@ pub enum MqttMessage {
     Shutdown,
 }
 
+/// LoRaWAN sensor data payload for MQTT publishing
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorPayload {
+    pub dev_eui: String,
+    pub name: String,
+    pub serial_number: Option<String>,
+    pub temperature: Option<f32>,
+    pub humidity: Option<f32>,
+    pub voltage: Option<f32>,
+    pub ext_temperature_1: Option<f32>,
+    pub ext_temperature_2: Option<f32>,
+    pub illuminance: Option<u32>,
+    pub motion_count: Option<u32>,
+    pub orientation: Option<u8>,
+    pub rssi: Option<i32>,
+    pub snr: Option<f32>,
+    pub last_seen: Option<String>,
+    pub alarm_state: String,
+    pub temp_alarm_state: String,
+    pub humidity_alarm_state: String,
+}
+
 /// Sensor configuration data for query response
 #[derive(Debug, Clone)]
 pub struct SensorConfigData {
     pub line: u8,
     pub name: String,
+    pub location: Option<String>,
     pub enabled: bool,
     pub has_override: bool, // true if using per-line thresholds, false if using common defaults
     pub thresholds: AlarmThreshold,
+}
+
+/// LoRaWAN sensor configuration data for config state publishing
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorConfigData {
+    pub dev_eui: String,
+    pub name: Option<String>,
+    pub serial_number: Option<String>,
+    pub enabled: bool,
+    pub temp_critical_low: Option<f32>,
+    pub temp_warning_low: Option<f32>,
+    pub temp_warning_high: Option<f32>,
+    pub temp_critical_high: Option<f32>,
+    pub humidity_critical_low: Option<f32>,
+    pub humidity_warning_low: Option<f32>,
+    pub humidity_warning_high: Option<f32>,
+    pub humidity_critical_high: Option<f32>,
 }
 
 /// Commands received from MQTT broker
@@ -160,6 +224,9 @@ pub enum MqttCommand {
 
     /// Set sensor name (signed via ConfigRequest)
     SetSensorName { line: u8, name: String },
+
+    /// Set sensor probe location (signed via ConfigRequest)
+    SetSensorLocation { line: u8, location: String },
 
     /// Restart application
     RestartApplication { reason: String },
@@ -200,6 +267,10 @@ pub enum MqttCommand {
         volume: u8,
     },
 
+    /// Silence buzzer (from alarm acknowledgment)
+    /// Stops current pattern but re-arms for new alarms
+    SilenceBuzzer,
+
     /// Set network configuration (signed via ConfigRequest)
     SetNetworkConfig {
         interface: String,      // "ethernet" or "wifi"
@@ -209,6 +280,36 @@ pub enum MqttCommand {
         gateway: Option<String>,
         dns_primary: Option<String>,
         dns_secondary: Option<String>,
+    },
+
+    /// Set LoRaWAN sensor configuration (signed via ConfigRequest)
+    SetLoRaWANSensorConfig {
+        dev_eui: String,
+        name: Option<String>,
+        serial_number: Option<String>,
+        temp_critical_low: Option<f32>,
+        temp_warning_low: Option<f32>,
+        temp_warning_high: Option<f32>,
+        temp_critical_high: Option<f32>,
+        humidity_critical_low: Option<f32>,
+        humidity_warning_low: Option<f32>,
+        humidity_warning_high: Option<f32>,
+        humidity_critical_high: Option<f32>,
+    },
+
+    /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
+    AddLoRaWANSticker {
+        dev_eui: String,
+        name: String,
+        serial_number: String,
+        devaddr: String,
+        nwkskey: String,
+        appskey: String,
+    },
+
+    /// Remove LoRaWAN sticker: remove sensor config (signed via ConfigRequest)
+    RemoveLoRaWANSticker {
+        dev_eui: String,
     },
 
     /// Add signer (signed via ConfigRequest)
@@ -266,6 +367,7 @@ impl MqttCommand {
             MqttCommand::GetDeviceInfo => "get_device_info",
             MqttCommand::GetSensorConfig => "get_sensor_config",
             MqttCommand::SetSensorName { .. } => "set_sensor_name",
+            MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
             MqttCommand::RestartApplication { .. } => "restart_application",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",
@@ -274,7 +376,11 @@ impl MqttCommand {
             MqttCommand::SetLedBrightness { .. } => "set_led_brightness",
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
+            MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
+            MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
+            MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
+            MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",

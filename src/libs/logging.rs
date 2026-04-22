@@ -17,11 +17,3 @@ pub fn get_timestamp_str() -> String {
 
     format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
 }
-
-/// Log with timestamp
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => {
-        eprintln!("[{}] {}", $crate::libs::logging::get_timestamp_str(), format!($($arg)*))
-    };
-}

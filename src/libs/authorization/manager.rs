@@ -446,6 +446,7 @@ impl AuthorizationManager {
         let permission = match command_type {
             "set_threshold" => "set_threshold",
             "set_sensor_name" => "set_sensor_name",
+            "set_sensor_location" => "set_sensor_location",
             "set_alarm_pattern" => "set_alarm_pattern",
             "set_screen" => "set_screen",
             "flush_storage" => "flush_storage",
@@ -462,6 +463,9 @@ impl AuthorizationManager {
             "set_screen_brightness" => "set_screen_brightness",
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
+            "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
+            "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -492,6 +496,11 @@ impl AuthorizationManager {
                 let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Change sensor line {} name to \"{}\"", line, name)
+            }
+            "set_sensor_location" => {
+                let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                let location = params.get("location").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Change sensor line {} location to \"{}\"", line, location)
             }
             "restart_application" => "Reboot the device".to_string(),
             "set_interval" => {
@@ -534,6 +543,20 @@ impl AuthorizationManager {
                 let cfg_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Configure {} network to {}", iface, cfg_type)
             }
+            "set_lorawan_sensor_config" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Configure LoRaWAN sensor {} (name: \"{}\")", dev_eui, name)
+            }
+            "add_lorawan_sticker" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Add HARDWARIO STICKER {} (name: \"{}\")", dev_eui, name)
+            }
+            "remove_lorawan_sticker" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove HARDWARIO STICKER {}", dev_eui)
+            }
             _ => format!("Execute command: {}", command_type),
         }
     }
@@ -570,6 +593,18 @@ impl AuthorizationManager {
                     .to_string();
 
                 Ok(MqttCommand::SetSensorName { line, name })
+            }
+            "set_sensor_location" => {
+                let line = challenge.params.get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))? as u8;
+
+                let location = challenge.params.get("location")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing location".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::SetSensorLocation { line, location })
             }
             "restart_application" => {
                 let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());
@@ -716,6 +751,91 @@ impl AuthorizationManager {
                     dns_primary,
                     dns_secondary,
                 })
+            }
+            "set_lorawan_sensor_config" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let serial_number = challenge.params.get("serial_number")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let temp_critical_low = challenge.params.get("temp_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_warning_low = challenge.params.get("temp_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_warning_high = challenge.params.get("temp_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let temp_critical_high = challenge.params.get("temp_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_critical_low = challenge.params.get("humidity_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_warning_low = challenge.params.get("humidity_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_warning_high = challenge.params.get("humidity_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+                let humidity_critical_high = challenge.params.get("humidity_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
+
+                Ok(MqttCommand::SetLoRaWANSensorConfig {
+                    dev_eui,
+                    name,
+                    serial_number,
+                    temp_critical_low,
+                    temp_warning_low,
+                    temp_warning_high,
+                    temp_critical_high,
+                    humidity_critical_low,
+                    humidity_warning_low,
+                    humidity_warning_high,
+                    humidity_critical_high,
+                })
+            }
+            "add_lorawan_sticker" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
+                    .to_string();
+
+                let serial_number = challenge.params.get("serial_number")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing serial_number".to_string()))?
+                    .to_string();
+
+                let devaddr = challenge.params.get("devaddr")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr".to_string()))?
+                    .to_string();
+
+                let nwkskey = challenge.params.get("nwkskey")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey".to_string()))?
+                    .to_string();
+
+                let appskey = challenge.params.get("appskey")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing appskey".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::AddLoRaWANSticker {
+                    dev_eui,
+                    name,
+                    serial_number,
+                    devaddr,
+                    nwkskey,
+                    appskey,
+                })
+            }
+            "remove_lorawan_sticker" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",

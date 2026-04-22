@@ -17,6 +17,7 @@ pub mod authorization;
 pub mod config_applier;
 pub mod pairing;
 pub mod ble;
+pub mod lorawan;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};
@@ -31,3 +32,4 @@ pub use network::QrCodeGenerator;
 pub use storage::{StorageHandle, StorageThread};
 pub use mqtt::{MqttHandle, MqttMonitor};
 pub use pairing::{PairingMonitor, PairingHandle};
+pub use lorawan::{LoRaWANMonitor, LoRaWANHandle};
