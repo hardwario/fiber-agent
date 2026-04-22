@@ -457,86 +457,6 @@ pub struct SensorConfig {
     pub warmup_threshold: u8,
 }
 
-/// Temperature threshold configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TemperatureThresholds {
-    /// High temperature alarm threshold (Celsius)
-    pub high_alarm_celsius: f32,
-
-    /// Low temperature alarm threshold (Celsius)
-    pub low_alarm_celsius: f32,
-
-    /// Critical high temperature alarm (Celsius)
-    pub critical_high_celsius: f32,
-
-    /// Critical low temperature alarm (Celsius)
-    pub critical_low_celsius: f32,
-}
-
-/// Display configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisplayConfig {
-    /// Display update interval in milliseconds
-    pub update_interval_ms: u64,
-
-    /// Display refresh rate (updates per second)
-    pub refresh_rate_hz: u8,
-
-    /// Backlight control enabled
-    pub backlight_enabled: bool,
-
-    /// Rotation in degrees (0, 90, 180, 270)
-    pub rotation_degrees: u16,
-}
-
-/// User interface configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UiConfig {
-    /// Button debounce time in milliseconds
-    pub button_debounce_ms: u64,
-
-    /// Menu idle timeout in seconds (0 = no timeout)
-    pub menu_idle_timeout_sec: u64,
-
-    /// Buzzer configuration
-    pub buzzer: BuzzerConfig,
-}
-
-/// Buzzer feedback configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuzzerConfig {
-    /// Enable buzzer feedback
-    pub enabled: bool,
-
-    /// Beep duration in milliseconds
-    pub beep_duration_ms: u64,
-
-    /// Beep interval for alerts in milliseconds
-    pub alert_interval_ms: u64,
-}
-
-/// Data logging configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoggingConfig {
-    /// Enable data logging
-    pub enabled: bool,
-
-    /// Log file path
-    pub log_file: String,
-
-    /// Log interval in milliseconds
-    pub interval_ms: u64,
-
-    /// Maximum log file size in MB
-    pub max_file_size_mb: u64,
-
-    /// Number of historical log files to keep
-    pub max_backup_files: u32,
-
-    /// Log verbosity level
-    pub verbosity: String,
-}
-
 /// Serial communication configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerialConfig {
@@ -545,12 +465,6 @@ pub struct SerialConfig {
 
     /// Baud rate
     pub baud_rate: u32,
-
-    /// Serial port timeout in milliseconds
-    pub timeout_ms: u64,
-
-    /// Maximum retries for failed commands
-    pub max_retries: u8,
 }
 
 /// Accelerometer motion detection configuration
@@ -610,35 +524,11 @@ pub struct SystemConfig {
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// Enable storage system
-    pub enabled: bool,
-
     /// Path to SQLite database file
     pub db_path: String,
 
     /// Maximum database size in gigabytes
     pub max_size_gb: i32,
-
-    /// Minimum data retention in days
-    pub retention_days: i32,
-
-    /// Cleanup threshold percentage (e.g., 90 = cleanup at 90% capacity)
-    pub cleanup_threshold_percent: f32,
-
-    /// Auto-flush interval in milliseconds
-    pub flush_interval_ms: u64,
-
-    /// Auto-flush threshold (number of messages)
-    pub flush_threshold_messages: usize,
-
-    /// Enable backup functionality
-    pub backup_enabled: bool,
-
-    /// Path for database backups
-    pub backup_path: String,
-
-    /// Enable audit trail logging
-    pub audit_enabled: bool,
 
     /// Path to HMAC secret key file for sensor reading integrity (EU MDR)
     #[serde(default = "default_hmac_secret_path")]
@@ -936,15 +826,6 @@ pub struct Config {
     /// Temperature sensor settings
     pub sensors: SensorConfig,
 
-    /// Display settings
-    pub display: DisplayConfig,
-
-    /// User interface settings
-    pub ui: UiConfig,
-
-    /// Data logging settings
-    pub logging: LoggingConfig,
-
     /// Serial communication settings
     pub serial: SerialConfig,
 
@@ -1014,34 +895,9 @@ impl Config {
                 failure_threshold: 3,
                 warmup_threshold: 3,
             },
-            display: DisplayConfig {
-                update_interval_ms: 1000,
-                refresh_rate_hz: 1,
-                backlight_enabled: true,
-                rotation_degrees: 180,
-            },
-            ui: UiConfig {
-                button_debounce_ms: 50,
-                menu_idle_timeout_sec: 30,
-                buzzer: BuzzerConfig {
-                    enabled: true,
-                    beep_duration_ms: 100,
-                    alert_interval_ms: 500,
-                },
-            },
-            logging: LoggingConfig {
-                enabled: true,
-                log_file: "data/sensor_log.csv".to_string(),
-                interval_ms: 60000,
-                max_file_size_mb: 10,
-                max_backup_files: 10,
-                verbosity: "info".to_string(),
-            },
             serial: SerialConfig {
                 port: "/dev/ttyAMA4".to_string(),
                 baud_rate: 115200,
-                timeout_ms: 1000,
-                max_retries: 3,
             },
             accelerometer: AccelerometerConfig {
                 enabled: true,
@@ -1052,16 +908,8 @@ impl Config {
                 logging_enabled: true,
             },
             storage: StorageConfig {
-                enabled: true,
                 db_path: "/data/fiber_medical.db".to_string(),
                 max_size_gb: 5,
-                retention_days: 1095, // 3 years
-                cleanup_threshold_percent: 90.0,
-                flush_interval_ms: 100,
-                flush_threshold_messages: 1000,
-                backup_enabled: true,
-                backup_path: "/data/backups/".to_string(),
-                audit_enabled: true,
                 hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {
@@ -1105,6 +953,6 @@ mod tests {
     fn test_serial_config() {
         let config = Config::default_config();
         assert_eq!(config.serial.port, "/dev/ttyAMA4");
-        assert_eq!(config.serial.baud_rate, 115200);
+        assert_eq!(config.serial.baud_rate, 115200u32);
     }
 }
