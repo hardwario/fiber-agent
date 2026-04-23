@@ -1,204 +1,184 @@
-### FIBER MEDICAL PROJECT
+# FIBER Medical Thermometer
 
-Target : Raspberry CM4
+Embedded Rust application for medical-grade temperature monitoring on Raspberry Pi Compute Module 4.
 
-Peripherals: /drivers
-Libraries: /libs
+## Overview
 
-We'll create an app to medical thermo sensors reading
-it has a display, buzzer, buttons, one wire sensors connected
-- Display: /drivers/display.rs
-- Buzzer: /drivers/buzzer.rs
-- STM32: /drivers/stm.rs
-- Buttons: /drivers/buttons.rs
-- Accelerometer: /drivers/lis2dh12.rs
-- W1 sensors: in target (CM4) on /sys/bus/w1/devices/:
-  - each w1 line has in stm32 two related LEDs, green and red, so w1_bus_master_1 should be related in stm32.rs with LED1G and LED1R
-- Power LEDS: in stm32.rs PWRLEDY and PWRLEDG
-- Battery and voltage in: in stm32.rs we have analog VIN and VBAT
+FIBER monitors up to 8 DS18B20 temperature sensors with a 4-level alarm system, stores readings in an encrypted database with HMAC integrity, and communicates via MQTT with EU MDR 2017/745 compliance. It also bridges LoRaWAN wireless sensors (HARDWARIO STICKER) into the same monitoring pipeline.
 
-The main idea is:
-3) Discover sensors connected (we have 8 lines of W1 sensors DS18B20)
-2) Thread for reading them (the time to trigger the reading should be defined in a fiber.config.yaml) (in this moment just read, not saving)
-1) develop in /libs alarms to:
-    - power (VIN > 12000mV -> LEDPWRG ON && LEDPWRY OFF)
-        (VIN < 11000mV PWRLEDY ON on PWRLEDG off)
-        (VBAT < 3100mV PWRLEDY blinking)
-example:
+## Hardware
+
+| Component | Detail |
+|-----------|--------|
+| **Target** | Raspberry Pi CM4 |
+| **Co-processor** | STM32 via UART — LED control, ADC (Vbat, VIN) |
+| **Sensors** | 8x DS18B20 (1-Wire via DS2482 I2C bridge) |
+| **Display** | ST7920 128x64 LCD (SPI) |
+| **Buttons** | UP (GPIO23), DOWN (GPIO25), ENTER (GPIO24) |
+| **Accelerometer** | LIS2DH12 (I2C, 0x19) — motion/tamper detection |
+| **Buzzer** | GPIO17, PWM volume control (0-100%) |
+| **Connectivity** | MQTT (TLS), BLE, LoRaWAN (ChirpStack) |
+
+## Implemented Features
+
+### Temperature Monitoring
+- 8 independent 1-Wire sensor lines with per-sensor configurable thresholds
+- 4-level alarm states: Normal, Warning, Critical, Disconnected
+- Failure debouncing and warmup filtering to prevent false alarms
+- Periodic aggregation (min/max/mean) with crash recovery via JSON persistence
+
+### Alarm System
+- Per-sensor LED indication: green (normal), yellow (warning), red (critical), blinking red (disconnected)
+- Buzzer patterns with priority management (critical > disconnected > power alerts)
+- Configurable alarm thresholds and LED/buzzer patterns per alarm level
+- MQTT alarm event publishing (QoS 2)
+
+### Power Management
+- Battery monitoring via STM32 ADC (Vbat: 3100-3400mV range)
+- AC power detection via VIN threshold (>12V = AC, <12V = battery)
+- Power LED: green (AC), yellow (battery), blinking yellow (low battery)
+- Buzzer alerts on AC disconnect, battery mode reminder, critical battery
+
+### Display & UI
+- **Sensor Overview** — 4 sensors per page, 2 pages, with alarm indicators
+- **Sensor Detail** — thresholds, current temp, alarm state, location
+- **LoRaWAN Sensors** — remote sensor temp, humidity, battery, signal
+- **QR Code** — BLE pairing info (`ble://{hostname}/{mac}/{pin}`)
+- **System Info** — version, hostname, network, battery, storage, uptime (paginated)
+- **Pairing Mode** — 6-character code display
+- Button navigation: UP/DOWN scroll, ENTER select, UP+DOWN 3s hold enters pairing
+
+### MQTT Communication
+- TLS with CA certificate validation (insecure_skip_verify blocked in production)
+- Per-topic QoS (0 for telemetry, 1 for power, 2 for alarms)
+- Last Will and Testament for offline detection
+- Exponential backoff reconnection (1s to 60s)
+- Rate-limited command subscription with audit logging
+- Publishes: sensors, power, network status, system info, alarms, aggregations
+
+### Secure Command Protocol (EU MDR)
+- Ed25519 signature verification on all incoming commands
+- Challenge-response protocol: request → challenge → confirm → apply
+- Nonce-based replay attack prevention
+- Authorized signers registry with per-signer permissions and expiration
+- Audit trail of every command attempt (success and failure)
+
+### Device Pairing
+- Initiated by 3-second button hold (UP+DOWN)
+- 6-character code shown on display, entered in viewer app
+- AES-256-GCM encrypted key exchange using pairing code as seed
+- Device CA signs admin Ed25519 certificate for the paired user
+
+### Storage
+- SQLCipher encrypted SQLite database (WAL mode)
+- HMAC-SHA256 integrity on every sensor reading
+- Immutable audit trail of all operations
+- Auto-generated HMAC key on first boot
+- Configurable max size (default 5GB) with FIFO auto-purge
+- Non-blocking writes via background thread with 100ms flush interval
+
+### LoRaWAN Gateway Bridge
+- Auto-detects ChirpStack gateway hardware
+- Subscribes to ChirpStack uplink events on local Mosquitto
+- Parses HARDWARIO STICKER payloads: temp, humidity, voltage, illuminance, motion
+- 4-level alarm system per wireless sensor (same as wired)
+- Sensor timeout tracking (default 1 hour)
+- Bridges data into FIBER MQTT topic hierarchy
+
+### Additional
+- **Accelerometer**: motion/tamper detection with configurable threshold and debounce
+- **BLE**: advertising control via system service, PIN-based pairing
+- **Network**: WiFi/Ethernet status detection, signal strength, IP reporting
+- **Buzzer volume**: software PWM, MQTT-adjustable
+- **Screen brightness**: PWM backlight control, MQTT-adjustable
+- **Config applier**: atomic file writes with backup, validation, and rollback
+
+## Architecture
+
+The application spawns dedicated threads for each subsystem:
+
+| Thread | Interval | Role |
+|--------|----------|------|
+| Sensor Monitor | 1s | Read DS18B20 sensors, evaluate alarms |
+| Power Monitor | 1s | Read Vbat/VIN via STM32 ADC |
+| LED Monitor | 50ms | Drive per-sensor and power LEDs |
+| Display Monitor | 250ms | Render LCD screens |
+| Button Monitor | event | Handle physical button input |
+| Buzzer Controller | event | Priority-managed audio patterns |
+| Storage Thread | 100ms flush | Non-blocking SQLCipher writes |
+| MQTT Monitor | event | Publish telemetry, process commands |
+| Pairing Monitor | event | Handle secure pairing protocol |
+| LoRaWAN Monitor | 30s | Bridge ChirpStack to FIBER MQTT |
+| Accelerometer | 100ms | Motion state machine |
+
+All threads communicate via `Arc<Mutex<T>>` shared state and crossbeam channels.
+
+## Building
+
+### Prerequisites
+
+- Rust toolchain (see [`rust-toolchain.toml`](rust-toolchain.toml))
+- Cross-compilation linker: `aarch64-linux-gnu-gcc`
+
+### Build for target
+
 ```bash
-// src/power.rs
-//
-// Battery/Power management module for medical thermometer.
-// VBAT: 3100mV = 0%, 3400mV = 100%
-// VIN: >12000mV = AC Power, <12000mV = Battery mode
-
-use std::sync::{Arc, Mutex};
-
-/// Power supply information
-#[derive(Debug, Clone, Copy)]
-pub struct PowerStatus {
-    /// Battery voltage in millivolts
-    pub vbat_mv: u16,
-    /// Calculated battery percentage (0-100)
-    pub battery_percent: u8,
-    /// Main input voltage (VIN) in millivolts
-    pub vin_mv: u16,
-    /// Whether on AC power (VIN > 12000mV)
-    pub on_ac_power: bool,
-}
-
-impl PowerStatus {
-    /// Create power status from VBAT and VIN voltages in millivolts
-    /// Maps: 3100mV → 0%, 3400mV → 100% (VBAT)
-    /// VIN > 12000mV = AC power, < 12000mV = Battery mode
-    pub fn new(vbat_mv: u16, vin_mv: u16) -> Self {
-        let percent = Self::calculate_battery_percent(vbat_mv);
-        let on_ac_power = vin_mv > 12000;
-        Self {
-            vbat_mv,
-            battery_percent: percent,
-            vin_mv,
-            on_ac_power,
-        }
-    }
-
-    /// Create power status from VBAT only (VIN assumed 0)
-    pub fn from_vbat(vbat_mv: u16) -> Self {
-        Self::new(vbat_mv, 0)
-    }
-
-    /// Create power status from VIN only (VBAT assumed 0)
-    pub fn from_vin(vin_mv: u16) -> Self {
-        Self::new(0, vin_mv)
-    }
-
-    /// Calculate battery percentage from voltage
-    /// Linear mapping: 3100mV = 0%, 3400mV = 100%
-    fn calculate_battery_percent(vbat_mv: u16) -> u8 {
-        const MIN_VBAT: u16 = 3100; // 0%
-        const MAX_VBAT: u16 = 3400; // 100%
-
-        if vbat_mv <= MIN_VBAT {
-            0
-        } else if vbat_mv >= MAX_VBAT {
-            100
-        } else {
-            let range = (MAX_VBAT - MIN_VBAT) as u16;
-            let used = (vbat_mv - MIN_VBAT) as u16;
-            ((used * 100) / range) as u8
-        }
-    }
-
-    /// Check if battery is low (< 20%)
-    pub fn is_low(&self) -> bool {
-        self.battery_percent < 20
-    }
-
-    /// Check if battery is critical (< 5%)
-    pub fn is_critical(&self) -> bool {
-        self.battery_percent < 5
-    }
-
-    /// Get LED control state for power indicator (PWRLEDG / PWRLEDY)
-    /// Returns (green_on, yellow_on)
-    /// - AC Power: GREEN on, YELLOW off
-    /// - Battery OK: GREEN off, YELLOW on
-    /// - Battery Low: GREEN off, YELLOW blinking (controlled by caller)
-    pub fn get_pwr_led_state(&self) -> (bool, bool) {
-        if self.on_ac_power {
-            // AC Power connected: GREEN on, YELLOW off
-            (true, false)
-        } else if self.is_low() {
-            // Battery low: YELLOW should blink (return as on, caller will blink)
-            (false, true)
-        } else {
-            // Battery mode, not low: GREEN off, YELLOW on
-            (false, true)
-        }
-    }
-
-    /// Check if YELLOW LED should blink (low battery on battery power)
-    pub fn should_yellow_blink(&self) -> bool {
-        !self.on_ac_power && self.is_low()
-    }
-}
-
-impl Default for PowerStatus {
-    fn default() -> Self {
-        // Default to full battery (3400mV) and AC power (15000mV)
-        Self::new(3400, 15000)
-    }
-}
-
-pub type SharedPowerStatus = Arc<Mutex<PowerStatus>>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_battery_calculation_bounds() {
-        let min = PowerStatus::from_vbat(3100);
-        assert_eq!(min.battery_percent, 0);
-
-        let max = PowerStatus::from_vbat(3400);
-        assert_eq!(max.battery_percent, 100);
-
-        let over = PowerStatus::from_vbat(3500);
-        assert_eq!(over.battery_percent, 100);
-
-        let under = PowerStatus::from_vbat(3000);
-        assert_eq!(under.battery_percent, 0);
-    }
-
-    #[test]
-    fn test_battery_calculation_midpoint() {
-        let mid = PowerStatus::from_vbat(3250);
-        assert_eq!(mid.battery_percent, 50);
-    }
-
-    #[test]
-    fn test_battery_low_critical() {
-        let low = PowerStatus::from_vbat(3150); // ~16%
-        assert!(low.is_low());
-
-        let critical = PowerStatus::from_vbat(3110); // ~3%
-        assert!(critical.is_critical());
-    }
-
-    #[test]
-    fn test_pwr_led_ac_power() {
-        // AC Power (VIN > 12000mV): GREEN on, YELLOW off
-        let ac = PowerStatus::new(3400, 15000);
-        let (green, yellow) = ac.get_pwr_led_state();
-        assert!(green && !yellow, "AC power should have GREEN on, YELLOW off");
-        assert!(!ac.should_yellow_blink());
-    }
-
-    #[test]
-    fn test_pwr_led_battery_ok() {
-        // Battery mode, not low: GREEN off, YELLOW on
-        let battery_ok = PowerStatus::new(3300, 5000);
-        let (green, yellow) = battery_ok.get_pwr_led_state();
-        assert!(!green && yellow, "Battery OK should have GREEN off, YELLOW on");
-        assert!(!battery_ok.should_yellow_blink());
-    }
-
-    #[test]
-    fn test_pwr_led_battery_low() {
-        // Battery low: YELLOW should blink
-        let battery_low = PowerStatus::new(3120, 5000); // ~7%
-        let (green, yellow) = battery_low.get_pwr_led_state();
-        assert!(!green && yellow, "Battery low should have GREEN off, YELLOW on (blinking)");
-        assert!(battery_low.should_yellow_blink());
-    }
-}
-
+cargo build --release --target aarch64-unknown-linux-gnu
 ```
 
-echo ds2482 0x18 | sudo tee /sys/bus/i2c/devices/i2c-10/new_device
+### Dev-platform build
 
- cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform
+Disables cryptographic verification. Requires `/data/fiber/config/DEV_MODE_ENABLED` on the device.
 
- sed -i 's/bundled-sqlcipher/bundled/' Cargo.toml                                                                                                                                                              
-  cargo build --release --target aarch64-unknown-linux-gnu   
+```bash
+cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform
+```
+
+## Configuration
+
+Runtime configuration is loaded from `/data/fiber/config/fiber.config.yaml`. See [`fiber.config.yaml`](fiber.config.yaml) for defaults. Sensor thresholds are in [`fiber.sensors.config.yaml`](fiber.sensors.config.yaml).
+
+| File | Purpose |
+|------|---------|
+| `fiber.config.yaml` | Main config: power, MQTT, serial, storage, display, buzzer |
+| `fiber.sensors.config.yaml` | Per-sensor thresholds, alarm patterns, names, locations |
+| `authorized_signers.yaml` | EU MDR authorized public keys for remote commands |
+
+## EU MDR 2017/745 Compliance
+
+Classification: **Class IIa** | Software safety: **IEC 62304 Class B**
+
+| Area | Status | What's implemented |
+|------|--------|--------------------|
+| Data integrity | **Complete** | HMAC-SHA256 on every sensor reading, SHA-256 hash-chain on audit logs |
+| Encryption at rest | **Complete** | SQLCipher (AES-256) on all databases |
+| Encryption in transit | **Complete** | TLS on MQTT (8883) and HTTPS (443) |
+| Command authorization | **Complete** | Ed25519 signatures, challenge-response protocol, nonce replay prevention |
+| Access control | **Complete** | JWT auth, 8 RBAC roles, bcrypt passwords, rate limiting, session IP binding |
+| Audit trail | **Complete** | Tamper-evident hash-chain on firmware and viewer, API access logs, frontend action audit |
+| Configuration tracking | **Complete** | All signed changes stored with signer ID, signature, nonce, verification status |
+| Privilege separation | **Complete** | Dedicated `fiber` user, systemd hardening (NoNewPrivileges, ProtectSystem=strict) |
+| Firewall | **Complete** | iptables default-deny, only SSH/MQTT-TLS/HTTPS/mDNS/DHCP allowed |
+| OTA updates | **Complete** | RAUC A/B partitions, signed bundles, auto-rollback on failed boot |
+| Data retention | **Complete** | 3-year retention with FIFO auto-purge at 90% capacity |
+| GDPR (code-level) | **95%** | Consent, right to erasure, processing records. Missing: DPIA document |
+
+### Cryptographic algorithms
+
+| Algorithm | Usage |
+|-----------|-------|
+| Ed25519 | Command signing, certificate chain |
+| AES-256-GCM | Pairing key encryption |
+| HMAC-SHA256 | Sensor reading integrity |
+| SHA-256 | Audit hash-chain |
+| SQLCipher (AES-256) | Database encryption at rest |
+| PBKDF2 (480k iterations) | Key derivation for pairing |
+| bcrypt | Password hashing |
+
+### Remaining gaps (documentation, not code)
+
+ISO 14971 risk management, IEC 62304 software development plan, ISO 13485 QMS, clinical evaluation report, technical file, instructions for use (IFU), IEC 62366 usability evaluation, GDPR DPIA.
+
+## License
+
+See [LICENSE](LICENSE) for details.

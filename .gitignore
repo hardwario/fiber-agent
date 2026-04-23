@@ -1,7 +1,27 @@
-*.md
-!README.md
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Tool artifacts
 .claude/
-docs/*
-!docs/superpowers/
-!docs/superpowers/**
-target/
+.playwright-mcp/
+docs/
+
+# Temporary
+*.bak
+*.tmp
