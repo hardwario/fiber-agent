@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -318,6 +318,36 @@ fn main() -> io::Result<()> {
 
     // Store MQTT monitor to keep it alive (after pairing handle is set)
     let _mqtt_monitor = mqtt_monitor;
+
+    // Create and spawn BLE monitor if enabled.
+    // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
+    let (_ble_monitor, ble_handle) = if config.ble.enabled {
+        eprintln!("[main] Starting BLE monitor (in-app GATT server)...");
+        match BleMonitor::new(config.ble.clone()) {
+            Ok(monitor) => {
+                eprintln!("[main] BLE monitor started");
+                let h = monitor.handle();
+                (Some(monitor), Some(h))
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: BLE monitor failed to start: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        eprintln!("[main] BLE in-app monitor disabled (config.ble.enabled = false)");
+        (None, None)
+    };
+
+    // BLE event router — bridges BleEvents to display_state and pairing_handle.
+    let _ble_router = ble_handle.as_ref().map(|h| {
+        eprintln!("[main] Spawning BLE event router");
+        spawn_ble_event_router(
+            h.clone(),
+            _display_monitor.display_state.clone(),
+            pairing_handle.clone(),
+        )
+    });
 
     // Update button monitor with pairing handle
     eprintln!("[main] Restarting button monitor with pairing support...");

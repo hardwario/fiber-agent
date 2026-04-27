@@ -17,3 +17,4 @@ pub use libs::network::QrCodeGenerator;
 pub use libs::mqtt::{MqttMonitor, MqttHandle};
 pub use libs::pairing::{PairingMonitor, PairingHandle};
 pub use libs::lorawan::{LoRaWANMonitor, LoRaWANHandle};
+pub use libs::ble::{BleMonitor, BleHandle, BleEvent, BleConfig, spawn_ble_event_router};
