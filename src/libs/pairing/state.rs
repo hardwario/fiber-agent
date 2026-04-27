@@ -41,6 +41,10 @@ impl Default for PairingState {
 pub struct PairingStateMachine {
     /// Current state
     state: PairingState,
+    /// True while a BLE client is connected. The button monitor blocks the
+    /// MQTT-pairing key combo while this is set so the LCD doesn't flicker
+    /// between two pairing flows.
+    ble_active: bool,
 }
 
 impl PairingStateMachine {
@@ -140,6 +144,20 @@ impl PairingStateMachine {
             eprintln!("[PairingState] Pairing cancelled");
             self.state = PairingState::Inactive;
         }
+    }
+
+    /// True when a BLE client is currently connected. The button handler
+    /// uses this to block the MQTT-pairing combo so two pairing flows do
+    /// not race for the LCD.
+    pub fn ble_active(&self) -> bool {
+        self.ble_active
+    }
+
+    /// Set or clear the ble_active flag. Called by the BLE event router
+    /// on ClientConnected/ClientDisconnected.
+    pub fn set_ble_active(&mut self, active: bool) {
+        self.ble_active = active;
+        eprintln!("[PairingState] ble_active = {}", active);
     }
 
     /// Check expiration and auto-cancel if expired
@@ -254,5 +272,30 @@ mod tests {
     fn test_no_remaining_when_inactive() {
         let sm = PairingStateMachine::new();
         assert_eq!(sm.remaining_secs(), None);
+    }
+
+    #[test]
+    fn ble_active_defaults_false() {
+        let sm = PairingStateMachine::new();
+        assert!(!sm.ble_active());
+    }
+
+    #[test]
+    fn ble_active_can_be_toggled() {
+        let mut sm = PairingStateMachine::new();
+        sm.set_ble_active(true);
+        assert!(sm.ble_active());
+        sm.set_ble_active(false);
+        assert!(!sm.ble_active());
+    }
+
+    #[test]
+    fn ble_active_independent_of_pairing_state() {
+        let mut sm = PairingStateMachine::new();
+        sm.set_ble_active(true);
+        sm.start_pairing("CODE12".to_string());
+        // Both flags coexist; no cross-pollination.
+        assert!(sm.ble_active());
+        assert!(sm.is_waiting());
     }
 }
