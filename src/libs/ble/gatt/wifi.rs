@@ -68,6 +68,166 @@ pub fn parse_ip_addr_show(stdout: &str) -> String {
     String::new()
 }
 
+use std::process::Command;
+use regex::Regex;
+
+/// Scan for available WiFi networks using nmcli, falling back to iwlist.
+pub(crate) fn scan_wifi() -> Vec<WiFiNetwork> {
+    let mut networks = Vec::new();
+
+    // Try nmcli first
+    if let Ok(output) = Command::new("nmcli")
+        .args(["-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        networks = parse_nmcli_wifi_list(&stdout);
+        return networks;
+    }
+
+    // Fallback to iwlist
+    if let Ok(output) = Command::new("iwlist").args(["wlan0", "scan"]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut current = WiFiNetwork::default();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.contains("ESSID:") {
+                if let Some(ssid) = line.split("ESSID:").nth(1) {
+                    let ssid = ssid.trim_matches('"');
+                    if !ssid.is_empty() {
+                        current.ssid = ssid.to_string();
+                    }
+                }
+            } else if line.contains("Quality=") {
+                let re = Regex::new(r"Quality=(\d+)/(\d+)").unwrap();
+                if let Some(caps) = re.captures(line) {
+                    let quality: f32 = caps[1].parse().unwrap_or(0.0);
+                    let max: f32 = caps[2].parse().unwrap_or(1.0);
+                    current.signal = ((quality / max) * 100.0) as i32;
+                }
+            } else if line.contains("Encryption key:") {
+                current.security = if line.to_lowercase().contains("off") {
+                    "Open".to_string()
+                } else {
+                    "Secured".to_string()
+                };
+
+                if !current.ssid.is_empty() {
+                    networks.push(current.clone());
+                    current = WiFiNetwork::default();
+                }
+            }
+        }
+    }
+
+    networks
+}
+
+/// Connect to a WiFi network using nmcli.
+pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
+    let result = if password.is_empty() {
+        Command::new("nmcli")
+            .args(["dev", "wifi", "connect", ssid])
+            .output()
+    } else {
+        Command::new("nmcli")
+            .args(["dev", "wifi", "connect", ssid, "password", password])
+            .output()
+    };
+
+    match result {
+        Ok(output) if output.status.success() => {
+            let ip = get_ip_address();
+            WiFiStatusResponse {
+                connected: true,
+                ssid: ssid.to_string(),
+                ip_address: ip,
+                error: String::new(),
+            }
+        }
+        Ok(output) => WiFiStatusResponse {
+            connected: false,
+            ssid: ssid.to_string(),
+            ip_address: String::new(),
+            error: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(e) => WiFiStatusResponse {
+            connected: false,
+            ssid: ssid.to_string(),
+            ip_address: String::new(),
+            error: e.to_string(),
+        },
+    }
+}
+
+/// Disconnect from WiFi network.
+pub(crate) fn disconnect_wifi() -> WiFiStatusResponse {
+    match Command::new("nmcli")
+        .args(["dev", "disconnect", "wlan0"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            println!("[WiFi] Disconnected successfully");
+            WiFiStatusResponse {
+                connected: false,
+                ssid: String::new(),
+                ip_address: String::new(),
+                error: String::new(),
+            }
+        }
+        Ok(output) => {
+            let current = get_wifi_status();
+            WiFiStatusResponse {
+                connected: current.connected,
+                ssid: current.ssid,
+                ip_address: String::new(),
+                error: String::from_utf8_lossy(&output.stderr).to_string(),
+            }
+        }
+        Err(e) => WiFiStatusResponse {
+            connected: true,
+            ssid: String::new(),
+            ip_address: String::new(),
+            error: e.to_string(),
+        },
+    }
+}
+
+/// Get current WiFi status.
+pub(crate) fn get_wifi_status() -> WiFiStatusResponse {
+    if let Ok(output) = Command::new("nmcli")
+        .args(["-t", "-f", "DEVICE,STATE,CONNECTION", "dev", "status"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some((_device, ssid)) = parse_nmcli_dev_status(&stdout) {
+            return WiFiStatusResponse {
+                connected: true,
+                ssid,
+                ip_address: get_ip_address(),
+                error: String::new(),
+            };
+        }
+    }
+
+    WiFiStatusResponse {
+        connected: false,
+        ssid: String::new(),
+        ip_address: String::new(),
+        error: String::new(),
+    }
+}
+
+/// Get IP address of wlan0.
+pub(crate) fn get_ip_address() -> String {
+    if let Ok(output) = Command::new("ip").args(["addr", "show", "wlan0"]).output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return parse_ip_addr_show(&stdout);
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
