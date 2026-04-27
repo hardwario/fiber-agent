@@ -21,6 +21,8 @@ Thumbs.db
 .claude/
 .playwright-mcp/
 docs/
+!docs/superpowers/
+!docs/superpowers/**
 
 # Temporary
 *.bak
