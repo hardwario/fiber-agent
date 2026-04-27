@@ -91,3 +91,9 @@ mqtt:
     payload: '{"status":"offline","reason":"unexpected_disconnect"}'
     qos: 1
     retain: true
+ble:
+  enabled: false               # Phase 1: false. Flip to true after Phase 2 hardware validation.
+  pin_file: /data/ble/pin.txt
+  default_pin: "123456"
+  enable_terminal: true        # Set false to omit FB05/FB06 (Terminal-over-BLE) for stricter deployments.
+  advertising_name: null       # null → use device hostname
