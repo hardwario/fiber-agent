@@ -23,6 +23,7 @@ Thumbs.db
 docs/
 !docs/superpowers/
 !docs/superpowers/**
+!docs/BLE_HARDWARE_TESTS.md
 
 # Temporary
 *.bak
