@@ -46,6 +46,8 @@ pub enum PairingCommand {
     CancelPairing,
     /// Process incoming pairing request
     ProcessRequest(PairingRequest),
+    /// Toggle the ble_active flag (notification-only, no response).
+    SetBleActive(bool),
     /// Shutdown the monitor
     Shutdown,
 }
@@ -80,6 +82,11 @@ impl PairingHandle {
     /// Process an incoming pairing request
     pub fn process_request(&self, request: PairingRequest) {
         let _ = self.command_tx.send(PairingCommand::ProcessRequest(request));
+    }
+
+    /// Notify the pairing monitor that a BLE client is or is no longer connected.
+    pub fn set_ble_active(&self, active: bool) {
+        let _ = self.command_tx.send(PairingCommand::SetBleActive(active));
     }
 
     /// Try to receive a pairing result (non-blocking)
@@ -208,6 +215,10 @@ impl PairingMonitor {
                 }
                 Ok(PairingCommand::ProcessRequest(request)) => {
                     Self::handle_process_request(&state, &display_state, &ca_key, &result_tx, request);
+                }
+                Ok(PairingCommand::SetBleActive(active)) => {
+                    let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
+                    state_lock.set_ble_active(active);
                 }
                 Ok(PairingCommand::Shutdown) => {
                     eprintln!("[PairingMonitor] Shutdown command received");
