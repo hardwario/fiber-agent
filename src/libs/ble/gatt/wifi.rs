@@ -125,7 +125,27 @@ pub(crate) fn scan_wifi() -> Vec<WiFiNetwork> {
 }
 
 /// Connect to a WiFi network using nmcli.
+///
+/// Deletes any pre-existing connection profile with the same SSID name first.
+/// nmcli reuses profile names across connect attempts; a stale profile with
+/// outdated credentials (or different security settings) causes
+/// `Error: Connection '<ssid>' is not available on device wlan0` even when
+/// the password supplied here is correct. Treating each connect as a fresh
+/// profile avoids that whole class of state mismatches.
 pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
+    eprintln!("[WiFi] Connect requested: ssid='{}'", ssid);
+
+    // Pre-cleanup: delete stale profile for this SSID if one exists.
+    // Ignore failure (most common cause is "no such connection" — fine).
+    if let Ok(output) = Command::new("nmcli")
+        .args(["connection", "delete", ssid])
+        .output()
+    {
+        if output.status.success() {
+            eprintln!("[WiFi] Cleaned up stale profile '{}'", ssid);
+        }
+    }
+
     let result = if password.is_empty() {
         Command::new("nmcli")
             .args(["dev", "wifi", "connect", ssid])
@@ -139,6 +159,7 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
     match result {
         Ok(output) if output.status.success() => {
             let ip = get_ip_address();
+            eprintln!("[WiFi] Connected to '{}' (ip={})", ssid, ip);
             WiFiStatusResponse {
                 connected: true,
                 ssid: ssid.to_string(),
@@ -146,29 +167,77 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
                 error: String::new(),
             }
         }
-        Ok(output) => WiFiStatusResponse {
-            connected: false,
-            ssid: ssid.to_string(),
-            ip_address: String::new(),
-            error: String::from_utf8_lossy(&output.stderr).to_string(),
-        },
-        Err(e) => WiFiStatusResponse {
-            connected: false,
-            ssid: ssid.to_string(),
-            ip_address: String::new(),
-            error: e.to_string(),
-        },
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            eprintln!("[WiFi] Connect to '{}' FAILED: {}", ssid, stderr.trim());
+            WiFiStatusResponse {
+                connected: false,
+                ssid: ssid.to_string(),
+                ip_address: String::new(),
+                error: stderr,
+            }
+        }
+        Err(e) => {
+            eprintln!("[WiFi] Connect to '{}' command spawn failed: {}", ssid, e);
+            WiFiStatusResponse {
+                connected: false,
+                ssid: ssid.to_string(),
+                ip_address: String::new(),
+                error: e.to_string(),
+            }
+        }
     }
 }
 
-/// Disconnect from WiFi network.
-pub(crate) fn disconnect_wifi() -> WiFiStatusResponse {
-    match Command::new("nmcli")
-        .args(["dev", "disconnect", "wlan0"])
+/// Find the active NetworkManager connection profile bound to wlan0, if any.
+fn active_connection_on_wlan0() -> Option<String> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
         .output()
-    {
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 2 && parts[1] == "wlan0" && !parts[0].is_empty() {
+            return Some(parts[0].to_string());
+        }
+    }
+    None
+}
+
+/// Disconnect from WiFi network.
+///
+/// Also deletes the active connection profile so NetworkManager does not
+/// auto-reconnect on the next radio event. Without this, an explicit
+/// disconnect followed by a connect to a different SSID often loses the
+/// race against NM's autoconnect of the previous profile.
+pub(crate) fn disconnect_wifi() -> WiFiStatusResponse {
+    let active = active_connection_on_wlan0();
+    eprintln!("[WiFi] Disconnect requested (active profile: {:?})", active);
+
+    let disconnect_result = Command::new("nmcli")
+        .args(["dev", "disconnect", "wlan0"])
+        .output();
+
+    // Delete the active profile so NM doesn't auto-reconnect.
+    if let Some(ref name) = active {
+        match Command::new("nmcli")
+            .args(["connection", "delete", name])
+            .output()
+        {
+            Ok(o) if o.status.success() => eprintln!("[WiFi] Deleted profile '{}'", name),
+            Ok(o) => eprintln!(
+                "[WiFi] Profile delete '{}' stderr: {}",
+                name,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => eprintln!("[WiFi] Profile delete '{}' spawn error: {}", name, e),
+        }
+    }
+
+    match disconnect_result {
         Ok(output) if output.status.success() => {
-            println!("[WiFi] Disconnected successfully");
+            eprintln!("[WiFi] Disconnected successfully");
             WiFiStatusResponse {
                 connected: false,
                 ssid: String::new(),
@@ -177,20 +246,25 @@ pub(crate) fn disconnect_wifi() -> WiFiStatusResponse {
             }
         }
         Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            eprintln!("[WiFi] Disconnect FAILED: {}", stderr.trim());
             let current = get_wifi_status();
             WiFiStatusResponse {
                 connected: current.connected,
                 ssid: current.ssid,
                 ip_address: String::new(),
-                error: String::from_utf8_lossy(&output.stderr).to_string(),
+                error: stderr,
             }
         }
-        Err(e) => WiFiStatusResponse {
-            connected: true,
-            ssid: String::new(),
-            ip_address: String::new(),
-            error: e.to_string(),
-        },
+        Err(e) => {
+            eprintln!("[WiFi] Disconnect command spawn failed: {}", e);
+            WiFiStatusResponse {
+                connected: true,
+                ssid: String::new(),
+                ip_address: String::new(),
+                error: e.to_string(),
+            }
+        }
     }
 }
 
