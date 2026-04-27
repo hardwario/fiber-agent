@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
-use crate::libs::pairing::PairingHandle;
+use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
 use crate::libs::buzzer::BuzzerPriorityManager;
 use super::SharedDisplayStateHandle;
 
@@ -50,12 +50,13 @@ impl ButtonMonitor {
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
+        pairing_state: Option<SharedPairingStateHandle>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority);
+            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority, pairing_state);
         });
 
         Ok(Self {
@@ -70,6 +71,7 @@ impl ButtonMonitor {
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
+        pairing_state: Option<SharedPairingStateHandle>,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -489,8 +491,19 @@ impl ButtonMonitor {
             // Check countdown completion for UP button hold (pairing)
             if state == ButtonMonitorState::UpHoldActive {
                 if up_hold_start.elapsed() >= COUNTDOWN_DURATION {
-                    // Trigger pairing mode if handle available
-                    if let Some(ref ph) = pairing_handle {
+                    // Check whether a BLE client is currently connected; if so, the
+                    // MQTT pairing flow must not start (it would race with BLE for LCD).
+                    let ble_is_active = if let Some(ref ps) = pairing_state {
+                        let st = ps.lock().unwrap_or_else(|e| e.into_inner());
+                        st.ble_active()
+                    } else {
+                        false
+                    };
+
+                    if ble_is_active {
+                        eprintln!("[ButtonMonitor] UP+DOWN ignored: BLE client connected");
+                        state = ButtonMonitorState::Idle;
+                    } else if let Some(ref ph) = pairing_handle {
                         ph.start_pairing();
                         eprintln!("[ButtonMonitor] UP hold complete (2.5s) - triggering pairing mode");
                         state = ButtonMonitorState::ShowingPairing;
