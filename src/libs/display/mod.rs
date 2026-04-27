@@ -49,6 +49,14 @@ pub enum Screen {
     SystemInfo { page: usize },
     /// Pairing mode - displays pairing code
     Pairing { code: String },
+    /// BLE client connected — shows abbreviated client address.
+    BleConnected { addr: String },
+    /// BLE provisioning a WiFi connection.
+    BleProvisioning { ssid: String },
+    /// WiFi provisioning succeeded — auto-reverts at `until`.
+    BleWifiOk { ssid: String, ip: String, until: std::time::Instant },
+    /// WiFi provisioning failed — auto-reverts at `until`.
+    BleWifiFail { error: String, until: std::time::Instant },
 }
 
 impl Screen {
@@ -61,6 +69,10 @@ impl Screen {
             Screen::Pairing { .. } => None,
             Screen::SensorDetail { .. } => None,
             Screen::LoRaWANSensorDetail { .. } => None,
+            Screen::BleConnected { .. } => None,
+            Screen::BleProvisioning { .. } => None,
+            Screen::BleWifiOk { .. } => None,
+            Screen::BleWifiFail { .. } => None,
         }
     }
 
@@ -71,7 +83,7 @@ impl Screen {
 
     /// Check if this is a special screen (QR code or Pairing - System info allows navigation)
     pub fn is_special_screen(&self) -> bool {
-        matches!(self, Screen::QrCodeConfig | Screen::Pairing { .. })
+        matches!(self, Screen::QrCodeConfig | Screen::Pairing { .. } | Screen::BleConnected { .. } | Screen::BleProvisioning { .. } | Screen::BleWifiOk { .. } | Screen::BleWifiFail { .. })
     }
 
     /// Check if this is a pairing screen
@@ -218,6 +230,52 @@ impl DisplayState {
     pub fn show_pairing(&mut self, code: String) {
         self.current_screen = Screen::Pairing { code };
         self.should_update = true;
+    }
+
+    /// Show "BLE Connected" with truncated address.
+    pub fn show_ble_connected(&mut self, addr: &str) {
+        let short = if addr.len() > 17 { &addr[..17] } else { addr };
+        self.current_screen = Screen::BleConnected { addr: short.to_string() };
+        self.should_update = true;
+    }
+
+    /// Show "Connecting WiFi..." with the SSID being attempted.
+    pub fn show_ble_provisioning(&mut self, ssid: &str) {
+        self.current_screen = Screen::BleProvisioning { ssid: ssid.to_string() };
+        self.should_update = true;
+    }
+
+    /// Show "WiFi OK" with IP, dwell 3s, then auto-revert via tick_timed_screens.
+    pub fn show_ble_wifi_ok(&mut self, ssid: &str, ip: &str) {
+        self.current_screen = Screen::BleWifiOk {
+            ssid: ssid.to_string(),
+            ip: ip.to_string(),
+            until: std::time::Instant::now() + std::time::Duration::from_secs(3),
+        };
+        self.should_update = true;
+    }
+
+    /// Show "WiFi Failed" with truncated error, dwell 5s.
+    pub fn show_ble_wifi_fail(&mut self, error: &str) {
+        let short_err: String = error.chars().take(30).collect();
+        self.current_screen = Screen::BleWifiFail {
+            error: short_err,
+            until: std::time::Instant::now() + std::time::Duration::from_secs(5),
+        };
+        self.should_update = true;
+    }
+
+    /// Auto-revert from time-limited BLE provisioning screens.
+    /// Called from the display monitor loop on each tick.
+    pub fn tick_timed_screens(&mut self) {
+        let now = std::time::Instant::now();
+        let revert = match &self.current_screen {
+            Screen::BleWifiOk { until, .. } | Screen::BleWifiFail { until, .. } => now >= *until,
+            _ => false,
+        };
+        if revert {
+            self.show_sensor_overview();
+        }
     }
 
     /// Enter selection mode (from SensorOverview)
