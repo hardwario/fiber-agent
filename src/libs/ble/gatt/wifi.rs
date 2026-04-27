@@ -124,19 +124,28 @@ pub(crate) fn scan_wifi() -> Vec<WiFiNetwork> {
     networks
 }
 
-/// Connect to a WiFi network using nmcli.
+/// Connect to a WiFi network by explicitly building a NetworkManager profile.
 ///
-/// Deletes any pre-existing connection profile with the same SSID name first.
-/// nmcli reuses profile names across connect attempts; a stale profile with
-/// outdated credentials (or different security settings) causes
-/// `Error: Connection '<ssid>' is not available on device wlan0` even when
-/// the password supplied here is correct. Treating each connect as a fresh
-/// profile avoids that whole class of state mismatches.
+/// `nmcli dev wifi connect` relies on scan-cache state to infer the security
+/// type. When the cache is stale (most common right after a disconnect from
+/// the same network), nmcli emits
+/// `Error: 802-11-wireless-security.key-mgmt: property is missing` and
+/// refuses to create the connection. To dodge that whole class of state bugs
+/// we build the profile by hand:
+///
+/// 1. Delete any existing profile with the same SSID name (clean slate).
+/// 2. Rescan so wlan0 has a fresh view of nearby networks.
+/// 3. `nmcli connection add type wifi ...` creates the profile.
+/// 4. `nmcli connection modify ... wifi-sec.key-mgmt wpa-psk wifi-sec.psk ...`
+///    sets WPA-PSK security explicitly (skipped for open networks).
+/// 5. `nmcli connection up <ssid>` activates it.
+///
+/// If any step after the `add` fails we delete the partial profile so the
+/// next attempt starts clean.
 pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
     eprintln!("[WiFi] Connect requested: ssid='{}'", ssid);
 
-    // Pre-cleanup: delete stale profile for this SSID if one exists.
-    // Ignore failure (most common cause is "no such connection" — fine).
+    // Step 1: cleanup stale profile, if any.
     if let Ok(output) = Command::new("nmcli")
         .args(["connection", "delete", ssid])
         .output()
@@ -146,18 +155,64 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
         }
     }
 
-    let result = if password.is_empty() {
-        Command::new("nmcli")
-            .args(["dev", "wifi", "connect", ssid])
-            .output()
-    } else {
-        Command::new("nmcli")
-            .args(["dev", "wifi", "connect", ssid, "password", password])
-            .output()
-    };
+    // Step 2: refresh scan cache. Best-effort — failures here aren't fatal
+    // since the network may still be reachable.
+    let _ = Command::new("nmcli").args(["dev", "wifi", "rescan"]).output();
 
-    match result {
-        Ok(output) if output.status.success() => {
+    // Step 3: create the profile.
+    let add_result = Command::new("nmcli")
+        .args([
+            "connection", "add",
+            "type", "wifi",
+            "con-name", ssid,
+            "ifname", "wlan0",
+            "ssid", ssid,
+        ])
+        .output();
+    match add_result {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            eprintln!("[WiFi] connection add '{}' FAILED: {}", ssid, stderr.trim());
+            return failure(ssid, stderr);
+        }
+        Err(e) => {
+            eprintln!("[WiFi] connection add '{}' spawn error: {}", ssid, e);
+            return failure(ssid, e.to_string());
+        }
+    }
+
+    // Step 4: set WPA-PSK + password (skipped for open networks).
+    if !password.is_empty() {
+        let modify_result = Command::new("nmcli")
+            .args([
+                "connection", "modify", ssid,
+                "wifi-sec.key-mgmt", "wpa-psk",
+                "wifi-sec.psk", password,
+            ])
+            .output();
+        match modify_result {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                eprintln!("[WiFi] connection modify '{}' FAILED: {}", ssid, stderr.trim());
+                let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+                return failure(ssid, stderr);
+            }
+            Err(e) => {
+                eprintln!("[WiFi] connection modify '{}' spawn error: {}", ssid, e);
+                let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+                return failure(ssid, e.to_string());
+            }
+        }
+    }
+
+    // Step 5: activate the profile.
+    let up_result = Command::new("nmcli")
+        .args(["connection", "up", ssid])
+        .output();
+    match up_result {
+        Ok(o) if o.status.success() => {
             let ip = get_ip_address();
             eprintln!("[WiFi] Connected to '{}' (ip={})", ssid, ip);
             WiFiStatusResponse {
@@ -167,25 +222,26 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
                 error: String::new(),
             }
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            eprintln!("[WiFi] Connect to '{}' FAILED: {}", ssid, stderr.trim());
-            WiFiStatusResponse {
-                connected: false,
-                ssid: ssid.to_string(),
-                ip_address: String::new(),
-                error: stderr,
-            }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            eprintln!("[WiFi] connection up '{}' FAILED: {}", ssid, stderr.trim());
+            let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+            failure(ssid, stderr)
         }
         Err(e) => {
-            eprintln!("[WiFi] Connect to '{}' command spawn failed: {}", ssid, e);
-            WiFiStatusResponse {
-                connected: false,
-                ssid: ssid.to_string(),
-                ip_address: String::new(),
-                error: e.to_string(),
-            }
+            eprintln!("[WiFi] connection up '{}' spawn error: {}", ssid, e);
+            let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+            failure(ssid, e.to_string())
         }
+    }
+}
+
+fn failure(ssid: &str, error: String) -> WiFiStatusResponse {
+    WiFiStatusResponse {
+        connected: false,
+        ssid: ssid.to_string(),
+        ip_address: String::new(),
+        error,
     }
 }
 
