@@ -154,7 +154,6 @@ pub async fn create_gatt_app(
                             serde_json::from_slice(&new_value)
                                 .map_err(|_| ReqError::InvalidValueLength)?;
 
-                        eprintln!("[WiFi] Connecting to '{}'...", request.ssid);
                         let _ = event_tx.try_send(super::BleEvent::WifiConnecting {
                             ssid: request.ssid.clone(),
                         });
@@ -164,17 +163,12 @@ pub async fn create_gatt_app(
                         );
 
                         if result.connected {
-                            eprintln!(
-                                "[WiFi] Connected successfully, IP: {}",
-                                result.ip_address
-                            );
                             let _ = event_tx.try_send(super::BleEvent::WifiConnected {
                                 ssid: result.ssid.clone(),
                                 ip: result.ip_address.clone(),
                             });
                             Ok(())
                         } else {
-                            eprintln!("[WiFi] Connection failed: {}", result.error);
                             let _ = event_tx.try_send(super::BleEvent::WifiFailed {
                                 error: result.error.clone(),
                             });
@@ -204,13 +198,11 @@ pub async fn create_gatt_app(
                         }
                         drop(state_guard);
 
-                        eprintln!("[WiFi] Disconnecting...");
                         let result = crate::libs::ble::gatt::wifi::disconnect_wifi();
 
                         if !result.connected {
                             Ok(())
                         } else {
-                            eprintln!("[WiFi] Disconnect failed: {}", result.error);
                             Err(ReqError::Failed)
                         }
                     })
