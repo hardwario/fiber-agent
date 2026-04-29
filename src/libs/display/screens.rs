@@ -61,16 +61,8 @@ pub fn render_sensor_overview(
         icons::draw_mute(display, mute_x, 3);
     }
 
-    // In dev-platform mode, show "DEV" indicator before device label
     let header_label = if page >= 2 {
         "LORAWAN".to_string()
-    } else if cfg!(feature = "dev-platform") {
-        let max_len = 11;
-        if device_label.len() > max_len {
-            format!("*{}..", &device_label[..max_len - 2])
-        } else {
-            format!("*{}", device_label)
-        }
     } else if device_label.len() > 14 {
         format!("{}...", &device_label[..11])
     } else {
@@ -493,7 +485,6 @@ pub fn render_qr_code_screen(
             }
         }
 
-        eprintln!("[Screen] QR code rendered successfully");
     } else {
         eprintln!("[Screen] Warning: QR matrix is empty!");
         Text::with_alignment(
@@ -527,7 +518,7 @@ pub fn render_system_info(
 
     // Header: "SYSTEM INFO" centered with page indicator
     let header = if cfg!(feature = "dev-platform") {
-        format!("*DEV INFO {}/3", page + 1)
+        format!("DEV INFO {}/3", page + 1)
     } else {
         format!("SYSTEM INFO {}/3", page + 1)
     };

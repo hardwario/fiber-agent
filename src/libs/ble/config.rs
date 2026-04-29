@@ -10,13 +10,9 @@ pub struct BleConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Path to the editable PIN file. If absent, created with `default_pin`.
-    #[serde(default = "default_pin_file")]
-    pub pin_file: String,
-
-    /// Default PIN value used when `pin_file` does not exist.
-    #[serde(default = "default_pin_value")]
-    pub default_pin: String,
+    /// BLE pairing PIN. Edit this in fiber.config.yaml to rotate.
+    #[serde(default = "default_pin")]
+    pub pin: String,
 
     /// Whether the Terminal-over-BLE characteristics (FB05/FB06) are exposed.
     /// Operators may set this to false in stricter deployments.
@@ -28,16 +24,14 @@ pub struct BleConfig {
     pub advertising_name: Option<String>,
 }
 
-fn default_pin_file() -> String { "/data/ble/pin.txt".to_string() }
-fn default_pin_value() -> String { "123456".to_string() }
+fn default_pin() -> String { "123456".to_string() }
 fn default_enable_terminal() -> bool { true }
 
 impl Default for BleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            pin_file: default_pin_file(),
-            default_pin: default_pin_value(),
+            pin: default_pin(),
             enable_terminal: default_enable_terminal(),
             advertising_name: None,
         }
@@ -64,15 +58,13 @@ mod tests {
     fn full_yaml_round_trip() {
         let yaml = r#"
 enabled: true
-pin_file: "/etc/ble/pin"
-default_pin: "999999"
+pin: "999999"
 enable_terminal: false
 advertising_name: "MY-DEVICE"
 "#;
         let cfg: BleConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.enabled);
-        assert_eq!(cfg.pin_file, "/etc/ble/pin");
-        assert_eq!(cfg.default_pin, "999999");
+        assert_eq!(cfg.pin, "999999");
         assert!(!cfg.enable_terminal);
         assert_eq!(cfg.advertising_name, Some("MY-DEVICE".to_string()));
     }
@@ -81,8 +73,7 @@ advertising_name: "MY-DEVICE"
     fn default_disables_ble() {
         let cfg = BleConfig::default();
         assert!(!cfg.enabled);
-        assert_eq!(cfg.pin_file, "/data/ble/pin.txt");
-        assert_eq!(cfg.default_pin, "123456");
+        assert_eq!(cfg.pin, "123456");
         assert!(cfg.enable_terminal);
     }
 }

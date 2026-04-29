@@ -235,3 +235,19 @@ ISO 14971 risk management, IEC 62304 software development plan, ISO 13485 QMS, c
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+
+## DEBUG
+scp fiber_app fiber@192.168.0.18:/tmp/
+ssh fiber@192.168.0.18
+sudo systemctl stop fiber
+sudo mv /tmp/fiber_app /opt/fiber/fiber_app
+sudo chmod +x /opt/fiber/fiber_app
+sudo systemctl start fiber
+sudo systemctl status fiber
+
+
+sudo dpkg --add-architecture arm64                                              
+sudo apt update
+sudo apt install libdbus-1-dev:arm64
+PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform

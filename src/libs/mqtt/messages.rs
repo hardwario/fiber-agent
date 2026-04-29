@@ -34,6 +34,14 @@ pub enum MqttMessage {
         message: String,        // Human-readable message
     },
 
+    /// Publish an accelerometer motion transition event
+    PublishAccelerometerEvent {
+        x_g: f32,       // X-axis acceleration at transition (g)
+        y_g: f32,       // Y-axis acceleration at transition (g)
+        z_g: f32,       // Z-axis acceleration at transition (g)
+        position: u8,   // Box orientation 1..6 (see MotionDetector::position)
+    },
+
     /// Publish combined system status (power, network, storage, uptime)
     PublishSystemStatus {
         /// Hostname

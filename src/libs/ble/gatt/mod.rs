@@ -158,10 +158,9 @@ async fn run_server(
 
     let mac = adapter.address().await?;
     let mac_str = mac.to_string();
-    state::write_mac_to_file("/data/ble/mac.txt", &mac_str);
 
     let hostname = state::get_hostname();
-    let pin = state::load_pin(&config.pin_file, &config.default_pin);
+    let pin = config.pin.clone();
 
     let advertising_name = config.advertising_name.clone().unwrap_or_else(|| hostname.clone());
     adapter.set_alias(advertising_name.clone()).await?;

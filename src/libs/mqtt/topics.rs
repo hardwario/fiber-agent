@@ -113,6 +113,11 @@ impl TopicBuilder {
         self.build(&["alarms", "events"])
     }
 
+    // Accelerometer topics
+    pub fn accelerometer_events(&self) -> String {
+        self.build(&["accelerometer", "events"])
+    }
+
     // Command topics (for subscription)
     pub fn commands_wildcard(&self) -> String {
         self.build(&["commands", "#"])
