@@ -61,16 +61,8 @@ pub fn render_sensor_overview(
         icons::draw_mute(display, mute_x, 3);
     }
 
-    // In dev-platform mode, show "DEV" indicator before device label
     let header_label = if page >= 2 {
         "LORAWAN".to_string()
-    } else if cfg!(feature = "dev-platform") {
-        let max_len = 11;
-        if device_label.len() > max_len {
-            format!("*{}..", &device_label[..max_len - 2])
-        } else {
-            format!("*{}", device_label)
-        }
     } else if device_label.len() > 14 {
         format!("{}...", &device_label[..11])
     } else {
@@ -493,7 +485,6 @@ pub fn render_qr_code_screen(
             }
         }
 
-        eprintln!("[Screen] QR code rendered successfully");
     } else {
         eprintln!("[Screen] Warning: QR matrix is empty!");
         Text::with_alignment(
@@ -527,7 +518,7 @@ pub fn render_system_info(
 
     // Header: "SYSTEM INFO" centered with page indicator
     let header = if cfg!(feature = "dev-platform") {
-        format!("*DEV INFO {}/3", page + 1)
+        format!("DEV INFO {}/3", page + 1)
     } else {
         format!("SYSTEM INFO {}/3", page + 1)
     };
@@ -822,6 +813,102 @@ pub fn render_sensor_detail(
                 .ok();
         }
     }
+
+    display.flush()
+}
+
+/// Render the BLE-connected screen (transient — shows when a BLE client is connected).
+pub fn render_ble_connected(
+    display: &mut St7920,
+    addr: &str,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment("BLE Connected", Point::new(64, 18), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Line::new(Point::new(0, 22), Point::new(127, 22))
+        .into_styled(line_style)
+        .draw(display).ok();
+
+    Text::with_alignment(addr, Point::new(64, 42), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    display.flush()
+}
+
+/// Render the WiFi-provisioning screen (during connect attempt).
+pub fn render_ble_provisioning(
+    display: &mut St7920,
+    ssid: &str,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment("Connecting WiFi...", Point::new(64, 18), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Line::new(Point::new(0, 22), Point::new(127, 22))
+        .into_styled(line_style)
+        .draw(display).ok();
+
+    Text::with_alignment(ssid, Point::new(64, 42), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    display.flush()
+}
+
+/// Render the "WiFi OK" success screen.
+pub fn render_ble_wifi_ok(
+    display: &mut St7920,
+    ssid: &str,
+    ip: &str,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment("WiFi OK", Point::new(64, 18), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Line::new(Point::new(0, 22), Point::new(127, 22))
+        .into_styled(line_style)
+        .draw(display).ok();
+
+    Text::with_alignment(ssid, Point::new(64, 38), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Text::with_alignment(ip, Point::new(64, 54), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    display.flush()
+}
+
+/// Render the "WiFi Failed" error screen.
+pub fn render_ble_wifi_fail(
+    display: &mut St7920,
+    error: &str,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment("WiFi Failed", Point::new(64, 18), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Line::new(Point::new(0, 22), Point::new(127, 22))
+        .into_styled(line_style)
+        .draw(display).ok();
+
+    Text::with_alignment(error, Point::new(64, 42), text_style, Alignment::Center)
+        .draw(display).ok();
 
     display.flush()
 }

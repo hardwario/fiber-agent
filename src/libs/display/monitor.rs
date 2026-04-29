@@ -15,7 +15,11 @@ use crate::libs::power::SharedPowerStatus;
 use crate::libs::lorawan::LoRaWANSensorState;
 
 use super::{SharedDisplayStateHandle, Screen};
-use super::screens::{render_sensor_overview, render_qr_code_screen, render_system_info, render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail};
+use super::screens::{
+    render_sensor_overview, render_qr_code_screen, render_system_info,
+    render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
+    render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
+};
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -81,6 +85,8 @@ pub fn display_loop(
             // Get current display state (screen and page)
             let (current_screen, qr_generator, lorawan_gateway_present, total_pages) = {
                 if let Ok(mut state) = display_state.lock() {
+                    // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
+                    state.tick_timed_screens();
                     // Update network status in display state
                     state.network_status = network_status.clone();
                     let tp = state.total_pages();
@@ -213,6 +219,26 @@ pub fn display_loop(
                     // Render pairing mode screen with code
                     if let Err(e) = render_pairing_screen(&mut display, &code) {
                         eprintln!("[DisplayMonitor] Error rendering pairing display: {}", e);
+                    }
+                }
+                Screen::BleConnected { addr } => {
+                    if let Err(e) = render_ble_connected(&mut display, &addr) {
+                        eprintln!("[DisplayMonitor] Error rendering BLE connected: {}", e);
+                    }
+                }
+                Screen::BleProvisioning { ssid } => {
+                    if let Err(e) = render_ble_provisioning(&mut display, &ssid) {
+                        eprintln!("[DisplayMonitor] Error rendering BLE provisioning: {}", e);
+                    }
+                }
+                Screen::BleWifiOk { ssid, ip, .. } => {
+                    if let Err(e) = render_ble_wifi_ok(&mut display, &ssid, &ip) {
+                        eprintln!("[DisplayMonitor] Error rendering BLE wifi ok: {}", e);
+                    }
+                }
+                Screen::BleWifiFail { error, .. } => {
+                    if let Err(e) = render_ble_wifi_fail(&mut display, &error) {
+                        eprintln!("[DisplayMonitor] Error rendering BLE wifi fail: {}", e);
                     }
                 }
             }

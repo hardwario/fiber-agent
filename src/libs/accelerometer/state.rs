@@ -37,11 +37,9 @@ impl MotionDetector {
     /// Update detector with new acceleration data
     /// Returns (new_state, state_changed)
     pub fn update(&mut self, accel: &AccelData) -> (MotionState, bool) {
-        let magnitude = self.calculate_magnitude(accel);
-        // Detect motion when acceleration magnitude exceeds threshold.
-        // A constant 1g gravitational component is always present, so the threshold
-        // only triggers on motion-induced acceleration above the static baseline.
-        let above_threshold = magnitude > self.threshold_g;
+        // Compare gravity-compensated motion intensity against the threshold so
+        // a stationary device (≈1 g total magnitude) does not trip the detector.
+        let above_threshold = Self::motion_intensity(accel) > self.threshold_g;
 
         let new_state = match self.current_state {
             MotionState::Idle => {
@@ -90,8 +88,37 @@ impl MotionDetector {
 
     /// Calculate acceleration magnitude from 3-axis data
     /// magnitude = sqrt(x² + y² + z²)
-    fn calculate_magnitude(&self, accel: &AccelData) -> f32 {
+    pub fn magnitude(accel: &AccelData) -> f32 {
         (accel.x_g * accel.x_g + accel.y_g * accel.y_g + accel.z_g * accel.z_g).sqrt()
+    }
+
+    /// Gravity-compensated motion intensity in g.
+    /// A stationary device reads ~1 g total, so subtracting that baseline gives
+    /// the magnitude of motion-induced acceleration regardless of orientation.
+    pub fn motion_intensity(accel: &AccelData) -> f32 {
+        (Self::magnitude(accel) - 1.0).abs()
+    }
+
+    /// Identify which of the six box orientations the device is closest to,
+    /// based on the dominant gravity axis.
+    ///
+    /// 1 = top up (+Z), 2 = top down (-Z),
+    /// 3 = right up (+X), 4 = left up (-X),
+    /// 5 = front up (+Y), 6 = back up (-Y).
+    pub fn position(accel: &AccelData) -> u8 {
+        let ax = accel.x_g.abs();
+        let ay = accel.y_g.abs();
+        let az = accel.z_g.abs();
+
+        if az >= ax && az >= ay {
+            if accel.z_g >= 0.0 { 1 } else { 2 }
+        } else if ax >= ay {
+            if accel.x_g >= 0.0 { 3 } else { 4 }
+        } else if accel.y_g >= 0.0 {
+            5
+        } else {
+            6
+        }
     }
 }
 
@@ -101,53 +128,49 @@ mod tests {
 
     #[test]
     fn test_magnitude_calculation() {
-        let detector = MotionDetector::new(0.5, 1);
         let accel = AccelData {
             x_g: 3.0,
             y_g: 4.0,
             z_g: 0.0,
         };
-        let magnitude = 5.0; // 3-4-5 triangle
-        assert!((detector.calculate_magnitude(&accel) - magnitude).abs() < 0.001);
+        // 3-4-5 triangle
+        assert!((MotionDetector::magnitude(&accel) - 5.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_gravity_baseline() {
-        let detector = MotionDetector::new(0.5, 1);
+    fn test_gravity_baseline_does_not_trigger() {
+        let mut detector = MotionDetector::new(0.3, 1);
         let gravity_only = AccelData {
             x_g: 0.0,
             y_g: 0.0,
-            z_g: 1.0, // 1g from gravity
+            z_g: 1.0, // pure gravity
         };
-        let (state, _changed) = detector.clone().update(&gravity_only);
-        // 1.0g > 0.5 threshold, so it triggers motion detection
-        // This is expected behavior - any acceleration > threshold triggers motion
-        assert_eq!(state, MotionState::Moving);
+        // Intensity = |1.0 - 1.0| = 0, below threshold → stay Idle.
+        let (state, changed) = detector.update(&gravity_only);
+        assert_eq!(state, MotionState::Idle);
+        assert!(!changed);
     }
 
     #[test]
     fn test_motion_detection_simple() {
         let mut detector = MotionDetector::new(0.5, 1);
-        let motion = AccelData {
-            x_g: 0.3,
-            y_g: 0.4,
-            z_g: 0.0, // No gravity component to focus on motion-only acceleration
+        // Slight acceleration above gravity (1.4g total → intensity 0.4) - below threshold.
+        let weak = AccelData {
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: 1.4,
         };
-        let (state, changed) = detector.update(&motion);
-        // Magnitude: sqrt(0.09 + 0.16) = 0.5 > 0.5 threshold? No, equal
-        // Need slightly higher value
+        let (state, changed) = detector.update(&weak);
         assert_eq!(state, MotionState::Idle);
         assert!(!changed);
 
-        // Now trigger actual motion
-        let motion_strong = AccelData {
-            x_g: 0.4,
-            y_g: 0.4,
-            z_g: 0.0,
+        // Strong acceleration (2.0g total → intensity 1.0) - above threshold.
+        let strong = AccelData {
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: 2.0,
         };
-        let (state, changed) = detector.update(&motion_strong);
-        // Magnitude: sqrt(0.16 + 0.16) ≈ 0.566 > 0.5 threshold = true
-        // With debounce=1, should immediately go to Moving
+        let (state, changed) = detector.update(&strong);
         assert_eq!(state, MotionState::Moving);
         assert!(changed);
     }
@@ -155,19 +178,20 @@ mod tests {
     #[test]
     fn test_debouncing() {
         let mut detector = MotionDetector::new(0.3, 3);
+        // Magnitude 1.5g → intensity 0.5g, above 0.3 threshold.
         let motion = AccelData {
-            x_g: 0.2,
-            y_g: 0.25,
-            z_g: 0.0, // No gravity, focus on motion detection
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: 1.5,
         };
+        // Pure gravity → intensity 0, below threshold.
         let idle = AccelData {
             x_g: 0.0,
             y_g: 0.0,
-            z_g: 1.0, // Gravity only = 1.0g, above 0.3 threshold
+            z_g: 1.0,
         };
 
         let (state, _) = detector.update(&motion);
-        // Magnitude: sqrt(0.04 + 0.0625) ≈ 0.321 > 0.3 threshold = true
         assert_eq!(state, MotionState::Debouncing { samples: 1 });
 
         let (state, _) = detector.update(&motion);
@@ -177,33 +201,32 @@ mod tests {
         assert_eq!(state, MotionState::Moving);
         assert!(changed);
 
-        // Stop motion - idle reading has 1.0g > 0.3 threshold, stays above threshold
-        let (state, _changed) = detector.update(&idle);
-        // Gravity alone (1.0g) exceeds motion threshold (0.3g), so state stays Moving
-        assert_eq!(state, MotionState::Moving);
+        let (state, changed) = detector.update(&idle);
+        assert_eq!(state, MotionState::Idle);
+        assert!(changed);
     }
 
     #[test]
     fn test_debounce_reset_on_below_threshold() {
         let mut detector = MotionDetector::new(0.5, 3);
+        // Intensity = |1.6 - 1.0| = 0.6 > 0.5 threshold.
         let motion = AccelData {
-            x_g: 0.3,
-            y_g: 0.3,
-            z_g: 0.0,
-        };
-
-        // Start debouncing
-        detector.update(&motion);
-        detector.update(&motion);
-
-        // Drop below threshold - use truly idle reading with no motion
-        let truly_idle = AccelData {
             x_g: 0.0,
             y_g: 0.0,
-            z_g: 0.3, // Below motion threshold
+            z_g: 1.6,
         };
 
-        let (state, _) = detector.update(&truly_idle);
+        detector.update(&motion);
+        detector.update(&motion);
+
+        // Pure gravity → intensity 0, below threshold.
+        let resting = AccelData {
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: 1.0,
+        };
+
+        let (state, _) = detector.update(&resting);
         assert_eq!(state, MotionState::Idle);
     }
 }

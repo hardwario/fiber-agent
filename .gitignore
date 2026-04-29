@@ -21,6 +21,11 @@ Thumbs.db
 .claude/
 .playwright-mcp/
 docs/
+!docs/superpowers/
+!docs/superpowers/**
+!docs/superpowers/sessions/
+!docs/superpowers/sessions/**
+!docs/BLE_HARDWARE_TESTS.md
 
 # Temporary
 *.bak

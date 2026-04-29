@@ -119,10 +119,45 @@ All threads communicate via `Arc<Mutex<T>>` shared state and crossbeam channels.
 
 - Rust toolchain (see [`rust-toolchain.toml`](rust-toolchain.toml))
 - Cross-compilation linker: `aarch64-linux-gnu-gcc`
+- arm64 dev headers:
+  - `libssl-dev` (required by SQLCipher)
+  - `libdbus-1-dev` (required by `bluer` for the in-app BLE GATT server)
+
+```bash
+sudo apt install gcc-aarch64-linux-gnu pkg-config
+```
+
+On Ubuntu, arm64 packages require the `ports.ubuntu.com` mirror. Add arm64 architecture and configure apt sources:
+
+```bash
+sudo dpkg --add-architecture arm64
+```
+
+Edit `/etc/apt/sources.list.d/ubuntu.sources` — add `Architectures: amd64 i386` to existing entries and append an arm64 block:
+
+```
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble noble-updates noble-backports noble-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+Architectures: arm64
+```
+
+Then install the cross-compilation dependencies:
+
+```bash
+sudo apt update
+sudo apt install libssl-dev:arm64 libdbus-1-dev:arm64
+```
 
 ### Build for target
 
+`pkg-config` needs to be told it's allowed to cross-compile and where to find the arm64 `.pc` files:
+
 ```bash
+PKG_CONFIG_ALLOW_CROSS=1 \
+PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
 cargo build --release --target aarch64-unknown-linux-gnu
 ```
 
@@ -131,8 +166,26 @@ cargo build --release --target aarch64-unknown-linux-gnu
 Disables cryptographic verification. Requires `/data/fiber/config/DEV_MODE_ENABLED` on the device.
 
 ```bash
+PKG_CONFIG_ALLOW_CROSS=1 \
+PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
 cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform
 ```
+
+### Native build (for tests + lint only — does not run on hardware)
+
+If you only want to compile the code and run unit tests without producing a target binary:
+
+```bash
+sudo apt install libssl-dev libdbus-1-dev pkg-config
+cargo build --release      # native x86_64
+cargo test --lib
+```
+
+The resulting binary will not work on the device (Pi GPIO, STM32 UART, BLE adapter not present), but this is the fastest way to validate code changes.
+
+### Yocto build
+
+When building via the `meta-fiber` recipe (`bitbake fiber`), bitbake provides the cross-sysroot automatically. The recipe declares `DEPENDS += "openssl dbus"`, so no manual setup is needed.
 
 ## Configuration
 
@@ -182,3 +235,19 @@ ISO 14971 risk management, IEC 62304 software development plan, ISO 13485 QMS, c
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+
+## DEBUG
+scp fiber_app fiber@192.168.0.18:/tmp/
+ssh fiber@192.168.0.18
+sudo systemctl stop fiber
+sudo mv /tmp/fiber_app /opt/fiber/fiber_app
+sudo chmod +x /opt/fiber/fiber_app
+sudo systemctl start fiber
+sudo systemctl status fiber
+
+
+sudo dpkg --add-architecture arm64                                              
+sudo apt update
+sudo apt install libdbus-1-dev:arm64
+PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform

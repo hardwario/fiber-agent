@@ -829,6 +829,10 @@ pub struct Config {
     /// LoRaWAN gateway settings
     #[serde(default)]
     pub lorawan: Option<LoRaWANConfig>,
+
+    /// BLE GATT server settings
+    #[serde(default)]
+    pub ble: crate::libs::ble::BleConfig,
 }
 
 impl Config {
@@ -908,6 +912,7 @@ impl Config {
             },
             mqtt: None,  // MQTT disabled by default
             lorawan: None,  // LoRaWAN disabled by default
+            ble: crate::libs::ble::BleConfig::default(),
         }
     }
 }

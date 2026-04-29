@@ -5,22 +5,27 @@ use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
 use fiber_app::libs::config::LoRaWANConfig;
 
-/// Read BLE PIN from /data/ble/pin.txt
-fn read_pin_from_file() -> io::Result<String> {
-    let pin = fs::read_to_string("/data/ble/pin.txt")?;
-    Ok(pin.trim().to_string())
-}
-
-/// Read BLE MAC address from /data/ble/mac.txt
-fn read_mac_from_file() -> io::Result<String> {
-    let mac = fs::read_to_string("/data/ble/mac.txt")?;
-    Ok(mac.trim().to_string())
+/// Query the default BLE adapter for its MAC. Falls back to a placeholder if
+/// the adapter is unavailable (BLE disabled, bluetoothd down, etc.).
+fn read_mac_from_bluer() -> Result<String, bluer::Error> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| bluer::Error {
+            kind: bluer::ErrorKind::Failed,
+            message: format!("tokio runtime: {}", e),
+        })?;
+    rt.block_on(async {
+        let session = bluer::Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        Ok(adapter.address().await?.to_string())
+    })
 }
 
 /// Read hostname from /etc/hostname and convert to uppercase
@@ -120,26 +125,16 @@ fn main() -> io::Result<()> {
     // Initialize QR code generator for Bluetooth/WiFi configuration
     eprintln!("[main] Initializing QR code generator...");
 
-    // Read PIN from file
-    let pin = match read_pin_from_file() {
-        Ok(p) => {
-            eprintln!("[main] PIN read from /data/ble/pin.txt");
-            p
-        }
-        Err(e) => {
-            eprintln!("[main] Failed to read PIN from /data/ble/pin.txt: {}", e);
-            return Err(e);
-        }
-    };
+    let pin = config.ble.pin.clone();
 
-    // Read MAC address from file (written by ble-fiber service)
-    let mac_address = match read_mac_from_file() {
+    // Read MAC address directly from the BLE adapter via bluer
+    let mac_address = match read_mac_from_bluer() {
         Ok(m) => {
-            eprintln!("[main] MAC address read from /data/ble/mac.txt: {}", m);
+            eprintln!("[main] MAC address from bluer: {}", m);
             m
         }
         Err(e) => {
-            eprintln!("[main] Warning: Failed to read MAC from /data/ble/mac.txt: {}", e);
+            eprintln!("[main] Warning: Failed to read MAC from bluer: {}", e);
             eprintln!("[main] Using placeholder MAC address");
             "00:00:00:00:00:00".to_string()
         }
@@ -206,7 +201,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None)?;
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None, None)?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -222,24 +217,6 @@ fn main() -> io::Result<()> {
     eprintln!("[main] Initializing buzzer priority manager...");
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
     _display_monitor.set_buzzer_priority(buzzer_priority_manager.clone());
-
-    // Create and spawn accelerometer monitoring thread if enabled
-    let _accel_monitor = if config.accelerometer.enabled {
-        eprintln!("[main] Starting accelerometer monitor...");
-        match AccelerometerMonitor::new(config.accelerometer) {
-            Ok(monitor) => {
-                eprintln!("[main] Accelerometer monitor started");
-                Some(monitor)
-            }
-            Err(e) => {
-                eprintln!("[main] Warning: Failed to initialize accelerometer: {}", e);
-                None
-            }
-        }
-    } else {
-        eprintln!("[main] Accelerometer monitoring disabled in configuration");
-        None
-    };
 
     // Initialize storage thread for medical data persistence
     eprintln!("[main] Starting storage thread...");
@@ -319,6 +296,36 @@ fn main() -> io::Result<()> {
     // Store MQTT monitor to keep it alive (after pairing handle is set)
     let _mqtt_monitor = mqtt_monitor;
 
+    // Create and spawn BLE monitor if enabled.
+    // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
+    let (_ble_monitor, ble_handle) = if config.ble.enabled {
+        eprintln!("[main] Starting BLE monitor (in-app GATT server)...");
+        match BleMonitor::new(config.ble.clone()) {
+            Ok(monitor) => {
+                eprintln!("[main] BLE monitor started");
+                let h = monitor.handle();
+                (Some(monitor), Some(h))
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: BLE monitor failed to start: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        eprintln!("[main] BLE in-app monitor disabled (config.ble.enabled = false)");
+        (None, None)
+    };
+
+    // BLE event router — bridges BleEvents to display_state and pairing_handle.
+    let _ble_router = ble_handle.as_ref().map(|h| {
+        eprintln!("[main] Spawning BLE event router");
+        spawn_ble_event_router(
+            h.clone(),
+            _display_monitor.display_state.clone(),
+            pairing_handle.clone(),
+        )
+    });
+
     // Update button monitor with pairing handle
     eprintln!("[main] Restarting button monitor with pairing support...");
     drop(_button_monitor);
@@ -326,12 +333,33 @@ fn main() -> io::Result<()> {
         _display_monitor.display_state.clone(),
         pairing_handle.clone(),
         Some(buzzer_priority_manager.clone()),
+        _pairing_monitor.as_ref().map(|p| p.state()),
     )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 
+    // Derive MQTT sender for monitors that publish events
+    let mqtt_sender = mqtt_handle.as_ref().map(|h| h.sender());
+
+    // Create and spawn accelerometer monitoring thread if enabled
+    let _accel_monitor = if config.accelerometer.enabled {
+        eprintln!("[main] Starting accelerometer monitor...");
+        match AccelerometerMonitor::new(config.accelerometer, mqtt_sender.clone()) {
+            Ok(monitor) => {
+                eprintln!("[main] Accelerometer monitor started");
+                Some(monitor)
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to initialize accelerometer: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] Accelerometer monitoring disabled in configuration");
+        None
+    };
+
     // Create and spawn power monitoring thread with configured interval
     eprintln!("[main] Starting power monitor...");
-    let mqtt_sender = mqtt_handle.as_ref().map(|h| h.sender());
     let _power_monitor = PowerMonitor::new(
         stm_guard.clone(),
         config.power.update_interval_ms,

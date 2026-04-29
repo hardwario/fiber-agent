@@ -76,6 +76,15 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishAccelerometerEvent {
+                x_g,
+                y_g,
+                z_g,
+                position,
+            } => {
+                self.publish_accelerometer_event(x_g, y_g, z_g, position).await
+            }
+
             MqttMessage::PublishSystemStatus {
                 hostname,
                 device_label,
@@ -327,6 +336,31 @@ impl MqttPublisher {
 
         let topic = self.topics.alarms_events();
         let qos = Self::qos_from_u8(self.qos_overrides.alarm_events);
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish accelerometer motion transition event
+    async fn publish_accelerometer_event(
+        &self,
+        x_g: f32,
+        y_g: f32,
+        z_g: f32,
+        position: u8,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "event_type": "motion_transition",
+            "x_g": x_g,
+            "y_g": y_g,
+            "z_g": z_g,
+            "position": position,
+        });
+
+        let topic = self.topics.accelerometer_events();
+        // Motion is high-frequency, non-critical telemetry — losing one
+        // transition is harmless since the next event refreshes state.
+        let qos = QoS::AtMostOnce;
 
         self.publish(topic, payload.to_string(), qos, false).await
     }

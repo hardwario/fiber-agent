@@ -6,8 +6,11 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
+use crossbeam::channel::Sender;
+
 use crate::drivers::lis2dh12::Lis2dh12;
 use crate::libs::config::AccelerometerConfig;
+use crate::libs::mqtt::messages::MqttMessage;
 use super::state::{MotionDetector, MotionState};
 
 /// Background accelerometer monitoring thread
@@ -18,12 +21,15 @@ pub struct AccelerometerMonitor {
 
 impl AccelerometerMonitor {
     /// Create and spawn background accelerometer monitoring thread
-    pub fn new(config: AccelerometerConfig) -> io::Result<Self> {
+    pub fn new(
+        config: AccelerometerConfig,
+        mqtt_sender: Option<Sender<MqttMessage>>,
+    ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(config, shutdown_flag_clone);
+            Self::monitor_loop(config, shutdown_flag_clone, mqtt_sender);
         });
 
         Ok(Self {
@@ -33,7 +39,11 @@ impl AccelerometerMonitor {
     }
 
     /// Background monitoring loop
-    fn monitor_loop(config: AccelerometerConfig, shutdown_flag: Arc<AtomicBool>) {
+    fn monitor_loop(
+        config: AccelerometerConfig,
+        shutdown_flag: Arc<AtomicBool>,
+        mqtt_sender: Option<Sender<MqttMessage>>,
+    ) {
         // Open I2C device
         let mut accel = match Lis2dh12::new(&config.i2c_path) {
             Ok(a) => a,
@@ -68,29 +78,38 @@ impl AccelerometerMonitor {
                 Ok(accel_data) => {
                     let (new_state, state_changed) = detector.update(&accel_data);
 
-                    if state_changed && config.logging_enabled {
-                        let timestamp = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map(|d| format!("{:.3}s", d.as_secs_f64()))
-                            .unwrap_or_else(|_| "unknown".to_string());
+                    if state_changed {
+                        let real_transition = !matches!(new_state, MotionState::Debouncing { .. });
 
-                        match new_state {
-                            MotionState::Moving => {
-                                let magnitude =
-                                    (accel_data.x_g * accel_data.x_g
-                                        + accel_data.y_g * accel_data.y_g
-                                        + accel_data.z_g * accel_data.z_g)
-                                        .sqrt();
-                                eprintln!(
-                                    "[AccelerometerMonitor] Motion detected at {} (magnitude: {:.2}g)",
-                                    timestamp, magnitude
-                                );
+                        if config.logging_enabled {
+                            let timestamp = SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .map(|d| format!("{:.3}s", d.as_secs_f64()))
+                                .unwrap_or_else(|_| "unknown".to_string());
+
+                            match new_state {
+                                MotionState::Moving => {
+                                    let intensity = MotionDetector::motion_intensity(&accel_data);
+                                    eprintln!(
+                                        "[AccelerometerMonitor] Motion detected at {} (intensity: {:.2}g)",
+                                        timestamp, intensity
+                                    );
+                                }
+                                MotionState::Idle => {
+                                    eprintln!("[AccelerometerMonitor] Motion stopped at {}", timestamp);
+                                }
+                                MotionState::Debouncing { .. } => {}
                             }
-                            MotionState::Idle => {
-                                eprintln!("[AccelerometerMonitor] Motion stopped at {}", timestamp);
-                            }
-                            MotionState::Debouncing { .. } => {
-                                // Don't log debouncing state changes
+                        }
+
+                        if real_transition {
+                            if let Some(sender) = mqtt_sender.as_ref() {
+                                let _ = sender.try_send(MqttMessage::PublishAccelerometerEvent {
+                                    x_g: accel_data.x_g,
+                                    y_g: accel_data.y_g,
+                                    z_g: accel_data.z_g,
+                                    position: MotionDetector::position(&accel_data),
+                                });
                             }
                         }
                     }

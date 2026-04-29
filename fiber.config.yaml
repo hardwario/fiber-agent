@@ -38,10 +38,10 @@ storage:
   max_size_gb: 5
 system:
   debug_mode: false
-  app_name: FIBER Medical Thermometer
+  app_name: FIBER Application
   app_version: 0.1.0
   timezone_offset_hours: 0
-  device_label: PROXIMOS
+  device_label: FIBER
   led_brightness: 25
   screen_brightness: 50
 mqtt:
@@ -51,7 +51,7 @@ mqtt:
     port: 1883
     client_id: ''
     username: fiber
-    password: '123456789'
+    password: 'fiber_dev'
   # TLS: disabled by default (app connects to local broker on same device)
   # Enable and set ca_cert_path when connecting to a remote broker
   tls:
@@ -91,3 +91,8 @@ mqtt:
     payload: '{"status":"offline","reason":"unexpected_disconnect"}'
     qos: 1
     retain: true
+ble:
+  enabled: true                # dev platform: in-app BLE GATT server is active
+  pin: "123456"                # BLE pairing PIN. Edit to rotate.
+  enable_terminal: true        # FB05/FB06 terminal-over-BLE; set false for stricter deployments
+  advertising_name: null       # null → use device hostname; set to "FIBER-DEV" if mobile filters by name
