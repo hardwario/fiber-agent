@@ -1,4 +1,4 @@
-# FIBER Medical Thermometer
+# FIBER Agent
 
 Embedded Rust application for medical-grade temperature monitoring on Raspberry Pi Compute Module 4.
 
