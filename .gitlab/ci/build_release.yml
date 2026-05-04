@@ -16,14 +16,14 @@ build:aarch64-dev-platform:
         libssl-dev:arm64 libdbus-1-dev:arm64
   script:
     - cargo build --release --target aarch64-unknown-linux-gnu --features dev-platform
-    - cp target/aarch64-unknown-linux-gnu/release/fiber_app fiber_app-aarch64-dev-platform
+    - cp target/aarch64-unknown-linux-gnu/release/fiber_app fiber_app
     - 'curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN"
-        --upload-file fiber_app-aarch64-dev-platform
-        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/fiber-agent/${CI_COMMIT_TAG}/fiber_app-aarch64-dev-platform"'
+        --upload-file fiber_app
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/fiber-agent/${CI_COMMIT_TAG}/fiber_app"'
   artifacts:
-    name: "fiber_app-${CI_COMMIT_TAG}-aarch64-dev-platform"
+    name: "fiber_app-${CI_COMMIT_TAG}"
     paths:
-      - fiber_app-aarch64-dev-platform
+      - fiber_app
     expire_in: 6 months
   cache:
     key:
@@ -51,6 +51,6 @@ release:dev-platform:
     description: "Auto-built aarch64 binary with --features dev-platform."
     assets:
       links:
-        - name: "fiber_app-aarch64-dev-platform"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/fiber-agent/${CI_COMMIT_TAG}/fiber_app-aarch64-dev-platform"
+        - name: "fiber_app"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/fiber-agent/${CI_COMMIT_TAG}/fiber_app"
           link_type: package
