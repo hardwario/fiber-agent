@@ -1,0 +1,10 @@
+# Gitleaks config — extends defaults with project-specific allowlists.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project paths excluded from secret scanning"
+paths = [
+    '''^target/''',           # Cargo build artifacts (binary metadata triggers private-key rule)
+    '''^\.playwright-mcp/''', # Local Playwright MCP debug logs (not tracked, gitignored)
+]
