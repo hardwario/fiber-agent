@@ -19,9 +19,12 @@ workflow:
 
 stages:
   - prep
+  - build
   - trigger
+  - release
 
 include:
   - local: .gitlab/ci/_rules.yml
   - local: .gitlab/ci/prep_tags.yml
   - local: .gitlab/ci/trigger_yocto_qbee.yml
+  - local: .gitlab/ci/build_release.yml
