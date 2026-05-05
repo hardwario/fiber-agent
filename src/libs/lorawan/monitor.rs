@@ -146,6 +146,13 @@ fn lorawan_loop(
             mqttoptions.set_keep_alive(Duration::from_secs(30));
             mqttoptions.set_clean_session(true);
 
+            if let (Some(u), Some(p)) = (
+                &config.chirpstack_mqtt_username,
+                &config.chirpstack_mqtt_password,
+            ) {
+                mqttoptions.set_credentials(u, p);
+            }
+
             let (client, mut eventloop) = AsyncClient::new(mqttoptions, 100);
 
             // Subscribe to ChirpStack uplink events

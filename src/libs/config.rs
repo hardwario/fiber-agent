@@ -580,6 +580,14 @@ pub struct LoRaWANConfig {
     #[serde(default = "default_chirpstack_mqtt_port")]
     pub chirpstack_mqtt_port: u16,
 
+    /// ChirpStack local MQTT broker username (optional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chirpstack_mqtt_username: Option<String>,
+
+    /// ChirpStack local MQTT broker password (optional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chirpstack_mqtt_password: Option<String>,
+
     /// Publish interval for LoRaWAN sensor data (seconds)
     #[serde(default = "default_lorawan_publish_interval")]
     pub publish_interval_s: u64,
@@ -599,6 +607,8 @@ impl Default for LoRaWANConfig {
             enabled: false,
             chirpstack_mqtt_host: "localhost".to_string(),
             chirpstack_mqtt_port: 1883,
+            chirpstack_mqtt_username: None,
+            chirpstack_mqtt_password: None,
             publish_interval_s: 30,
             sensor_timeout_s: 3600, // 1 hour
             sensors: Vec::new(),
