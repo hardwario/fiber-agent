@@ -212,7 +212,7 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y, &LORAWAN_BITMAP);
+    draw_wifi_bitmap(display, x, y+1, &LORAWAN_BITMAP);
 }
 
 fn draw_ethernet_bitmap<D>(
