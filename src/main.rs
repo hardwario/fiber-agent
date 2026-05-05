@@ -386,12 +386,25 @@ fn main() -> io::Result<()> {
 
     // Create and spawn LoRaWAN monitor if MQTT is available
     let _lorawan_monitor = if let Some(ref handle) = mqtt_handle {
-        let lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
+        let mut lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
             // Auto-enable if gateway hardware is detected
             let mut cfg = LoRaWANConfig::default();
             cfg.enabled = true;
             cfg
         });
+
+        // If ChirpStack creds are not set and it points at the same broker as
+        // the main MQTT client, reuse the main broker's credentials.
+        if let Some(ref main_mqtt) = config.mqtt {
+            if lorawan_config.chirpstack_mqtt_username.is_none()
+                && lorawan_config.chirpstack_mqtt_password.is_none()
+                && lorawan_config.chirpstack_mqtt_host == main_mqtt.broker.host
+                && lorawan_config.chirpstack_mqtt_port == main_mqtt.broker.port
+            {
+                lorawan_config.chirpstack_mqtt_username = main_mqtt.broker.username.clone();
+                lorawan_config.chirpstack_mqtt_password = main_mqtt.broker.password.clone();
+            }
+        }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
         match LoRaWANMonitor::new(lorawan_config, handle.sender(), hostname.clone()) {
