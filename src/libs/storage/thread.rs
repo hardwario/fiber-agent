@@ -226,6 +226,17 @@ impl StorageThread {
             }
         };
 
+        // Open ONE connection for the lifetime of this thread.
+        // Re-opening per message would re-run SQLCipher's PBKDF2 KDF (256k iterations)
+        // and burn an entire CPU core on low-power ARM devices.
+        let mut conn = match db.connect() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("STORAGE THREAD: Failed to open initial connection: {}", e);
+                return;
+            }
+        };
+
         let retention_policy = RetentionPolicy::new(max_size_gb);
         let mut message_count = 0u64;
         let mut pending_writes = 0usize;
@@ -245,11 +256,9 @@ impl StorageThread {
                 Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                     // Timeout - do periodic flush if needed
                     if pending_writes > 0 && last_flush.elapsed() > flush_interval {
-                        if let Ok(conn) = db.connect() {
-                            let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
-                            pending_writes = 0;
-                            last_flush = std::time::Instant::now();
-                        }
+                        let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
+                        pending_writes = 0;
+                        last_flush = std::time::Instant::now();
                     }
                     None
                 }
@@ -268,37 +277,33 @@ impl StorageThread {
                         is_connected,
                         alarm_state,
                     } => {
-                        if let Ok(conn) = db.connect() {
-                            let reading = SensorReading::new(
-                                timestamp,
-                                sensor_line,
-                                temperature,
-                                is_connected,
-                                alarm_state,
-                            );
+                        let reading = SensorReading::new(
+                            timestamp,
+                            sensor_line,
+                            temperature,
+                            is_connected,
+                            alarm_state,
+                        );
 
-                            match StorageWriter::write_sensor_reading(&conn, &reading, hmac_secret) {
-                                Ok(_) => {
-                                    pending_writes += 1;
-                                    message_count += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("STORAGE THREAD: Failed to write reading: {}", e);
-                                }
+                        match StorageWriter::write_sensor_reading(&conn, &reading, hmac_secret) {
+                            Ok(_) => {
+                                pending_writes += 1;
+                                message_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: Failed to write reading: {}", e);
                             }
                         }
                     }
 
                     StorageMessage::WriteSensorReadingsBatch { readings } => {
-                        if let Ok(mut conn) = db.connect() {
-                            match StorageWriter::write_sensor_readings_batch(&mut conn, &readings, hmac_secret) {
-                                Ok(count) => {
-                                    pending_writes += count as usize;
-                                    message_count += count as u64;
-                                }
-                                Err(e) => {
-                                    eprintln!("STORAGE THREAD: Failed to write batch: {}", e);
-                                }
+                        match StorageWriter::write_sensor_readings_batch(&mut conn, &readings, hmac_secret) {
+                            Ok(count) => {
+                                pending_writes += count as usize;
+                                message_count += count as u64;
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: Failed to write batch: {}", e);
                             }
                         }
                     }
@@ -310,66 +315,56 @@ impl StorageThread {
                         to_state,
                         temperature,
                     } => {
-                        if let Ok(conn) = db.connect() {
-                            let event =
-                                AlarmEvent::new(timestamp, sensor_line, from_state, to_state, temperature);
+                        let event =
+                            AlarmEvent::new(timestamp, sensor_line, from_state, to_state, temperature);
 
-                            match StorageWriter::write_alarm_event(&conn, &event) {
-                                Ok(_) => {
-                                    pending_writes += 1;
-                                    message_count += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("STORAGE THREAD: Failed to write alarm: {}", e);
-                                }
+                        match StorageWriter::write_alarm_event(&conn, &event) {
+                            Ok(_) => {
+                                pending_writes += 1;
+                                message_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: Failed to write alarm: {}", e);
                             }
                         }
                     }
 
                     StorageMessage::Flush => {
-                        if let Ok(conn) = db.connect() {
-                            let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
-                            pending_writes = 0;
-                            last_flush = std::time::Instant::now();
-                        }
+                        let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
+                        pending_writes = 0;
+                        last_flush = std::time::Instant::now();
                     }
 
                     StorageMessage::EnforceRetention => {
-                        if let Ok(mut conn) = db.connect() {
-                            match retention_policy.enforce(&db, &mut conn) {
-                                Ok(stats) => {
-                                    eprintln!(
-                                        "STORAGE THREAD: Retention enforced - deleted {}, freed {}MB",
-                                        stats.deleted_count,
-                                        stats.freed_bytes / (1024 * 1024)
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("STORAGE THREAD: Retention enforcement failed: {}", e);
-                                }
+                        match retention_policy.enforce(&db, &mut conn) {
+                            Ok(stats) => {
+                                eprintln!(
+                                    "STORAGE THREAD: Retention enforced - deleted {}, freed {}MB",
+                                    stats.deleted_count,
+                                    stats.freed_bytes / (1024 * 1024)
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: Retention enforcement failed: {}", e);
                             }
                         }
                     }
 
                     StorageMessage::GetStorageStats => {
-                        if let Ok(conn) = db.connect() {
-                            match StorageReader::get_storage_stats(&conn, db_path) {
-                                Ok(stats) => {
-                                    eprintln!("STORAGE THREAD: {}", stats);
-                                }
-                                Err(e) => {
-                                    eprintln!("STORAGE THREAD: Failed to get stats: {}", e);
-                                }
+                        match StorageReader::get_storage_stats(&conn, db_path) {
+                            Ok(stats) => {
+                                eprintln!("STORAGE THREAD: {}", stats);
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: Failed to get stats: {}", e);
                             }
                         }
                     }
 
                     StorageMessage::Shutdown => {
                         if pending_writes > 0 {
-                            if let Ok(conn) = db.connect() {
-                                let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
-                                eprintln!("STORAGE THREAD: Final flush of {} pending writes", pending_writes);
-                            }
+                            let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
+                            eprintln!("STORAGE THREAD: Final flush of {} pending writes", pending_writes);
                         }
                         eprintln!(
                             "STORAGE THREAD: Shutting down after processing {} messages",
@@ -383,22 +378,18 @@ impl StorageThread {
 
                 // Periodic flush if we have pending writes
                 if pending_writes > flush_threshold || last_flush.elapsed() > flush_interval {
-                    if let Ok(conn) = db.connect() {
-                        let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
-                        pending_writes = 0;
-                        last_flush = std::time::Instant::now();
-                    }
+                    let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
+                    pending_writes = 0;
+                    last_flush = std::time::Instant::now();
                 }
 
-                // Periodic retention check (every 10,000 messages)
-                if message_count % 10000 == 0 {
-                    if let Ok(mut conn) = db.connect() {
-                        if let Ok(should_clean) = retention_policy.needs_cleanup(&db) {
-                            if should_clean {
-                                if let Ok(usage) = retention_policy.get_usage_percent(&db) {
-                                    eprintln!("STORAGE THREAD: Storage at {:.1}%, enforcing retention", usage);
-                                    let _ = retention_policy.enforce(&db, &mut conn);
-                                }
+                // Periodic retention check (every 10,000 messages, skipping 0)
+                if message_count > 0 && message_count % 10000 == 0 {
+                    if let Ok(should_clean) = retention_policy.needs_cleanup(&db) {
+                        if should_clean {
+                            if let Ok(usage) = retention_policy.get_usage_percent(&db) {
+                                eprintln!("STORAGE THREAD: Storage at {:.1}%, enforcing retention", usage);
+                                let _ = retention_policy.enforce(&db, &mut conn);
                             }
                         }
                     }
