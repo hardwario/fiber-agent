@@ -52,7 +52,7 @@ fn main() -> io::Result<()> {
 
     // Load configuration from /data/fiber/config/fiber.config.yaml
     eprintln!("[main] Loading configuration...");
-    let config = match Config::load_default() {
+    let mut config = match Config::load_default() {
         Ok(cfg) => {
             eprintln!("[main] Configuration loaded from /data/fiber/config/fiber.config.yaml");
             cfg
@@ -63,6 +63,13 @@ fn main() -> io::Result<()> {
             Config::default_config()
         }
     };
+
+    // Override app_version with the build-time FIBER_VERSION (set by Yocto from the
+    // upstream git tag). Falls back to CARGO_PKG_VERSION for local cargo builds.
+    config.system.app_version = option_env!("FIBER_VERSION")
+        .filter(|v| !v.is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .to_string();
 
     // Display configuration info
     let display_version = if cfg!(feature = "dev-platform") {
