@@ -71,6 +71,7 @@ impl AlarmStateMachine {
     /// Returns true if state changed
     pub fn update_from_read_result(&mut self, success: bool, failure_threshold: u8, warmup_threshold: u8) -> bool {
         let old_state = self.current;
+        self.previous = self.current;
 
         if success {
             // Successful read - reset failure count
@@ -337,6 +338,32 @@ mod tests {
 
         sm.update_from_threshold(true, false, false);
         assert_eq!(sm.current, AlarmState::Critical);
+    }
+
+    #[test]
+    fn test_disconnected_does_not_re_fire_state_changed() {
+        // Regression: while sensor stays in Disconnected, every failed read
+        // must NOT report state_changed() — otherwise MQTT alarm spam.
+        let mut sm = AlarmStateMachine::new();
+        // Get out of NeverConnected and into Normal-like territory
+        sm.update_from_read_result(true, 3, 1);
+        sm.update_from_threshold(false, false, false);
+        assert_eq!(sm.current, AlarmState::Normal);
+
+        // Trip the failure threshold → transitions Normal → Disconnected once
+        sm.update_from_read_result(false, 3, 1);
+        sm.update_from_read_result(false, 3, 1);
+        let changed = sm.update_from_read_result(false, 3, 1);
+        assert_eq!(sm.current, AlarmState::Disconnected);
+        assert!(changed, "first transition into Disconnected must report changed");
+        assert!(sm.state_changed(), "first Disconnected entry must show state_changed");
+
+        // Subsequent failures while staying Disconnected: NO further state changes
+        for _ in 0..10 {
+            let changed = sm.update_from_read_result(false, 3, 1);
+            assert!(!changed, "stuck in Disconnected must not report changed");
+            assert!(!sm.state_changed(), "stuck in Disconnected must not show state_changed");
+        }
     }
 
     #[test]
