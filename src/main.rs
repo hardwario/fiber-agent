@@ -34,6 +34,60 @@ fn read_hostname_from_file() -> io::Result<String> {
     Ok(hostname.trim().to_uppercase())
 }
 
+/// Rewrite the `app_version:` line under `system:` in the YAML config so the
+/// on-disk file reflects the running binary's version (which may have been
+/// updated by a RAUC bundle install). No-op if the value already matches or
+/// the file/line cannot be found.
+fn sync_app_version_to_yaml(path: &str, version: &str) {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[main] sync_app_version_to_yaml: cannot read {}: {}", path, e);
+            return;
+        }
+    };
+
+    let mut in_system = false;
+    let mut changed = false;
+    let mut out = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        // Track whether we're inside the top-level `system:` block. Top-level
+        // keys start at column 0; nested keys are indented.
+        if !line.starts_with(' ') && !line.starts_with('\t') && trimmed.ends_with(':') {
+            in_system = trimmed == "system:";
+        }
+
+        if in_system && trimmed.starts_with("app_version:") {
+            let indent_len = line.len() - trimmed.len();
+            let indent = &line[..indent_len];
+            let new_line = format!("{}app_version: {}", indent, version);
+            if new_line != line {
+                changed = true;
+            }
+            out.push_str(&new_line);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+
+    // `lines()` drops a trailing newline; restore original file's trailing-newline state.
+    if !content.ends_with('\n') {
+        out.pop();
+    }
+
+    if !changed {
+        return;
+    }
+
+    if let Err(e) = fs::write(path, out) {
+        eprintln!("[main] sync_app_version_to_yaml: cannot write {}: {}", path, e);
+    } else {
+        eprintln!("[main] Synced app_version={} to {}", version, path);
+    }
+}
+
 fn main() -> io::Result<()> {
     #[cfg(feature = "dev-platform")]
     {
@@ -70,6 +124,15 @@ fn main() -> io::Result<()> {
         .filter(|v| !v.is_empty())
         .unwrap_or(env!("CARGO_PKG_VERSION"))
         .to_string();
+
+    // Persist app_version back to the YAML so external readers see the running
+    // version after a RAUC bundle install. Surgical line edit preserves comments
+    // and key order; only writes if the value actually changed (avoids needless
+    // flash wear on every boot).
+    sync_app_version_to_yaml(
+        "/data/fiber/config/fiber.config.yaml",
+        &config.system.app_version,
+    );
 
     // Display configuration info
     let display_version = if cfg!(feature = "dev-platform") {
