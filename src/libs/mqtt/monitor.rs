@@ -539,14 +539,15 @@ pub struct MqttMonitor {
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
-    pub fn new(config: MqttConfig, hostname: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, power_status, None, None, None, None)
+    pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
     pub fn new_with_stm(
         config: MqttConfig,
         hostname: String,
+        app_version: String,
         power_status: crate::libs::power::status::SharedPowerStatus,
         stm_bridge: Option<SharedStmBridge>,
         screen_brightness: Option<SharedScreenBrightnessHandle>,
@@ -604,6 +605,7 @@ impl MqttMonitor {
             if let Err(e) = Self::monitor_loop(
                 config,
                 hostname,
+                app_version,
                 receiver,
                 shutdown_flag_clone,
                 connection_state_clone,
@@ -656,6 +658,7 @@ impl MqttMonitor {
     fn monitor_loop(
         config: MqttConfig,
         hostname: String,
+        app_version: String,
         receiver: Receiver<MqttMessage>,
         shutdown_flag: Arc<AtomicBool>,
         connection_state: SharedConnectionState,
@@ -921,7 +924,7 @@ impl MqttMonitor {
                 // Initialize periodic status reporting
                 let mut last_status_log = Instant::now();
                 let app_start_time = Instant::now();
-                let firmware_version = env!("CARGO_PKG_VERSION").to_string();
+                let firmware_version = app_version.clone();
 
                 // Initialize periodic challenge cleanup
                 let mut last_challenge_cleanup = Instant::now();

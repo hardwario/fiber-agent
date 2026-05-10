@@ -317,6 +317,7 @@ fn main() -> io::Result<()> {
         match MqttMonitor::new_with_stm(
             config.mqtt.clone().unwrap(),
             hostname.clone(),
+            config.system.app_version.clone(),
             power_status.clone(),
             Some(stm_guard.clone()),
             Some(screen_brightness.clone()),
