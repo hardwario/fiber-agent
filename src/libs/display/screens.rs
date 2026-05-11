@@ -209,33 +209,45 @@ pub fn render_sensor_overview(
 pub fn render_lorawan_sensor_detail(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
+    detail_page: u8,
+    config: Option<&crate::libs::config::LoRaWANSensorConfig>,
+) -> anyhow::Result<()> {
+    match detail_page {
+        0 => render_lorawan_detail_page_readings(display, sensor),
+        1 => render_lorawan_detail_page_thresholds(display, sensor, config),
+        _ => render_lorawan_detail_page_location(display, sensor, config),
+    }
+}
+
+fn render_lorawan_detail_header(
+    display: &mut St7920,
+    sensor: &LoRaWANSensorState,
+    page_label: &str,
+) {
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    let display_name = if sensor.name.len() > 12 { &sensor.name[..12] } else { &sensor.name };
+
+    Text::with_alignment(display_name, Point::new(64, 9), text_style, Alignment::Center)
+        .draw(display).ok();
+
+    Text::with_alignment(page_label, Point::new(126, 9), text_style, Alignment::Right)
+        .draw(display).ok();
+
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display).ok();
+}
+
+fn render_lorawan_detail_page_readings(
+    display: &mut St7920,
+    sensor: &LoRaWANSensorState,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
-    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-
-    // Header: sensor name (truncate to 16 chars)
-    let display_name = if sensor.name.len() > 16 {
-        &sensor.name[..16]
-    } else {
-        &sensor.name
-    };
-
-    Text::with_alignment(
-        display_name,
-        Point::new(64, 9),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)
-    .ok();
-
-    // Separator line
-    Line::new(Point::new(0, 11), Point::new(127, 11))
-        .into_styled(line_style)
-        .draw(display)
-        .ok();
+    render_lorawan_detail_header(display, sensor, "1/3");
 
     // Line 1 (y=24): Temperature and alarm state
     let temp_str = sensor.temperature
@@ -247,10 +259,8 @@ pub fn render_lorawan_sensor_detail(
         LoRaWANAlarmState::Critical => "C",
         LoRaWANAlarmState::Disconnected => "E",
     };
-    let temp_line = format!("Temp:{} [{}]", temp_str, temp_alarm);
-    Text::new(&temp_line, Point::new(2, 24), text_style)
-        .draw(display)
-        .ok();
+    Text::new(&format!("Temp:{} [{}]", temp_str, temp_alarm), Point::new(2, 24), text_style)
+        .draw(display).ok();
 
     // Line 2 (y=37): Humidity and alarm state
     let hum_str = sensor.humidity
@@ -262,26 +272,21 @@ pub fn render_lorawan_sensor_detail(
         LoRaWANAlarmState::Critical => "C",
         LoRaWANAlarmState::Disconnected => "E",
     };
-    let hum_line = format!("Hum:{} [{}]", hum_str, hum_alarm);
-    Text::new(&hum_line, Point::new(2, 37), text_style)
-        .draw(display)
-        .ok();
+    Text::new(&format!("Hum:{} [{}]", hum_str, hum_alarm), Point::new(2, 37), text_style)
+        .draw(display).ok();
 
     // Line 3 (y=50): RSSI
     let rssi_str = sensor.rssi
         .map(|r| format!("{}dBm", r))
         .unwrap_or_else(|| "N/A".to_string());
-    let rssi_line = format!("RSSI:{}", rssi_str);
-    Text::new(&rssi_line, Point::new(2, 50), text_style)
-        .draw(display)
-        .ok();
+    Text::new(&format!("RSSI:{}", rssi_str), Point::new(2, 50), text_style)
+        .draw(display).ok();
 
     // Line 4 (y=63): Serial number or last seen
     let info_line = if let Some(ref serial) = sensor.serial_number {
         let s = if serial.len() > 18 { &serial[..18] } else { serial.as_str() };
         format!("SN:{}", s)
     } else if let Some(ref last_seen) = sensor.last_seen {
-        // Show just time portion if possible
         let time_part = if last_seen.len() > 10 { &last_seen[11..] } else { last_seen.as_str() };
         let time_display = if time_part.len() > 8 { &time_part[..8] } else { time_part };
         format!("Seen:{}", time_display)
@@ -289,9 +294,30 @@ pub fn render_lorawan_sensor_detail(
         "No data".to_string()
     };
     Text::new(&info_line, Point::new(2, 63), text_style)
-        .draw(display)
-        .ok();
+        .draw(display).ok();
 
+    display.flush()
+}
+
+// Stub for Task 12 (thresholds page).
+fn render_lorawan_detail_page_thresholds(
+    display: &mut St7920,
+    sensor: &LoRaWANSensorState,
+    _config: Option<&crate::libs::config::LoRaWANSensorConfig>,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+    render_lorawan_detail_header(display, sensor, "2/3");
+    display.flush()
+}
+
+// Stub for Task 13 (location page).
+fn render_lorawan_detail_page_location(
+    display: &mut St7920,
+    sensor: &LoRaWANSensorState,
+    _config: Option<&crate::libs::config::LoRaWANSensorConfig>,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+    render_lorawan_detail_header(display, sensor, "3/3");
     display.flush()
 }
 
