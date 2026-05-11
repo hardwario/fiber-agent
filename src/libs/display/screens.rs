@@ -21,6 +21,48 @@ use crate::libs::display::icons;
 use crate::libs::power::PowerStatus;
 use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
 
+/// A single row of the sensor overview, with its identity and active flag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverviewEntry {
+    /// Sensor kind (DS18B20 probe or LoRa sticker).
+    pub kind: OverviewKind,
+    /// Global sensor index: 0..8 for DS18B20 slot, 8..8+N for LoRa.
+    pub global_idx: usize,
+    /// True if the sensor has a current live reading (see `ordered_sensors`).
+    pub active: bool,
+}
+
+/// Kind of sensor in the overview.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OverviewKind {
+    Ds18b20,
+    LoRa,
+}
+
+/// Build the overview entries with active sensors first, inactive after.
+/// Within each group, underlying order is preserved (DS18B20 slot 0..7, then LoRa 0..N).
+pub fn ordered_sensors(
+    ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    lorawan_sensors: &[crate::libs::lorawan::state::LoRaWANSensorState],
+) -> Vec<OverviewEntry> {
+    use crate::libs::lorawan::state::LoRaWANAlarmState;
+
+    let mut all: Vec<OverviewEntry> = Vec::with_capacity(8 + lorawan_sensors.len());
+    for (i, slot) in ds_readings.iter().enumerate() {
+        let active = matches!(slot, Some(r) if r.is_connected);
+        all.push(OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active });
+    }
+    for (i, s) in lorawan_sensors.iter().enumerate() {
+        let has_reading = s.temperature.is_some() || s.humidity.is_some();
+        let connected = !matches!(s.alarm_state, LoRaWANAlarmState::Disconnected);
+        let active = has_reading && connected;
+        all.push(OverviewEntry { kind: OverviewKind::LoRa, global_idx: 8 + i, active });
+    }
+    let (mut active, mut inactive): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.active);
+    active.append(&mut inactive);
+    active
+}
+
 /// Render the sensor overview screen showing sensors across multiple pages
 /// Pages 0-1: DS18B20 sensors (4 per page), Pages 2+: LoRaWAN sensors (4 per page)
 /// When selected_sensor is Some, shows cursor at that sensor position (selection mode)
@@ -911,4 +953,111 @@ pub fn render_ble_wifi_fail(
         .draw(display).ok();
 
     display.flush()
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    use crate::libs::alarms::AlarmState;
+    use crate::libs::sensors::state::SensorReading;
+    use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
+
+    fn ds(temp: f32, connected: bool) -> Option<SensorReading> {
+        Some(SensorReading {
+            temperature: temp,
+            is_connected: connected,
+            alarm_state: if connected { AlarmState::Normal } else { AlarmState::Disconnected },
+        })
+    }
+
+    fn lora(name: &str, temp: Option<f32>, alarm: LoRaWANAlarmState) -> LoRaWANSensorState {
+        LoRaWANSensorState {
+            dev_eui: name.to_string(),
+            name: name.to_string(),
+            serial_number: None,
+            temperature: temp,
+            humidity: None,
+            voltage: None,
+            ext_temperature_1: None,
+            ext_temperature_2: None,
+            illuminance: None,
+            motion_count: None,
+            orientation: None,
+            rssi: None,
+            snr: None,
+            last_seen: None,
+            alarm_state: alarm.clone(),
+            temp_alarm_state: alarm.clone(),
+            humidity_alarm_state: alarm,
+        }
+    }
+
+    fn empty_ds() -> [Option<SensorReading>; 8] {
+        [None, None, None, None, None, None, None, None]
+    }
+
+    #[test]
+    fn all_inactive_keeps_underlying_order() {
+        let ds_arr = empty_ds();
+        let lr = vec![lora("a", None, LoRaWANAlarmState::Disconnected),
+                      lora("b", None, LoRaWANAlarmState::Disconnected)];
+        let entries = ordered_sensors(&ds_arr, &lr);
+        assert_eq!(entries.len(), 10);
+        for (i, e) in entries.iter().enumerate() {
+            assert_eq!(e.global_idx, i);
+            assert!(!e.active);
+        }
+    }
+
+    #[test]
+    fn all_active_keeps_underlying_order() {
+        let mut ds_arr = empty_ds();
+        for i in 0..8 { ds_arr[i] = ds(20.0, true); }
+        let lr = vec![lora("a", Some(21.0), LoRaWANAlarmState::Normal)];
+        let entries = ordered_sensors(&ds_arr, &lr);
+        assert_eq!(entries.len(), 9);
+        for (i, e) in entries.iter().enumerate() {
+            assert_eq!(e.global_idx, i);
+            assert!(e.active);
+        }
+    }
+
+    #[test]
+    fn mixed_active_first_then_inactive() {
+        let mut ds_arr = empty_ds();
+        ds_arr[1] = ds(20.0, true);
+        ds_arr[5] = ds(20.0, true);
+        let lr = vec![
+            lora("a", None, LoRaWANAlarmState::Disconnected),
+            lora("b", Some(21.0), LoRaWANAlarmState::Normal),
+        ];
+        let entries = ordered_sensors(&ds_arr, &lr);
+        let global_indices: Vec<usize> = entries.iter().map(|e| e.global_idx).collect();
+        assert_eq!(global_indices, vec![1, 5, 9, 0, 2, 3, 4, 6, 7, 8]);
+        assert!(entries[0].active);
+        assert!(entries[1].active);
+        assert!(entries[2].active);
+        assert!(!entries[3].active);
+    }
+
+    #[test]
+    fn lora_disconnected_with_temperature_still_inactive() {
+        let ds_arr = empty_ds();
+        let lr = vec![lora("a", Some(20.0), LoRaWANAlarmState::Disconnected)];
+        let entries = ordered_sensors(&ds_arr, &lr);
+        assert!(!entries[0].active);
+    }
+
+    #[test]
+    fn ds_disconnected_is_inactive_even_with_reading() {
+        let mut ds_arr = empty_ds();
+        ds_arr[0] = Some(SensorReading {
+            temperature: 20.0,
+            is_connected: false,
+            alarm_state: AlarmState::Disconnected,
+        });
+        let lr = vec![];
+        let entries = ordered_sensors(&ds_arr, &lr);
+        assert!(!entries[0].active);
+    }
 }
