@@ -2191,6 +2191,21 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.remove_lorawan_sensor_config(dev_eui.clone());
                     if result.success {
+                        // Drop the in-memory sensor entry so the display stops showing it.
+                        let state_opt: Option<crate::libs::lorawan::SharedLoRaWANState> =
+                            lorawan_state_slot.lock().ok().and_then(|g| g.clone());
+                        if let Some(state) = state_opt {
+                            if let Ok(mut s) = state.write() {
+                                s.sensors.remove(&dev_eui);
+                            }
+                        }
+                        // Drop from the shared configs so the LoRa monitor stops
+                        // evaluating thresholds for it (matches on-disk YAML state).
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                v.retain(|c| c.dev_eui != dev_eui);
+                            }
+                        }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
                         Ok(())
                     } else {
