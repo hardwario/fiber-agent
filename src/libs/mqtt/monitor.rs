@@ -1533,11 +1533,17 @@ impl MqttMonitor {
                                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                 .map(|d| d.as_secs());
 
-                            // Get device label from config, defaulting to hostname
-                            let device_label = crate::libs::config::Config::load_default()
-                                .ok()
-                                .and_then(|cfg| cfg.system.device_label)
+                            // Get device label and LoRaWAN sensor count from config
+                            let cfg = crate::libs::config::Config::load_default().ok();
+                            let device_label = cfg
+                                .as_ref()
+                                .and_then(|c| c.system.device_label.clone())
                                 .unwrap_or_else(|| hostname.clone());
+                            let lorawan_sensor_count = cfg
+                                .as_ref()
+                                .and_then(|c| c.lorawan.as_ref())
+                                .map(|l| l.sensors.len())
+                                .unwrap_or(0);
 
                             // Check LoRaWAN gateway status (checks running services, not just installed)
                             let lorawan_detection = crate::libs::lorawan::detector::detect_gateway();
@@ -1563,7 +1569,7 @@ impl MqttMonitor {
                                 lorawan_gateway_present: lorawan_detection.is_present(),
                                 lorawan_concentratord_running: lorawan_detection.concentratord_running,
                                 lorawan_chirpstack_running: lorawan_detection.chirpstack_running,
-                                lorawan_sensor_count: 0, // Sensor count updated by LoRaWAN monitor
+                                lorawan_sensor_count,
                             }).await {
                                 eprintln!("[MQTT Monitor] Failed to publish system status: {}", e);
                             }
