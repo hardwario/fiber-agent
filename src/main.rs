@@ -305,6 +305,16 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Build the shared LoRa configs handle from the initial config snapshot.
+    // This becomes the live source of truth: LoRaWAN monitor reads it for
+    // alarm evaluation, MQTT writes it on config changes, display reads it
+    // for the thresholds / location pages.
+    let lorawan_configs = fiber_app::libs::lorawan::create_shared_lorawan_sensor_configs(
+        config.lorawan.as_ref().map(|l| l.sensors.clone()).unwrap_or_default(),
+    );
+    eprintln!("[main] LoRa configs handle initialized with {} sensors",
+        lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
+
     // Create and spawn MQTT monitor if enabled
     eprintln!("[main] Checking MQTT configuration...");
     eprintln!("[main]   config.mqtt present: {}", config.mqtt.is_some());
@@ -323,6 +333,8 @@ fn main() -> io::Result<()> {
             Some(screen_brightness.clone()),
             Some(buzzer_volume.clone()),
             Some(buzzer_priority_manager.clone()),
+            None,
+            Some(lorawan_configs.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
@@ -455,16 +467,6 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Build the shared LoRa configs handle from the initial config snapshot.
-    // This becomes the live source of truth: LoRaWAN monitor reads it for
-    // alarm evaluation, MQTT writes it on config changes, display reads it
-    // for the thresholds / location pages.
-    let lorawan_configs = fiber_app::libs::lorawan::create_shared_lorawan_sensor_configs(
-        config.lorawan.as_ref().map(|l| l.sensors.clone()).unwrap_or_default(),
-    );
-    eprintln!("[main] LoRa configs handle initialized with {} sensors",
-        lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
-
     // Create and spawn LoRaWAN monitor if MQTT is available
     let _lorawan_monitor = if let Some(ref handle) = mqtt_handle {
         let mut lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
@@ -514,6 +516,11 @@ fn main() -> io::Result<()> {
         eprintln!("[main] LoRaWAN monitor disabled (MQTT not enabled)");
         None
     };
+
+    // Wire LoRaWAN state into MQTT monitor now that both exist.
+    if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
+        mqtt_mon.set_lorawan_state(lr_mon.state.clone());
+    }
 
     // Application is now running with background monitoring
     eprintln!("[main] Application running with medical data persistence. Press Ctrl+C to exit.");
