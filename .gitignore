@@ -21,6 +21,7 @@ Thumbs.db
 .claude/
 .playwright-mcp/
 docs/
+.worktrees/
 
 # Temporary
 *.bak
