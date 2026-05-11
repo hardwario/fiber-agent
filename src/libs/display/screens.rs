@@ -228,6 +228,46 @@ fn fmt_thresh_hum(v: Option<f32>) -> String {
     v.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "--".to_string())
 }
 
+/// Wrap `text` into up to two lines of at most `width` characters each.
+/// Prefers breaking on whitespace; falls back to a hard break at `width`.
+/// If content overflows two lines, the second line is truncated and ends in `…`.
+pub fn wrap_two_lines(text: &str, width: usize) -> [String; 2] {
+    if text.is_empty() {
+        return ["".to_string(), "".to_string()];
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= width {
+        return [text.to_string(), "".to_string()];
+    }
+
+    // Find a whitespace within [0..=width] for line 1; otherwise hard-wrap.
+    let break_at = (0..=width.min(chars.len()))
+        .rev()
+        .find(|&i| i < chars.len() && chars[i].is_whitespace())
+        .unwrap_or(width);
+
+    let line1: String = chars[..break_at].iter().collect();
+    // Skip a single whitespace at the break point if we wrapped on one.
+    let rest_start = if break_at < chars.len() && chars[break_at].is_whitespace() {
+        break_at + 1
+    } else {
+        break_at
+    };
+    let rest: Vec<char> = chars[rest_start..].to_vec();
+
+    let line2 = if rest.len() <= width {
+        rest.iter().collect()
+    } else {
+        // Overflow — truncate with ellipsis to exactly `width` chars.
+        let mut s: String = rest[..width.saturating_sub(1)].iter().collect();
+        s.push('…');
+        s
+    };
+
+    [line1, line2]
+}
+
 fn render_lorawan_detail_header(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
@@ -346,14 +386,34 @@ fn render_lorawan_detail_page_thresholds(
     display.flush()
 }
 
-// Stub for Task 13 (location page).
 fn render_lorawan_detail_page_location(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
-    _config: Option<&crate::libs::config::LoRaWANSensorConfig>,
+    config: Option<&crate::libs::config::LoRaWANSensorConfig>,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     render_lorawan_detail_header(display, sensor, "3/3");
+
+    let location_str = config
+        .and_then(|c| c.location.as_deref())
+        .filter(|s| !s.is_empty());
+
+    Text::new("Location:", Point::new(2, 24), text_style).draw(display).ok();
+
+    match location_str {
+        Some(loc) => {
+            let lines = wrap_two_lines(loc, 21);
+            Text::new(&lines[0], Point::new(2, 37), text_style).draw(display).ok();
+            if !lines[1].is_empty() {
+                Text::new(&lines[1], Point::new(2, 50), text_style).draw(display).ok();
+            }
+        }
+        None => {
+            Text::new("--", Point::new(2, 37), text_style).draw(display).ok();
+        }
+    }
+
     display.flush()
 }
 
@@ -1084,5 +1144,48 @@ mod ordering_tests {
         let lr = vec![];
         let entries = ordered_sensors(&ds_arr, &lr);
         assert!(!entries[0].active);
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    #[test]
+    fn empty_returns_empty_lines() {
+        let lines = wrap_two_lines("", 21);
+        assert_eq!(lines, ["".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn short_fits_on_first_line() {
+        let lines = wrap_two_lines("Cold room A", 21);
+        assert_eq!(lines, ["Cold room A".to_string(), "".to_string()]);
+    }
+
+    #[test]
+    fn wraps_on_whitespace() {
+        let lines = wrap_two_lines("Cold room A, shelf 3 corner", 21);
+        // "Cold room A, shelf 3" is 20 chars (fits in 21); rest goes to line 2
+        assert_eq!(lines[0], "Cold room A, shelf 3");
+        assert_eq!(lines[1], "corner");
+    }
+
+    #[test]
+    fn hard_wraps_when_no_whitespace() {
+        let lines = wrap_two_lines("AAAAAAAAAAAAAAAAAAAAABBBBBB", 21);
+        assert_eq!(lines[0], "AAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(lines[1], "BBBBBB");
+    }
+
+    #[test]
+    fn truncates_with_ellipsis_when_overflow() {
+        let lines = wrap_two_lines(
+            "AAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBCCCCCC",
+            21,
+        );
+        assert_eq!(lines[0], "AAAAAAAAAAAAAAAAAAAAA");
+        assert!(lines[1].ends_with('…'));
+        assert_eq!(lines[1].chars().count(), 21);
     }
 }
