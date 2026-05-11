@@ -161,18 +161,22 @@ pub fn display_loop(
                     }
                 }
                 Screen::LoRaWANSensorDetail { dev_eui } => {
-                    let (lorawan_sensor, detail_page, config_snapshot) = if let Ok(ds) = display_state.lock() {
-                        let sensor = ds.lorawan_state.as_ref()
-                            .and_then(|s| s.read().ok())
-                            .and_then(|s| s.sensors.get(&dev_eui).cloned());
-                        let page = ds.lorawan_detail_page;
-                        let cfg = ds.lorawan_configs.as_ref()
-                            .and_then(|c| c.read().ok())
-                            .and_then(|v| v.iter().find(|c| c.dev_eui == dev_eui).cloned());
-                        (sensor, page, cfg)
-                    } else {
-                        (None, 0, None)
-                    };
+                    // Clone Arc handles + page index out of display_state under its Mutex,
+                    // then drop the Mutex before taking the inner RwLocks. Avoids holding
+                    // the Mutex while readers/writers contend on the LoRa handles.
+                    let (lorawan_state_arc, lorawan_configs_arc, detail_page) =
+                        if let Ok(ds) = display_state.lock() {
+                            (ds.lorawan_state.clone(), ds.lorawan_configs.clone(), ds.lorawan_detail_page)
+                        } else {
+                            (None, None, 0)
+                        };
+
+                    let lorawan_sensor = lorawan_state_arc.as_ref()
+                        .and_then(|s| s.read().ok())
+                        .and_then(|s| s.sensors.get(&dev_eui).cloned());
+                    let config_snapshot = lorawan_configs_arc.as_ref()
+                        .and_then(|c| c.read().ok())
+                        .and_then(|v| v.iter().find(|c| c.dev_eui == dev_eui).cloned());
 
                     if let Some(sensor) = lorawan_sensor {
                         if let Err(e) = render_lorawan_sensor_detail(
