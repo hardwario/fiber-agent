@@ -169,10 +169,10 @@ impl DisplayState {
         8 + self.lorawan_sensor_count()
     }
 
-    /// Total number of overview pages: 2 DS18B20 + ceil(lorawan_count / 4)
+    /// Total number of overview pages: ceil((8 + N) / 4)
     pub fn total_pages(&self) -> usize {
-        let lrw_count = self.lorawan_sensor_count();
-        2 + (lrw_count + 3) / 4
+        let total = self.total_sensor_count();
+        (total + 3) / 4
     }
 
     /// Snapshot the current ordered list of overview entries.

@@ -63,9 +63,9 @@ pub fn ordered_sensors(
     active
 }
 
-/// Render the sensor overview screen showing sensors across multiple pages
-/// Pages 0-1: DS18B20 sensors (4 per page), Pages 2+: LoRaWAN sensors (4 per page)
-/// When selected_sensor is Some, shows cursor at that sensor position (selection mode)
+/// Render the sensor overview screen showing sensors across multiple pages.
+/// Rows are rendered from the pre-computed `entries` slice (active-first ordered list).
+/// When selected_sensor is Some, shows cursor at that sensor position (selection mode).
 pub fn render_sensor_overview(
     display: &mut St7920,
     page: usize,
@@ -76,6 +76,7 @@ pub fn render_sensor_overview(
     device_label: &str,
     lorawan_gateway_present: bool,
     lorawan_sensors: &[LoRaWANSensorState],
+    entries: &[OverviewEntry],
     total_pages: usize,
     sensor_silenced: bool,
 ) -> anyhow::Result<()> {
@@ -103,9 +104,7 @@ pub fn render_sensor_overview(
         icons::draw_mute(display, mute_x, 3);
     }
 
-    let header_label = if page >= 2 {
-        "LORAWAN".to_string()
-    } else if device_label.len() > 14 {
+    let header_label = if device_label.len() > 14 {
         format!("{}...", &device_label[..11])
     } else {
         device_label.to_string()
@@ -143,99 +142,63 @@ pub fn render_sensor_overview(
     // Calculate x offset for labels (make room for cursor in selection mode)
     let label_x = if selected_sensor.is_some() { 8 } else { 2 };
 
-    if page < 2 {
-        // DS18B20 pages (0-1): 4 sensors per page
-        let start_sensor = page * 4;
-        for row in 0..4 {
-            let sensor_idx = start_sensor + row;
-            if sensor_idx >= 8 {
-                break;
-            }
+    let start = page * 4;
+    let end = (start + 4).min(entries.len());
+    let slice = &entries[start..end];
 
-            let y = 23 + (row as i32 * 12);
+    for (row, entry) in slice.iter().enumerate() {
+        let y = 23 + (row as i32 * 12);
+        let is_selected = selected_sensor == Some(entry.global_idx);
 
-            // Check if this row is selected (cursor position)
-            let is_selected = selected_sensor == Some(sensor_idx);
-
-            // Get sensor reading to determine status from AlarmState
-            let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
-                let (ch, is_alm) = match reading.alarm_state {
-                    AlarmState::NeverConnected => ("-", false),
-                    AlarmState::Disconnected => ("E", true),
-                    AlarmState::Reconnecting => ("W", true),
-                    AlarmState::Normal => ("N", false),
-                    AlarmState::Warning => ("W", true),
-                    AlarmState::Critical => ("C", true),
+        match entry.kind {
+            OverviewKind::Ds18b20 => {
+                let sensor_idx = entry.global_idx;
+                let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
+                    match reading.alarm_state {
+                        AlarmState::NeverConnected => ("-", false),
+                        AlarmState::Disconnected => ("E", true),
+                        AlarmState::Reconnecting => ("W", true),
+                        AlarmState::Normal => ("N", false),
+                        AlarmState::Warning => ("W", true),
+                        AlarmState::Critical => ("C", true),
+                    }
+                } else {
+                    ("?", false)
                 };
-                (ch, is_alm)
-            } else {
-                ("?", false)
-            };
-
-            // Get name from shared state (truncate to 7 chars in selection mode, 8 otherwise)
-            let name = &sensor_state.names[sensor_idx];
-            let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
-            let label = if name.len() > max_name_len {
-                format!("{}  ", &name[..max_name_len])
-            } else {
-                format!("{:width$}  ", name, width = max_name_len)
-            };
-
-            // Get temperature from sensor state
-            let temp_str = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
-                if reading.is_connected {
-                    format!("{:.1}°C", reading.temperature)
+                let name = &sensor_state.names[sensor_idx];
+                let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
+                let label = if name.len() > max_name_len {
+                    format!("{}  ", &name[..max_name_len])
+                } else {
+                    format!("{:width$}  ", name, width = max_name_len)
+                };
+                let temp_str = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
+                    if reading.is_connected {
+                        format!("{:.1}°C", reading.temperature)
+                    } else {
+                        "--.-°C".to_string()
+                    }
                 } else {
                     "--.-°C".to_string()
-                }
-            } else {
-                "--.-°C".to_string()
-            };
-
-            draw_sensor_row(display, y, label_x, is_selected, is_alarm, &label, &temp_str, status_char, &text_style);
-        }
-    } else {
-        // LoRaWAN pages (2+): 4 sensors per page
-        let lrw_page = page - 2;
-        let start = lrw_page * 4;
-        for row in 0..4 {
-            let lrw_idx = start + row;
-            if lrw_idx >= lorawan_sensors.len() {
-                break;
+                };
+                draw_sensor_row(display, y, label_x, is_selected, is_alarm, &label, &temp_str, status_char, &text_style);
             }
-
-            let sensor = &lorawan_sensors[lrw_idx];
-            let global_idx = 8 + lrw_idx; // Global sensor index
-            let y = 23 + (row as i32 * 12);
-
-            let is_selected = selected_sensor == Some(global_idx);
-
-            // Alarm status char from overall alarm_state
-            let (status_char, is_alarm) = match sensor.alarm_state {
-                LoRaWANAlarmState::Normal => ("N", false),
-                LoRaWANAlarmState::Warning => ("W", true),
-                LoRaWANAlarmState::Critical => ("C", true),
-                LoRaWANAlarmState::Disconnected => ("E", true),
-            };
-
-            // Name truncated to 6 chars to fit temp+humidity
-            let name = if sensor.name.len() > 6 {
-                &sensor.name[..6]
-            } else {
-                &sensor.name
-            };
-
-            // Format: "NAME  XX.X° XX% S"
-            let temp_str = sensor.temperature
-                .map(|t| format!("{:.1}", t))
-                .unwrap_or_else(|| "--.-".to_string());
-            let hum_str = sensor.humidity
-                .map(|h| format!("{:.0}%", h))
-                .unwrap_or_else(|| "--%".to_string());
-
-            let label = format!("{:6} {}° {}", name, temp_str, hum_str);
-
-            draw_sensor_row_wide(display, y, label_x, is_selected, is_alarm, &label, status_char, &text_style);
+            OverviewKind::LoRa => {
+                let lr_idx = entry.global_idx - 8;
+                if lr_idx >= lorawan_sensors.len() { continue; }
+                let sensor = &lorawan_sensors[lr_idx];
+                let (status_char, is_alarm) = match sensor.alarm_state {
+                    LoRaWANAlarmState::Normal => ("N", false),
+                    LoRaWANAlarmState::Warning => ("W", true),
+                    LoRaWANAlarmState::Critical => ("C", true),
+                    LoRaWANAlarmState::Disconnected => ("E", true),
+                };
+                let name = if sensor.name.len() > 6 { &sensor.name[..6] } else { &sensor.name };
+                let temp_str = sensor.temperature.map(|t| format!("{:.1}", t)).unwrap_or_else(|| "--.-".to_string());
+                let hum_str = sensor.humidity.map(|h| format!("{:.0}%", h)).unwrap_or_else(|| "--%".to_string());
+                let label = format!("{:6} {}° {}", name, temp_str, hum_str);
+                draw_sensor_row_wide(display, y, label_x, is_selected, is_alarm, &label, status_char, &text_style);
+            }
         }
     }
 

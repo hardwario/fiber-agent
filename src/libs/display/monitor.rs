@@ -137,8 +137,14 @@ pub fn display_loop(
                         false
                     };
 
+                    // Build the active-first ordered entries list for rendering
+                    let entries = crate::libs::display::screens::ordered_sensors(
+                        &sensor_snapshot.readings,
+                        &lorawan_sensors,
+                    );
+
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, total_pages, sensor_silenced) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, &entries, total_pages, sensor_silenced) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }
