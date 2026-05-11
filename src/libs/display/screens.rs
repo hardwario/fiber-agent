@@ -219,6 +219,15 @@ pub fn render_lorawan_sensor_detail(
     }
 }
 
+// Threshold formatting helpers
+fn fmt_thresh_temp(v: Option<f32>) -> String {
+    v.map(|x| format!("{:.1}", x)).unwrap_or_else(|| "--".to_string())
+}
+
+fn fmt_thresh_hum(v: Option<f32>) -> String {
+    v.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "--".to_string())
+}
+
 fn render_lorawan_detail_header(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
@@ -299,14 +308,41 @@ fn render_lorawan_detail_page_readings(
     display.flush()
 }
 
-// Stub for Task 12 (thresholds page).
 fn render_lorawan_detail_page_thresholds(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
-    _config: Option<&crate::libs::config::LoRaWANSensorConfig>,
+    config: Option<&crate::libs::config::LoRaWANSensorConfig>,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     render_lorawan_detail_header(display, sensor, "2/3");
+
+    let (tcl, twl, twh, tch, hcl, hwl, hwh, hch) = match config {
+        Some(c) => (
+            fmt_thresh_temp(c.temp_critical_low),
+            fmt_thresh_temp(c.temp_warning_low),
+            fmt_thresh_temp(c.temp_warning_high),
+            fmt_thresh_temp(c.temp_critical_high),
+            fmt_thresh_hum(c.humidity_critical_low),
+            fmt_thresh_hum(c.humidity_warning_low),
+            fmt_thresh_hum(c.humidity_warning_high),
+            fmt_thresh_hum(c.humidity_critical_high),
+        ),
+        None => (
+            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
+            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
+        ),
+    };
+
+    Text::new(&format!("T crit:{} - {}", tcl, tch), Point::new(2, 24), text_style)
+        .draw(display).ok();
+    Text::new(&format!("T warn:{} - {}", twl, twh), Point::new(2, 37), text_style)
+        .draw(display).ok();
+    Text::new(&format!("H crit:{} - {}", hcl, hch), Point::new(2, 50), text_style)
+        .draw(display).ok();
+    Text::new(&format!("H warn:{} - {}", hwl, hwh), Point::new(2, 63), text_style)
+        .draw(display).ok();
+
     display.flush()
 }
 
