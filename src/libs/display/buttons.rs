@@ -193,8 +193,13 @@ impl ButtonMonitor {
                                 state = ButtonMonitorState::Idle;
                                 eprintln!("[ButtonMonitor] DOWN hold cancelled by UP button");
                             }
+                            ButtonMonitorState::ShowingDetail => {
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.lorawan_detail_prev();
+                                }
+                            }
                             _ => {
-                                // Other states (ShowingQr, ShowingDetail) - ignore UP
+                                // Other states (ShowingQr) - ignore UP
                             }
                         }
                     }
@@ -280,8 +285,13 @@ impl ButtonMonitor {
                                 }
                                 selection_activity = Instant::now(); // Reset inactivity timer
                             }
+                            ButtonMonitorState::ShowingDetail => {
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.lorawan_detail_next();
+                                }
+                            }
                             _ => {
-                                // Other states (ShowingQr, ShowingDetail) - ignore DOWN
+                                // Other states (ShowingQr) - ignore DOWN
                             }
                         }
                     }
