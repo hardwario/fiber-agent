@@ -455,6 +455,16 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Build the shared LoRa configs handle from the initial config snapshot.
+    // This becomes the live source of truth: LoRaWAN monitor reads it for
+    // alarm evaluation, MQTT writes it on config changes, display reads it
+    // for the thresholds / location pages.
+    let lorawan_configs = fiber_app::libs::lorawan::create_shared_lorawan_sensor_configs(
+        config.lorawan.as_ref().map(|l| l.sensors.clone()).unwrap_or_default(),
+    );
+    eprintln!("[main] LoRa configs handle initialized with {} sensors",
+        lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
+
     // Create and spawn LoRaWAN monitor if MQTT is available
     let _lorawan_monitor = if let Some(ref handle) = mqtt_handle {
         let mut lorawan_config = config.lorawan.clone().unwrap_or_else(|| {
@@ -478,7 +488,7 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
-        match LoRaWANMonitor::new(lorawan_config, handle.sender(), hostname.clone()) {
+        match LoRaWANMonitor::new(lorawan_config, lorawan_configs.clone(), handle.sender(), hostname.clone()) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state
                 let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
