@@ -141,6 +141,10 @@ pub struct DisplayState {
     pub lorawan_state: Option<SharedLoRaWANState>,
     /// Buzzer priority manager for checking mute state
     pub buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
+    /// Current page within the LoRa detail view (0..3). Reset to 0 on each entry.
+    pub lorawan_detail_page: u8,
+    /// Shared LoRa configs handle (for rendering thresholds + location pages).
+    pub lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
 }
 
 impl DisplayState {
@@ -153,6 +157,8 @@ impl DisplayState {
             lorawan_gateway_present: false,
             lorawan_state: None,
             buzzer_priority: None,
+            lorawan_detail_page: 0,
+            lorawan_configs: None,
         }
     }
 
@@ -226,6 +232,26 @@ impl DisplayState {
                 self.current_screen = Screen::SystemInfo { page: (page + 1) % 3 };
             }
             _ => {}
+        }
+    }
+
+    /// Move forward through LoRa detail pages: 0 → 1 → 2, clamped at 2 (no wraparound).
+    pub fn lorawan_detail_next(&mut self) {
+        if matches!(self.current_screen, Screen::LoRaWANSensorDetail { .. }) {
+            if self.lorawan_detail_page < 2 {
+                self.lorawan_detail_page += 1;
+                self.should_update = true;
+            }
+        }
+    }
+
+    /// Move backward through LoRa detail pages: 2 → 1 → 0, clamped at 0 (no wraparound).
+    pub fn lorawan_detail_prev(&mut self) {
+        if matches!(self.current_screen, Screen::LoRaWANSensorDetail { .. }) {
+            if self.lorawan_detail_page > 0 {
+                self.lorawan_detail_page -= 1;
+                self.should_update = true;
+            }
         }
     }
 
@@ -374,6 +400,7 @@ impl DisplayState {
                 let dev_euis = self.sorted_lorawan_dev_euis();
                 if let Some(dev_eui) = dev_euis.get(lorawan_idx) {
                     self.current_screen = Screen::LoRaWANSensorDetail { dev_eui: dev_eui.clone() };
+                    self.lorawan_detail_page = 0;
                     self.should_update = true;
                 }
             } else {

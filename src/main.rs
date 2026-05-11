@@ -315,6 +315,14 @@ fn main() -> io::Result<()> {
     eprintln!("[main] LoRa configs handle initialized with {} sensors",
         lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
 
+    // Attach LoRa configs to display state
+    {
+        if let Ok(mut state) = _display_monitor.display_state.lock() {
+            state.lorawan_configs = Some(lorawan_configs.clone());
+            eprintln!("[main] LoRa configs attached to display state");
+        }
+    }
+
     // Create and spawn MQTT monitor if enabled
     eprintln!("[main] Checking MQTT configuration...");
     eprintln!("[main]   config.mqtt present: {}", config.mqtt.is_some());
