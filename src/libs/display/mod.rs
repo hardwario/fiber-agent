@@ -141,6 +141,10 @@ pub struct DisplayState {
     pub lorawan_state: Option<SharedLoRaWANState>,
     /// Buzzer priority manager for checking mute state
     pub buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
+    /// Current page within the LoRa detail view (0..3). Reset to 0 on each entry.
+    pub lorawan_detail_page: u8,
+    /// Shared LoRa configs handle (for rendering thresholds + location pages).
+    pub lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
 }
 
 impl DisplayState {
@@ -153,6 +157,8 @@ impl DisplayState {
             lorawan_gateway_present: false,
             lorawan_state: None,
             buzzer_priority: None,
+            lorawan_detail_page: 0,
+            lorawan_configs: None,
         }
     }
 
@@ -169,10 +175,28 @@ impl DisplayState {
         8 + self.lorawan_sensor_count()
     }
 
-    /// Total number of overview pages: 2 DS18B20 + ceil(lorawan_count / 4)
+    /// Total number of overview pages: ceil((8 + N) / 4)
     pub fn total_pages(&self) -> usize {
-        let lrw_count = self.lorawan_sensor_count();
-        2 + (lrw_count + 3) / 4
+        let total = self.total_sensor_count();
+        (total + 3) / 4
+    }
+
+    /// Snapshot the current ordered list of overview entries.
+    /// Returns an empty list if shared state isn't ready.
+    pub fn ordered_entries(
+        &self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ) -> Vec<crate::libs::display::screens::OverviewEntry> {
+        let lr_vec: Vec<crate::libs::lorawan::state::LoRaWANSensorState> =
+            self.lorawan_state.as_ref()
+                .and_then(|s| s.read().ok())
+                .map(|s| {
+                    let mut v: Vec<_> = s.sensors.values().cloned().collect();
+                    v.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
+                    v
+                })
+                .unwrap_or_default();
+        crate::libs::display::screens::ordered_sensors(ds_readings, &lr_vec)
     }
 
     /// Get sorted LoRaWAN dev_euis for consistent indexing
@@ -208,6 +232,26 @@ impl DisplayState {
                 self.current_screen = Screen::SystemInfo { page: (page + 1) % 3 };
             }
             _ => {}
+        }
+    }
+
+    /// Move forward through LoRa detail pages: 0 → 1 → 2, clamped at 2 (no wraparound).
+    pub fn lorawan_detail_next(&mut self) {
+        if matches!(self.current_screen, Screen::LoRaWANSensorDetail { .. }) {
+            if self.lorawan_detail_page < 2 {
+                self.lorawan_detail_page += 1;
+                self.should_update = true;
+            }
+        }
+    }
+
+    /// Move backward through LoRa detail pages: 2 → 1 → 0, clamped at 0 (no wraparound).
+    pub fn lorawan_detail_prev(&mut self) {
+        if matches!(self.current_screen, Screen::LoRaWANSensorDetail { .. }) {
+            if self.lorawan_detail_page > 0 {
+                self.lorawan_detail_page -= 1;
+                self.should_update = true;
+            }
         }
     }
 
@@ -279,13 +323,18 @@ impl DisplayState {
     }
 
     /// Enter selection mode (from SensorOverview)
-    pub fn enter_selection_mode(&mut self) {
+    pub fn enter_selection_mode(
+        &mut self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ) {
         if let Screen::SensorOverview { page, .. } = self.current_screen {
-            // Start selection at first sensor on current page
-            let first_sensor = page * 4;
+            let entries = self.ordered_entries(ds_readings);
+            if entries.is_empty() { return; }
+            let pos = (page * 4).min(entries.len() - 1);
+            let first_global = entries[pos].global_idx;
             self.current_screen = Screen::SensorOverview {
                 page,
-                selected_sensor: Some(first_sensor),
+                selected_sensor: Some(first_global),
             };
             self.should_update = true;
         }
@@ -302,29 +351,41 @@ impl DisplayState {
         }
     }
 
-    /// Move selection cursor up (wraps within all sensors: 8 DS18B20 + N LoRaWAN)
-    pub fn selection_up(&mut self) {
+    /// Move selection cursor up within the ordered (active-first) list.
+    pub fn selection_up(
+        &mut self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let total = self.total_sensor_count();
-            let new_idx = if idx == 0 { total - 1 } else { idx - 1 };
-            let new_page = new_idx / 4;
+            let entries = self.ordered_entries(ds_readings);
+            if entries.is_empty() { return; }
+            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
+            let new_pos = if pos == 0 { entries.len() - 1 } else { pos - 1 };
+            let new_global = entries[new_pos].global_idx;
+            let new_page = new_pos / 4;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
-                selected_sensor: Some(new_idx),
+                selected_sensor: Some(new_global),
             };
             self.should_update = true;
         }
     }
 
-    /// Move selection cursor down (wraps within all sensors: 8 DS18B20 + N LoRaWAN)
-    pub fn selection_down(&mut self) {
+    /// Move selection cursor down within the ordered (active-first) list.
+    pub fn selection_down(
+        &mut self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let total = self.total_sensor_count();
-            let new_idx = if idx >= total - 1 { 0 } else { idx + 1 };
-            let new_page = new_idx / 4;
+            let entries = self.ordered_entries(ds_readings);
+            if entries.is_empty() { return; }
+            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
+            let new_pos = if pos + 1 >= entries.len() { 0 } else { pos + 1 };
+            let new_global = entries[new_pos].global_idx;
+            let new_page = new_pos / 4;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
-                selected_sensor: Some(new_idx),
+                selected_sensor: Some(new_global),
             };
             self.should_update = true;
         }
@@ -339,6 +400,7 @@ impl DisplayState {
                 let dev_euis = self.sorted_lorawan_dev_euis();
                 if let Some(dev_eui) = dev_euis.get(lorawan_idx) {
                     self.current_screen = Screen::LoRaWANSensorDetail { dev_eui: dev_eui.clone() };
+                    self.lorawan_detail_page = 0;
                     self.should_update = true;
                 }
             } else {
@@ -349,30 +411,27 @@ impl DisplayState {
     }
 
     /// Exit detail view back to selection mode
-    pub fn exit_detail_view(&mut self) {
-        match &self.current_screen {
-            Screen::SensorDetail { sensor_idx } => {
-                let idx = *sensor_idx;
-                let page = idx / 4;
-                self.current_screen = Screen::SensorOverview {
-                    page,
-                    selected_sensor: Some(idx),
-                };
-                self.should_update = true;
-            }
+    pub fn exit_detail_view(
+        &mut self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ) {
+        let target_global = match &self.current_screen {
+            Screen::SensorDetail { sensor_idx } => Some(*sensor_idx),
             Screen::LoRaWANSensorDetail { dev_eui } => {
-                // Find the global index of this LoRaWAN sensor
                 let dev_euis = self.sorted_lorawan_dev_euis();
-                let lorawan_idx = dev_euis.iter().position(|e| e == dev_eui).unwrap_or(0);
-                let idx = 8 + lorawan_idx;
-                let page = idx / 4;
-                self.current_screen = Screen::SensorOverview {
-                    page,
-                    selected_sensor: Some(idx),
-                };
-                self.should_update = true;
+                dev_euis.iter().position(|e| e == dev_eui).map(|i| 8 + i)
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(idx) = target_global {
+            let entries = self.ordered_entries(ds_readings);
+            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
+            let page = pos / 4;
+            self.current_screen = Screen::SensorOverview {
+                page,
+                selected_sensor: Some(idx),
+            };
+            self.should_update = true;
         }
     }
 }

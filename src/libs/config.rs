@@ -540,6 +540,10 @@ pub struct LoRaWANSensorConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial_number: Option<String>,
 
+    /// Sensor location (e.g., "Cold room A, shelf 3")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+
     /// Enable this sensor
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -953,5 +957,52 @@ mod tests {
         let config = Config::default_config();
         assert_eq!(config.serial.port, "/dev/ttyAMA4");
         assert_eq!(config.serial.baud_rate, 115200u32);
+    }
+}
+
+#[cfg(test)]
+mod lorawan_sensor_config_tests {
+    use super::*;
+
+    #[test]
+    fn lorawan_sensor_config_deserializes_with_location() {
+        let yaml = r#"
+dev_eui: "aabbccdd"
+name: "Fridge"
+location: "Cold room A, shelf 3"
+"#;
+        let cfg: LoRaWANSensorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.location.as_deref(), Some("Cold room A, shelf 3"));
+    }
+
+    #[test]
+    fn lorawan_sensor_config_deserializes_without_location() {
+        let yaml = r#"
+dev_eui: "aabbccdd"
+name: "Fridge"
+"#;
+        let cfg: LoRaWANSensorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.location, None);
+    }
+
+    #[test]
+    fn lorawan_sensor_config_omits_location_when_none() {
+        let cfg = LoRaWANSensorConfig {
+            dev_eui: "x".to_string(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            temp_critical_low: None,
+            temp_warning_low: None,
+            temp_warning_high: None,
+            temp_critical_high: None,
+            humidity_critical_low: None,
+            humidity_warning_low: None,
+            humidity_warning_high: None,
+            humidity_critical_high: None,
+        };
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(!out.contains("location"));
     }
 }

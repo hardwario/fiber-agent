@@ -40,6 +40,7 @@ impl LoRaWANMonitor {
     /// `mqtt_tx` is the channel sender for the main FIBER MQTT publisher.
     pub fn new(
         config: LoRaWANConfig,
+        configs: super::state::SharedLoRaWANSensorConfigs,
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
     ) -> io::Result<Self> {
@@ -67,6 +68,7 @@ impl LoRaWANMonitor {
                 shutdown_flag_clone,
                 state_clone,
                 config,
+                configs,
                 mqtt_tx,
                 hostname,
             );
@@ -107,6 +109,7 @@ fn lorawan_loop(
     shutdown_flag: Arc<AtomicBool>,
     state: SharedLoRaWANState,
     config: LoRaWANConfig,
+    configs: super::state::SharedLoRaWANSensorConfigs,
     mqtt_tx: Sender<MqttMessage>,
     hostname: String,
 ) {
@@ -219,7 +222,9 @@ fn lorawan_loop(
                 // Check sensor timeouts and evaluate alarms
                 if let Ok(mut s) = state.write() {
                     s.check_timeouts(timeout_secs);
-                    s.evaluate_alarms(&config.sensors);
+                    if let Ok(cfgs) = configs.read() {
+                        s.evaluate_alarms(&cfgs);
+                    }
                 }
 
                 // Publish sensor data periodically

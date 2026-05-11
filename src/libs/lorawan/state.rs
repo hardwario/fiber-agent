@@ -257,6 +257,21 @@ pub fn create_shared_lorawan_state(gateway_present: bool) -> SharedLoRaWANState 
     Arc::new(RwLock::new(LoRaWANState::new(gateway_present)))
 }
 
+/// Thread-safe shared LoRaWAN sensor configs.
+///
+/// Acts as the live source of truth for LoRa sensor configuration (thresholds,
+/// names, locations). Producers (MQTT config-applier) take a write lock to
+/// mutate; consumers (LoRaWAN monitor for alarm evaluation, display for
+/// rendering) take a read lock on each access.
+pub type SharedLoRaWANSensorConfigs = Arc<RwLock<Vec<LoRaWANSensorConfig>>>;
+
+/// Construct a shared configs handle, seeded with the given vec.
+pub fn create_shared_lorawan_sensor_configs(
+    seed: Vec<LoRaWANSensorConfig>,
+) -> SharedLoRaWANSensorConfigs {
+    Arc::new(RwLock::new(seed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +336,7 @@ mod tests {
             dev_eui: "aabb".to_string(),
             name: Some("Test Sensor".to_string()),
             serial_number: Some("SN-001".to_string()),
+            location: None,
             enabled: true,
             temp_critical_low: Some(0.0),
             temp_warning_low: Some(10.0),
@@ -360,6 +376,7 @@ mod tests {
             dev_eui: "aabb".to_string(),
             name: None,
             serial_number: None,
+            location: None,
             enabled: true,
             temp_critical_low: None,
             temp_warning_low: None,
@@ -374,5 +391,36 @@ mod tests {
         state.evaluate_alarms(&configs);
         // humidity is 50% from make_reading -> Normal
         assert_eq!(state.sensors["aabb"].humidity_alarm_state, LoRaWANAlarmState::Normal);
+    }
+
+    #[test]
+    fn shared_lorawan_sensor_configs_round_trip() {
+        let cfgs = create_shared_lorawan_sensor_configs(vec![
+            LoRaWANSensorConfig {
+                dev_eui: "aabb".to_string(),
+                name: Some("A".to_string()),
+                serial_number: None,
+                location: None,
+                enabled: true,
+                temp_critical_low: Some(0.0),
+                temp_warning_low: None,
+                temp_warning_high: None,
+                temp_critical_high: Some(40.0),
+                humidity_critical_low: None,
+                humidity_warning_low: None,
+                humidity_warning_high: None,
+                humidity_critical_high: None,
+            },
+        ]);
+        {
+            let read = cfgs.read().unwrap();
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].dev_eui, "aabb");
+        }
+        {
+            let mut write = cfgs.write().unwrap();
+            write.clear();
+        }
+        assert_eq!(cfgs.read().unwrap().len(), 0);
     }
 }

@@ -51,12 +51,14 @@ impl ButtonMonitor {
         pairing_handle: Option<PairingHandle>,
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
+        sensor_state: crate::libs::sensors::SharedSensorStateHandle,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
+        let sensor_state_clone = sensor_state.clone();
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority, pairing_state);
+            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority, pairing_state, sensor_state_clone);
         });
 
         Ok(Self {
@@ -72,6 +74,7 @@ impl ButtonMonitor {
         pairing_handle: Option<PairingHandle>,
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
+        sensor_state: crate::libs::sensors::SharedSensorStateHandle,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -169,8 +172,9 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor up
+                                let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.selection_up();
+                                    display_state_lock.selection_up(&ds_readings);
                                     eprintln!("[ButtonMonitor] Selection cursor moved up");
                                 }
                                 selection_activity = Instant::now(); // Reset inactivity timer
@@ -189,8 +193,13 @@ impl ButtonMonitor {
                                 state = ButtonMonitorState::Idle;
                                 eprintln!("[ButtonMonitor] DOWN hold cancelled by UP button");
                             }
+                            ButtonMonitorState::ShowingDetail => {
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.lorawan_detail_prev();
+                                }
+                            }
                             _ => {
-                                // Other states (ShowingQr, ShowingDetail) - ignore UP
+                                // Other states (ShowingQr) - ignore UP
                             }
                         }
                     }
@@ -269,14 +278,20 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor down
+                                let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.selection_down();
+                                    display_state_lock.selection_down(&ds_readings);
                                     eprintln!("[ButtonMonitor] Selection cursor moved down");
                                 }
                                 selection_activity = Instant::now(); // Reset inactivity timer
                             }
+                            ButtonMonitorState::ShowingDetail => {
+                                if let Ok(mut display_state_lock) = display_state.lock() {
+                                    display_state_lock.lorawan_detail_next();
+                                }
+                            }
                             _ => {
-                                // Other states (ShowingQr, ShowingDetail) - ignore DOWN
+                                // Other states (ShowingQr) - ignore DOWN
                             }
                         }
                     }
@@ -383,8 +398,9 @@ impl ButtonMonitor {
 
                                         if is_double_click {
                                             // Double-click detected - enter selection mode
+                                            let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
                                             if let Ok(mut display_state_lock) = display_state.lock() {
-                                                display_state_lock.enter_selection_mode();
+                                                display_state_lock.enter_selection_mode(&ds_readings);
                                                 eprintln!("[ButtonMonitor] Double-click detected - entering selection mode");
                                             }
                                             state = ButtonMonitorState::SelectionMode;
@@ -445,8 +461,9 @@ impl ButtonMonitor {
                                     last_enter_click = None;
                                 } else {
                                     // Single click - exit to selection mode
+                                    let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
                                     if let Ok(mut display_state_lock) = display_state.lock() {
-                                        display_state_lock.exit_detail_view();
+                                        display_state_lock.exit_detail_view(&ds_readings);
                                         eprintln!("[ButtonMonitor] Exiting sensor detail view to selection mode");
                                     }
                                     state = ButtonMonitorState::SelectionMode;

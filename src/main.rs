@@ -271,7 +271,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None, None)?;
+    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None, None, sensor_state.clone())?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -305,6 +305,24 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Build the shared LoRa configs handle from the initial config snapshot.
+    // This becomes the live source of truth: LoRaWAN monitor reads it for
+    // alarm evaluation, MQTT writes it on config changes, display reads it
+    // for the thresholds / location pages.
+    let lorawan_configs = fiber_app::libs::lorawan::create_shared_lorawan_sensor_configs(
+        config.lorawan.as_ref().map(|l| l.sensors.clone()).unwrap_or_default(),
+    );
+    eprintln!("[main] LoRa configs handle initialized with {} sensors",
+        lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
+
+    // Attach LoRa configs to display state
+    {
+        if let Ok(mut state) = _display_monitor.display_state.lock() {
+            state.lorawan_configs = Some(lorawan_configs.clone());
+            eprintln!("[main] LoRa configs attached to display state");
+        }
+    }
+
     // Create and spawn MQTT monitor if enabled
     eprintln!("[main] Checking MQTT configuration...");
     eprintln!("[main]   config.mqtt present: {}", config.mqtt.is_some());
@@ -323,6 +341,8 @@ fn main() -> io::Result<()> {
             Some(screen_brightness.clone()),
             Some(buzzer_volume.clone()),
             Some(buzzer_priority_manager.clone()),
+            None,
+            Some(lorawan_configs.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
@@ -405,6 +425,7 @@ fn main() -> io::Result<()> {
         pairing_handle.clone(),
         Some(buzzer_priority_manager.clone()),
         _pairing_monitor.as_ref().map(|p| p.state()),
+        sensor_state.clone(),
     )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 
@@ -478,7 +499,7 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
-        match LoRaWANMonitor::new(lorawan_config, handle.sender(), hostname.clone()) {
+        match LoRaWANMonitor::new(lorawan_config, lorawan_configs.clone(), handle.sender(), hostname.clone()) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state
                 let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
@@ -504,6 +525,11 @@ fn main() -> io::Result<()> {
         eprintln!("[main] LoRaWAN monitor disabled (MQTT not enabled)");
         None
     };
+
+    // Wire LoRaWAN state into MQTT monitor now that both exist.
+    if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
+        mqtt_mon.set_lorawan_state(lr_mon.state.clone());
+    }
 
     // Application is now running with background monitoring
     eprintln!("[main] Application running with medical data persistence. Press Ctrl+C to exit.");

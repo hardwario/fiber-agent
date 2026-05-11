@@ -535,12 +535,14 @@ pub struct MqttMonitor {
     screen_brightness: Option<SharedScreenBrightnessHandle>,
     buzzer_volume: Option<SharedBuzzerVolumeHandle>,
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
+    lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+    lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None)
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -553,6 +555,8 @@ impl MqttMonitor {
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
+        lorawan_state: Option<crate::libs::lorawan::SharedLoRaWANState>,
+        lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
     ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
@@ -600,6 +604,11 @@ impl MqttMonitor {
         // Clone reconnect flag for monitor thread
         let reconnected_flag_clone = reconnected_flag.clone();
 
+        // Create LoRaWAN state slot (filled in later via set_lorawan_state)
+        let lorawan_state_slot = std::sync::Arc::new(std::sync::Mutex::new(lorawan_state));
+        let lorawan_state_slot_clone = lorawan_state_slot.clone();
+        let lorawan_configs_clone = lorawan_configs.clone();
+
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
             if let Err(e) = Self::monitor_loop(
@@ -616,6 +625,8 @@ impl MqttMonitor {
                 buzzer_volume_clone,
                 buzzer_priority_clone,
                 reconnected_flag_clone,
+                lorawan_state_slot_clone,
+                lorawan_configs_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -633,6 +644,8 @@ impl MqttMonitor {
             screen_brightness,
             buzzer_volume,
             buzzer_priority,
+            lorawan_state_slot,
+            lorawan_configs,
         })
     }
 
@@ -641,6 +654,14 @@ impl MqttMonitor {
         if let Ok(mut ph) = self.pairing_handle.lock() {
             *ph = Some(handle);
             eprintln!("[MQTT Monitor] Pairing handle set");
+        }
+    }
+
+    /// Set the LoRaWAN state handle (call after LoRaWANMonitor is created).
+    pub fn set_lorawan_state(&self, state: crate::libs::lorawan::SharedLoRaWANState) {
+        if let Ok(mut g) = self.lorawan_state_slot.lock() {
+            *g = Some(state);
+            eprintln!("[MQTT Monitor] LoRaWAN state handle set");
         }
     }
 
@@ -669,6 +690,8 @@ impl MqttMonitor {
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         reconnected_flag: Arc<AtomicBool>,
+        lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -1084,6 +1107,8 @@ impl MqttMonitor {
                                                                     &buzzer_volume,
                                                                     &buzzer_priority,
                                                                     &led_brightness_tracker,
+                                                                    &lorawan_state_slot,
+                                                                    &lorawan_configs,
                                                                 ) {
                                                                     eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
                                                                     if let Err(publish_err) = publisher.publish_error(
@@ -1206,6 +1231,8 @@ impl MqttMonitor {
                                                                         &buzzer_volume,
                                                                         &buzzer_priority,
                                                                         &led_brightness_tracker,
+                                                                        &lorawan_state_slot,
+                                                                        &lorawan_configs,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
@@ -1808,6 +1835,8 @@ impl MqttMonitor {
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
+        lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -2040,8 +2069,8 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_sensor_config(
                         dev_eui.clone(),
-                        name,
-                        serial_number,
+                        name.clone(),
+                        serial_number.clone(),
                         temp_critical_low,
                         temp_warning_low,
                         temp_warning_high,
@@ -2052,6 +2081,40 @@ impl MqttMonitor {
                         humidity_critical_high,
                     );
                     if result.success {
+                        // Mirror to in-memory shared configs so the LoRa monitor
+                        // and display pick up the new thresholds without a restart.
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                if let Some(existing) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
+                                    existing.name = name.clone();
+                                    existing.serial_number = serial_number.clone();
+                                    existing.temp_critical_low = temp_critical_low;
+                                    existing.temp_warning_low = temp_warning_low;
+                                    existing.temp_warning_high = temp_warning_high;
+                                    existing.temp_critical_high = temp_critical_high;
+                                    existing.humidity_critical_low = humidity_critical_low;
+                                    existing.humidity_warning_low = humidity_warning_low;
+                                    existing.humidity_warning_high = humidity_warning_high;
+                                    existing.humidity_critical_high = humidity_critical_high;
+                                } else {
+                                    v.push(crate::libs::config::LoRaWANSensorConfig {
+                                        dev_eui: dev_eui.clone(),
+                                        name: name.clone(),
+                                        serial_number: serial_number.clone(),
+                                        location: None,
+                                        enabled: true,
+                                        temp_critical_low,
+                                        temp_warning_low,
+                                        temp_warning_high,
+                                        temp_critical_high,
+                                        humidity_critical_low,
+                                        humidity_warning_low,
+                                        humidity_warning_high,
+                                        humidity_critical_high,
+                                    });
+                                }
+                            }
+                        }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sensor config updated for {}", dev_eui);
                         Ok(())
                     } else {
@@ -2087,12 +2150,33 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_sensor_config(
                         dev_eui.clone(),
-                        Some(name),
-                        Some(serial_number),
+                        Some(name.clone()),
+                        Some(serial_number.clone()),
                         None, None, None, None,  // temp thresholds: use defaults
                         None, None, None, None,  // humidity thresholds: use defaults
                     );
                     if result.success {
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                if !v.iter().any(|c| c.dev_eui == dev_eui) {
+                                    v.push(crate::libs::config::LoRaWANSensorConfig {
+                                        dev_eui: dev_eui.clone(),
+                                        name: Some(name.clone()),
+                                        serial_number: Some(serial_number.clone()),
+                                        location: None,
+                                        enabled: true,
+                                        temp_critical_low: None,
+                                        temp_warning_low: None,
+                                        temp_warning_high: None,
+                                        temp_critical_high: None,
+                                        humidity_critical_low: None,
+                                        humidity_warning_low: None,
+                                        humidity_warning_high: None,
+                                        humidity_critical_high: None,
+                                    });
+                                }
+                            }
+                        }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} config saved", dev_eui);
                         Ok(())
                     } else {
@@ -2107,6 +2191,21 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.remove_lorawan_sensor_config(dev_eui.clone());
                     if result.success {
+                        // Drop the in-memory sensor entry so the display stops showing it.
+                        let state_opt: Option<crate::libs::lorawan::SharedLoRaWANState> =
+                            lorawan_state_slot.lock().ok().and_then(|g| g.clone());
+                        if let Some(state) = state_opt {
+                            if let Ok(mut s) = state.write() {
+                                s.sensors.remove(&dev_eui);
+                            }
+                        }
+                        // Drop from the shared configs so the LoRa monitor stops
+                        // evaluating thresholds for it (matches on-disk YAML state).
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                v.retain(|c| c.dev_eui != dev_eui);
+                            }
+                        }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
                         Ok(())
                     } else {
