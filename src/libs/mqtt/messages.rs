@@ -191,6 +191,20 @@ pub struct LoRaWANSensorConfigData {
     pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
 }
 
+/// LoRaWAN activation mode for STICKER registration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ActivationMode {
+    /// OTAA: device joins the network using AppKey + JoinEUI.
+    Otaa { app_key: String },
+    /// ABP: device pre-personalised with session keys.
+    Abp {
+        devaddr: String,
+        nwkskey: String,
+        appskey: String,
+    },
+}
+
 /// Commands received from MQTT broker
 #[derive(Debug, Clone)]
 pub enum MqttCommand {
@@ -310,9 +324,7 @@ pub enum MqttCommand {
         dev_eui: String,
         name: String,
         serial_number: String,
-        devaddr: String,
-        nwkskey: String,
-        appskey: String,
+        activation: ActivationMode,
     },
 
     /// Remove LoRaWAN sticker: remove sensor config (signed via ConfigRequest)
@@ -421,5 +433,42 @@ mod tests {
 
         let cmd2 = MqttCommand::FlushStorage;
         assert_eq!(cmd2.name(), "flush_storage");
+    }
+
+    #[test]
+    fn activation_mode_otaa_roundtrip() {
+        let app_key: String = "ab".repeat(16);
+        let v = ActivationMode::Otaa { app_key: app_key.clone() };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(s, serde_json::json!({"mode": "otaa", "app_key": app_key}));
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_abp_roundtrip() {
+        let nwkskey: String = "0".repeat(32);
+        let appskey: String = "f".repeat(32);
+        let v = ActivationMode::Abp {
+            devaddr: "01020304".to_string(),
+            nwkskey: nwkskey.clone(),
+            appskey: appskey.clone(),
+        };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(s, serde_json::json!({
+            "mode": "abp",
+            "devaddr": "01020304",
+            "nwkskey": nwkskey,
+            "appskey": appskey,
+        }));
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_unknown_mode_rejected() {
+        let s = serde_json::json!({"mode": "xyz"});
+        let r: Result<ActivationMode, _> = serde_json::from_value(s);
+        assert!(r.is_err());
     }
 }
