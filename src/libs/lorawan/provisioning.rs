@@ -289,17 +289,40 @@ fn create_device(
     description: &str,
     application_id: &str,
     device_profile_id: &str,
+    join_eui: Option<&str>,
 ) -> Result<(), String> {
-    let device = [
+    let mut parts = vec![
         encode_string(1, dev_eui),
         encode_string(2, name),
         encode_string(3, description),
         encode_string(4, application_id),
         encode_string(5, device_profile_id),
-    ].concat();
+    ];
+    if let Some(je) = join_eui {
+        parts.push(encode_string(6, je));
+    }
+    let device: Vec<u8> = parts.concat();
 
     let req = encode_submessage(1, &device);
     grpc_web_call("api.DeviceService/Create", &req, Some(token))?;
+    Ok(())
+}
+
+fn set_device_keys(
+    token: &str,
+    dev_eui: &str,
+    app_key: &str,
+) -> Result<(), String> {
+    // DeviceKeys message (proto): dev_eui=1, nwk_key=2, app_key=3.
+    // LoRaWAN 1.0.x convention: nwk_key slot stores the same value as app_key.
+    let keys = [
+        encode_string(1, dev_eui),
+        encode_string(2, app_key),
+        encode_string(3, app_key),
+    ].concat();
+
+    let req = encode_submessage(1, &keys);
+    grpc_web_call("api.DeviceService/CreateKeys", &req, Some(token))?;
     Ok(())
 }
 
@@ -354,9 +377,10 @@ pub fn provision_sticker(
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
 
-    let device_profile_id = config.get("device_profile_id")
+    let device_profile_id = config.get("device_profile_id_abp")
+        .or_else(|| config.get("device_profile_id"))  // legacy fallback during rollout
         .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("Missing device_profile_id in {}", LORAWAN_CONFIG_PATH))?;
+        .ok_or_else(|| format!("Missing device_profile_id_abp in {}", LORAWAN_CONFIG_PATH))?;
 
     // Login
     let token = login()?;
@@ -368,7 +392,7 @@ pub fn provision_sticker(
         format!("HARDWARIO STICKER S/N: {}", serial_number)
     };
 
-    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id) {
+    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, None) {
         Ok(()) => {
             eprintln!("[lorawan-provision] Created device {} in ChirpStack", dev_eui);
         }
@@ -381,6 +405,59 @@ pub fn provision_sticker(
     // Activate with ABP keys
     activate_device_abp(&token, dev_eui, dev_addr, nwk_s_key, app_s_key)?;
     eprintln!("[lorawan-provision] Activated device {} with ABP keys", dev_eui);
+
+    Ok(())
+}
+
+/// Provision a HARDWARIO STICKER in ChirpStack via OTAA: login + create device + set keys.
+///
+/// Reads application_id and device_profile_id_otaa from /data/lorawan/config.json.
+/// JoinEUI is fixed to 16 zero hex characters (firmware default).
+pub fn provision_sticker_otaa(
+    dev_eui: &str,
+    name: &str,
+    serial_number: &str,
+    app_key: &str,
+) -> Result<(), String> {
+    const JOIN_EUI: &str = "0000000000000000";
+
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
+        .map_err(|e| format!("Cannot read {}: {}. Has ChirpStack been provisioned?", LORAWAN_CONFIG_PATH, e))?;
+
+    let config: serde_json::Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
+
+    let application_id = config.get("application_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
+
+    let device_profile_id = config.get("device_profile_id_otaa")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!(
+            "Missing device_profile_id_otaa in {} — re-run lorawan-setup to provision the OTAA profile",
+            LORAWAN_CONFIG_PATH
+        ))?;
+
+    let token = login()?;
+
+    let description = if serial_number.is_empty() {
+        "HARDWARIO STICKER".to_string()
+    } else {
+        format!("HARDWARIO STICKER S/N: {}", serial_number)
+    };
+
+    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, Some(JOIN_EUI)) {
+        Ok(()) => {
+            eprintln!("[lorawan-provision] Created OTAA device {} in ChirpStack", dev_eui);
+        }
+        Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
+            eprintln!("[lorawan-provision] Device {} already exists in ChirpStack", dev_eui);
+        }
+        Err(e) => return Err(e),
+    }
+
+    set_device_keys(&token, dev_eui, app_key)?;
+    eprintln!("[lorawan-provision] Set OTAA keys for device {}", dev_eui);
 
     Ok(())
 }
