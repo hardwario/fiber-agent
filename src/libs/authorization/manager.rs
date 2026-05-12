@@ -551,7 +551,8 @@ impl AuthorizationManager {
             "add_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                format!("Add HARDWARIO STICKER {} (name: \"{}\")", dev_eui, name)
+                let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("?").to_uppercase();
+                format!("Add HARDWARIO STICKER {} via {} (name: \"{}\")", dev_eui, mode, name)
             }
             "remove_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -822,28 +823,59 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing serial_number".to_string()))?
                     .to_string();
 
-                let devaddr = challenge.params.get("devaddr")
+                let mode = challenge.params.get("mode")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr".to_string()))?
-                    .to_string();
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mode".to_string()))?;
 
-                let nwkskey = challenge.params.get("nwkskey")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey".to_string()))?
-                    .to_string();
-
-                let appskey = challenge.params.get("appskey")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing appskey".to_string()))?
-                    .to_string();
+                let activation = match mode {
+                    "otaa" => {
+                        let app_key = challenge.params.get("app_key")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing app_key for OTAA".to_string()))?
+                            .to_string();
+                        if app_key.len() != 32 || !app_key.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand(
+                                "app_key must be exactly 32 hex characters".to_string()
+                            ));
+                        }
+                        crate::libs::mqtt::messages::ActivationMode::Otaa { app_key }
+                    }
+                    "abp" => {
+                        let devaddr = challenge.params.get("devaddr")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr for ABP".to_string()))?
+                            .to_string();
+                        let nwkskey = challenge.params.get("nwkskey")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey for ABP".to_string()))?
+                            .to_string();
+                        let appskey = challenge.params.get("appskey")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing appskey for ABP".to_string()))?
+                            .to_string();
+                        if devaddr.len() != 8 || !devaddr.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("devaddr must be 8 hex".into()));
+                        }
+                        if nwkskey.len() != 32 || !nwkskey.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("nwkskey must be 32 hex".into()));
+                        }
+                        if appskey.len() != 32 || !appskey.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("appskey must be 32 hex".into()));
+                        }
+                        crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey }
+                    }
+                    other => {
+                        return Err(AuthError::InvalidCommand(
+                            format!("Unknown activation mode: {}", other)
+                        ));
+                    }
+                };
 
                 Ok(MqttCommand::AddLoRaWANSticker {
                     dev_eui,
                     name,
                     serial_number,
-                    devaddr,
-                    nwkskey,
-                    appskey,
+                    activation,
                 })
             }
             "remove_lorawan_sticker" => {
