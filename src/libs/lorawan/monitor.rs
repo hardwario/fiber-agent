@@ -198,11 +198,11 @@ fn lorawan_loop(
                         match chirpstack::parse_uplink(&payload) {
                             Ok(reading) => {
                                 eprintln!(
-                                    "[LoRaWAN Monitor] Uplink from {} ({}): temp={:?}°C hum={:?}% rssi={:?}dBm",
+                                    "[LoRaWAN Monitor] Uplink from {} ({}): {} fields, {} counters, rssi={:?}dBm",
                                     reading.device_name,
                                     reading.dev_eui,
-                                    reading.temperature,
-                                    reading.humidity,
+                                    reading.fields.len(),
+                                    reading.counters.len(),
                                     reading.rssi,
                                 );
 
@@ -282,36 +282,45 @@ fn publish_lorawan_sensors(
         Err(_) => return,
     };
 
-    // Reconcile against current config: drop sensors that were removed from
-    // fiber.config.yaml so the backend sees the removal and the UI updates.
-    // Publish even when the resulting list is empty so the backend can sync.
-    let allowed_dev_euis: Option<std::collections::HashSet<String>> =
-        crate::libs::config::Config::load_default()
-            .ok()
-            .and_then(|cfg| cfg.lorawan.map(|l| l.sensors.into_iter().map(|s| s.dev_eui).collect()));
+    // Load config from disk so we can both reconcile against allowed sensors and
+    // include each sensor's field_thresholds in the published payload.
+    let loaded = crate::libs::config::Config::load_default().ok();
+    let sensors_config: Vec<crate::libs::config::LoRaWANSensorConfig> = loaded
+        .as_ref()
+        .and_then(|c| c.lorawan.as_ref().map(|l| l.sensors.clone()))
+        .unwrap_or_default();
+    let allowed_dev_euis: Option<std::collections::HashSet<String>> = Some(
+        sensors_config.iter().map(|s| s.dev_eui.clone()).collect(),
+    );
+    let configs_snapshot = sensors_config;
 
     let sensors: Vec<crate::libs::mqtt::messages::LoRaWANSensorPayload> = state_snapshot
         .sensors
         .values()
         .filter(|s| allowed_dev_euis.as_ref().map_or(true, |set| set.contains(&s.dev_eui)))
-        .map(|s| crate::libs::mqtt::messages::LoRaWANSensorPayload {
-            dev_eui: s.dev_eui.clone(),
-            name: s.name.clone(),
-            serial_number: s.serial_number.clone(),
-            temperature: s.temperature,
-            humidity: s.humidity,
-            voltage: s.voltage,
-            ext_temperature_1: s.ext_temperature_1,
-            ext_temperature_2: s.ext_temperature_2,
-            illuminance: s.illuminance,
-            motion_count: s.motion_count,
-            orientation: s.orientation,
-            rssi: s.rssi,
-            snr: s.snr,
-            last_seen: s.last_seen.clone(),
-            alarm_state: s.alarm_state.to_string(),
-            temp_alarm_state: s.temp_alarm_state.to_string(),
-            humidity_alarm_state: s.humidity_alarm_state.to_string(),
+        .map(|s| {
+            let field_alarm_states = s.field_alarm_states.iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect();
+            let field_thresholds = configs_snapshot.iter()
+                .find(|c| c.dev_eui == s.dev_eui)
+                .map(|c| c.field_thresholds.clone())
+                .unwrap_or_default();
+            crate::libs::mqtt::messages::LoRaWANSensorPayload {
+                dev_eui: s.dev_eui.clone(),
+                name: s.name.clone(),
+                serial_number: s.serial_number.clone(),
+                location: s.location.clone(),
+                fields: s.fields.clone(),
+                field_alarm_states,
+                field_thresholds,
+                counters: s.counters.clone(),
+                events: s.recent_events.iter().cloned().collect(),
+                rssi: s.rssi,
+                snr: s.snr,
+                last_seen: s.last_seen.clone(),
+                alarm_state: s.alarm_state.to_string(),
+            }
         })
         .collect();
 

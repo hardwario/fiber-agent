@@ -820,21 +820,14 @@ impl ConfigApplier {
         }
     }
 
-    /// Apply LoRaWAN sensor configuration change to main config
+    /// Apply LoRaWAN sensor metadata change (name/serial/location) to main config.
+    /// Per-field thresholds use `apply_lorawan_field_threshold` / `delete_lorawan_field_threshold`.
     pub fn apply_lorawan_sensor_config(
         &self,
         dev_eui: String,
         name: Option<String>,
         serial_number: Option<String>,
         location: Option<String>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
     ) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -899,8 +892,6 @@ impl ConfigApplier {
             name.as_deref(),
             serial_number.as_deref(),
             location.as_deref(),
-            temp_critical_low, temp_warning_low, temp_warning_high, temp_critical_high,
-            humidity_critical_low, humidity_warning_low, humidity_warning_high, humidity_critical_high,
         ) {
             return ApplyResult {
                 success: false,
@@ -1427,8 +1418,7 @@ impl ConfigApplier {
         Ok(())
     }
 
-    /// Update or insert a LoRaWAN sensor config in lorawan.sensors array
-    #[allow(clippy::too_many_arguments)]
+    /// Update or insert a LoRaWAN sensor config in lorawan.sensors array (metadata only)
     fn update_lorawan_sensor_config(
         &self,
         config: &mut Value,
@@ -1436,14 +1426,6 @@ impl ConfigApplier {
         name: Option<&str>,
         serial_number: Option<&str>,
         location: Option<&str>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
     ) -> Result<(), String> {
         let config_map = config
             .as_mapping_mut()
@@ -1513,24 +1495,159 @@ impl ConfigApplier {
             sensor_map.insert(Value::String("location".to_string()), Value::String(loc.to_string()));
         }
 
-        // Helper to set or remove optional f32 threshold
-        let set_opt_f32 = |map: &mut Mapping, key: &str, val: Option<f32>| {
-            let k = Value::String(key.to_string());
-            match val {
-                Some(v) => { map.insert(k, Value::Number(serde_yaml::Number::from(v as f64))); }
-                None => { map.remove(&k); }
-            }
+        Ok(())
+    }
+
+    /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
+    pub fn apply_lorawan_field_threshold(
+        &self,
+        dev_eui: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    ) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        if dev_eui.is_empty() {
+            return ApplyResult { success: false, file_path: String::new(), backup_path: None,
+                error_message: Some("dev_eui cannot be empty".into()), applied_at };
+        }
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.upsert_field_threshold(&mut cfg, &dev_eui, &field,
+            critical_low, warning_low, warning_high, critical_high)
+        {
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+
+        let new_content = serde_yaml::to_string(&cfg).map_err(|e| e.to_string());
+        match new_content.and_then(|c| fs::write(&config_file, c).map_err(|e| e.to_string())) {
+            Ok(_) => ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: None, applied_at },
+            Err(e) => ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at },
+        }
+    }
+
+    /// Remove a per-field threshold from lorawan.sensors[*].field_thresholds.
+    pub fn delete_lorawan_field_threshold(&self, dev_eui: String, field: String) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        let _ = self.remove_field_threshold(&mut cfg, &dev_eui, &field);
+        let new_content = serde_yaml::to_string(&cfg).map_err(|e| e.to_string());
+        match new_content.and_then(|c| fs::write(&config_file, c).map_err(|e| e.to_string())) {
+            Ok(_) => ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: None, applied_at },
+            Err(e) => ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at },
+        }
+    }
+
+    fn upsert_field_threshold(
+        &self, config: &mut Value, dev_eui: &str, field: &str,
+        critical_low: Option<f64>, warning_low: Option<f64>,
+        warning_high: Option<f64>, critical_high: Option<f64>,
+    ) -> Result<(), String> {
+        let lorawan_key = Value::String("lorawan".to_string());
+        let sensors_key = Value::String("sensors".to_string());
+        let ft_key = Value::String("field_thresholds".to_string());
+
+        let lorawan = config.as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?
+            .entry(lorawan_key.clone())
+            .or_insert_with(|| {
+                let mut m = Mapping::new();
+                m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+                m.insert(sensors_key.clone(), Value::Sequence(Vec::new()));
+                Value::Mapping(m)
+            });
+        let lorawan_map = lorawan.as_mapping_mut().ok_or_else(|| "lorawan is not a mapping".to_string())?;
+        let sensors = lorawan_map.entry(sensors_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "sensors is not a sequence".to_string())?;
+
+        // Find or create sensor entry
+        let idx = sensors.iter().position(|s| s.get("dev_eui").and_then(|v| v.as_str()) == Some(dev_eui));
+        let sensor_map = if let Some(i) = idx {
+            sensors[i].as_mapping_mut().ok_or_else(|| "sensor entry is not a mapping".to_string())?
+        } else {
+            let mut m = Mapping::new();
+            m.insert(Value::String("dev_eui".to_string()), Value::String(dev_eui.to_string()));
+            m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            sensors.push(Value::Mapping(m));
+            sensors.last_mut().unwrap().as_mapping_mut().unwrap()
         };
 
-        set_opt_f32(sensor_map, "temp_critical_low", temp_critical_low);
-        set_opt_f32(sensor_map, "temp_warning_low", temp_warning_low);
-        set_opt_f32(sensor_map, "temp_warning_high", temp_warning_high);
-        set_opt_f32(sensor_map, "temp_critical_high", temp_critical_high);
-        set_opt_f32(sensor_map, "humidity_critical_low", humidity_critical_low);
-        set_opt_f32(sensor_map, "humidity_warning_low", humidity_warning_low);
-        set_opt_f32(sensor_map, "humidity_warning_high", humidity_warning_high);
-        set_opt_f32(sensor_map, "humidity_critical_high", humidity_critical_high);
+        let thresholds = sensor_map.entry(ft_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
 
+        let make_entry = || -> Value {
+            let mut m = Mapping::new();
+            m.insert(Value::String("field".to_string()), Value::String(field.to_string()));
+            for (k, v) in [("critical_low", critical_low), ("warning_low", warning_low),
+                           ("warning_high", warning_high), ("critical_high", critical_high)] {
+                if let Some(v) = v {
+                    m.insert(Value::String(k.to_string()),
+                        Value::Number(serde_yaml::Number::from(v)));
+                }
+            }
+            Value::Mapping(m)
+        };
+
+        if let Some(existing) = thresholds.iter_mut()
+            .find(|t| t.get("field").and_then(|v| v.as_str()) == Some(field))
+        {
+            *existing = make_entry();
+        } else {
+            thresholds.push(make_entry());
+        }
+        Ok(())
+    }
+
+    fn remove_field_threshold(&self, config: &mut Value, dev_eui: &str, field: &str) -> Result<(), String> {
+        let lorawan = config.as_mapping_mut()
+            .and_then(|m| m.get_mut(&Value::String("lorawan".into())))
+            .and_then(|v| v.as_mapping_mut());
+        let Some(lorawan_map) = lorawan else { return Ok(()); };
+        let Some(sensors) = lorawan_map.get_mut(&Value::String("sensors".into()))
+            .and_then(|v| v.as_sequence_mut()) else { return Ok(()); };
+        for s in sensors.iter_mut() {
+            if s.get("dev_eui").and_then(|v| v.as_str()) != Some(dev_eui) { continue; }
+            let sm = match s.as_mapping_mut() { Some(m) => m, None => continue };
+            if let Some(thresholds) = sm.get_mut(&Value::String("field_thresholds".into()))
+                .and_then(|v| v.as_sequence_mut())
+            {
+                thresholds.retain(|t| t.get("field").and_then(|v| v.as_str()) != Some(field));
+            }
+        }
         Ok(())
     }
 

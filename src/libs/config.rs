@@ -526,7 +526,22 @@ pub struct StorageConfig {
     pub hmac_secret_path: String,
 }
 
-/// Per-sensor LoRaWAN configuration (mirrors SensorLineConfig pattern)
+/// Per-field threshold (4-level, like DS18B20)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FieldThreshold {
+    /// Field name from the LoRaWAN field registry (e.g., "temperature")
+    pub field: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_high: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_high: Option<f64>,
+}
+
+/// Per-sensor LoRaWAN configuration (generic field-driven thresholds)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANSensorConfig {
     /// Device EUI (unique identifier)
@@ -548,25 +563,9 @@ pub struct LoRaWANSensorConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    // Temperature thresholds (4-level, same as DS18B20)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_critical_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_warning_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_warning_high: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_critical_high: Option<f32>,
-
-    // Humidity thresholds (4-level, same pattern)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_critical_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_warning_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_warning_high: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_critical_high: Option<f32>,
+    /// Per-field thresholds (replaces temp_*/humidity_* fixed columns)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_thresholds: Vec<FieldThreshold>,
 }
 
 /// LoRaWAN gateway configuration
@@ -993,16 +992,29 @@ name: "Fridge"
             serial_number: None,
             location: None,
             enabled: true,
-            temp_critical_low: None,
-            temp_warning_low: None,
-            temp_warning_high: None,
-            temp_critical_high: None,
-            humidity_critical_low: None,
-            humidity_warning_low: None,
-            humidity_warning_high: None,
-            humidity_critical_high: None,
+            field_thresholds: Vec::new(),
         };
         let out = serde_yaml::to_string(&cfg).unwrap();
         assert!(!out.contains("location"));
+    }
+
+    #[test]
+    fn lorawan_sensor_config_deserializes_field_thresholds() {
+        let yaml = r#"
+dev_eui: "aabb"
+name: "Sticker"
+field_thresholds:
+  - field: temperature
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 35.0
+    critical_high: 40.0
+  - field: ext_temperature_1
+    critical_high: 80.0
+"#;
+        let cfg: LoRaWANSensorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.field_thresholds.len(), 2);
+        assert_eq!(cfg.field_thresholds[0].field, "temperature");
+        assert_eq!(cfg.field_thresholds[1].critical_high, Some(80.0));
     }
 }

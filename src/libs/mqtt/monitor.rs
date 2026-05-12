@@ -2058,14 +2058,6 @@ impl MqttMonitor {
                 name,
                 serial_number,
                 location,
-                temp_critical_low,
-                temp_warning_low,
-                temp_warning_high,
-                temp_critical_high,
-                humidity_critical_low,
-                humidity_warning_low,
-                humidity_warning_high,
-                humidity_critical_high,
             } => {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_sensor_config(
@@ -2073,18 +2065,8 @@ impl MqttMonitor {
                         name.clone(),
                         serial_number.clone(),
                         location.clone(),
-                        temp_critical_low,
-                        temp_warning_low,
-                        temp_warning_high,
-                        temp_critical_high,
-                        humidity_critical_low,
-                        humidity_warning_low,
-                        humidity_warning_high,
-                        humidity_critical_high,
                     );
                     if result.success {
-                        // Mirror to in-memory shared configs so the LoRa monitor
-                        // and display pick up the new thresholds without a restart.
                         if let Some(cfgs) = lorawan_configs.as_ref() {
                             if let Ok(mut v) = cfgs.write() {
                                 if let Some(existing) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
@@ -2093,14 +2075,6 @@ impl MqttMonitor {
                                     if location.is_some() {
                                         existing.location = location.clone();
                                     }
-                                    existing.temp_critical_low = temp_critical_low;
-                                    existing.temp_warning_low = temp_warning_low;
-                                    existing.temp_warning_high = temp_warning_high;
-                                    existing.temp_critical_high = temp_critical_high;
-                                    existing.humidity_critical_low = humidity_critical_low;
-                                    existing.humidity_warning_low = humidity_warning_low;
-                                    existing.humidity_warning_high = humidity_warning_high;
-                                    existing.humidity_critical_high = humidity_critical_high;
                                 } else {
                                     v.push(crate::libs::config::LoRaWANSensorConfig {
                                         dev_eui: dev_eui.clone(),
@@ -2108,19 +2082,75 @@ impl MqttMonitor {
                                         serial_number: serial_number.clone(),
                                         location: location.clone(),
                                         enabled: true,
-                                        temp_critical_low,
-                                        temp_warning_low,
-                                        temp_warning_high,
-                                        temp_critical_high,
-                                        humidity_critical_low,
-                                        humidity_warning_low,
-                                        humidity_warning_high,
-                                        humidity_critical_high,
+                                        field_thresholds: Vec::new(),
                                     });
                                 }
                             }
                         }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sensor config updated for {}", dev_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::SetLoRaWANFieldThreshold {
+                dev_eui, field,
+                critical_low, warning_low, warning_high, critical_high,
+            } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_lorawan_field_threshold(
+                        dev_eui.clone(), field.clone(),
+                        critical_low, warning_low, warning_high, critical_high,
+                    );
+                    if result.success {
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                let entry = match v.iter_mut().find(|c| c.dev_eui == dev_eui) {
+                                    Some(e) => e,
+                                    None => {
+                                        v.push(crate::libs::config::LoRaWANSensorConfig {
+                                            dev_eui: dev_eui.clone(),
+                                            name: None, serial_number: None, location: None,
+                                            enabled: true, field_thresholds: Vec::new(),
+                                        });
+                                        v.last_mut().unwrap()
+                                    }
+                                };
+                                let new_t = crate::libs::config::FieldThreshold {
+                                    field: field.clone(),
+                                    critical_low, warning_low, warning_high, critical_high,
+                                };
+                                if let Some(t) = entry.field_thresholds.iter_mut().find(|t| t.field == field) {
+                                    *t = new_t;
+                                } else {
+                                    entry.field_thresholds.push(new_t);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ Field threshold {}/{} applied", dev_eui, field);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.delete_lorawan_field_threshold(dev_eui.clone(), field.clone());
+                    if result.success {
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                if let Some(entry) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
+                                    entry.field_thresholds.retain(|t| t.field != field);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ Field threshold {}/{} removed", dev_eui, field);
                         Ok(())
                     } else {
                         Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
@@ -2158,8 +2188,6 @@ impl MqttMonitor {
                         Some(name.clone()),
                         Some(serial_number.clone()),
                         None,  // location: not set at provisioning
-                        None, None, None, None,  // temp thresholds: use defaults
-                        None, None, None, None,  // humidity thresholds: use defaults
                     );
                     if result.success {
                         if let Some(cfgs) = lorawan_configs.as_ref() {
@@ -2171,14 +2199,7 @@ impl MqttMonitor {
                                         serial_number: Some(serial_number.clone()),
                                         location: None,
                                         enabled: true,
-                                        temp_critical_low: None,
-                                        temp_warning_low: None,
-                                        temp_warning_high: None,
-                                        temp_critical_high: None,
-                                        humidity_critical_low: None,
-                                        humidity_warning_low: None,
-                                        humidity_warning_high: None,
-                                        humidity_critical_high: None,
+                                        field_thresholds: Vec::new(),
                                     });
                                 }
                             }
@@ -2196,20 +2217,15 @@ impl MqttMonitor {
                                         dev_eui: dev_eui.clone(),
                                         name: name.clone(),
                                         serial_number: Some(serial_number.clone()),
-                                        temperature: None,
-                                        humidity: None,
-                                        voltage: None,
-                                        ext_temperature_1: None,
-                                        ext_temperature_2: None,
-                                        illuminance: None,
-                                        motion_count: None,
-                                        orientation: None,
+                                        location: None,
+                                        fields: std::collections::HashMap::new(),
+                                        field_alarm_states: std::collections::HashMap::new(),
+                                        counters: std::collections::HashMap::new(),
+                                        recent_events: std::collections::VecDeque::new(),
                                         rssi: None,
                                         snr: None,
                                         last_seen: None,
                                         alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
-                                        temp_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
-                                        humidity_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
                                     });
                             }
                         }
@@ -2339,14 +2355,7 @@ impl MqttMonitor {
                         serial_number: s.serial_number.clone(),
                         location: s.location.clone(),
                         enabled: s.enabled,
-                        temp_critical_low: s.temp_critical_low,
-                        temp_warning_low: s.temp_warning_low,
-                        temp_warning_high: s.temp_warning_high,
-                        temp_critical_high: s.temp_critical_high,
-                        humidity_critical_low: s.humidity_critical_low,
-                        humidity_warning_low: s.humidity_warning_low,
-                        humidity_warning_high: s.humidity_warning_high,
-                        humidity_critical_high: s.humidity_critical_high,
+                        field_thresholds: s.field_thresholds.clone(),
                     })
                     .collect()
             })

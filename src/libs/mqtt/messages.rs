@@ -151,26 +151,22 @@ pub enum MqttMessage {
     Shutdown,
 }
 
-/// LoRaWAN sensor data payload for MQTT publishing
+/// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
 #[derive(Debug, Clone)]
 pub struct LoRaWANSensorPayload {
     pub dev_eui: String,
     pub name: String,
     pub serial_number: Option<String>,
-    pub temperature: Option<f32>,
-    pub humidity: Option<f32>,
-    pub voltage: Option<f32>,
-    pub ext_temperature_1: Option<f32>,
-    pub ext_temperature_2: Option<f32>,
-    pub illuminance: Option<u32>,
-    pub motion_count: Option<u32>,
-    pub orientation: Option<u8>,
+    pub location: Option<String>,
+    pub fields: std::collections::HashMap<String, f64>,
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+    pub counters: std::collections::HashMap<String, u64>,
+    pub events: Vec<crate::libs::lorawan::chirpstack::StickerEvent>,
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
     pub last_seen: Option<String>,
     pub alarm_state: String,
-    pub temp_alarm_state: String,
-    pub humidity_alarm_state: String,
 }
 
 /// Sensor configuration data for query response
@@ -184,7 +180,7 @@ pub struct SensorConfigData {
     pub thresholds: AlarmThreshold,
 }
 
-/// LoRaWAN sensor configuration data for config state publishing
+/// LoRaWAN sensor configuration data for config state publishing (v2)
 #[derive(Debug, Clone)]
 pub struct LoRaWANSensorConfigData {
     pub dev_eui: String,
@@ -192,14 +188,7 @@ pub struct LoRaWANSensorConfigData {
     pub serial_number: Option<String>,
     pub location: Option<String>,
     pub enabled: bool,
-    pub temp_critical_low: Option<f32>,
-    pub temp_warning_low: Option<f32>,
-    pub temp_warning_high: Option<f32>,
-    pub temp_critical_high: Option<f32>,
-    pub humidity_critical_low: Option<f32>,
-    pub humidity_warning_low: Option<f32>,
-    pub humidity_warning_high: Option<f32>,
-    pub humidity_critical_high: Option<f32>,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
 }
 
 /// Commands received from MQTT broker
@@ -291,20 +280,29 @@ pub enum MqttCommand {
         dns_secondary: Option<String>,
     },
 
-    /// Set LoRaWAN sensor configuration (signed via ConfigRequest)
+    /// Set LoRaWAN sensor metadata (name/serial/location) — signed via ConfigRequest.
+    /// Per-field thresholds live in dedicated commands (`SetLoRaWANFieldThreshold` / `DeleteLoRaWANFieldThreshold`).
     SetLoRaWANSensorConfig {
         dev_eui: String,
         name: Option<String>,
         serial_number: Option<String>,
         location: Option<String>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
+    },
+
+    /// Set a single per-field threshold for a LoRaWAN sensor
+    SetLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    },
+
+    /// Remove a per-field threshold for a LoRaWAN sensor
+    DeleteLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
     },
 
     /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
@@ -389,6 +387,8 @@ impl MqttCommand {
             MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
+            MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
+            MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::AddSigner { .. } => "add_signer",

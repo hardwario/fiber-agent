@@ -770,29 +770,41 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let temp_critical_low = challenge.params.get("temp_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_warning_low = challenge.params.get("temp_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_warning_high = challenge.params.get("temp_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_critical_high = challenge.params.get("temp_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_critical_low = challenge.params.get("humidity_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_warning_low = challenge.params.get("humidity_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_warning_high = challenge.params.get("humidity_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_critical_high = challenge.params.get("humidity_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-
                 Ok(MqttCommand::SetLoRaWANSensorConfig {
                     dev_eui,
                     name,
                     serial_number,
                     location,
-                    temp_critical_low,
-                    temp_warning_low,
-                    temp_warning_high,
-                    temp_critical_high,
-                    humidity_critical_low,
-                    humidity_warning_low,
-                    humidity_warning_high,
-                    humidity_critical_high,
                 })
+            }
+            "set_lorawan_field_threshold" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
+                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
+                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                Ok(MqttCommand::SetLoRaWANFieldThreshold {
+                    dev_eui, field,
+                    critical_low, warning_low, warning_high, critical_high,
+                })
+            }
+            "delete_lorawan_field_threshold" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_string();
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                Ok(MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field })
             }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")
