@@ -7,7 +7,10 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-const CHIRPSTACK_HOST: &str = "localhost";
+// 127.0.0.1 instead of "localhost" to avoid IPv6 ::1 resolution surprises —
+// connect_timeout takes a single SocketAddr, so we must pick the right one.
+// ChirpStack binds 0.0.0.0:8080, so IPv4 is the safe choice.
+const CHIRPSTACK_HOST: &str = "127.0.0.1";
 const CHIRPSTACK_PORT: u16 = 8080;
 const LORAWAN_CONFIG_PATH: &str = "/data/lorawan/config.json";
 
