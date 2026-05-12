@@ -7,6 +7,7 @@ pub mod chirpstack;
 pub mod detector;
 pub mod monitor;
 pub mod provisioning;
+pub mod registry;
 pub mod state;
 
 pub use monitor::{LoRaWANMonitor, LoRaWANHandle};
