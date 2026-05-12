@@ -156,10 +156,10 @@ pub fn render_sensor_overview(
                 let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
                     match reading.alarm_state {
                         AlarmState::NeverConnected => ("-", false),
-                        AlarmState::Disconnected => ("E", true),
-                        AlarmState::Reconnecting => ("W", true),
+                        AlarmState::Disconnected => ("E", false),
+                        AlarmState::Reconnecting => ("W", false),
                         AlarmState::Normal => ("N", false),
-                        AlarmState::Warning => ("W", true),
+                        AlarmState::Warning => ("W", false),
                         AlarmState::Critical => ("C", true),
                     }
                 } else {
@@ -189,11 +189,11 @@ pub fn render_sensor_overview(
                 let sensor = &lorawan_sensors[lr_idx];
                 let (status_char, is_alarm) = match sensor.alarm_state {
                     LoRaWANAlarmState::Normal => ("N", false),
-                    LoRaWANAlarmState::Warning => ("W", true),
+                    LoRaWANAlarmState::Warning => ("W", false),
                     LoRaWANAlarmState::Critical => ("C", true),
-                    LoRaWANAlarmState::Disconnected => ("E", true),
+                    LoRaWANAlarmState::Disconnected => ("E", false),
                 };
-                let name = if sensor.name.len() > 6 { &sensor.name[..6] } else { &sensor.name };
+                let name = truncate_chars(&sensor.name, 6);
                 let temp_str = sensor.fields.get("temperature").map(|t| format!("{:.1}", t)).unwrap_or_else(|| "--.-".to_string());
                 let hum_str = sensor.fields.get("humidity").map(|h| format!("{:.0}%", h)).unwrap_or_else(|| "--%".to_string());
                 let label = format!("{:6} {}° {}", name, temp_str, hum_str);
