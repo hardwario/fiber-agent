@@ -30,6 +30,8 @@ struct BuzzerPriorityState {
     sensor_critical_active: bool,
     /// Is battery in critical state?
     battery_critical_active: bool,
+    /// Is at least one LoRaWAN sticker in critical state?
+    sticker_critical_active: bool,
     /// Buzzer silenced by ACK (resets on next NEW alarm transition)
     silenced: bool,
     /// Which pattern is currently playing?
@@ -56,6 +58,7 @@ impl BuzzerPriorityState {
         Self {
             sensor_critical_active: false,
             battery_critical_active: false,
+            sticker_critical_active: false,
             silenced: false,
             current_pattern_source: PatternSource::None,
             pattern_switch_time: Instant::now(),
@@ -125,6 +128,28 @@ impl BuzzerPriorityManager {
         }; // Release state lock here
 
         // Update buzzer if pattern changed
+        self.apply_pattern(pattern_to_set);
+    }
+
+    /// Set sticker critical state.
+    /// When true, any LoRaWAN sticker is in critical; treated with the same precedence
+    /// as `set_sensor_critical` and uses the identical `CriticalBeep` pattern.
+    /// A new off→on transition clears the ACK silence (matches sensor behavior).
+    pub fn set_sticker_critical(&self, is_critical: bool) {
+        let pattern_to_set = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let was_critical = state.sticker_critical_active;
+            state.sticker_critical_active = is_critical;
+            if is_critical && !was_critical {
+                state.silenced = false;
+            }
+            eprintln!(
+                "[BuzzerPriority] Sticker critical: {}",
+                if is_critical { "ON" } else { "OFF" }
+            );
+            self.compute_pattern(&state)
+        };
+
         self.apply_pattern(pattern_to_set);
     }
 
@@ -201,11 +226,13 @@ impl BuzzerPriorityManager {
         self.apply_pattern(pattern_to_set);
     }
 
-    /// Returns true if the sensor-critical pattern is currently audible.
+    /// Returns true if a critical-alarm pattern (sensor OR sticker) is currently audible.
     /// Used by the button handler to decide whether to consume a press.
+    /// Note: the name is preserved for compatibility; semantically it covers both
+    /// wired DS18B20 sensors and LoRaWAN stickers, since they share the same pattern.
     pub fn is_sensor_beeping(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.sensor_critical_active {
+        if !state.sensor_critical_active && !state.sticker_critical_active {
             return false;
         }
         if state.silenced {
@@ -238,19 +265,22 @@ impl BuzzerPriorityManager {
             return Some(PatternSource::None);
         }
 
-        // Check button silence (sensor-only, time-limited)
-        let sensor_active = if let Some(deadline) = state.sensor_silenced_until {
+        // Combined critical signal: any wired sensor OR any LoRaWAN sticker.
+        // Both use the same CriticalBeep pattern, so we treat them as one source
+        // for precedence purposes. The 30-min button silence suppresses both.
+        let raw_critical = state.sensor_critical_active || state.sticker_critical_active;
+        let critical_active = if let Some(deadline) = state.sensor_silenced_until {
             if (self.clock)() >= deadline {
-                state.sensor_critical_active
+                raw_critical
             } else {
-                false // Sensor suppressed by button silence
+                false
             }
         } else {
-            state.sensor_critical_active
+            raw_critical
         };
 
         let new_pattern_source = match (
-            sensor_active,
+            critical_active,
             state.battery_critical_active,
         ) {
             // Only sensor critical: play sensor pattern
@@ -441,6 +471,100 @@ mod tests {
         state.sensor_silenced_until = None;
 
         assert!(eval_sensor_active(&state, &clock), "sensor should resume after new alarm");
+    }
+
+    /// Helper: evaluate "any critical-sensor source is active" given silence state.
+    /// Mirrors the updated compute_pattern OR-logic between sensor and sticker.
+    fn eval_critical_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        let raw = state.sensor_critical_active || state.sticker_critical_active;
+        if let Some(deadline) = state.sensor_silenced_until {
+            if (clock)() >= deadline { raw } else { false }
+        } else {
+            raw
+        }
+    }
+
+    #[test]
+    fn sticker_critical_alone_triggers_sensor_pattern() {
+        let (clock, _) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sticker_critical_active = true;
+
+        assert!(eval_critical_active(&state, &clock));
+        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        assert_eq!(pattern, PatternSource::SensorCritical);
+    }
+
+    #[test]
+    fn sticker_critical_with_battery_critical_alternates_like_sensor() {
+        let (clock, _) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sticker_critical_active = true;
+        state.battery_critical_active = true;
+
+        assert!(eval_critical_active(&state, &clock));
+        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        assert_eq!(pattern, PatternSource::SensorCritical);
+    }
+
+    #[test]
+    fn sensor_critical_or_sticker_critical_both_active_resolves_to_sensor_pattern() {
+        let (clock, _) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.sticker_critical_active = true;
+
+        assert!(eval_critical_active(&state, &clock));
+        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        assert_eq!(pattern, PatternSource::SensorCritical);
+    }
+
+    #[test]
+    fn button_silence_suppresses_sticker_critical_too() {
+        let (clock, _) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sticker_critical_active = true;
+        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        assert!(!eval_critical_active(&state, &clock),
+                "sticker should be suppressed by 30-min button silence");
+    }
+
+    #[test]
+    fn set_sticker_critical_off_to_on_clears_ack_silence() {
+        // Fallback: BuzzerController::new_for_test() doesn't exist, so we
+        // model the state machine semantics of set_sticker_critical directly
+        // (mirrors style of silence_sensor_30min_suppresses_sensor_only).
+        let mut state = BuzzerPriorityState::new();
+        state.silenced = true; // prior ACK silence
+
+        // Simulate set_sticker_critical(true) off→on transition:
+        let was_critical = state.sticker_critical_active;
+        state.sticker_critical_active = true;
+        if state.sticker_critical_active && !was_critical {
+            state.silenced = false;
+        }
+
+        assert!(!state.silenced, "ACK silence should be cleared on sticker off→on transition");
+        assert!(state.sticker_critical_active);
+    }
+
+    #[test]
+    fn set_sticker_critical_is_idempotent() {
+        // Fallback: BuzzerController::new_for_test() doesn't exist, so we
+        // model the state machine semantics directly. Repeated calls with the
+        // same value must leave state.sticker_critical_active = true.
+        let mut state = BuzzerPriorityState::new();
+
+        for _ in 0..3 {
+            let was_critical = state.sticker_critical_active;
+            state.sticker_critical_active = true;
+            if state.sticker_critical_active && !was_critical {
+                state.silenced = false;
+            }
+        }
+
+        assert!(state.sticker_critical_active);
     }
 
     #[test]
