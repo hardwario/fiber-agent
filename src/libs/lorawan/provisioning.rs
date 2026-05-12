@@ -176,6 +176,30 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
         return Err(format!("HTTP error: {}", status_line));
     }
 
+    // Some chirpstack endpoints return gRPC trailers as HTTP headers when the
+    // response carries no data frame (e.g. an early validation failure). Treat
+    // a non-zero grpc-status in HTTP headers as a hard error instead of
+    // silently swallowing it as success.
+    {
+        let lower = header_str.to_lowercase();
+        if let Some(idx) = lower.find("grpc-status:") {
+            let rest = &lower[idx + "grpc-status:".len()..];
+            let val: String = rest.chars()
+                .take_while(|c| !matches!(c, '\r' | '\n'))
+                .collect();
+            let val = val.trim();
+            if !val.is_empty() && val != "0" {
+                let msg = lower.find("grpc-message:")
+                    .map(|i| {
+                        let r = &header_str[i + "grpc-message:".len()..];
+                        r.lines().next().unwrap_or("").trim().to_string()
+                    })
+                    .unwrap_or_default();
+                return Err(format!("gRPC error: grpc-status={} {}", val, msg));
+            }
+        }
+    }
+
     let body = &response[header_end + 4..];
 
     // Handle chunked transfer encoding
@@ -299,7 +323,8 @@ fn create_device(
         encode_string(5, device_profile_id),
     ];
     if let Some(je) = join_eui {
-        parts.push(encode_string(6, je));
+        // chirpstack v4 Device.join_eui = 10 (field 6 is skip_fcnt_check, a bool)
+        parts.push(encode_string(10, je));
     }
     let device: Vec<u8> = parts.concat();
 
