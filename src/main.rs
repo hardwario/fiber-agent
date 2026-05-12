@@ -499,7 +499,13 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
-        match LoRaWANMonitor::new(lorawan_config, lorawan_configs.clone(), handle.sender(), hostname.clone()) {
+        match LoRaWANMonitor::new(
+            lorawan_config,
+            lorawan_configs.clone(),
+            handle.sender(),
+            hostname.clone(),
+            Some(buzzer_priority_manager.clone()),
+        ) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state
                 let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
