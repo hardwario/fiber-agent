@@ -466,6 +466,8 @@ impl AuthorizationManager {
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "set_lorawan_field_threshold" => "set_threshold",
+            "delete_lorawan_field_threshold" => "set_threshold",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
