@@ -4,7 +4,7 @@
 //! Manual protobuf encoding - same pattern as chirpstack-provision.py.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 const CHIRPSTACK_HOST: &str = "localhost";
@@ -135,8 +135,12 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
     headers.push_str("\r\n");
 
     let addr = format!("{}:{}", CHIRPSTACK_HOST, CHIRPSTACK_PORT);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to ChirpStack at {}: {}", addr, e))?;
+    let socket_addr = addr.to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve ChirpStack address {}: {}", addr, e))?
+        .next()
+        .ok_or_else(|| format!("No address found for ChirpStack at {}", addr))?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))
+        .map_err(|e| format!("Failed to connect to ChirpStack at {} (5s timeout): {}", addr, e))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
