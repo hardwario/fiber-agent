@@ -2057,6 +2057,7 @@ impl MqttMonitor {
                 dev_eui,
                 name,
                 serial_number,
+                location,
                 temp_critical_low,
                 temp_warning_low,
                 temp_warning_high,
@@ -2071,6 +2072,7 @@ impl MqttMonitor {
                         dev_eui.clone(),
                         name.clone(),
                         serial_number.clone(),
+                        location.clone(),
                         temp_critical_low,
                         temp_warning_low,
                         temp_warning_high,
@@ -2088,6 +2090,9 @@ impl MqttMonitor {
                                 if let Some(existing) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
                                     existing.name = name.clone();
                                     existing.serial_number = serial_number.clone();
+                                    if location.is_some() {
+                                        existing.location = location.clone();
+                                    }
                                     existing.temp_critical_low = temp_critical_low;
                                     existing.temp_warning_low = temp_warning_low;
                                     existing.temp_warning_high = temp_warning_high;
@@ -2101,7 +2106,7 @@ impl MqttMonitor {
                                         dev_eui: dev_eui.clone(),
                                         name: name.clone(),
                                         serial_number: serial_number.clone(),
-                                        location: None,
+                                        location: location.clone(),
                                         enabled: true,
                                         temp_critical_low,
                                         temp_warning_low,
@@ -2152,6 +2157,7 @@ impl MqttMonitor {
                         dev_eui.clone(),
                         Some(name.clone()),
                         Some(serial_number.clone()),
+                        None,  // location: not set at provisioning
                         None, None, None, None,  // temp thresholds: use defaults
                         None, None, None, None,  // humidity thresholds: use defaults
                     );
@@ -2175,6 +2181,36 @@ impl MqttMonitor {
                                         humidity_critical_high: None,
                                     });
                                 }
+                            }
+                        }
+                        // Insert a stub in shared state so the next periodic publish
+                        // includes the sticker even before its first uplink arrives.
+                        // Without this, the backend's sync would consider the
+                        // optimistic entry stale and drop it.
+                        let state_opt: Option<crate::libs::lorawan::SharedLoRaWANState> =
+                            lorawan_state_slot.lock().ok().and_then(|g| g.clone());
+                        if let Some(state) = state_opt {
+                            if let Ok(mut s) = state.write() {
+                                s.sensors.entry(dev_eui.clone())
+                                    .or_insert_with(|| crate::libs::lorawan::LoRaWANSensorState {
+                                        dev_eui: dev_eui.clone(),
+                                        name: name.clone(),
+                                        serial_number: Some(serial_number.clone()),
+                                        temperature: None,
+                                        humidity: None,
+                                        voltage: None,
+                                        ext_temperature_1: None,
+                                        ext_temperature_2: None,
+                                        illuminance: None,
+                                        motion_count: None,
+                                        orientation: None,
+                                        rssi: None,
+                                        snr: None,
+                                        last_seen: None,
+                                        alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
+                                        temp_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
+                                        humidity_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
+                                    });
                             }
                         }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} config saved", dev_eui);
@@ -2288,6 +2324,7 @@ impl MqttMonitor {
                         dev_eui: s.dev_eui.clone(),
                         name: s.name.clone(),
                         serial_number: s.serial_number.clone(),
+                        location: s.location.clone(),
                         enabled: s.enabled,
                         temp_critical_low: s.temp_critical_low,
                         temp_warning_low: s.temp_warning_low,

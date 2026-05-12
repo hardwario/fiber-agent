@@ -826,6 +826,7 @@ impl ConfigApplier {
         dev_eui: String,
         name: Option<String>,
         serial_number: Option<String>,
+        location: Option<String>,
         temp_critical_low: Option<f32>,
         temp_warning_low: Option<f32>,
         temp_warning_high: Option<f32>,
@@ -897,6 +898,7 @@ impl ConfigApplier {
             &dev_eui,
             name.as_deref(),
             serial_number.as_deref(),
+            location.as_deref(),
             temp_critical_low, temp_warning_low, temp_warning_high, temp_critical_high,
             humidity_critical_low, humidity_warning_low, humidity_warning_high, humidity_critical_high,
         ) {
@@ -1433,6 +1435,7 @@ impl ConfigApplier {
         dev_eui: &str,
         name: Option<&str>,
         serial_number: Option<&str>,
+        location: Option<&str>,
         temp_critical_low: Option<f32>,
         temp_warning_low: Option<f32>,
         temp_warning_high: Option<f32>,
@@ -1505,6 +1508,9 @@ impl ConfigApplier {
         }
         if let Some(sn) = serial_number {
             sensor_map.insert(Value::String("serial_number".to_string()), Value::String(sn.to_string()));
+        }
+        if let Some(loc) = location {
+            sensor_map.insert(Value::String("location".to_string()), Value::String(loc.to_string()));
         }
 
         // Helper to set or remove optional f32 threshold

@@ -683,6 +683,7 @@ impl MqttPublisher {
                     "dev_eui": s.dev_eui,
                     "name": s.name,
                     "serial_number": s.serial_number,
+                    "location": s.location,
                     "enabled": s.enabled,
                     "temp_critical_low": s.temp_critical_low,
                     "temp_warning_low": s.temp_warning_low,

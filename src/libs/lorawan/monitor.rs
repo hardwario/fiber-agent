@@ -252,13 +252,18 @@ fn publish_lorawan_sensors(
         Err(_) => return,
     };
 
-    if state_snapshot.sensors.is_empty() {
-        return;
-    }
+    // Reconcile against current config: drop sensors that were removed from
+    // fiber.config.yaml so the backend sees the removal and the UI updates.
+    // Publish even when the resulting list is empty so the backend can sync.
+    let allowed_dev_euis: Option<std::collections::HashSet<String>> =
+        crate::libs::config::Config::load_default()
+            .ok()
+            .and_then(|cfg| cfg.lorawan.map(|l| l.sensors.into_iter().map(|s| s.dev_eui).collect()));
 
     let sensors: Vec<crate::libs::mqtt::messages::LoRaWANSensorPayload> = state_snapshot
         .sensors
         .values()
+        .filter(|s| allowed_dev_euis.as_ref().map_or(true, |set| set.contains(&s.dev_eui)))
         .map(|s| crate::libs::mqtt::messages::LoRaWANSensorPayload {
             dev_eui: s.dev_eui.clone(),
             name: s.name.clone(),

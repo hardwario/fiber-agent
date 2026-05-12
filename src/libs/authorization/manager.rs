@@ -766,6 +766,10 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
+                let location = challenge.params.get("location")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 let temp_critical_low = challenge.params.get("temp_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
                 let temp_warning_low = challenge.params.get("temp_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
                 let temp_warning_high = challenge.params.get("temp_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
@@ -779,6 +783,7 @@ impl AuthorizationManager {
                     dev_eui,
                     name,
                     serial_number,
+                    location,
                     temp_critical_low,
                     temp_warning_low,
                     temp_warning_high,
