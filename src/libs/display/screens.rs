@@ -214,7 +214,7 @@ pub fn render_lorawan_sensor_detail(
 ) -> anyhow::Result<()> {
     match detail_page {
         0 => render_lorawan_detail_page_readings(display, sensor),
-        1 => render_lorawan_detail_page_thresholds(display, sensor, config),
+        1 => render_lorawan_detail_page_thresholds(display, sensor),
         _ => render_lorawan_detail_page_location(display, sensor, config),
     }
 }
@@ -358,14 +358,16 @@ fn render_lorawan_detail_page_readings(
 fn render_lorawan_detail_page_thresholds(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
-    config: Option<&crate::libs::config::LoRaWANSensorConfig>,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     render_lorawan_detail_header(display, sensor, "2/3");
 
+    // Effective thresholds (override + YAML defaults merged) live on the state
+    // after `evaluate_alarms`, so the display reads them directly instead of
+    // re-resolving them from the per-sensor config.
     let find_thr = |field: &str| -> Option<&crate::libs::config::FieldThreshold> {
-        config.and_then(|c| c.field_thresholds.iter().find(|t| t.field == field))
+        sensor.field_thresholds.iter().find(|t| t.field == field)
     };
     let temp_thr = find_thr("temperature");
     let hum_thr = find_thr("humidity");
@@ -1078,6 +1080,7 @@ mod ordering_tests {
             location: None,
             fields,
             field_alarm_states: std::collections::HashMap::new(),
+            field_thresholds: Vec::new(),
             counters: std::collections::HashMap::new(),
             recent_events: std::collections::VecDeque::new(),
             rssi: None,

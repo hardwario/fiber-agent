@@ -1,6 +1,7 @@
 // Configuration management for FIBER Medical Thermometer
 // Loads and provides access to configuration from fiber.config.yaml
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -208,6 +209,13 @@ pub struct SensorFileConfig {
     /// Common (default) alarm thresholds for all lines
     pub common_alarms: SensorAlarmConfig,
 
+    /// Default per-field thresholds for LoRaWAN stickers, keyed by field name
+    /// (matches `registry::REGISTRY`). Used as a fallback for every sticker that
+    /// has no explicit override, on a per-bound basis. Empty map disables
+    /// auto-alarming for stickers.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub common_lorawan_field_thresholds: HashMap<String, FieldThresholdBounds>,
+
     /// Per-line sensor configurations
     pub lines: Vec<SensorLineConfig>,
 }
@@ -314,6 +322,7 @@ impl SensorFileConfig {
                 high_alarm_celsius: 100.0, // disabled - defaults
                 critical_high_celsius: 40.0,
             },
+            common_lorawan_field_thresholds: HashMap::new(),
             lines: vec![
                 SensorLineConfig {
                     line: 0,
@@ -539,6 +548,93 @@ pub struct FieldThreshold {
     pub warning_high: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_high: Option<f64>,
+}
+
+/// Bounds-only form of a field threshold, used for the YAML defaults map
+/// where the field name is the map key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FieldThresholdBounds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_high: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_high: Option<f64>,
+}
+
+impl FieldThresholdBounds {
+    /// True if any bound is set.
+    pub fn is_set(&self) -> bool {
+        self.critical_low.is_some()
+            || self.warning_low.is_some()
+            || self.warning_high.is_some()
+            || self.critical_high.is_some()
+    }
+}
+
+/// Resolve the effective threshold for a single field on a sticker, merging the
+/// per-sensor override (if present) over the YAML defaults (if present) on a
+/// per-bound basis. Returns `None` only when neither side provides any bound.
+pub fn resolve_field_threshold(
+    field: &str,
+    sensor_override: Option<&FieldThreshold>,
+    default: Option<&FieldThresholdBounds>,
+) -> Option<FieldThreshold> {
+    match (sensor_override, default) {
+        (None, None) => None,
+        (Some(o), None) => Some(o.clone()),
+        (None, Some(d)) if d.is_set() => Some(FieldThreshold {
+            field: field.to_string(),
+            critical_low: d.critical_low,
+            warning_low: d.warning_low,
+            warning_high: d.warning_high,
+            critical_high: d.critical_high,
+        }),
+        (None, Some(_)) => None,
+        (Some(o), Some(d)) => {
+            let merged = FieldThreshold {
+                field: field.to_string(),
+                critical_low: o.critical_low.or(d.critical_low),
+                warning_low: o.warning_low.or(d.warning_low),
+                warning_high: o.warning_high.or(d.warning_high),
+                critical_high: o.critical_high.or(d.critical_high),
+            };
+            if merged.critical_low.is_none()
+                && merged.warning_low.is_none()
+                && merged.warning_high.is_none()
+                && merged.critical_high.is_none()
+            {
+                None
+            } else {
+                Some(merged)
+            }
+        }
+    }
+}
+
+/// Compute the full list of effective thresholds for a sticker, considering
+/// both the per-sensor `field_thresholds` and the YAML defaults map. Every
+/// field that has at least one bound from either source is included.
+pub fn effective_field_thresholds(
+    sensor: Option<&LoRaWANSensorConfig>,
+    defaults: &HashMap<String, FieldThresholdBounds>,
+) -> Vec<FieldThreshold> {
+    let mut fields: std::collections::BTreeSet<String> = defaults.keys().cloned().collect();
+    if let Some(s) = sensor {
+        for t in &s.field_thresholds {
+            fields.insert(t.field.clone());
+        }
+    }
+    fields
+        .into_iter()
+        .filter_map(|f| {
+            let override_ = sensor.and_then(|s| s.field_thresholds.iter().find(|t| t.field == f));
+            let default = defaults.get(&f);
+            resolve_field_threshold(&f, override_, default)
+        })
+        .collect()
 }
 
 /// Per-sensor LoRaWAN configuration (generic field-driven thresholds)

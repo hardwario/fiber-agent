@@ -41,6 +41,7 @@ impl LoRaWANMonitor {
     pub fn new(
         config: LoRaWANConfig,
         configs: super::state::SharedLoRaWANSensorConfigs,
+        field_threshold_defaults: super::state::SharedFieldThresholdDefaults,
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
         buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
@@ -70,6 +71,7 @@ impl LoRaWANMonitor {
                 state_clone,
                 config,
                 configs,
+                field_threshold_defaults,
                 mqtt_tx,
                 hostname,
                 buzzer_priority_manager,
@@ -112,6 +114,7 @@ fn lorawan_loop(
     state: SharedLoRaWANState,
     config: LoRaWANConfig,
     configs: super::state::SharedLoRaWANSensorConfigs,
+    field_threshold_defaults: super::state::SharedFieldThresholdDefaults,
     mqtt_tx: Sender<MqttMessage>,
     hostname: String,
     buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
@@ -231,7 +234,7 @@ fn lorawan_loop(
                 let any_sticker_critical = if let Ok(mut s) = state.write() {
                     s.check_timeouts(timeout_secs);
                     if let Ok(cfgs) = configs.read() {
-                        s.evaluate_alarms(&cfgs);
+                        s.evaluate_alarms(&cfgs, &field_threshold_defaults);
                     }
                     // Compute "is any sticker in Critical?" while we still hold the lock.
                     s.sensors.values().any(|sensor| {
@@ -282,17 +285,20 @@ fn publish_lorawan_sensors(
         Err(_) => return,
     };
 
-    // Load config from disk so we can both reconcile against allowed sensors and
-    // include each sensor's field_thresholds in the published payload.
+    // Reconcile against the sensors declared in the config — anything not in
+    // the YAML's `lorawan.sensors[]` is filtered out of the published payload.
+    // The effective `field_thresholds` (with defaults merged) live on each
+    // `LoRaWANSensorState` after `evaluate_alarms`, so we read them straight
+    // from the state instead of re-resolving here.
     let loaded = crate::libs::config::Config::load_default().ok();
-    let sensors_config: Vec<crate::libs::config::LoRaWANSensorConfig> = loaded
-        .as_ref()
-        .and_then(|c| c.lorawan.as_ref().map(|l| l.sensors.clone()))
-        .unwrap_or_default();
     let allowed_dev_euis: Option<std::collections::HashSet<String>> = Some(
-        sensors_config.iter().map(|s| s.dev_eui.clone()).collect(),
+        loaded
+            .as_ref()
+            .and_then(|c| c.lorawan.as_ref().map(|l| {
+                l.sensors.iter().map(|s| s.dev_eui.clone()).collect()
+            }))
+            .unwrap_or_default(),
     );
-    let configs_snapshot = sensors_config;
 
     let sensors: Vec<crate::libs::mqtt::messages::LoRaWANSensorPayload> = state_snapshot
         .sensors
@@ -302,10 +308,6 @@ fn publish_lorawan_sensors(
             let field_alarm_states = s.field_alarm_states.iter()
                 .map(|(k, v)| (k.clone(), v.to_string()))
                 .collect();
-            let field_thresholds = configs_snapshot.iter()
-                .find(|c| c.dev_eui == s.dev_eui)
-                .map(|c| c.field_thresholds.clone())
-                .unwrap_or_default();
             crate::libs::mqtt::messages::LoRaWANSensorPayload {
                 dev_eui: s.dev_eui.clone(),
                 name: s.name.clone(),
@@ -313,7 +315,7 @@ fn publish_lorawan_sensors(
                 location: s.location.clone(),
                 fields: s.fields.clone(),
                 field_alarm_states,
-                field_thresholds,
+                field_thresholds: s.field_thresholds.clone(),
                 counters: s.counters.clone(),
                 events: s.recent_events.iter().cloned().collect(),
                 rssi: s.rssi,

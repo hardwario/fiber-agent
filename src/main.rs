@@ -499,9 +499,19 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
+        // Load YAML defaults for sticker per-field thresholds. These give newly
+        // paired stickers automatic alarming (mirrors DS18B20 `common_alarms`).
+        let lorawan_field_defaults: fiber_app::libs::lorawan::SharedFieldThresholdDefaults =
+            Arc::new(
+                fiber_app::libs::config::SensorFileConfig::load_default()
+                    .ok()
+                    .map(|c| c.common_lorawan_field_thresholds)
+                    .unwrap_or_default(),
+            );
         match LoRaWANMonitor::new(
             lorawan_config,
             lorawan_configs.clone(),
+            lorawan_field_defaults,
             handle.sender(),
             hostname.clone(),
             Some(buzzer_priority_manager.clone()),

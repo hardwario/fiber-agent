@@ -69,6 +69,23 @@ common_alarms:
   # Reconnection animation
   reconnect_blinks: 5
 
+# Default per-field thresholds for LoRaWAN stickers. Applied automatically to
+# every paired sticker that has no explicit override saved via the viewer —
+# this is the LoRaWAN analogue of `common_alarms` above. Each per-sensor
+# override merges over these on a per-bound basis (omit a bound to inherit).
+# Field names must match the LoRaWAN field registry.
+common_lorawan_field_thresholds:
+  temperature:
+    critical_low: 0.0
+    warning_low: 5.0
+    warning_high: 30.0
+    critical_high: 40.0
+  humidity:
+    critical_low: 15.0
+    warning_low: 25.0
+    warning_high: 75.0
+    critical_high: 85.0
+
 lines:
   - line: 0
     enabled: true

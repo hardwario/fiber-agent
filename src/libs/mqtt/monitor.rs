@@ -2231,6 +2231,7 @@ impl MqttMonitor {
                                         location: None,
                                         fields: std::collections::HashMap::new(),
                                         field_alarm_states: std::collections::HashMap::new(),
+                                        field_thresholds: Vec::new(),
                                         counters: std::collections::HashMap::new(),
                                         recent_events: std::collections::VecDeque::new(),
                                         rssi: None,

@@ -5,7 +5,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
-use crate::libs::config::{LoRaWANSensorConfig, FieldThreshold};
+use crate::libs::config::{
+    effective_field_thresholds, FieldThreshold, FieldThresholdBounds, LoRaWANSensorConfig,
+};
 
 use super::chirpstack::{StickerReading, StickerEvent};
 
@@ -71,6 +73,10 @@ pub struct LoRaWANSensorState {
     pub location: Option<String>,
     pub fields: HashMap<String, f64>,
     pub field_alarm_states: HashMap<String, LoRaWANAlarmState>,
+    /// Effective per-field thresholds (per-sensor override merged over YAML
+    /// defaults). Recomputed on every `evaluate_alarms`. Used by the MQTT
+    /// publisher and the on-device display so they don't re-resolve.
+    pub field_thresholds: Vec<FieldThreshold>,
     pub counters: HashMap<String, u64>,
     pub recent_events: VecDeque<StickerEvent>,
     pub rssi: Option<i32>,
@@ -90,6 +96,7 @@ impl LoRaWANSensorState {
             location: None,
             fields: reading.fields.clone(),
             field_alarm_states: HashMap::new(),
+            field_thresholds: Vec::new(),
             counters: reading.counters.clone(),
             recent_events: events,
             rssi: reading.rssi,
@@ -122,17 +129,25 @@ impl LoRaWANSensorState {
         self.alarm_state = LoRaWANAlarmState::Normal;
     }
 
-    pub fn evaluate_alarms(&mut self, config: Option<&LoRaWANSensorConfig>) {
+    pub fn evaluate_alarms(
+        &mut self,
+        config: Option<&LoRaWANSensorConfig>,
+        defaults: &HashMap<String, FieldThresholdBounds>,
+    ) {
         self.field_alarm_states.clear();
-        let Some(cfg) = config else {
-            self.alarm_state = LoRaWANAlarmState::Normal;
-            return;
-        };
-        if let Some(ref name) = cfg.name { self.name = name.clone(); }
-        self.serial_number = cfg.serial_number.clone();
-        self.location = cfg.location.clone();
+        self.field_thresholds.clear();
+        if let Some(cfg) = config {
+            if let Some(ref name) = cfg.name { self.name = name.clone(); }
+            self.serial_number = cfg.serial_number.clone();
+            self.location = cfg.location.clone();
+        }
 
-        for t in &cfg.field_thresholds {
+        // Merge per-sensor overrides over YAML defaults. Stickers without a
+        // matching config entry still pick up defaults — this is what gives
+        // newly-paired stickers automatic alarming, mirroring DS18B20 probes.
+        self.field_thresholds = effective_field_thresholds(config, defaults);
+
+        for t in &self.field_thresholds {
             if let Some(&v) = self.fields.get(&t.field) {
                 let s = evaluate_threshold(
                     v,
@@ -177,10 +192,14 @@ impl LoRaWANState {
         }
     }
 
-    pub fn evaluate_alarms(&mut self, sensor_configs: &[LoRaWANSensorConfig]) {
+    pub fn evaluate_alarms(
+        &mut self,
+        sensor_configs: &[LoRaWANSensorConfig],
+        defaults: &HashMap<String, FieldThresholdBounds>,
+    ) {
         for sensor in self.sensors.values_mut() {
             let config = sensor_configs.iter().find(|c| c.dev_eui == sensor.dev_eui);
-            sensor.evaluate_alarms(config);
+            sensor.evaluate_alarms(config, defaults);
         }
     }
 
@@ -215,6 +234,11 @@ pub fn create_shared_lorawan_sensor_configs(
 ) -> SharedLoRaWANSensorConfigs {
     Arc::new(RwLock::new(seed))
 }
+
+/// Shared, immutable-at-runtime defaults loaded from `fiber.sensors.config.yaml`.
+/// Wrapped in `Arc` (no `RwLock`) because YAML defaults are not mutated by
+/// MQTT commands — to change them, the operator edits the file and restarts.
+pub type SharedFieldThresholdDefaults = Arc<HashMap<String, FieldThresholdBounds>>;
 
 #[cfg(test)]
 mod tests {
@@ -269,7 +293,7 @@ mod tests {
                 },
             ],
         };
-        state.evaluate_alarms(&[cfg]);
+        state.evaluate_alarms(&[cfg], &HashMap::new());
         let s = &state.sensors["aabb"];
         assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Critical);
         assert_eq!(s.field_alarm_states["humidity"], LoRaWANAlarmState::Normal);
@@ -284,9 +308,56 @@ mod tests {
             dev_eui: "aabb".into(), name: None, serial_number: None,
             location: None, enabled: true, field_thresholds: vec![],
         };
-        state.evaluate_alarms(&[cfg]);
+        state.evaluate_alarms(&[cfg], &HashMap::new());
         assert!(state.sensors["aabb"].field_alarm_states.is_empty());
         assert_eq!(state.sensors["aabb"].alarm_state, LoRaWANAlarmState::Normal);
+    }
+
+    #[test]
+    fn test_yaml_defaults_apply_when_no_override() {
+        let mut state = LoRaWANState::new(true);
+        state.update_sensor(&reading_with_fields("aabb", 45.0, 50.0));
+        let cfg = LoRaWANSensorConfig {
+            dev_eui: "aabb".into(), name: None, serial_number: None,
+            location: None, enabled: true, field_thresholds: vec![],
+        };
+        let mut defaults: HashMap<String, FieldThresholdBounds> = HashMap::new();
+        defaults.insert("temperature".into(), FieldThresholdBounds {
+            critical_low: Some(0.0), warning_low: Some(5.0),
+            warning_high: Some(30.0), critical_high: Some(40.0),
+        });
+        state.evaluate_alarms(&[cfg], &defaults);
+        let s = &state.sensors["aabb"];
+        assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Critical);
+        assert_eq!(s.alarm_state, LoRaWANAlarmState::Critical);
+        // Effective thresholds are surfaced so the publisher/display can read them.
+        let t = s.field_thresholds.iter().find(|t| t.field == "temperature").unwrap();
+        assert_eq!(t.critical_high, Some(40.0));
+    }
+
+    #[test]
+    fn test_override_takes_precedence_over_default_per_bound() {
+        let mut state = LoRaWANState::new(true);
+        state.update_sensor(&reading_with_fields("aabb", 42.0, 50.0));
+        let cfg = LoRaWANSensorConfig {
+            dev_eui: "aabb".into(), name: None, serial_number: None,
+            location: None, enabled: true,
+            // Override only critical_high; other bounds come from defaults.
+            field_thresholds: vec![FieldThreshold {
+                field: "temperature".into(),
+                critical_low: None, warning_low: None,
+                warning_high: None, critical_high: Some(50.0),
+            }],
+        };
+        let mut defaults: HashMap<String, FieldThresholdBounds> = HashMap::new();
+        defaults.insert("temperature".into(), FieldThresholdBounds {
+            critical_low: Some(0.0), warning_low: Some(5.0),
+            warning_high: Some(30.0), critical_high: Some(40.0),
+        });
+        state.evaluate_alarms(&[cfg], &defaults);
+        let s = &state.sensors["aabb"];
+        // 42°C: warning_high (30) exceeded but critical_high override is 50 → Warning.
+        assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Warning);
     }
 
     #[test]
