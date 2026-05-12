@@ -228,6 +228,12 @@ fn fmt_thresh_hum(v: Option<f32>) -> String {
     v.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "--".to_string())
 }
 
+/// Truncate `s` to at most `max` Unicode characters (not bytes).
+/// Safe at multi-byte UTF-8 boundaries — never panics.
+pub fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 /// Wrap `text` into up to two lines of at most `width` characters each.
 /// Prefers breaking on whitespace; falls back to a hard break at `width`.
 /// If content overflows two lines, the second line is truncated and ends in `…`.
@@ -276,9 +282,9 @@ fn render_lorawan_detail_header(
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
-    let display_name = if sensor.name.len() > 12 { &sensor.name[..12] } else { &sensor.name };
+    let display_name = truncate_chars(&sensor.name, 12);
 
-    Text::with_alignment(display_name, Point::new(64, 9), text_style, Alignment::Center)
+    Text::with_alignment(&display_name, Point::new(64, 9), text_style, Alignment::Center)
         .draw(display).ok();
 
     Text::with_alignment(page_label, Point::new(126, 9), text_style, Alignment::Right)
@@ -333,11 +339,11 @@ fn render_lorawan_detail_page_readings(
 
     // Line 4 (y=63): Serial number or last seen
     let info_line = if let Some(ref serial) = sensor.serial_number {
-        let s = if serial.len() > 18 { &serial[..18] } else { serial.as_str() };
-        format!("SN:{}", s)
+        format!("SN:{}", truncate_chars(serial, 18))
     } else if let Some(ref last_seen) = sensor.last_seen {
-        let time_part = if last_seen.len() > 10 { &last_seen[11..] } else { last_seen.as_str() };
-        let time_display = if time_part.len() > 8 { &time_part[..8] } else { time_part };
+        // RFC3339 looks like "2026-05-12T14:30:00Z" — extract HH:MM:SS safely.
+        let time_part: String = last_seen.chars().skip(11).take(8).collect();
+        let time_display = if time_part.is_empty() { "--:--:--".to_string() } else { time_part };
         format!("Seen:{}", time_display)
     } else {
         "No data".to_string()
@@ -1187,5 +1193,24 @@ mod wrap_tests {
         assert_eq!(lines[0], "AAAAAAAAAAAAAAAAAAAAA");
         assert!(lines[1].ends_with('…'));
         assert_eq!(lines[1].chars().count(), 21);
+    }
+
+    #[test]
+    fn truncate_chars_is_utf8_safe_at_multibyte_boundary() {
+        // "Sensor Café" has byte length 12 (é is 2 bytes), char count 11.
+        // Byte slicing at index 12 would land mid-codepoint and panic.
+        let s = "Sensor Café";
+        let out = truncate_chars(s, 8);
+        assert_eq!(out, "Sensor C");
+        let out_full = truncate_chars(s, 12);
+        assert_eq!(out_full, "Sensor Café");
+        let out_short = truncate_chars(s, 0);
+        assert_eq!(out_short, "");
+    }
+
+    #[test]
+    fn truncate_chars_keeps_ascii_intact() {
+        assert_eq!(truncate_chars("ABCDEFGHIJ", 5), "ABCDE");
+        assert_eq!(truncate_chars("short", 99), "short");
     }
 }
