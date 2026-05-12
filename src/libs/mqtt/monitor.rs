@@ -2242,6 +2242,19 @@ impl MqttMonitor {
                                 v.retain(|c| c.dev_eui != dev_eui);
                             }
                         }
+                        // Best-effort: remove from ChirpStack so the device disappears
+                        // from the network server too. Failure is logged but not fatal —
+                        // local config is the source of truth.
+                        match crate::libs::lorawan::provisioning::deprovision_sticker(&dev_eui) {
+                            Ok(()) => eprintln!(
+                                "[MQTT Monitor] ✓ Sticker {} removed from ChirpStack",
+                                dev_eui
+                            ),
+                            Err(e) => eprintln!(
+                                "[MQTT Monitor] ⚠ ChirpStack deprovision for {}: {}",
+                                dev_eui, e
+                            ),
+                        }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
                         Ok(())
                     } else {

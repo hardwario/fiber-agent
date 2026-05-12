@@ -300,6 +300,13 @@ fn create_device(
     Ok(())
 }
 
+fn delete_device(token: &str, dev_eui: &str) -> Result<(), String> {
+    // DeleteDeviceRequest { string dev_eui = 1; } — flat message, no submessage wrap.
+    let req = encode_string(1, dev_eui);
+    grpc_web_call("api.DeviceService/Delete", &req, Some(token))?;
+    Ok(())
+}
+
 fn activate_device_abp(
     token: &str,
     dev_eui: &str,
@@ -373,4 +380,25 @@ pub fn provision_sticker(
     eprintln!("[lorawan-provision] Activated device {} with ABP keys", dev_eui);
 
     Ok(())
+}
+
+/// Remove a HARDWARIO STICKER from ChirpStack: login + DeviceService/Delete.
+/// NOT_FOUND is treated as success (idempotent — device already absent is fine).
+pub fn deprovision_sticker(dev_eui: &str) -> Result<(), String> {
+    let token = login()?;
+    match delete_device(&token, dev_eui) {
+        Ok(()) => {
+            eprintln!("[lorawan-provision] Deleted device {} from ChirpStack", dev_eui);
+            Ok(())
+        }
+        Err(e) if e.contains("NOT_FOUND")
+            || e.to_lowercase().contains("not found")
+            || e.contains("grpc-status:5")
+            || e.contains("grpc-status: 5") =>
+        {
+            eprintln!("[lorawan-provision] Device {} already absent in ChirpStack", dev_eui);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
