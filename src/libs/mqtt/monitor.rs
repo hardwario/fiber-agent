@@ -2171,9 +2171,9 @@ impl MqttMonitor {
                 };
                 eprintln!("[MQTT Monitor] Provisioning sticker {} in ChirpStack ({})...", dev_eui, mode_label);
                 let provision_result = match &activation {
-                    crate::libs::mqtt::messages::ActivationMode::Otaa { app_key } => {
+                    crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui } => {
                         crate::libs::lorawan::provisioning::provision_sticker_otaa(
-                            &dev_eui, &name, &serial_number, app_key,
+                            &dev_eui, &name, &serial_number, app_key, join_eui,
                         )
                     }
                     crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey } => {

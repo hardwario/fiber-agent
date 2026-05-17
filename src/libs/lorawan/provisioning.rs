@@ -437,15 +437,13 @@ pub fn provision_sticker(
 /// Provision a HARDWARIO STICKER in ChirpStack via OTAA: login + create device + set keys.
 ///
 /// Reads application_id and device_profile_id_otaa from /data/lorawan/config.json.
-/// JoinEUI is fixed to 16 zero hex characters (firmware default).
 pub fn provision_sticker_otaa(
     dev_eui: &str,
     name: &str,
     serial_number: &str,
     app_key: &str,
+    join_eui: &str,
 ) -> Result<(), String> {
-    const JOIN_EUI: &str = "0000000000000000";
-
     let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
         .map_err(|e| format!("Cannot read {}: {}. Has ChirpStack been provisioned?", LORAWAN_CONFIG_PATH, e))?;
 
@@ -471,7 +469,7 @@ pub fn provision_sticker_otaa(
         format!("HARDWARIO STICKER S/N: {}", serial_number)
     };
 
-    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, Some(JOIN_EUI)) {
+    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, Some(join_eui)) {
         Ok(()) => {
             eprintln!("[lorawan-provision] Created OTAA device {} in ChirpStack", dev_eui);
         }

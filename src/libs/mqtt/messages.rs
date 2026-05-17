@@ -191,12 +191,22 @@ pub struct LoRaWANSensorConfigData {
     pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
 }
 
+fn default_join_eui() -> String {
+    "0000000000000000".to_string()
+}
+
 /// LoRaWAN activation mode for STICKER registration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum ActivationMode {
     /// OTAA: device joins the network using AppKey + JoinEUI.
-    Otaa { app_key: String },
+    Otaa {
+        app_key: String,
+        /// 16 hex chars. Defaults to all-zeros for compatibility with viewers
+        /// that pre-date the configurable JoinEUI field.
+        #[serde(default = "default_join_eui")]
+        join_eui: String,
+    },
     /// ABP: device pre-personalised with session keys.
     Abp {
         devaddr: String,
@@ -438,11 +448,32 @@ mod tests {
     #[test]
     fn activation_mode_otaa_roundtrip() {
         let app_key: String = "ab".repeat(16);
-        let v = ActivationMode::Otaa { app_key: app_key.clone() };
+        let join_eui: String = "cd".repeat(8);
+        let v = ActivationMode::Otaa {
+            app_key: app_key.clone(),
+            join_eui: join_eui.clone(),
+        };
         let s = serde_json::to_value(&v).unwrap();
-        assert_eq!(s, serde_json::json!({"mode": "otaa", "app_key": app_key}));
+        assert_eq!(
+            s,
+            serde_json::json!({"mode": "otaa", "app_key": app_key, "join_eui": join_eui})
+        );
         let back: ActivationMode = serde_json::from_value(s).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_otaa_legacy_payload_defaults_join_eui_to_zeros() {
+        // Old viewers send {"mode": "otaa", "app_key": "..."} with no join_eui.
+        let app_key: String = "ab".repeat(16);
+        let payload = serde_json::json!({"mode": "otaa", "app_key": app_key});
+        let back: ActivationMode = serde_json::from_value(payload).unwrap();
+        match back {
+            ActivationMode::Otaa { join_eui, .. } => {
+                assert_eq!(join_eui, "0000000000000000");
+            }
+            _ => panic!("expected Otaa"),
+        }
     }
 
     #[test]

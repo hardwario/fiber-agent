@@ -840,7 +840,18 @@ impl AuthorizationManager {
                                 "app_key must be exactly 32 hex characters".to_string()
                             ));
                         }
-                        crate::libs::mqtt::messages::ActivationMode::Otaa { app_key }
+                        // join_eui: required from new viewers; absent payloads
+                        // (legacy viewer) fall back to all-zeros for compatibility.
+                        let join_eui = challenge.params.get("join_eui")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("0000000000000000")
+                            .to_string();
+                        if join_eui.len() != 16 || !join_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand(
+                                "join_eui must be exactly 16 hex characters".to_string()
+                            ));
+                        }
+                        crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui }
                     }
                     "abp" => {
                         let devaddr = challenge.params.get("devaddr")
