@@ -85,6 +85,45 @@ common_lorawan_field_thresholds:
     warning_low: 25.0
     warning_high: 75.0
     critical_high: 85.0
+  # External temperature probes — mirror temperature defaults
+  ext_temperature_1:
+    critical_low: 0.0
+    warning_low: 5.0
+    warning_high: 30.0
+    critical_high: 40.0
+  ext_temperature_2:
+    critical_low: 0.0
+    warning_low: 5.0
+    warning_high: 30.0
+    critical_high: 40.0
+  # Machine probes (temperature) — mirror temperature defaults
+  machine_probe_temperature_1:
+    critical_low: 0.0
+    warning_low: 5.0
+    warning_high: 30.0
+    critical_high: 40.0
+  machine_probe_temperature_2:
+    critical_low: 0.0
+    warning_low: 5.0
+    warning_high: 30.0
+    critical_high: 40.0
+  # Machine probes (humidity) — mirror humidity defaults
+  machine_probe_humidity_1:
+    critical_low: 15.0
+    warning_low: 25.0
+    warning_high: 75.0
+    critical_high: 85.0
+  machine_probe_humidity_2:
+    critical_low: 15.0
+    warning_low: 25.0
+    warning_high: 75.0
+    critical_high: 85.0
+  # Battery (2x AA): warn at ~half capacity, critical near depletion.
+  # low_only — no high thresholds.
+  voltage:
+    critical_low: 2.2
+    warning_low: 2.5
+  # No global defaults for illuminance, pressure, altitude — too context-dependent.
 
 lines:
   - line: 0

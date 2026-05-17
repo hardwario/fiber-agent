@@ -1053,6 +1053,57 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyAMA4");
         assert_eq!(config.serial.baud_rate, 115200u32);
     }
+
+    #[test]
+    fn shipped_sensors_yaml_has_voltage_low_only_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path)
+            .expect("shipped fiber.sensors.config.yaml must parse");
+        let v = cfg
+            .common_lorawan_field_thresholds
+            .get("voltage")
+            .expect("voltage default present");
+        assert_eq!(v.warning_low, Some(2.5));
+        assert_eq!(v.critical_low, Some(2.2));
+        assert!(v.warning_high.is_none(), "low_only field should not have warning_high");
+        assert!(v.critical_high.is_none(), "low_only field should not have critical_high");
+    }
+
+    #[test]
+    fn shipped_sensors_yaml_mirrors_temperature_for_external_probes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path).unwrap();
+        let temp = cfg
+            .common_lorawan_field_thresholds
+            .get("temperature")
+            .expect("temperature default present");
+        for name in ["ext_temperature_1", "ext_temperature_2",
+                     "machine_probe_temperature_1", "machine_probe_temperature_2"] {
+            let other = cfg
+                .common_lorawan_field_thresholds
+                .get(name)
+                .unwrap_or_else(|| panic!("{} default missing", name));
+            assert_eq!(other.critical_low, temp.critical_low, "{}", name);
+            assert_eq!(other.warning_low,  temp.warning_low, "{}", name);
+            assert_eq!(other.warning_high, temp.warning_high, "{}", name);
+            assert_eq!(other.critical_high, temp.critical_high, "{}", name);
+        }
+    }
+
+    #[test]
+    fn shipped_sensors_yaml_omits_defaults_for_unbounded_fields() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path).unwrap();
+        for name in ["illuminance", "pressure", "altitude"] {
+            assert!(
+                cfg.common_lorawan_field_thresholds.get(name).is_none(),
+                "{} should NOT have a global default", name
+            );
+        }
+    }
 }
 
 #[cfg(test)]
