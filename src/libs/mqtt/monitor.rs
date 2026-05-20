@@ -542,7 +542,7 @@ pub struct MqttMonitor {
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None)
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -557,6 +557,7 @@ impl MqttMonitor {
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         lorawan_state: Option<crate::libs::lorawan::SharedLoRaWANState>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: Option<crate::libs::storage::StorageHandle>,
     ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
@@ -608,6 +609,7 @@ impl MqttMonitor {
         let lorawan_state_slot = std::sync::Arc::new(std::sync::Mutex::new(lorawan_state));
         let lorawan_state_slot_clone = lorawan_state_slot.clone();
         let lorawan_configs_clone = lorawan_configs.clone();
+        let storage_handle_clone = storage_handle.clone();
 
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
@@ -627,6 +629,7 @@ impl MqttMonitor {
                 reconnected_flag_clone,
                 lorawan_state_slot_clone,
                 lorawan_configs_clone,
+                storage_handle_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -692,6 +695,7 @@ impl MqttMonitor {
         reconnected_flag: Arc<AtomicBool>,
         lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: Option<crate::libs::storage::StorageHandle>,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -1109,6 +1113,7 @@ impl MqttMonitor {
                                                                     &led_brightness_tracker,
                                                                     &lorawan_state_slot,
                                                                     &lorawan_configs,
+                                                                    &storage_handle,
                                                                 ) {
                                                                     eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
                                                                     if let Err(publish_err) = publisher.publish_error(
@@ -1233,6 +1238,7 @@ impl MqttMonitor {
                                                                         &led_brightness_tracker,
                                                                         &lorawan_state_slot,
                                                                         &lorawan_configs,
+                                                                        &storage_handle,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
@@ -1837,6 +1843,7 @@ impl MqttMonitor {
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -2185,6 +2192,37 @@ impl MqttMonitor {
                 match provision_result {
                     Ok(()) => {
                         eprintln!("[MQTT Monitor] ✓ Sticker {} provisioned in ChirpStack", dev_eui);
+
+                        // Save-and-feed: bump the provisioning epoch only when this
+                        // dev_eui was previously absent OR its most recent event was
+                        // a sticker_removed marker. That way re-provisioning an
+                        // already-active sticker is idempotent (no spurious epoch
+                        // change), while a remove → re-add cycle creates a new
+                        // epoch so the downstream pipeline can tell the new
+                        // sticker apart from the old one.
+                        if let Some(storage) = storage_handle.as_ref() {
+                            match storage.dev_eui_last_event_was_removal_or_absent(dev_eui.clone()) {
+                                Ok(true) => {
+                                    match storage.bump_provisioning_epoch(dev_eui.clone()) {
+                                        Ok(new_epoch) => eprintln!(
+                                            "[MQTT Monitor] sticker {} provisioning epoch bumped to {}",
+                                            dev_eui, new_epoch
+                                        ),
+                                        Err(e) => eprintln!(
+                                            "[MQTT Monitor] bump_provisioning_epoch({}) failed: {}",
+                                            dev_eui, e
+                                        ),
+                                    }
+                                }
+                                Ok(false) => {
+                                    // Re-provision of an already-active sticker; no bump.
+                                }
+                                Err(e) => eprintln!(
+                                    "[MQTT Monitor] dev_eui_last_event lookup for {} failed: {}",
+                                    dev_eui, e
+                                ),
+                            }
+                        }
                     }
                     Err(e) => {
                         // Log but continue - ChirpStack may be down or device may already exist

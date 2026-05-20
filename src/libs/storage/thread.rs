@@ -94,6 +94,13 @@ pub enum StorageMessage {
     EnforceStickerRetention {
         retention_seconds: i64,
     },
+    /// Returns true if `dev_eui` has no sticker_readings rows OR the
+    /// most-recent one is a `sticker_removed` marker. Used by provisioning
+    /// to decide whether to bump the epoch.
+    DevEuiLastEventWasRemovalOrAbsent {
+        dev_eui: String,
+        reply: Sender<StorageResult<bool>>,
+    },
 }
 
 /// Handle for sending messages to storage thread
@@ -289,6 +296,32 @@ impl StorageHandle {
                     e
                 ))
             })
+    }
+
+    /// Returns true if `dev_eui` is absent from `sticker_readings` OR the
+    /// most-recent row for it is a `sticker_removed` marker. Used by the
+    /// LoRaWAN provisioning path to decide whether bumping the epoch is
+    /// the right thing to do (vs. an idempotent re-provision of an already-
+    /// active sticker).
+    pub fn dev_eui_last_event_was_removal_or_absent(
+        &self,
+        dev_eui: String,
+    ) -> StorageResult<bool> {
+        let (tx, rx) = bounded(1);
+        self.sender
+            .send(StorageMessage::DevEuiLastEventWasRemovalOrAbsent { dev_eui, reply: tx })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send dev_eui_last_event_was_removal_or_absent: {}",
+                    e
+                ))
+            })?;
+        rx.recv().map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to receive dev_eui_last_event_was_removal_or_absent reply: {}",
+                e
+            ))
+        })?
     }
 
     /// Enforce retention on `sticker_readings`.
@@ -606,6 +639,30 @@ impl StorageThread {
                         }
                     }
 
+                    StorageMessage::DevEuiLastEventWasRemovalOrAbsent { dev_eui, reply } => {
+                        use rusqlite::OptionalExtension;
+                        let result = conn
+                            .query_row(
+                                "SELECT event_type FROM sticker_readings
+                                 WHERE dev_eui = ?
+                                 ORDER BY id DESC LIMIT 1",
+                                rusqlite::params![dev_eui],
+                                |r| r.get::<_, String>(0),
+                            )
+                            .optional()
+                            .map(|opt| match opt {
+                                None => true, // absent
+                                Some(e) => e == "sticker_removed",
+                            })
+                            .map_err(|e| {
+                                crate::libs::storage::error::StorageError::QueryError(format!(
+                                    "dev_eui_last_event: {}",
+                                    e
+                                ))
+                            });
+                        let _ = reply.send(result);
+                    }
+
                     StorageMessage::EnforceStickerRetention { retention_seconds } => {
                         match RetentionPolicy::default()
                             .sweep_sticker_readings(&mut conn, retention_seconds)
@@ -727,6 +784,39 @@ mod tests {
         assert_eq!(handle.bump_provisioning_epoch("xyz".into()).unwrap(), 2);
         assert_eq!(handle.bump_provisioning_epoch("xyz".into()).unwrap(), 3);
         assert_eq!(handle.get_provisioning_epoch("xyz".into()).unwrap(), 3);
+
+        handle.shutdown().unwrap();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn dev_eui_last_event_logic_works() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
+
+        // Absent → true
+        assert!(handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
+
+        handle
+            .write_sticker_reading(
+                "abc".into(),
+                1,
+                1000,
+                1000,
+                "abc-1000-0".into(),
+                "uplink".into(),
+                "{}".into(),
+            )
+            .unwrap();
+        handle.flush().unwrap();
+        // Last event is uplink → false
+        assert!(!handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
+
+        handle.append_sticker_removed("abc".into(), 1100).unwrap();
+        handle.flush().unwrap();
+        // Last event is sticker_removed → true
+        assert!(handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
 
         handle.shutdown().unwrap();
         join.join().unwrap();

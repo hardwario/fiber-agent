@@ -343,6 +343,7 @@ fn main() -> io::Result<()> {
             Some(buzzer_priority_manager.clone()),
             None,
             Some(lorawan_configs.clone()),
+            Some(storage_handle.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
