@@ -26,10 +26,11 @@ prep_tags:
           BRANCH="main"
         else
           FOLDER="dev"
-          BRANCH=$(git branch -r --contains "$TAG_SHA" \
+          BRANCH=$(git branch -r --contains "$TAG_SHA" 2>/dev/null \
                     | grep -v HEAD \
                     | sed 's| *origin/||' \
-                    | head -n1)
+                    | head -n1 || true)
+          [ -z "$BRANCH" ] && BRANCH="unknown"
         fi
       else
         # not a tag → main→release, everything else→dev
