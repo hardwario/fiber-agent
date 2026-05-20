@@ -240,6 +240,45 @@ impl StorageWriter {
 
         Ok(count)
     }
+
+    /// Insert a sticker reading (LoRaWAN uplink or sticker_removed marker).
+    ///
+    /// Idempotent on `message_id`: returns `Ok(Some(rowid))` on insert and
+    /// `Ok(None)` if a row with the same `message_id` already exists. This
+    /// lets the save-and-feed write path be retried freely (e.g. by the
+    /// LoRaWAN monitor on transient failures) without creating duplicates.
+    pub fn write_sticker_reading(
+        conn: &mut Connection,
+        dev_eui: &str,
+        provisioning_epoch: i64,
+        ts: i64,
+        received_at: i64,
+        message_id: &str,
+        event_type: &str,
+        payload_json: &str,
+    ) -> StorageResult<Option<i64>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let res = conn.execute(
+            "INSERT OR IGNORE INTO sticker_readings
+             (dev_eui, provisioning_epoch, ts, received_at, message_id, event_type, payload_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                dev_eui, provisioning_epoch, ts, received_at,
+                message_id, event_type, payload_json, now,
+            ],
+        )
+        .map_err(|e| StorageError::InsertError(format!("Failed to insert sticker reading: {}", e)))?;
+
+        if res == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(conn.last_insert_rowid()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -409,5 +448,44 @@ mod tests {
         assert_ne!(hmacs[1], hmacs[2], "Different readings should have different HMACs");
 
         let _ = std::fs::remove_file("/tmp/test_batch_hmac.db");
+    }
+
+    #[test]
+    fn write_sticker_reading_inserts_and_is_idempotent_on_message_id() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        let id1 = StorageWriter::write_sticker_reading(
+            &mut conn,
+            "70b3d5",
+            2,
+            1716120000,
+            1716120001,
+            "70b3d5-1716120000-7",
+            "uplink",
+            r#"{"fields":{"temp":21.0}}"#,
+        )
+        .unwrap();
+        assert!(id1.is_some());
+
+        // Same message_id again: must be a no-op, returns None.
+        let id2 = StorageWriter::write_sticker_reading(
+            &mut conn,
+            "70b3d5",
+            2,
+            1716120000,
+            1716120001,
+            "70b3d5-1716120000-7",
+            "uplink",
+            r#"{"fields":{"temp":21.0}}"#,
+        )
+        .unwrap();
+        assert!(id2.is_none(), "duplicate message_id must not insert a new row");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
