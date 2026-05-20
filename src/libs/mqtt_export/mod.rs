@@ -7,6 +7,8 @@ pub mod config;
 pub mod destination;
 pub mod drain;
 pub mod envelope;
+#[cfg(test)]
+mod integration_tests;
 
 pub use config::{DestinationConfig, ExportConfig, TlsConfig};
 pub use destination::RumqttcDestination;
