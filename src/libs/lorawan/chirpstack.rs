@@ -145,6 +145,19 @@ pub fn parse_uplink(payload: &[u8]) -> Result<StickerReading, String> {
     })
 }
 
+/// Compute a stable message_id for a sticker uplink.
+///
+/// Format: `{dev_eui}-{ts}-{seq}`. `seq` is `fCnt` if present in the
+/// `counters` map (it's expected to be inserted by `parse_uplink` when the
+/// LoRaWAN frame counter is available), otherwise 0. Two uplinks from the
+/// same `dev_eui` with the same `(ts, seq)` are treated as the same
+/// message (the save-and-feed write path dedups via the UNIQUE constraint
+/// on `sticker_readings.message_id`).
+pub fn message_id_for(reading: &StickerReading, ts: i64) -> String {
+    let seq = reading.counters.get("fCnt").copied().unwrap_or(0);
+    format!("{}-{}-{}", reading.dev_eui, ts, seq)
+}
+
 /// Extract dev_eui from a ChirpStack MQTT topic.
 pub fn extract_dev_eui_from_topic(topic: &str) -> Option<String> {
     let parts: Vec<&str> = topic.split('/').collect();
@@ -202,6 +215,25 @@ mod tests {
         let r = parse_uplink(payload.as_bytes()).unwrap();
         assert!(r.fields.contains_key("temperature"));
         assert!(!r.fields.contains_key("humidity"));
+    }
+
+    #[test]
+    fn message_id_uses_fcnt_when_present_else_received_at_seq() {
+        let mut r = StickerReading {
+            dev_eui: "70b3d5".into(),
+            device_name: "".into(),
+            fields: Default::default(),
+            counters: Default::default(),
+            events: vec![],
+            rssi: None,
+            snr: None,
+            received_at: "2026-05-19T12:00:00Z".into(),
+        };
+        r.counters.insert("fCnt".into(), 42);
+        assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-42");
+
+        r.counters.remove("fCnt");
+        assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-0");
     }
 
     #[test]
