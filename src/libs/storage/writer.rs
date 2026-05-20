@@ -288,6 +288,31 @@ impl StorageWriter {
         Ok(epoch)
     }
 
+    /// Append a `sticker_removed` marker event for a sticker. The marker is
+    /// stored under the current provisioning epoch so that downstream readers
+    /// can distinguish "this sticker was deprovisioned" from a subsequent
+    /// re-provisioned incarnation. The `message_id` is derived from the
+    /// `dev_eui` and `ts`, so calling this twice with the same timestamp is
+    /// a no-op (same idempotency story as `write_sticker_reading`).
+    pub fn append_sticker_removed_event(
+        conn: &mut Connection,
+        dev_eui: &str,
+        ts: i64,
+    ) -> StorageResult<Option<i64>> {
+        let epoch = Self::get_provisioning_epoch(conn, dev_eui)?;
+        let message_id = format!("{}-{}-removed", dev_eui, ts);
+        Self::write_sticker_reading(
+            conn,
+            dev_eui,
+            epoch,
+            ts,
+            ts,
+            &message_id,
+            "sticker_removed",
+            "{}",
+        )
+    }
+
     /// Insert a sticker reading (LoRaWAN uplink or sticker_removed marker).
     ///
     /// Idempotent on `message_id`: returns `Ok(Some(rowid))` on insert and
@@ -552,5 +577,25 @@ mod tests {
 
         // Different dev_eui starts fresh
         assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "def").unwrap(), 1);
+    }
+
+    #[test]
+    fn append_sticker_removed_event_inserts_marker_row() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        let id = StorageWriter::append_sticker_removed_event(&mut conn, "70b3d5", 1716120100).unwrap();
+        assert!(id.is_some());
+
+        let (event_type, dev_eui): (String, String) = conn
+            .query_row(
+                "SELECT event_type, dev_eui FROM sticker_readings WHERE id = ?",
+                rusqlite::params![id.unwrap()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event_type, "sticker_removed");
+        assert_eq!(dev_eui, "70b3d5");
     }
 }
