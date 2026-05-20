@@ -20,6 +20,24 @@ pub struct RetentionPolicy {
     min_age_seconds: i64,
 }
 
+impl Default for RetentionPolicy {
+    /// Default 5GB capacity policy. Convenience for sticker-stream sweeping
+    /// where caller does not have a configured `max_size_gb` to pass in.
+    fn default() -> Self {
+        Self::new(5)
+    }
+}
+
+/// Result of a `sweep_sticker_readings` pass.
+#[derive(Debug, Clone, Default)]
+pub struct StickerRetentionResult {
+    /// Total rows deleted from `sticker_readings`.
+    pub purged: i64,
+    /// Of those deleted, how many had `id > min(cursor)` — i.e. were dropped
+    /// before any destination had a chance to export them. Emits a WARN log.
+    pub unexported_dropped: i64,
+}
+
 impl RetentionPolicy {
     /// Create a new retention policy (5GB with 90% cleanup threshold)
     pub fn new(max_size_gb: i32) -> Self {
@@ -188,6 +206,73 @@ impl RetentionPolicy {
         let record_age_seconds = now - record_timestamp;
         record_age_seconds > self.min_age_seconds
     }
+
+    /// Sweep the `sticker_readings` table — delete rows older than
+    /// `retention_seconds` (by `ts`). Reports how many of the deleted rows
+    /// had `id > min(last_exported_id across all destinations for the
+    /// "sticker" stream)`; those are data losses for at least one
+    /// destination and are logged at WARN level.
+    pub fn sweep_sticker_readings(
+        &self,
+        conn: &mut Connection,
+        retention_seconds: i64,
+    ) -> StorageResult<StickerRetentionResult> {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - retention_seconds;
+
+        // Lowest cursor across all destinations on the "sticker" stream.
+        // If no cursor row exists yet (no destinations have ever exported),
+        // treat as 0 so every soon-to-be-deleted row counts as un-exported.
+        let min_cursor: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MIN(last_exported_id), 0) FROM export_cursor
+                 WHERE stream = 'sticker'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let unexported_dropped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sticker_readings WHERE ts < ? AND id > ?",
+                rusqlite::params![cutoff, min_cursor],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let purged = conn
+            .execute(
+                "DELETE FROM sticker_readings WHERE ts < ?",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| StorageError::DeleteError(format!("sweep_sticker_readings: {}", e)))?
+            as i64;
+
+        if unexported_dropped > 0 {
+            eprintln!(
+                "WARN [retention] dropped {} un-exported sticker rows (min_cursor={}, cutoff={})",
+                unexported_dropped, min_cursor, cutoff,
+            );
+        }
+
+        if purged > 0 {
+            let _ = AuditLogger::log_operation(
+                conn,
+                "DELETE",
+                Some("sticker_readings"),
+                Some(purged),
+                None,
+            );
+        }
+
+        Ok(StickerRetentionResult {
+            purged,
+            unexported_dropped,
+        })
+    }
 }
 
 /// Statistics from a retention cleanup operation
@@ -242,5 +327,55 @@ mod tests {
         assert!(!needs, "Empty database should not need cleanup");
 
         let _ = std::fs::remove_file("/tmp/test_retention.db");
+    }
+
+    #[test]
+    fn sticker_retention_purges_old_rows_and_warns_when_unexported() {
+        use crate::libs::storage::writer::StorageWriter;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let day = 86400i64;
+
+        // Old row (35 days ago)
+        StorageWriter::write_sticker_reading(
+            &mut conn,
+            "abc",
+            1,
+            now - 35 * day,
+            now - 35 * day,
+            "abc-old",
+            "uplink",
+            "{}",
+        )
+        .unwrap();
+        // Fresh row (1 day ago)
+        StorageWriter::write_sticker_reading(
+            &mut conn,
+            "abc",
+            1,
+            now - day,
+            now - day,
+            "abc-fresh",
+            "uplink",
+            "{}",
+        )
+        .unwrap();
+
+        // Cursor is at 0 (no destinations have exported anything) → both
+        // un-exported. Sweep should drop the old row and warn.
+        let policy = RetentionPolicy::default();
+        let dropped = policy.sweep_sticker_readings(&mut conn, 30 * day).unwrap();
+        assert_eq!(dropped.purged, 1);
+        assert_eq!(dropped.unexported_dropped, 1);
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
     }
 }
