@@ -121,7 +121,7 @@ common_lorawan_field_thresholds:
   # Battery (2x AA): warn at ~half capacity, critical near depletion.
   # low_only — no high thresholds.
   voltage:
-    critical_low: 2.2
+    critical_low: 2.4
     warning_low: 2.5
   # No global defaults for illuminance, pressure, altitude — too context-dependent.
 
