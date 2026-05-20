@@ -241,6 +241,54 @@ impl StorageWriter {
         Ok(count)
     }
 
+    /// Advance the export cursor for `(broker_id, stream)` to `new_id`.
+    /// Monotonic: if `new_id <= current_cursor`, the cursor is left unchanged.
+    /// This makes the drain loop safe against out-of-order PUBACKs or retries.
+    pub fn advance_export_cursor(
+        conn: &mut Connection,
+        broker_id: &str,
+        stream: &str,
+        new_id: i64,
+    ) -> StorageResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO export_cursor (broker_id, stream, last_exported_id, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(broker_id, stream) DO UPDATE SET
+                 last_exported_id = MAX(last_exported_id, excluded.last_exported_id),
+                 updated_at       = excluded.updated_at",
+            rusqlite::params![broker_id, stream, new_id, now],
+        )
+        .map_err(|e| StorageError::InsertError(format!("advance cursor: {}", e)))?;
+        Ok(())
+    }
+
+    /// Reset the export cursor for `(broker_id, stream)` to 0 so the next
+    /// drain pass replays every row in the underlying stream. Idempotent.
+    pub fn reset_export_cursor(
+        conn: &mut Connection,
+        broker_id: &str,
+        stream: &str,
+    ) -> StorageResult<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO export_cursor (broker_id, stream, last_exported_id, updated_at)
+             VALUES (?, ?, 0, ?)
+             ON CONFLICT(broker_id, stream) DO UPDATE SET
+                 last_exported_id = 0,
+                 updated_at       = excluded.updated_at",
+            rusqlite::params![broker_id, stream, now],
+        )
+        .map_err(|e| StorageError::InsertError(format!("reset cursor: {}", e)))?;
+        Ok(())
+    }
+
     /// Look up the current provisioning epoch for a `dev_eui`. Returns 1 if
     /// the dev_eui has never been provisioned (default epoch). Used by the
     /// LoRaWAN monitor to stamp every uplink with the active epoch so a
@@ -577,6 +625,34 @@ mod tests {
 
         // Different dev_eui starts fresh
         assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "def").unwrap(), 1);
+    }
+
+    #[test]
+    fn cursor_load_default_is_zero_then_advance_updates() {
+        use crate::libs::storage::reader::StorageReader;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 0);
+
+        StorageWriter::advance_export_cursor(&mut conn, "remote", "sticker", 42).unwrap();
+        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+
+        // Going backwards is rejected (no-op). Monotonic guarantee.
+        StorageWriter::advance_export_cursor(&mut conn, "remote", "sticker", 41).unwrap();
+        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+
+        // Independent across (broker_id, stream)
+        StorageWriter::advance_export_cursor(&mut conn, "local", "sticker", 7).unwrap();
+        assert_eq!(StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(), 7);
+        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+
+        // Reset clears just the targeted pair
+        StorageWriter::reset_export_cursor(&mut conn, "remote", "sticker").unwrap();
+        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 0);
+        assert_eq!(StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(), 7);
     }
 
     #[test]

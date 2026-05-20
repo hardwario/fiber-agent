@@ -1,7 +1,7 @@
 //! Read operations for querying stored data
 //! Retrieve sensor readings, alarm events, and statistics
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
 use crate::libs::storage::models::{AlarmEvent, SensorReading, StickerReadingRow, StorageStats};
@@ -208,6 +208,25 @@ impl StorageReader {
             .map_err(|e| StorageError::QueryError(format!("collect sensor_readings_after: {}", e)))?;
 
         Ok(rows)
+    }
+
+    /// Look up the current export cursor for a `(broker_id, stream)` pair.
+    /// Returns 0 if no cursor row exists yet — semantically "haven't exported
+    /// anything yet", since `sticker_readings.id`/`sensor_readings.id`/
+    /// `alarm_events.id` are all `AUTOINCREMENT` starting at 1.
+    pub fn load_export_cursor(
+        conn: &Connection,
+        broker_id: &str,
+        stream: &str,
+    ) -> StorageResult<i64> {
+        let mut stmt = conn
+            .prepare("SELECT last_exported_id FROM export_cursor WHERE broker_id = ? AND stream = ?")
+            .map_err(|e| StorageError::QueryError(format!("prepare cursor: {}", e)))?;
+        let v: Option<i64> = stmt
+            .query_row(rusqlite::params![broker_id, stream], |r| r.get(0))
+            .optional()
+            .map_err(|e| StorageError::QueryError(format!("query cursor: {}", e)))?;
+        Ok(v.unwrap_or(0))
     }
 
     /// Fetch alarm events with `id > last_id`, ordered by id ascending,
