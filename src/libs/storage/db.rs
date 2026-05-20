@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::libs::storage::error::{StorageError, StorageResult};
 
 /// Current schema version for migrations
-pub const CURRENT_SCHEMA_VERSION: i32 = 2;
+pub const CURRENT_SCHEMA_VERSION: i32 = 3;
 
 /// SQLite database manager
 pub struct Database {
@@ -289,6 +289,9 @@ impl Database {
                 if v < 2 {
                     self.migrate_v1_to_v2(&conn)?;
                 }
+                if v < 3 {
+                    self.migrate_v2_to_v3(&conn)?;
+                }
                 Ok(())
             }
             Some(v) if v > CURRENT_SCHEMA_VERSION => {
@@ -308,13 +311,16 @@ impl Database {
                     .unwrap_or_default()
                     .as_secs() as i64;
 
+                // Create v3 tables on fresh initialization so DB starts at current version
+                self.create_v3_tables(&conn)?;
+
                 conn.execute(
                     "INSERT INTO schema_version (version, applied_at, description)
                      VALUES (?, ?, ?)",
                     rusqlite::params![
                         CURRENT_SCHEMA_VERSION,
                         now,
-                        "Initial schema v2: sensor_readings (with HMAC), alarm_events, audit_log (with hash-chain)"
+                        "Initial schema v3 (save-and-feed + tamper-evidence)"
                     ],
                 )
                 .map_err(|e| StorageError::DatabaseInitError(
@@ -373,6 +379,77 @@ impl Database {
         AuditLogger::log_schema_change(conn, "Migration v1\u{2192}v2: added tamper-evidence columns")?;
 
         eprintln!("MIGRATION: Schema upgraded from v1 to v2 (tamper-evident audit trail)");
+        Ok(())
+    }
+
+    /// Create v3 tables (sticker_readings, sticker_provisioning_epoch, export_cursor)
+    /// Used both by migration and by fresh initialization.
+    fn create_v3_tables(&self, conn: &Connection) -> StorageResult<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sticker_readings (
+                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                 dev_eui            TEXT    NOT NULL,
+                 provisioning_epoch INTEGER NOT NULL,
+                 ts                 INTEGER NOT NULL,
+                 received_at        INTEGER NOT NULL,
+                 message_id         TEXT    NOT NULL UNIQUE,
+                 event_type         TEXT    NOT NULL,
+                 payload_json       TEXT    NOT NULL,
+                 created_at         INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_sticker_readings_dev_eui_ts
+                 ON sticker_readings(dev_eui, ts);
+             CREATE INDEX IF NOT EXISTS idx_sticker_readings_id
+                 ON sticker_readings(id);
+
+             CREATE TABLE IF NOT EXISTS sticker_provisioning_epoch (
+                 dev_eui    TEXT    PRIMARY KEY,
+                 epoch      INTEGER NOT NULL DEFAULT 1,
+                 updated_at INTEGER NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS export_cursor (
+                 broker_id        TEXT    NOT NULL,
+                 stream           TEXT    NOT NULL,
+                 last_exported_id INTEGER NOT NULL DEFAULT 0,
+                 updated_at       INTEGER NOT NULL,
+                 PRIMARY KEY (broker_id, stream)
+             );"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to create v3 tables: {}", e),
+        ))?;
+        Ok(())
+    }
+
+    /// Migrate database schema from v2 to v3
+    /// Adds sticker_readings, sticker_provisioning_epoch, export_cursor
+    /// for the save-and-feed firmware DB / store-and-forward export pipeline.
+    fn migrate_v2_to_v3(&self, conn: &Connection) -> StorageResult<()> {
+        use crate::libs::storage::audit::AuditLogger;
+
+        self.create_v3_tables(conn)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+            rusqlite::params![
+                3,
+                now,
+                "Save-and-feed: sticker_readings, sticker_provisioning_epoch, export_cursor"
+            ],
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to record v3 migration: {}", e),
+        ))?;
+
+        AuditLogger::log_schema_change(conn, "Migration v2\u{2192}v3: save-and-feed tables")?;
+
+        eprintln!("MIGRATION: Schema upgraded from v2 to v3 (save-and-feed)");
         Ok(())
     }
 
@@ -496,5 +573,33 @@ mod tests {
         assert!(mb < 1.0, "Empty database should be less than 1MB");
 
         cleanup_test_db(&path);
+    }
+
+    #[test]
+    fn schema_v3_creates_new_tables() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let conn = db.connect().unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert!(tables.contains(&"sticker_readings".to_string()));
+        assert!(tables.contains(&"sticker_provisioning_epoch".to_string()));
+        assert!(tables.contains(&"export_cursor".to_string()));
+
+        let version: i32 = conn
+            .query_row(
+                "SELECT MAX(version) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 3);
     }
 }
