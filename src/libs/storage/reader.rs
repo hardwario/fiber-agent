@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 
 use crate::libs::storage::error::{StorageError, StorageResult};
-use crate::libs::storage::models::{SensorReading, StickerReadingRow, StorageStats};
+use crate::libs::storage::models::{AlarmEvent, SensorReading, StickerReadingRow, StorageStats};
 
 /// Reader for querying sensor data
 pub struct StorageReader;
@@ -170,6 +170,81 @@ impl StorageReader {
 
         Ok(rows)
     }
+
+    /// Fetch sensor readings with `id > last_id`, ordered by id ascending,
+    /// up to `limit` rows. Companion to `fetch_sticker_readings_after`,
+    /// consumed by the probe-stream export drain.
+    pub fn fetch_sensor_readings_after(
+        conn: &Connection,
+        last_id: i64,
+        limit: usize,
+    ) -> StorageResult<Vec<SensorReading>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, timestamp, sensor_line, temperature_c, is_connected,
+                        alarm_state, created_at, data_hmac
+                 FROM sensor_readings
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| StorageError::QueryError(format!("prepare sensor_readings_after: {}", e)))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![last_id, limit as i64], |r| {
+                Ok(SensorReading {
+                    id: r.get(0)?,
+                    timestamp: r.get(1)?,
+                    sensor_line: r.get::<_, i64>(2)? as u8,
+                    temperature_c: r.get(3)?,
+                    is_connected: r.get(4)?,
+                    alarm_state: r.get(5)?,
+                    created_at: r.get(6)?,
+                    data_hmac: r.get(7)?,
+                })
+            })
+            .map_err(|e| StorageError::QueryError(format!("query sensor_readings_after: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(format!("collect sensor_readings_after: {}", e)))?;
+
+        Ok(rows)
+    }
+
+    /// Fetch alarm events with `id > last_id`, ordered by id ascending,
+    /// up to `limit` rows. Used by the alarm-stream export drain.
+    pub fn fetch_alarm_events_after(
+        conn: &Connection,
+        last_id: i64,
+        limit: usize,
+    ) -> StorageResult<Vec<AlarmEvent>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, timestamp, sensor_line, from_state, to_state, temperature_c, details
+                 FROM alarm_events
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| StorageError::QueryError(format!("prepare alarm_events_after: {}", e)))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![last_id, limit as i64], |r| {
+                Ok(AlarmEvent {
+                    id: r.get(0)?,
+                    timestamp: r.get(1)?,
+                    sensor_line: r.get::<_, i64>(2)? as u8,
+                    from_state: r.get(3)?,
+                    to_state: r.get(4)?,
+                    temperature_c: r.get(5)?,
+                    details: r.get(6)?,
+                })
+            })
+            .map_err(|e| StorageError::QueryError(format!("query alarm_events_after: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(format!("collect alarm_events_after: {}", e)))?;
+
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -215,6 +290,33 @@ mod tests {
         assert_eq!(results[0].timestamp, 1500);
 
         let _ = std::fs::remove_file("/tmp/test_range.db");
+    }
+
+    #[test]
+    fn fetch_sensor_and_alarm_after_returns_in_id_order() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let conn = db.connect().unwrap();
+
+        for i in 0..3 {
+            let reading = SensorReading::new(1000 + i, 0, 21.0, true, AlarmState::Normal);
+            StorageWriter::write_sensor_reading(&conn, &reading, None).unwrap();
+
+            let event = AlarmEvent::new(
+                1000 + i,
+                0,
+                AlarmState::Normal,
+                AlarmState::Warning,
+                Some(21.0),
+            );
+            StorageWriter::write_alarm_event(&conn, &event).unwrap();
+        }
+
+        let s = StorageReader::fetch_sensor_readings_after(&conn, 1, 10).unwrap();
+        assert_eq!(s.iter().map(|r| r.id).collect::<Vec<_>>(), vec![2, 3]);
+
+        let a = StorageReader::fetch_alarm_events_after(&conn, 0, 10).unwrap();
+        assert_eq!(a.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 
     #[test]
