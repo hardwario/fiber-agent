@@ -772,7 +772,10 @@ impl MqttMonitor {
             None
         };
 
-        let config_applier = match ConfigApplier::new(std::path::Path::new("/data/fiber/config")) {
+        let config_applier = match ConfigApplier::new_with_storage(
+            std::path::Path::new("/data/fiber/config"),
+            storage_handle.clone(),
+        ) {
             Ok(applier) => {
                 eprintln!("[MQTT Monitor] Configuration applier initialized");
                 Some(Arc::new(applier))

@@ -33,11 +33,27 @@ pub struct ConfigApplier {
 
     /// Directory for backups
     backup_dir: PathBuf,
+
+    /// Optional storage handle for save-and-feed side effects (e.g. appending
+    /// `sticker_removed` markers on sensor removal). `None` in test or
+    /// pre-storage-init contexts; `Some` in the live runtime.
+    storage: Option<crate::libs::storage::StorageHandle>,
 }
 
 impl ConfigApplier {
-    /// Create a new configuration applier
+    /// Create a new configuration applier without storage hook. Tests and
+    /// callers that don't care about save-and-feed side effects use this.
     pub fn new(config_dir: &Path) -> Result<Self, String> {
+        Self::new_with_storage(config_dir, None)
+    }
+
+    /// Create a new configuration applier wired to the storage thread so
+    /// removal-style commands can record their side effects to the firmware
+    /// DB (sticker_removed markers, etc.).
+    pub fn new_with_storage(
+        config_dir: &Path,
+        storage: Option<crate::libs::storage::StorageHandle>,
+    ) -> Result<Self, String> {
         let config_dir = config_dir.to_path_buf();
         let backup_dir = config_dir.join(".backups");
 
@@ -48,6 +64,7 @@ impl ConfigApplier {
         Ok(Self {
             config_dir,
             backup_dir,
+            storage,
         })
     }
 
@@ -1077,6 +1094,19 @@ impl ConfigApplier {
             dev_eui
         );
 
+        // Save-and-feed: record a `sticker_removed` marker in the firmware DB
+        // so downstream destinations (replaying via the export drain loop)
+        // can see the deprovisioning event and avoid mis-attributing a later
+        // re-provisioned incarnation to the old epoch.
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = storage.append_sticker_removed(dev_eui.clone(), applied_at) {
+                eprintln!(
+                    "[ConfigApplier] WARN: failed to append sticker_removed for {}: {}",
+                    dev_eui, e
+                );
+            }
+        }
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -1734,5 +1764,43 @@ mod tests {
         assert!(result.success);
         assert!(result.backup_path.is_some());
         assert!(result.error_message.is_none());
+    }
+
+    #[test]
+    fn remove_lorawan_sensor_config_appends_sticker_removed_event() {
+        use crate::libs::storage::db::Database;
+        use crate::libs::storage::thread::StorageThread;
+
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+        let (storage, join) = StorageThread::spawn(&db_path, 1).unwrap();
+
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        let config_file = tmp_config_dir.path().join("fiber.config.yaml");
+        std::fs::write(
+            &config_file,
+            "lorawan:\n  sensors:\n    - dev_eui: '70b3d5'\n      name: test\n      enabled: true\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new_with_storage(tmp_config_dir.path(), Some(storage.clone())).unwrap();
+        let result = applier.remove_lorawan_sensor_config("70b3d5".to_string());
+        assert!(result.success, "removal should succeed: {:?}", result.error_message);
+
+        storage.flush().unwrap();
+        storage.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&db_path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sticker_readings WHERE dev_eui = '70b3d5' AND event_type = 'sticker_removed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n >= 1, "expected a sticker_removed row to be appended");
     }
 }
