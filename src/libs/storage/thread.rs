@@ -51,6 +51,49 @@ pub enum StorageMessage {
 
     /// Graceful shutdown
     Shutdown,
+
+    // ===== Save-and-feed (sticker stream + export cursor) =====
+    /// Write a sticker uplink or marker. Fire-and-forget — failures are logged.
+    WriteStickerReading {
+        dev_eui: String,
+        provisioning_epoch: i64,
+        ts: i64,
+        received_at: i64,
+        message_id: String,
+        event_type: String,
+        payload_json: String,
+    },
+    /// Append a `sticker_removed` marker event (fire-and-forget).
+    AppendStickerRemoved {
+        dev_eui: String,
+        ts: i64,
+    },
+    /// Bump and return the new provisioning epoch for a dev_eui.
+    BumpProvisioningEpoch {
+        dev_eui: String,
+        reply: Sender<StorageResult<i64>>,
+    },
+    /// Read the current provisioning epoch for a dev_eui (default 1).
+    GetProvisioningEpoch {
+        dev_eui: String,
+        reply: Sender<StorageResult<i64>>,
+    },
+    /// Advance the export cursor for a `(broker_id, stream)` pair.
+    AdvanceExportCursor {
+        broker_id: String,
+        stream: String,
+        new_id: i64,
+    },
+    /// Reset the export cursor for a `(broker_id, stream)` pair to 0.
+    ResetExportCursor {
+        broker_id: String,
+        stream: String,
+    },
+    /// Enforce retention on `sticker_readings` (delete rows older than
+    /// `retention_seconds`, log a WARN for un-exported drops).
+    EnforceStickerRetention {
+        retention_seconds: i64,
+    },
 }
 
 /// Handle for sending messages to storage thread
@@ -129,6 +172,132 @@ impl StorageHandle {
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
                     "Failed to send shutdown message: {}",
+                    e
+                ))
+            })
+    }
+
+    // ===== Save-and-feed (sticker stream + export cursor) =====
+
+    /// Send a sticker reading to be persisted (fire-and-forget).
+    pub fn write_sticker_reading(
+        &self,
+        dev_eui: String,
+        provisioning_epoch: i64,
+        ts: i64,
+        received_at: i64,
+        message_id: String,
+        event_type: String,
+        payload_json: String,
+    ) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::WriteStickerReading {
+                dev_eui,
+                provisioning_epoch,
+                ts,
+                received_at,
+                message_id,
+                event_type,
+                payload_json,
+            })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send sticker reading: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Append a `sticker_removed` marker event (fire-and-forget).
+    pub fn append_sticker_removed(&self, dev_eui: String, ts: i64) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::AppendStickerRemoved { dev_eui, ts })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send sticker_removed: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Bump and return the new provisioning epoch for `dev_eui`.
+    pub fn bump_provisioning_epoch(&self, dev_eui: String) -> StorageResult<i64> {
+        let (tx, rx) = bounded(1);
+        self.sender
+            .send(StorageMessage::BumpProvisioningEpoch { dev_eui, reply: tx })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send bump_provisioning_epoch: {}",
+                    e
+                ))
+            })?;
+        rx.recv().map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to receive bump_provisioning_epoch reply: {}",
+                e
+            ))
+        })?
+    }
+
+    /// Read the current provisioning epoch for `dev_eui` (default 1).
+    pub fn get_provisioning_epoch(&self, dev_eui: String) -> StorageResult<i64> {
+        let (tx, rx) = bounded(1);
+        self.sender
+            .send(StorageMessage::GetProvisioningEpoch { dev_eui, reply: tx })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send get_provisioning_epoch: {}",
+                    e
+                ))
+            })?;
+        rx.recv().map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to receive get_provisioning_epoch reply: {}",
+                e
+            ))
+        })?
+    }
+
+    /// Advance the export cursor for `(broker_id, stream)` to `new_id`.
+    pub fn advance_export_cursor(
+        &self,
+        broker_id: String,
+        stream: String,
+        new_id: i64,
+    ) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::AdvanceExportCursor {
+                broker_id,
+                stream,
+                new_id,
+            })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send advance_export_cursor: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Reset the export cursor for `(broker_id, stream)` to 0.
+    pub fn reset_export_cursor(&self, broker_id: String, stream: String) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::ResetExportCursor { broker_id, stream })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send reset_export_cursor: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Enforce retention on `sticker_readings`.
+    pub fn enforce_sticker_retention(&self, retention_seconds: i64) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::EnforceStickerRetention { retention_seconds })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send enforce_sticker_retention: {}",
                     e
                 ))
             })
@@ -361,6 +530,103 @@ impl StorageThread {
                         }
                     }
 
+                    StorageMessage::WriteStickerReading {
+                        dev_eui,
+                        provisioning_epoch,
+                        ts,
+                        received_at,
+                        message_id,
+                        event_type,
+                        payload_json,
+                    } => {
+                        match StorageWriter::write_sticker_reading(
+                            &mut conn,
+                            &dev_eui,
+                            provisioning_epoch,
+                            ts,
+                            received_at,
+                            &message_id,
+                            &event_type,
+                            &payload_json,
+                        ) {
+                            Ok(_) => {
+                                pending_writes += 1;
+                                message_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: write_sticker_reading failed: {}", e);
+                            }
+                        }
+                    }
+
+                    StorageMessage::AppendStickerRemoved { dev_eui, ts } => {
+                        match StorageWriter::append_sticker_removed_event(&mut conn, &dev_eui, ts) {
+                            Ok(_) => {
+                                pending_writes += 1;
+                                message_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "STORAGE THREAD: append_sticker_removed_event failed: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    StorageMessage::BumpProvisioningEpoch { dev_eui, reply } => {
+                        let _ = reply
+                            .send(StorageWriter::bump_provisioning_epoch(&mut conn, &dev_eui));
+                    }
+
+                    StorageMessage::GetProvisioningEpoch { dev_eui, reply } => {
+                        let _ = reply.send(StorageWriter::get_provisioning_epoch(&conn, &dev_eui));
+                    }
+
+                    StorageMessage::AdvanceExportCursor {
+                        broker_id,
+                        stream,
+                        new_id,
+                    } => {
+                        if let Err(e) = StorageWriter::advance_export_cursor(
+                            &mut conn,
+                            &broker_id,
+                            &stream,
+                            new_id,
+                        ) {
+                            eprintln!("STORAGE THREAD: advance_export_cursor failed: {}", e);
+                        }
+                    }
+
+                    StorageMessage::ResetExportCursor { broker_id, stream } => {
+                        if let Err(e) =
+                            StorageWriter::reset_export_cursor(&mut conn, &broker_id, &stream)
+                        {
+                            eprintln!("STORAGE THREAD: reset_export_cursor failed: {}", e);
+                        }
+                    }
+
+                    StorageMessage::EnforceStickerRetention { retention_seconds } => {
+                        match RetentionPolicy::default()
+                            .sweep_sticker_readings(&mut conn, retention_seconds)
+                        {
+                            Ok(r) => {
+                                if r.purged > 0 {
+                                    eprintln!(
+                                        "STORAGE THREAD: sticker retention purged {} rows ({} un-exported)",
+                                        r.purged, r.unexported_dropped
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "STORAGE THREAD: sweep_sticker_readings failed: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+
                     StorageMessage::Shutdown => {
                         if pending_writes > 0 {
                             let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
@@ -420,5 +686,72 @@ mod tests {
 
         let _ = handle.shutdown();
         let _ = std::fs::remove_file("/tmp/test_thread.db");
+    }
+
+    #[test]
+    fn storage_handle_write_sticker_reading_persists_via_thread() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
+        handle
+            .write_sticker_reading(
+                "abc".into(),
+                1,
+                1716120000,
+                1716120001,
+                "abc-1716120000-0".into(),
+                "uplink".into(),
+                r#"{"fields":{"temp":21}}"#.into(),
+            )
+            .unwrap();
+        handle.flush().unwrap();
+        handle.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn storage_handle_bump_and_get_provisioning_epoch_via_thread() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
+        assert_eq!(handle.get_provisioning_epoch("xyz".into()).unwrap(), 1);
+        assert_eq!(handle.bump_provisioning_epoch("xyz".into()).unwrap(), 2);
+        assert_eq!(handle.bump_provisioning_epoch("xyz".into()).unwrap(), 3);
+        assert_eq!(handle.get_provisioning_epoch("xyz".into()).unwrap(), 3);
+
+        handle.shutdown().unwrap();
+        join.join().unwrap();
+    }
+
+    #[test]
+    fn storage_handle_export_cursor_ops_via_thread() {
+        use crate::libs::storage::reader::StorageReader;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
+        handle
+            .advance_export_cursor("local".into(), "sticker".into(), 17)
+            .unwrap();
+        handle.flush().unwrap();
+        handle.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(),
+            17
+        );
     }
 }
