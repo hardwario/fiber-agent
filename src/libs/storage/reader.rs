@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 
 use crate::libs::storage::error::{StorageError, StorageResult};
-use crate::libs::storage::models::{SensorReading, StorageStats};
+use crate::libs::storage::models::{SensorReading, StickerReadingRow, StorageStats};
 
 /// Reader for querying sensor data
 pub struct StorageReader;
@@ -130,6 +130,46 @@ impl StorageReader {
             db_path: db_path.to_string(),
         })
     }
+
+    /// Fetch sticker readings with `id > last_id`, ordered by id ascending,
+    /// up to `limit` rows. Used by the export drain loop to consume rows
+    /// past the per-(broker, stream) cursor.
+    pub fn fetch_sticker_readings_after(
+        conn: &Connection,
+        last_id: i64,
+        limit: usize,
+    ) -> StorageResult<Vec<StickerReadingRow>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, dev_eui, provisioning_epoch, ts, received_at, message_id,
+                        event_type, payload_json, created_at
+                 FROM sticker_readings
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| StorageError::QueryError(format!("prepare sticker_readings_after: {}", e)))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![last_id, limit as i64], |r| {
+                Ok(StickerReadingRow {
+                    id: r.get(0)?,
+                    dev_eui: r.get(1)?,
+                    provisioning_epoch: r.get(2)?,
+                    ts: r.get(3)?,
+                    received_at: r.get(4)?,
+                    message_id: r.get(5)?,
+                    event_type: r.get(6)?,
+                    payload_json: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
+            })
+            .map_err(|e| StorageError::QueryError(format!("query sticker_readings_after: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(format!("collect sticker_readings_after: {}", e)))?;
+
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +215,34 @@ mod tests {
         assert_eq!(results[0].timestamp, 1500);
 
         let _ = std::fs::remove_file("/tmp/test_range.db");
+    }
+
+    #[test]
+    fn fetch_sticker_readings_after_returns_only_above_cursor_in_order() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        for i in 0..5 {
+            StorageWriter::write_sticker_reading(
+                &mut conn,
+                "abc",
+                1,
+                1000 + i,
+                1000 + i,
+                &format!("abc-{}-0", 1000 + i),
+                "uplink",
+                "{}",
+            )
+            .unwrap();
+        }
+
+        let rows = StorageReader::fetch_sticker_readings_after(&conn, 2, 10).unwrap();
+        assert_eq!(rows.len(), 3, "expected ids 3,4,5 (cursor=2)");
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![3, 4, 5]);
+
+        let limited = StorageReader::fetch_sticker_readings_after(&conn, 0, 2).unwrap();
+        assert_eq!(limited.len(), 2);
     }
 }
