@@ -1,7 +1,7 @@
 //! Async write operations for storage
 //! Handles insertion of sensor readings and alarm events
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::audit::AuditLogger;
 use crate::libs::storage::error::{StorageError, StorageResult};
@@ -239,6 +239,53 @@ impl StorageWriter {
             .map_err(|e| StorageError::QueryError(format!("Failed to count events: {}", e)))?;
 
         Ok(count)
+    }
+
+    /// Look up the current provisioning epoch for a `dev_eui`. Returns 1 if
+    /// the dev_eui has never been provisioned (default epoch). Used by the
+    /// LoRaWAN monitor to stamp every uplink with the active epoch so a
+    /// sticker that was removed and re-provisioned does not look identical
+    /// to its previous incarnation in downstream replays.
+    pub fn get_provisioning_epoch(conn: &Connection, dev_eui: &str) -> StorageResult<i64> {
+        let mut stmt = conn
+            .prepare("SELECT epoch FROM sticker_provisioning_epoch WHERE dev_eui = ?")
+            .map_err(|e| StorageError::QueryError(format!("prepare provisioning epoch: {}", e)))?;
+        let epoch: Option<i64> = stmt
+            .query_row(rusqlite::params![dev_eui], |r| r.get(0))
+            .optional()
+            .map_err(|e| StorageError::QueryError(format!("query provisioning epoch: {}", e)))?;
+        Ok(epoch.unwrap_or(1))
+    }
+
+    /// Atomically bump the provisioning epoch for a `dev_eui`. If no row
+    /// exists for the dev_eui, inserts at epoch=2 (a brand-new sticker that
+    /// has never sent traffic yet is implicitly at epoch 1; the first bump
+    /// signals re-provisioning and lands at 2). Otherwise increments by one.
+    pub fn bump_provisioning_epoch(conn: &mut Connection, dev_eui: &str) -> StorageResult<i64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let tx = conn
+            .transaction()
+            .map_err(|e| StorageError::QueryError(format!("tx: {}", e)))?;
+        tx.execute(
+            "INSERT INTO sticker_provisioning_epoch (dev_eui, epoch, updated_at)
+             VALUES (?, 2, ?)
+             ON CONFLICT(dev_eui) DO UPDATE SET epoch = epoch + 1, updated_at = ?",
+            rusqlite::params![dev_eui, now, now],
+        )
+        .map_err(|e| StorageError::InsertError(format!("bump_provisioning_epoch: {}", e)))?;
+        let epoch: i64 = tx
+            .query_row(
+                "SELECT epoch FROM sticker_provisioning_epoch WHERE dev_eui = ?",
+                rusqlite::params![dev_eui],
+                |r| r.get(0),
+            )
+            .map_err(|e| StorageError::QueryError(format!("read epoch: {}", e)))?;
+        tx.commit()
+            .map_err(|e| StorageError::QueryError(format!("commit: {}", e)))?;
+        Ok(epoch)
     }
 
     /// Insert a sticker reading (LoRaWAN uplink or sticker_removed marker).
@@ -487,5 +534,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn provisioning_epoch_starts_at_one_and_bumps() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "abc").unwrap(), 1);
+
+        let v = StorageWriter::bump_provisioning_epoch(&mut conn, "abc").unwrap();
+        assert_eq!(v, 2);
+
+        let v = StorageWriter::bump_provisioning_epoch(&mut conn, "abc").unwrap();
+        assert_eq!(v, 3);
+
+        // Different dev_eui starts fresh
+        assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "def").unwrap(), 1);
     }
 }
