@@ -465,7 +465,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn sensor monitoring thread (pass MQTT handle)
     eprintln!("[main] Starting sensor monitor...");
-    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle)) {
+    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle.clone())) {
         Ok(monitor) => {
             eprintln!("[main] Sensor monitor started");
             Some(monitor)
@@ -515,6 +515,7 @@ fn main() -> io::Result<()> {
             handle.sender(),
             hostname.clone(),
             Some(buzzer_priority_manager.clone()),
+            storage_handle.clone(),
         ) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state

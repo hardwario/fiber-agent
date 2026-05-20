@@ -16,6 +16,7 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 
 use crate::libs::config::LoRaWANConfig;
 use crate::libs::mqtt::messages::MqttMessage;
+use crate::libs::storage::StorageHandle;
 
 use super::chirpstack;
 use super::detector;
@@ -45,6 +46,7 @@ impl LoRaWANMonitor {
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
         buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
+        storage: StorageHandle,
     ) -> io::Result<Self> {
         // Detect gateway hardware
         let detection = detector::detect_gateway();
@@ -75,6 +77,7 @@ impl LoRaWANMonitor {
                 mqtt_tx,
                 hostname,
                 buzzer_priority_manager,
+                storage,
             );
         });
 
@@ -118,6 +121,7 @@ fn lorawan_loop(
     mqtt_tx: Sender<MqttMessage>,
     hostname: String,
     buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
+    storage: StorageHandle,
 ) {
     // Build a tokio runtime for the async MQTT client
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -207,6 +211,38 @@ fn lorawan_loop(
                                     reading.fields.len(),
                                     reading.counters.len(),
                                     reading.rssi,
+                                );
+
+                                // Save-and-feed: persist every uplink BEFORE live publish
+                                // so the firmware DB is the authoritative store for the
+                                // sticker stream and downstream destinations can replay
+                                // from it via the export drain loop.
+                                let now_ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                let message_id = chirpstack::message_id_for(&reading, now_ts);
+                                let epoch = storage
+                                    .get_provisioning_epoch(reading.dev_eui.clone())
+                                    .unwrap_or(1);
+                                let payload_json = serde_json::to_string(&serde_json::json!({
+                                    "fields":      reading.fields,
+                                    "counters":    reading.counters,
+                                    "events":      reading.events.iter().map(|e| e.event_type.clone()).collect::<Vec<_>>(),
+                                    "rssi":        reading.rssi,
+                                    "snr":         reading.snr,
+                                    "received_at": reading.received_at,
+                                    "device_name": reading.device_name,
+                                }))
+                                .unwrap_or_else(|_| "{}".to_string());
+                                let _ = storage.write_sticker_reading(
+                                    reading.dev_eui.clone(),
+                                    epoch,
+                                    now_ts,
+                                    now_ts,
+                                    message_id,
+                                    "uplink".to_string(),
+                                    payload_json,
                                 );
 
                                 if let Ok(mut s) = state.write() {
