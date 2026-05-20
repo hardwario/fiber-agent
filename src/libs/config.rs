@@ -868,6 +868,12 @@ pub struct MqttConfig {
 
     /// Last Will and Testament
     pub last_will: LastWillConfig,
+
+    /// Save-and-feed: multi-destination store-and-forward export config.
+    /// Defaults to disabled with no destinations — backwards-compatible
+    /// with configs that don't carry an `export` block.
+    #[serde(default)]
+    pub export: crate::libs::mqtt_export::ExportConfig,
 }
 
 // Default alarm pattern for backward compatibility (alarm level disabled)

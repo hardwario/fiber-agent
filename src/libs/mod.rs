@@ -18,6 +18,7 @@ pub mod config_applier;
 pub mod pairing;
 pub mod ble;
 pub mod lorawan;
+pub mod mqtt_export;
 
 // Re-export key types for convenience
 pub use alarms::{AlarmController, AlarmState, AlarmThreshold};

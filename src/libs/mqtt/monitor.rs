@@ -2639,6 +2639,7 @@ mod tests {
                 qos: 1,
                 retain: true,
             },
+            export: Default::default(),
         }
     }
 
