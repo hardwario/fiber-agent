@@ -305,6 +305,61 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Save-and-feed: spawn the multi-destination MQTT exporter when enabled.
+    // The exporter drains rows past per-(broker, stream) cursors and ships
+    // them to configured destinations at QoS 1. The thread owns its own
+    // tokio runtime; we hold the JoinHandle in `_export_thread` so it stays
+    // alive for the rest of `main`.
+    let _export_thread: Option<std::thread::JoinHandle<()>> = if config.mqtt
+        .as_ref()
+        .map(|m| m.export.enabled)
+        .unwrap_or(false)
+    {
+        let export_cfg = config.mqtt.as_ref().unwrap().export.clone();
+        let db_path = std::path::PathBuf::from(&config.storage.db_path);
+        let storage_for_export = storage_handle.clone();
+        let host_for_export = hostname.clone();
+        match std::thread::Builder::new()
+            .name("fiber-mqtt-export".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("[main] mqtt_export: failed to build tokio runtime: {}", e);
+                        return;
+                    }
+                };
+                rt.block_on(async move {
+                    let _thread = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
+                        export_cfg,
+                        db_path,
+                        storage_for_export,
+                        host_for_export,
+                    );
+                    // Park the runtime forever; the orchestrator task runs
+                    // until the process exits or its Shutdown command is
+                    // received. We never call shutdown from main here.
+                    std::future::pending::<()>().await;
+                });
+            })
+        {
+            Ok(h) => {
+                eprintln!("[main] mqtt_export thread spawned");
+                Some(h)
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: failed to spawn mqtt_export thread: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] mqtt.export.enabled=false — exporter not started");
+        None
+    };
+
     // Build the shared LoRa configs handle from the initial config snapshot.
     // This becomes the live source of truth: LoRaWAN monitor reads it for
     // alarm evaluation, MQTT writes it on config changes, display reads it
