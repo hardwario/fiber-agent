@@ -342,6 +342,15 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
+    /// next drain pass replays the stream from row 1. Use after a viewer DB
+    /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
+    /// "alarm" | "all".
+    ResetExportCursor {
+        broker_id: String,
+        stream: String,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -413,6 +422,7 @@ impl MqttCommand {
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",
@@ -443,6 +453,25 @@ mod tests {
 
         let cmd2 = MqttCommand::FlushStorage;
         assert_eq!(cmd2.name(), "flush_storage");
+    }
+
+    #[test]
+    fn reset_export_cursor_command_has_name_and_carries_fields() {
+        // MqttCommand isn't serde-derived (other variants carry non-serde
+        // types), so we exercise the variant directly rather than via JSON
+        // roundtrip. Parsing from JSON is the subscriber's job.
+        let cmd = MqttCommand::ResetExportCursor {
+            broker_id: "local".into(),
+            stream: "all".into(),
+        };
+        assert_eq!(cmd.name(), "reset_export_cursor");
+        match cmd {
+            MqttCommand::ResetExportCursor { broker_id, stream } => {
+                assert_eq!(broker_id, "local");
+                assert_eq!(stream, "all");
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]

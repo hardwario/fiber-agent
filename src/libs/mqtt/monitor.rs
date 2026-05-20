@@ -2333,6 +2333,34 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::ResetExportCursor { broker_id, stream } => {
+                // Forward the reset to the storage thread directly. The
+                // export orchestrator's drain loop will observe `cursor=0` on
+                // its next tick and replay the stream from row 1. We don't
+                // require an `ExportHandle` here — going through storage is
+                // simpler and keeps the dispatch path independent of whether
+                // the export orchestrator is running.
+                let Some(storage) = storage_handle.as_ref() else {
+                    return Err("Storage handle not available for ResetExportCursor".to_string());
+                };
+                if stream == "all" {
+                    for s in ["sticker", "probe", "alarm"] {
+                        if let Err(e) = storage.reset_export_cursor(broker_id.clone(), s.into()) {
+                            eprintln!(
+                                "[MQTT Monitor] reset_export_cursor({}, {}) failed: {}",
+                                broker_id, s, e
+                            );
+                        }
+                    }
+                } else if let Err(e) = storage.reset_export_cursor(broker_id.clone(), stream.clone()) {
+                    return Err(format!("reset_export_cursor({}, {}): {}", broker_id, stream, e));
+                }
+                eprintln!(
+                    "[MQTT Monitor] ✓ Export cursor reset for ({}, {})",
+                    broker_id, stream
+                );
+                Ok(())
+            }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
             | MqttCommand::RemoveSigner { .. }
