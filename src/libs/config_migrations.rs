@@ -120,17 +120,19 @@ fn migrate_v0_to_v1(mut value: Value) -> Result<Value, MigrationError> {
     Ok(value)
 }
 
-/// Conservative defaults: feature off, one disabled local destination
-/// already laid out so operators can flip `enabled: true` without consulting
-/// documentation. Mirrors the Rust-side `ExportConfig::default()` plus a
-/// destination scaffold.
+/// Defaults injected when a v0 yaml lacks `mqtt.export`: feature ON with
+/// one always-on local destination. Save-and-feed is a core invariant of
+/// the runtime (firmware DB ↔ viewer DB), not an optional feature, so we
+/// default-enable it on migration. Operators on `localhost:1883` get the
+/// pipeline running without touching the yaml; non-localhost destinations
+/// still require manual config (host/credentials/TLS).
 fn default_export_block() -> Value {
     let mut tls = serde_yaml::Mapping::new();
     tls.insert(Value::String("enabled".into()), Value::Bool(false));
 
     let mut local = serde_yaml::Mapping::new();
     local.insert(Value::String("broker_id".into()), Value::String("local".into()));
-    local.insert(Value::String("enabled".into()), Value::Bool(false));
+    local.insert(Value::String("enabled".into()), Value::Bool(true));
     local.insert(Value::String("host".into()), Value::String("localhost".into()));
     local.insert(Value::String("port".into()), Value::Number(1883.into()));
     local.insert(Value::String("username".into()), Value::String("".into()));
@@ -138,7 +140,7 @@ fn default_export_block() -> Value {
     local.insert(Value::String("tls".into()), Value::Mapping(tls));
 
     let mut export = serde_yaml::Mapping::new();
-    export.insert(Value::String("enabled".into()), Value::Bool(false));
+    export.insert(Value::String("enabled".into()), Value::Bool(true));
     export.insert(
         Value::String("streams".into()),
         Value::Sequence(vec![
@@ -207,8 +209,15 @@ ble:
 
         let mqtt = root.get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap();
         let export = mqtt.get(&Value::String("export".into())).unwrap().as_mapping().unwrap();
-        assert_eq!(export.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(false));
+        // Save-and-feed defaults to ON so the firmware↔viewer mirror is live
+        // from first boot without operator intervention.
+        assert_eq!(export.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
         assert_eq!(export.get(&Value::String("batch_size".into())).unwrap().as_u64(), Some(200));
+        // And the always-on `local` destination must also default-enabled.
+        let dests = export.get(&Value::String("destinations".into())).unwrap().as_sequence().unwrap();
+        let local = dests[0].as_mapping().unwrap();
+        assert_eq!(local.get(&Value::String("broker_id".into())).unwrap().as_str(), Some("local"));
+        assert_eq!(local.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
     }
 
     #[test]
