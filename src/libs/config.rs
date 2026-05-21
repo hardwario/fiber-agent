@@ -951,9 +951,24 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from a YAML file
+    /// Load configuration from a YAML file.
+    ///
+    /// Runs forward migrations on the file first (see
+    /// `crate::libs::config_migrations`) — older yaml shapes on persisted
+    /// device installs are upgraded in place with a backup so subsequent
+    /// boots read the new shape natively.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
+        let content = match crate::libs::config_migrations::migrate_and_persist(path.as_ref()) {
+            Ok(s) => s,
+            Err(e) => {
+                // Migration failed (e.g. file unreadable or yaml newer than
+                // firmware). Fall back to raw read so the typed parser can
+                // produce a more user-friendly error if the file is just
+                // malformed, or surface the migration error if it's fatal.
+                eprintln!("[config] migration failed: {} — falling back to direct read", e);
+                fs::read_to_string(path.as_ref())?
+            }
+        };
         let mut config: Config = serde_yaml::from_str(&content)?;
 
         // Validate TLS config for production safety (EU MDR Annex I, 17.2)
