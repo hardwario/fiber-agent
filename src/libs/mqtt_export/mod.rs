@@ -15,11 +15,14 @@ pub use destination::RumqttcDestination;
 pub use drain::{drain_one_batch, DrainConfig, Publisher, Stream};
 pub use envelope::{alarm_envelope, probe_envelope, sticker_envelope};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::libs::storage::db::Database;
+use crate::libs::storage::reader::StorageReader;
 use crate::libs::storage::StorageHandle;
 
 /// Commands the export thread accepts from the rest of the system.
@@ -62,29 +65,30 @@ impl ExportHandle {
     }
 }
 
-/// Orchestrator task: one tokio task per process that drives N destinations,
-/// each with M streams. On each tick, the orchestrator runs `drain_one_batch`
-/// for every (destination, stream) pair.
-pub struct MqttExportThread {
-    pub handle: ExportHandle,
-    _join: tokio::task::JoinHandle<()>,
-}
+/// Orchestrator handle plus the future that drives it. Callers (`main`)
+/// run the future on a dedicated current-thread tokio runtime; the handle
+/// is the side-channel used by the rest of the process to send commands.
+///
+/// We do NOT `tokio::spawn` internally because the orchestrator holds a
+/// non-`Send` `rusqlite::Connection` across `.await` points and the
+/// multi-thread spawn API requires `Send`. The dedicated OS thread already
+/// gives us isolation; spawning was an unneeded indirection.
+pub struct MqttExportThread;
 
 impl MqttExportThread {
-    /// Spawn the orchestrator. Caller must hold a tokio runtime alive for
-    /// the lifetime of the returned object. If `cfg.enabled` is false, the
-    /// task is created but drains nothing — only the command channel is
-    /// honored, which keeps callers (ConfigApplier, MQTT command handlers)
-    /// from having to check enabled state themselves.
+    /// Build the orchestrator. Returns `(handle, future)` — the caller is
+    /// responsible for driving the future (typically via `rt.block_on`).
+    /// If `cfg.enabled` is false, the future still runs and honors
+    /// commands (Shutdown, etc.) but performs no drains.
     pub fn spawn(
         cfg: ExportConfig,
         db_path: PathBuf,
         storage: StorageHandle,
         hostname: String,
-    ) -> Self {
+    ) -> (ExportHandle, impl std::future::Future<Output = ()>) {
         let (tx, mut rx) = mpsc::channel::<ExportCommand>(64);
         let handle = ExportHandle { tx };
-        let join = tokio::spawn(async move {
+        let fut = async move {
             if !cfg.enabled {
                 eprintln!("[mqtt_export] export.enabled=false — worker idle");
                 while let Some(cmd) = rx.recv().await {
@@ -122,12 +126,56 @@ impl MqttExportThread {
                 );
             }
 
+            // One read-side SQLite connection for the whole orchestrator. The
+            // drain used to call `Database::new(...)` on every pass, which
+            // re-ran `create_schema` + `verify_schema` against SQLCipher and
+            // burned ~90% of a core on AES alone (observed in field).
+            // Database::new is idempotent on existing files, so doing it once
+            // is enough — the WAL connection stays valid for the lifetime of
+            // the export thread. Safe to hold here because the export runs on
+            // its own current-thread tokio runtime; the connection never
+            // crosses threads.
+            let export_conn = match Database::new(&db_path, 1).and_then(|db| db.connect()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("[mqtt_export] cannot open export DB: {} — worker idle", e);
+                    None
+                }
+            };
+
+            // In-memory cursor cache, keyed by (broker_id, stream-as-str).
+            // Reading the persisted cursor at the start of every drain pass
+            // races with the storage thread that applies advance messages
+            // asynchronously, which caused identical batches to be re-fetched
+            // and re-published in a tight loop (~100% CPU). We seed the cache
+            // once from disk on startup and trust the in-process value from
+            // then on; the storage thread still owns the persisted copy for
+            // crash recovery.
+            let mut cursors: HashMap<(String, &'static str), i64> = HashMap::new();
+            if let Some(conn) = export_conn.as_ref() {
+                for (broker_id, _dest, streams) in &destinations {
+                    for s in streams {
+                        let cur = StorageReader::load_export_cursor(
+                            conn,
+                            broker_id,
+                            s.as_str(),
+                        )
+                        .unwrap_or(0);
+                        cursors.insert((broker_id.clone(), s.as_str()), cur);
+                    }
+                }
+            }
+
             let mut tick =
                 tokio::time::interval(Duration::from_millis(cfg.drain_interval_ms.max(50)));
 
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
+                        let conn = match export_conn.as_ref() {
+                            Some(c) => c,
+                            None => continue,
+                        };
                         for (broker_id, dest, streams) in &destinations {
                             for s in streams {
                                 let drain_cfg = DrainConfig {
@@ -136,8 +184,15 @@ impl MqttExportThread {
                                     batch_size: cfg.batch_size,
                                     drain_interval_ms: cfg.drain_interval_ms,
                                 };
-                                if let Err(e) = drain_one_batch(&drain_cfg, *s, dest.as_ref(), &storage).await {
-                                    eprintln!("[mqtt_export:{}:{:?}] drain error: {}", broker_id, s, e);
+                                let key = (broker_id.clone(), s.as_str());
+                                let cur_in = *cursors.get(&key).unwrap_or(&0);
+                                match drain_one_batch(&drain_cfg, *s, dest.as_ref(), &storage, conn, cur_in).await {
+                                    Ok((_n, new_cur)) => {
+                                        cursors.insert(key, new_cur);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[mqtt_export:{}:{:?}] drain error: {}", broker_id, s, e);
+                                    }
                                 }
                             }
                         }
@@ -152,18 +207,23 @@ impl MqttExportThread {
                                 // spec Section 4.
                             }
                             Some(ExportCommand::ResetCursor { broker_id, stream }) => {
-                                let _ = storage.reset_export_cursor(broker_id, stream);
+                                // Reset the persisted cursor AND invalidate the
+                                // in-memory cache for matching streams, otherwise
+                                // the drain would keep skipping rows we asked to
+                                // replay.
+                                let _ = storage.reset_export_cursor(broker_id.clone(), stream.clone());
+                                for s in [Stream::Sticker, Stream::Probe, Stream::Alarm] {
+                                    if s.as_str() == stream {
+                                        cursors.insert((broker_id.clone(), s.as_str()), 0);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
             eprintln!("[mqtt_export] shutting down");
-        });
-
-        Self {
-            handle,
-            _join: join,
-        }
+        };
+        (handle, fut)
     }
 }

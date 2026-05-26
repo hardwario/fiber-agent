@@ -10,7 +10,8 @@
 
 use std::path::PathBuf;
 
-use crate::libs::storage::db::Database;
+use rusqlite::Connection;
+
 use crate::libs::storage::reader::StorageReader;
 use crate::libs::storage::{StorageHandle, StorageResult};
 
@@ -57,76 +58,86 @@ pub struct DrainConfig {
 }
 
 /// Drain a single batch of `stream` for the destination identified by
-/// `cfg.broker_id`. Returns the number of rows fetched from storage (the
-/// number actually published may be lower if a publish failed mid-batch).
+/// `cfg.broker_id`, starting from `cursor_in`. Returns `(rows_fetched,
+/// new_cursor)` — `new_cursor` is the id of the last successfully published
+/// row (or `cursor_in` if nothing was published). Caller MUST treat the
+/// returned cursor as the authoritative next-read position; reading the
+/// persisted cursor from SQLite at the start of each pass races with the
+/// storage thread that applies `advance_export_cursor` messages and causes
+/// the same rows to be re-fetched and re-published in a hot loop.
+///
+/// The caller owns the SQLite `Connection` and reuses it across drain
+/// calls — opening a fresh `Database` per call re-runs `create_schema` and
+/// `verify_schema` against the encrypted store and easily burns a full CPU
+/// core on its own (observed: ~90% CPU at the default 500 ms tick).
 pub async fn drain_one_batch(
     cfg: &DrainConfig,
     stream: Stream,
     publisher: &dyn Publisher,
     storage: &StorageHandle,
-) -> StorageResult<usize> {
-    let db = Database::new(&cfg.db_path, 1)?;
-    let conn = db.connect()?;
-    let cursor = StorageReader::load_export_cursor(&conn, &cfg.broker_id, stream.as_str())?;
-
-    match stream {
+    conn: &Connection,
+    cursor_in: i64,
+) -> StorageResult<(usize, i64)> {
+    let mut last_id = cursor_in;
+    let fetched = match stream {
         Stream::Sticker => {
             let rows =
-                StorageReader::fetch_sticker_readings_after(&conn, cursor, cfg.batch_size)?;
+                StorageReader::fetch_sticker_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::sticker_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
                     eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
                     break;
                 }
-                storage.advance_export_cursor(
-                    cfg.broker_id.clone(),
-                    "sticker".into(),
-                    row.id,
-                )?;
+                last_id = row.id;
             }
-            Ok(rows.len())
+            rows.len()
         }
         Stream::Probe => {
             let rows =
-                StorageReader::fetch_sensor_readings_after(&conn, cursor, cfg.batch_size)?;
+                StorageReader::fetch_sensor_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::probe_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
                     eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
                     break;
                 }
-                storage.advance_export_cursor(
-                    cfg.broker_id.clone(),
-                    "probe".into(),
-                    row.id,
-                )?;
+                last_id = row.id;
             }
-            Ok(rows.len())
+            rows.len()
         }
         Stream::Alarm => {
             let rows =
-                StorageReader::fetch_alarm_events_after(&conn, cursor, cfg.batch_size)?;
+                StorageReader::fetch_alarm_events_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::alarm_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
                     eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
                     break;
                 }
-                storage.advance_export_cursor(
-                    cfg.broker_id.clone(),
-                    "alarm".into(),
-                    row.id,
-                )?;
+                last_id = row.id;
             }
-            Ok(rows.len())
+            rows.len()
         }
+    };
+
+    // One channel message per batch instead of one per row — keeps the
+    // storage thread's inbox from drowning under the export workload.
+    if last_id > cursor_in {
+        storage.advance_export_cursor(
+            cfg.broker_id.clone(),
+            stream.as_str().to_string(),
+            last_id,
+        )?;
     }
+
+    Ok((fetched, last_id))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::libs::storage::db::Database;
     use crate::libs::storage::StorageThread;
     use std::sync::Mutex;
 
@@ -185,19 +196,21 @@ mod tests {
             drain_interval_ms: 0,
         };
 
-        let n = drain_one_batch(&cfg, Stream::Sticker, &stub, &storage)
-            .await
-            .unwrap();
+        let db = Database::new(&path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let (n, new_cursor) =
+            drain_one_batch(&cfg, Stream::Sticker, &stub, &storage, &conn, 0)
+                .await
+                .unwrap();
         assert_eq!(n, 5);
         assert_eq!(stub.calls.lock().unwrap().len(), 3); // succeeds 3 then fails
+        assert_eq!(new_cursor, 3, "returned cursor should be last published id");
 
-        // Allow the storage thread to apply the 3 advance_export_cursor
-        // messages before we read back the cursor.
+        // Allow the storage thread to apply the (single) advance_export_cursor
+        // message before we read back the persisted cursor.
         storage.flush().unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let db = Database::new(&path, 1).unwrap();
-        let conn = db.connect().unwrap();
         let cur = StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap();
         assert_eq!(cur, 3, "cursor should be at last successfully published id");
 

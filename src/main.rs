@@ -333,16 +333,16 @@ fn main() -> io::Result<()> {
                     }
                 };
                 rt.block_on(async move {
-                    let _thread = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
+                    let (_handle, fut) = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
                         export_cfg,
                         db_path,
                         storage_for_export,
                         host_for_export,
                     );
-                    // Park the runtime forever; the orchestrator task runs
-                    // until the process exits or its Shutdown command is
-                    // received. We never call shutdown from main here.
-                    std::future::pending::<()>().await;
+                    // Drive the orchestrator inline on this thread's runtime.
+                    // It loops until it receives Shutdown (which we never send
+                    // from here) — effectively for the lifetime of the process.
+                    fut.await;
                 });
             })
         {

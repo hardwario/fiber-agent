@@ -18,9 +18,14 @@ use crate::libs::storage::{db::Database, reader::StorageReader, StorageThread};
 /// Simulates ~10h of accumulated sticker readings while the destination
 /// broker is unreachable, then enables the broker and verifies the export
 /// orchestrator catches up — cursor reaches the head of the stream.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 #[ignore]
 async fn ten_hour_offline_drain_matches_input() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(ten_hour_offline_drain_matches_input_inner()).await;
+}
+
+async fn ten_hour_offline_drain_matches_input_inner() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_str().unwrap().to_string();
     let (storage, _join) = StorageThread::spawn(&path, 1).unwrap();
@@ -57,12 +62,15 @@ async fn ten_hour_offline_drain_matches_input() {
             tls: Default::default(),
         }],
     };
-    let _export = MqttExportThread::spawn(
+    let (_handle, fut) = MqttExportThread::spawn(
         cfg,
         std::path::PathBuf::from(&path),
         storage.clone(),
         "myhost".into(),
     );
+    let _join = tokio::task::spawn_local(fut);
+    // ^ requires the test to run inside a LocalSet because the orchestrator
+    //   holds a non-Send rusqlite::Connection across awaits.
 
     tokio::time::sleep(Duration::from_secs(20)).await;
 
