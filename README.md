@@ -229,7 +229,6 @@ Classification: **Class IIa** | Software safety: **IEC 62304 Class B**
 | bcrypt | Password hashing |
 
 ### Remaining gaps (documentation, not code)
-
 ISO 14971 risk management, IEC 62304 software development plan, ISO 13485 QMS, clinical evaluation report, technical file, instructions for use (IFU), IEC 62366 usability evaluation, GDPR DPIA.
 
 ## License
