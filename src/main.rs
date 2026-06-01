@@ -443,11 +443,37 @@ fn main() -> io::Result<()> {
     // Store MQTT monitor to keep it alive (after pairing handle is set)
     let _mqtt_monitor = mqtt_monitor;
 
+    // Build a ConfigApplier for the BLE side so authenticated FB0A writes
+    // can update fiber.config.yaml::system.device_label. Shares
+    // /data/fiber/config with MQTT's own applier; on-disk writes are
+    // atomic so racing the two is safe.
+    let ble_config_applier: Option<Arc<fiber_app::ConfigApplier>> =
+        match fiber_app::ConfigApplier::new_with_storage(
+            std::path::Path::new("/data/fiber/config"),
+            Some(storage_handle.clone()),
+        ) {
+            Ok(applier) => {
+                eprintln!("[main] BLE-side ConfigApplier initialized");
+                Some(Arc::new(applier))
+            }
+            Err(e) => {
+                eprintln!(
+                    "[main] Warning: BLE-side ConfigApplier failed to init: {} (FB0A writes will be rejected)",
+                    e
+                );
+                None
+            }
+        };
+
     // Create and spawn BLE monitor if enabled.
     // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
     let (_ble_monitor, ble_handle) = if config.ble.enabled {
         eprintln!("[main] Starting BLE monitor (in-app GATT server)...");
-        match BleMonitor::new(config.ble.clone(), provisioning_session.clone()) {
+        match BleMonitor::new(
+            config.ble.clone(),
+            provisioning_session.clone(),
+            ble_config_applier.clone(),
+        ) {
             Ok(monitor) => {
                 eprintln!("[main] BLE monitor started");
                 let h = monitor.handle();

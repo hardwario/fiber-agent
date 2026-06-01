@@ -37,6 +37,8 @@ const DEVICE_INFO_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB07_0000_1000_8000_00805F9B34FB);
 const WIFI_DISCONNECT_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB08_0000_1000_8000_00805F9B34FB);
+const DEVICE_LABEL_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0A_0000_1000_8000_00805F9B34FB);
 
 // --- Application builder -----------------------------------------------------
 
@@ -68,6 +70,12 @@ pub async fn create_gatt_app(
                             String::from_utf8_lossy(&new_value).trim().to_string();
                         let state_guard = state.lock().await;
 
+                        // Phone is talking to us → reset the idle timer
+                        // before doing anything else. We bump on every op
+                        // regardless of auth outcome (matches spec: "no
+                        // FB01–FB0x reads/writes for 5 minutes → exit").
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+
                         if crate::libs::ble::gatt::auth::verify_token(
                             &token_attempt,
                             &state_guard.provisioning_session,
@@ -92,6 +100,7 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         let is_auth = state_guard.authenticated.load(Ordering::SeqCst);
                         let response =
                             crate::libs::ble::gatt::auth::auth_response(is_auth);
@@ -115,6 +124,7 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.authenticated.load(Ordering::SeqCst) {
                             return Err(ReqError::NotAuthorized);
                         }
@@ -145,6 +155,7 @@ pub async fn create_gatt_app(
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.authenticated.load(Ordering::SeqCst) {
                             return Err(ReqError::NotAuthorized);
                         }
@@ -193,6 +204,7 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.authenticated.load(Ordering::SeqCst) {
                             return Err(ReqError::NotAuthorized);
                         }
@@ -224,6 +236,7 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.authenticated.load(Ordering::SeqCst) {
                             return Err(ReqError::NotAuthorized);
                         }
@@ -262,7 +275,9 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
-                        // Device info is available without authentication.
+                        // Counts as activity even though no auth is required —
+                        // any FB0x op should keep the session alive.
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         let info = crate::libs::ble::gatt::device_info::build_response(
                             &state_guard.hostname,
                             &state_guard.mac_address,
@@ -271,6 +286,95 @@ pub async fn create_gatt_app(
                     })
                 }
             }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // --- Device Label characteristic (FB0A) -----------------------------------
+    // Read returns {"label": "<current>"} pulled from fiber.config.yaml.
+    // Write accepts {"label": "<new>"} and routes through ConfigApplier
+    // (atomic write + audit log entry). Auth-gated. Display picks up the
+    // new value on its next frame thanks to hot-reload in display/monitor.
+    let device_label_char = Characteristic {
+        uuid: DEVICE_LABEL_CHAR_UUID.into(),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let hostname_fallback = state_guard.hostname.clone();
+                        drop(state_guard);
+
+                        // Pull fresh from disk rather than caching: a write
+                        // via FB0A or MQTT could have changed it since
+                        // boot, and the file IS the source of truth.
+                        let label = crate::libs::config::Config::load_default()
+                            .ok()
+                            .and_then(|c| c.system.device_label)
+                            .unwrap_or(hostname_fallback);
+                        let resp = serde_json::json!({ "label": label });
+                        Ok(serde_json::to_vec(&resp).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let applier = match state_guard.config_applier.clone() {
+                            Some(a) => a,
+                            None => {
+                                eprintln!("[DeviceLabel] No ConfigApplier wired; rejecting write");
+                                return Err(ReqError::Failed);
+                            }
+                        };
+                        drop(state_guard);
+
+                        // Parse {"label": "<...>"}.
+                        #[derive(serde::Deserialize)]
+                        struct Req {
+                            label: String,
+                        }
+                        let req: Req = match serde_json::from_slice(&new_value) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("[DeviceLabel] Malformed write payload: {}", e);
+                                return Err(ReqError::InvalidValueLength);
+                            }
+                        };
+
+                        let result = applier.apply_device_label_change(req.label.clone());
+                        if result.success {
+                            eprintln!("[DeviceLabel] Updated to {:?}", req.label);
+                            Ok(())
+                        } else {
+                            eprintln!(
+                                "[DeviceLabel] Rejected: {}",
+                                result.error_message.as_deref().unwrap_or("unknown")
+                            );
+                            Err(ReqError::Failed)
+                        }
+                    })
+                }
+            })),
             ..Default::default()
         }),
         ..Default::default()
@@ -294,6 +398,7 @@ pub async fn create_gatt_app(
                         // across the slow shell-spawn path.
                         let (is_authenticated, notifier_opt, shell_opt) = {
                             let state_guard = state.lock().await;
+                            crate::libs::network::touch_shared(&state_guard.provisioning_session);
                             (
                                 state_guard.authenticated.load(Ordering::SeqCst),
                                 state_guard.terminal_notifier.clone(),
@@ -407,6 +512,7 @@ pub async fn create_gatt_app(
                         );
                         {
                             let mut state_guard = state.lock().await;
+                            crate::libs::network::touch_shared(&state_guard.provisioning_session);
                             state_guard.terminal_notifier =
                                 Some(Arc::new(Mutex::new(notifier)));
                             eprintln!("[Terminal] Notifier stored in state");
@@ -432,6 +538,7 @@ pub async fn create_gatt_app(
         wifi_disconnect_char,
         wifi_status_char,
         device_info_char,
+        device_label_char,
     ];
 
     if enable_terminal {

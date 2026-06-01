@@ -14,10 +14,11 @@ pub use libs::leds::{LedMonitor, SharedLedState};
 pub use libs::buzzer::BuzzerController;
 pub use libs::display::{DisplayMonitor, ButtonMonitor};
 pub use libs::network::{
-    new_shared_provisioning_session, ProvisioningSession, QrCodeGenerator,
-    SharedProvisioningSession, DEFAULT_SESSION_DURATION,
+    new_shared_provisioning_session, touch_shared, ProvisioningSession, QrCodeGenerator,
+    SharedProvisioningSession, DEFAULT_SESSION_DURATION, IDLE_TIMEOUT,
 };
 pub use libs::mqtt::{MqttMonitor, MqttHandle};
 pub use libs::pairing::{PairingMonitor, PairingHandle};
 pub use libs::lorawan::{LoRaWANMonitor, LoRaWANHandle};
 pub use libs::ble::{BleMonitor, BleHandle, BleEvent, BleConfig, spawn_ble_event_router};
+pub use libs::config_applier::ConfigApplier;

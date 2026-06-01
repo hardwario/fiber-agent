@@ -8,8 +8,8 @@ pub mod qrcode_generator;
 pub mod status;
 
 pub use provisioning_session::{
-    new_shared_provisioning_session, ProvisioningSession, SharedProvisioningSession,
-    DEFAULT_SESSION_DURATION,
+    new_shared_provisioning_session, touch_shared, ProvisioningSession,
+    SharedProvisioningSession, DEFAULT_SESSION_DURATION, IDLE_TIMEOUT,
 };
 pub use qrcode_generator::QrCodeGenerator;
 pub use status::{NetworkStatus, get_network_status};

@@ -7,9 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
-use crate::libs::network::{
-    ProvisioningSession, SharedProvisioningSession, DEFAULT_SESSION_DURATION,
-};
+use crate::libs::network::{ProvisioningSession, SharedProvisioningSession};
 use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
 use crate::libs::buzzer::BuzzerPriorityManager;
 use super::SharedDisplayStateHandle;
@@ -512,16 +510,12 @@ impl ButtonMonitor {
                     // starting BLE advertising — the GATT auth path reads
                     // this on every pairing attempt, so it must be live by
                     // the time the phone connects.
-                    match ProvisioningSession::new(
-                        &mac_address,
-                        &hostname,
-                        DEFAULT_SESSION_DURATION,
-                    ) {
+                    match ProvisioningSession::new(&mac_address, &hostname) {
                         Ok(session) => {
                             if let Ok(mut slot) = provisioning_session.write() {
                                 eprintln!(
-                                    "[ButtonMonitor] Provisioning session opened (token={}, exp={})",
-                                    session.token(), session.expires_at_unix(),
+                                    "[ButtonMonitor] Provisioning session opened (token={}, created_at={})",
+                                    session.token(), session.created_at_unix(),
                                 );
                                 *slot = Some(session);
                             } else {
@@ -546,10 +540,13 @@ impl ButtonMonitor {
                 }
             }
 
-            // Expire the provisioning session once its 5-minute TTL elapses:
-            // clear the shared slot, drop BLE advertising, and bounce the
-            // user back to the sensor overview. The display will fall through
-            // to render_qr_session_ended_screen for one frame if the user is
+            // Expire the provisioning session once it has sat idle for
+            // IDLE_TIMEOUT (no BLE GATT activity from the phone). Active
+            // sessions stay alive — each FB0x op bumps last_activity, so
+            // a user mid-flow won't get kicked out. We clear the shared
+            // slot, drop BLE advertising, and bounce the user back to the
+            // sensor overview. The display will fall through to
+            // render_qr_session_ended_screen for one frame if the user is
             // still on the QR screen between the expiry and the screen swap.
             if state == ButtonMonitorState::ShowingQr {
                 let expired = provisioning_session
@@ -558,7 +555,7 @@ impl ButtonMonitor {
                     .map(|g| g.as_ref().map(|s| s.is_expired()).unwrap_or(true))
                     .unwrap_or(false);
                 if expired {
-                    eprintln!("[ButtonMonitor] Provisioning session expired - tearing down");
+                    eprintln!("[ButtonMonitor] Provisioning session idle for 5min - tearing down");
                     if let Ok(mut slot) = provisioning_session.write() {
                         *slot = None;
                     }

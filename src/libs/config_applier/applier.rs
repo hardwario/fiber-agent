@@ -1,6 +1,6 @@
 //! Configuration applier with atomic updates and rollback
 
-use super::validation::ConfigValidator;
+use super::validation::{validate_device_label, ConfigValidator};
 use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::io::Write;
@@ -718,22 +718,16 @@ impl ConfigApplier {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        // 1. Validate label (1-64 characters, printable)
-        if label.is_empty() {
+        // 1. Validate label. We intentionally enforce the same policy on
+        //    every entry path (BLE FB0A and MQTT SetDeviceLabel) so that
+        //    nobody can sneak a malformed label in through one channel and
+        //    break the other — most importantly, MQTT topic publishing.
+        if let Err(msg) = validate_device_label(&label) {
             return ApplyResult {
                 success: false,
                 file_path: String::new(),
                 backup_path: None,
-                error_message: Some("Device label cannot be empty".to_string()),
-                applied_at,
-            };
-        }
-        if label.len() > 64 {
-            return ApplyResult {
-                success: false,
-                file_path: String::new(),
-                backup_path: None,
-                error_message: Some("Device label must be at most 64 characters".to_string()),
+                error_message: Some(msg),
                 applied_at,
             };
         }
@@ -827,6 +821,23 @@ impl ConfigApplier {
             "[ConfigApplier] ✓ Device label updated: \"{}\"",
             label
         );
+
+        // 9. Audit. Fire-and-forget — if the storage thread isn't wired up
+        //    (tests, early boot) the failure is logged but doesn't roll
+        //    back the on-disk change, which has already succeeded.
+        if let Some(storage) = self.storage.as_ref() {
+            let details = format!(r#"{{"new_label":{:?}}}"#, label);
+            if let Err(e) = storage.log_audit_event(
+                "SET_DEVICE_LABEL".to_string(),
+                Some("config".to_string()),
+                Some(details),
+            ) {
+                eprintln!(
+                    "[ConfigApplier] audit log_audit_event(SET_DEVICE_LABEL) failed: {}",
+                    e
+                );
+            }
+        }
 
         ApplyResult {
             success: true,
@@ -1802,5 +1813,110 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 1, "expected a sticker_removed row to be appended");
+    }
+
+    // ---- device label apply-path tests -----------------------------------------
+
+    fn write_minimal_main_config(dir: &std::path::Path) {
+        let yaml = "system:\n  device_label: \"OLD-LABEL\"\n";
+        std::fs::write(dir.join("fiber.config.yaml"), yaml).unwrap();
+    }
+
+    #[test]
+    fn apply_device_label_change_persists_new_value() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier.apply_device_label_change("Ward 3 Freezer".to_string());
+        assert!(result.success, "{:?}", result.error_message);
+
+        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        assert!(contents.contains("Ward 3 Freezer"), "got: {contents}");
+        assert!(!contents.contains("OLD-LABEL"), "old value should be gone: {contents}");
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_empty() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change(String::new());
+        assert!(!result.success);
+        assert!(
+            result.error_message.unwrap().to_lowercase().contains("empty"),
+        );
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_mqtt_chars() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change("bad/label".to_string());
+        assert!(!result.success);
+        assert!(result.error_message.unwrap().to_lowercase().contains("mqtt"));
+
+        // And the on-disk file is untouched.
+        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        assert!(contents.contains("OLD-LABEL"));
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_unicode() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change("Câmara".to_string());
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn apply_device_label_change_writes_audit_entry() {
+        use crate::libs::storage::db::Database;
+        use crate::libs::storage::thread::StorageThread;
+
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        let (storage, join) = StorageThread::spawn(&db_path, 1).unwrap();
+
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new_with_storage(
+            tmp_config_dir.path(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+
+        let result = applier.apply_device_label_change("New Label".to_string());
+        assert!(result.success, "{:?}", result.error_message);
+
+        storage.flush().unwrap();
+        storage.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&db_path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE operation = 'SET_DEVICE_LABEL'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n >= 1, "expected an SET_DEVICE_LABEL audit row to be written");
+
+        let details: Option<String> = conn
+            .query_row(
+                "SELECT details FROM audit_log WHERE operation = 'SET_DEVICE_LABEL' ORDER BY timestamp DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let details = details.expect("details should be Some");
+        assert!(details.contains("New Label"), "details should carry new label: {details}");
     }
 }

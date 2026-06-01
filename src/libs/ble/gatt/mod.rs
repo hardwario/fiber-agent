@@ -22,6 +22,7 @@ use std::time::Duration;
 use crossbeam::channel::{self, Receiver, Sender};
 
 use super::config::BleConfig;
+use crate::libs::config_applier::ConfigApplier;
 use crate::libs::network::SharedProvisioningSession;
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,7 @@ impl BleMonitor {
     pub fn new(
         config: BleConfig,
         provisioning_session: SharedProvisioningSession,
+        config_applier: Option<Arc<ConfigApplier>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
@@ -88,6 +90,7 @@ impl BleMonitor {
                 Self::thread_main(
                     config,
                     provisioning_session,
+                    config_applier,
                     command_rx,
                     event_tx_xbeam,
                     shutdown_flag_clone,
@@ -111,6 +114,7 @@ impl BleMonitor {
     fn thread_main(
         config: BleConfig,
         provisioning_session: SharedProvisioningSession,
+        config_applier: Option<Arc<ConfigApplier>>,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -132,6 +136,7 @@ impl BleMonitor {
             if let Err(e) = run_server(
                 config,
                 provisioning_session,
+                config_applier,
                 command_rx,
                 event_tx,
                 shutdown_flag,
@@ -164,6 +169,7 @@ impl Drop for BleMonitor {
 async fn run_server(
     config: BleConfig,
     provisioning_session: SharedProvisioningSession,
+    config_applier: Option<Arc<ConfigApplier>>,
     command_rx: Receiver<BleCommand>,
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
@@ -188,6 +194,7 @@ async fn run_server(
         provisioning_session,
         hostname.clone(),
         mac_str.clone(),
+        config_applier,
     )));
 
     // Bridge crossbeam Sender to a tokio mpsc that GATT closures can move into.

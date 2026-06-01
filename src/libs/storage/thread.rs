@@ -101,6 +101,14 @@ pub enum StorageMessage {
         dev_eui: String,
         reply: Sender<StorageResult<bool>>,
     },
+    /// Record a free-form audit log entry (fire-and-forget). Used by
+    /// config-applier paths that don't otherwise touch the database but
+    /// still need an EU-MDR audit trail (e.g. device label changes).
+    WriteAuditEvent {
+        operation: String,
+        table_name: Option<String>,
+        details: Option<String>,
+    },
 }
 
 /// Handle for sending messages to storage thread
@@ -331,6 +339,30 @@ impl StorageHandle {
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
                     "Failed to send enforce_sticker_retention: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Record an audit-log entry from outside the storage thread (e.g. the
+    /// config-applier path that updates `device_label`). Fire-and-forget;
+    /// failures show up only in the channel-error log line and never block
+    /// or fail the calling code path.
+    pub fn log_audit_event(
+        &self,
+        operation: String,
+        table_name: Option<String>,
+        details: Option<String>,
+    ) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::WriteAuditEvent {
+                operation,
+                table_name,
+                details,
+            })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send audit event: {}",
                     e
                 ))
             })
@@ -661,6 +693,34 @@ impl StorageThread {
                                 ))
                             });
                         let _ = reply.send(result);
+                    }
+
+                    StorageMessage::WriteAuditEvent { operation, table_name, details } => {
+                        // Fire-and-forget audit row. Used by config-applier
+                        // paths (e.g. device label changes) that don't
+                        // otherwise touch the database. record_count and
+                        // duration_ms aren't meaningful for these events.
+                        let result = match details.as_deref() {
+                            Some(d) => crate::libs::storage::audit::AuditLogger::log_operation_with_details(
+                                &conn,
+                                &operation,
+                                table_name.as_deref(),
+                                d,
+                            ),
+                            None => crate::libs::storage::audit::AuditLogger::log_operation(
+                                &conn,
+                                &operation,
+                                table_name.as_deref(),
+                                None,
+                                None,
+                            ),
+                        };
+                        if let Err(e) = result {
+                            eprintln!(
+                                "STORAGE THREAD: audit '{}' failed: {}",
+                                operation, e
+                            );
+                        }
                     }
 
                     StorageMessage::EnforceStickerRetention { retention_seconds } => {

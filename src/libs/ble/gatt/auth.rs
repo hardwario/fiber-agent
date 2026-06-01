@@ -41,8 +41,8 @@ pub fn auth_response(authenticated: bool) -> AuthResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::network::{new_shared_provisioning_session, ProvisioningSession};
-    use std::time::Duration;
+    use crate::libs::network::{new_shared_provisioning_session, ProvisioningSession, IDLE_TIMEOUT};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn shared_with(session: ProvisioningSession) -> SharedProvisioningSession {
         let s = new_shared_provisioning_session();
@@ -59,8 +59,7 @@ mod tests {
 
     #[test]
     fn correct_token_passes_against_live_session() {
-        let session = ProvisioningSession::new("AA:BB", "FIBER-T", Duration::from_secs(60))
-            .expect("session");
+        let session = ProvisioningSession::new("AA:BB", "FIBER-T").expect("session");
         let token = session.token().to_string();
         let shared = shared_with(session);
         assert!(verify_token(&token, &shared));
@@ -69,8 +68,7 @@ mod tests {
 
     #[test]
     fn wrong_token_fails() {
-        let session = ProvisioningSession::new("AA:BB", "FIBER-T", Duration::from_secs(60))
-            .expect("session");
+        let session = ProvisioningSession::new("AA:BB", "FIBER-T").expect("session");
         let shared = shared_with(session);
         assert!(!verify_token("000000", &shared));
         assert!(!verify_token("", &shared));
@@ -78,10 +76,15 @@ mod tests {
     }
 
     #[test]
-    fn expired_session_rejects_correct_token() {
-        let session = ProvisioningSession::new("AA:BB", "FIBER-T", Duration::from_secs(0))
-            .expect("session");
+    fn idle_expired_session_rejects_correct_token() {
+        // Backdate last_activity past IDLE_TIMEOUT so is_expired() trips.
+        let session = ProvisioningSession::new("AA:BB", "FIBER-T").expect("session");
         let token = session.token().to_string();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        session.set_last_activity_unix_for_test(now.saturating_sub(IDLE_TIMEOUT.as_secs() + 1));
         let shared = shared_with(session);
         assert!(!verify_token(&token, &shared));
     }
