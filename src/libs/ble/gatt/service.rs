@@ -64,13 +64,13 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
-                        let pin_attempt =
+                        let token_attempt =
                             String::from_utf8_lossy(&new_value).trim().to_string();
                         let state_guard = state.lock().await;
 
-                        if crate::libs::ble::gatt::auth::verify_pin(
-                            &pin_attempt,
-                            &state_guard.pin,
+                        if crate::libs::ble::gatt::auth::verify_token(
+                            &token_attempt,
+                            &state_guard.provisioning_session,
                         ) {
                             state_guard.authenticated.store(true, Ordering::SeqCst);
                             let _ = event_tx.try_send(super::BleEvent::AuthSuccess);

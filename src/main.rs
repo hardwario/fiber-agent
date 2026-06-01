@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicU8;
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router, new_shared_provisioning_session};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -192,11 +192,6 @@ fn main() -> io::Result<()> {
     let sensor_state = create_shared_sensor_state();
     eprintln!("[main] Sensor state initialized");
 
-    // Initialize QR code generator for Bluetooth/WiFi configuration
-    eprintln!("[main] Initializing QR code generator...");
-
-    let pin = config.ble.pin.clone();
-
     // Read MAC address directly from the BLE adapter via bluer
     let mac_address = match read_mac_from_bluer() {
         Ok(m) => {
@@ -222,17 +217,12 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let qr_generator = match QrCodeGenerator::new(mac_address, pin, hostname.clone()) {
-        Ok(gen) => {
-            eprintln!("[main] QR code generator initialized successfully");
-            eprintln!("[main] QR content: {}", gen.get_content());
-            Arc::new(gen)
-        }
-        Err(e) => {
-            eprintln!("[main] Failed to initialize QR code generator: {}", e);
-            return Err(io::Error::new(io::ErrorKind::Other, format!("QR code generation failed: {}", e)));
-        }
-    };
+    // Ephemeral BLE provisioning session — empty at boot, populated when
+    // the user holds ENTER to enter provisioning mode. Shared between the
+    // button monitor (writer), the display thread (reader, renders QR), and
+    // the BLE GATT server (reader, gates pairing).
+    let provisioning_session = new_shared_provisioning_session();
+    eprintln!("[main] Provisioning session slot created (empty)");
 
     // Create shared power status for power monitoring and display
     eprintln!("[main] Initializing shared power status...");
@@ -261,17 +251,27 @@ fn main() -> io::Result<()> {
     )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
-    // Set QR code generator in display state
+    // Attach the provisioning-session handle to the display state so the
+    // QR-config screen can pull the current session's QR each frame.
     {
         if let Ok(mut state) = _display_monitor.display_state.lock() {
-            state.set_qr_generator(qr_generator.clone());
-            eprintln!("[main] QR code generator attached to display state");
+            state.set_provisioning_session(provisioning_session.clone());
+            eprintln!("[main] Provisioning session attached to display state");
         }
     }
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None, None, sensor_state.clone())?;
+    let _button_monitor = ButtonMonitor::new(
+        _display_monitor.display_state.clone(),
+        None,
+        None,
+        None,
+        sensor_state.clone(),
+        provisioning_session.clone(),
+        mac_address.clone(),
+        hostname.clone(),
+    )?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -447,7 +447,7 @@ fn main() -> io::Result<()> {
     // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
     let (_ble_monitor, ble_handle) = if config.ble.enabled {
         eprintln!("[main] Starting BLE monitor (in-app GATT server)...");
-        match BleMonitor::new(config.ble.clone()) {
+        match BleMonitor::new(config.ble.clone(), provisioning_session.clone()) {
             Ok(monitor) => {
                 eprintln!("[main] BLE monitor started");
                 let h = monitor.handle();
@@ -482,6 +482,9 @@ fn main() -> io::Result<()> {
         Some(buzzer_priority_manager.clone()),
         _pairing_monitor.as_ref().map(|p| p.state()),
         sensor_state.clone(),
+        provisioning_session.clone(),
+        mac_address.clone(),
+        hostname.clone(),
     )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 

@@ -642,6 +642,49 @@ pub fn render_qr_code_screen(
     display.flush()
 }
 
+/// Render a placeholder when the QR config screen is requested but no
+/// provisioning session is active (e.g., user just opened it before the
+/// session was minted, or the 5-minute expiry has passed). Visually distinct
+/// from the live QR so users know not to scan stale photos.
+pub fn render_qr_session_ended_screen(display: &mut St7920) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment(
+        "Scan WiFi Config",
+        Point::new(64, 9),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    Text::with_alignment(
+        "Session ended",
+        Point::new(64, 32),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+    Text::with_alignment(
+        "Hold ENTER again",
+        Point::new(64, 48),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+
+    display.flush()
+}
+
 /// Render the system information screen with pagination (3 pages)
 pub fn render_system_info(
     display: &mut St7920,

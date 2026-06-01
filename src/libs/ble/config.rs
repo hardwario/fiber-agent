@@ -1,4 +1,9 @@
 //! BLE configuration loaded from the `[ble]` section of fiber.config.yaml.
+//!
+//! Note: the legacy static `pin` field was removed when BLE pairing switched
+//! to ephemeral provisioning tokens. Yamls that still carry `pin: "..."` are
+//! tolerated (the field is silently ignored) — the value no longer has any
+//! effect.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,10 +15,6 @@ pub struct BleConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// BLE pairing PIN. Edit this in fiber.config.yaml to rotate.
-    #[serde(default = "default_pin")]
-    pub pin: String,
-
     /// Whether the Terminal-over-BLE characteristics (FB05/FB06) are exposed.
     /// Operators may set this to false in stricter deployments.
     #[serde(default = "default_enable_terminal")]
@@ -24,14 +25,12 @@ pub struct BleConfig {
     pub advertising_name: Option<String>,
 }
 
-fn default_pin() -> String { "123456".to_string() }
 fn default_enable_terminal() -> bool { true }
 
 impl Default for BleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            pin: default_pin(),
             enable_terminal: default_enable_terminal(),
             advertising_name: None,
         }
@@ -55,7 +54,8 @@ mod tests {
     }
 
     #[test]
-    fn full_yaml_round_trip() {
+    fn legacy_pin_field_is_silently_ignored() {
+        // Backwards compat: old yamls still carry pin; we accept and discard.
         let yaml = r#"
 enabled: true
 pin: "999999"
@@ -64,7 +64,6 @@ advertising_name: "MY-DEVICE"
 "#;
         let cfg: BleConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.enabled);
-        assert_eq!(cfg.pin, "999999");
         assert!(!cfg.enable_terminal);
         assert_eq!(cfg.advertising_name, Some("MY-DEVICE".to_string()));
     }
@@ -73,7 +72,6 @@ advertising_name: "MY-DEVICE"
     fn default_disables_ble() {
         let cfg = BleConfig::default();
         assert!(!cfg.enabled);
-        assert_eq!(cfg.pin, "123456");
         assert!(cfg.enable_terminal);
     }
 }

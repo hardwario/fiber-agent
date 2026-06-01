@@ -14,7 +14,7 @@ use rppal::gpio::Gpio;
 
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
-use crate::libs::network::{QrCodeGenerator, NetworkStatus};
+use crate::libs::network::{NetworkStatus, SharedProvisioningSession};
 use crate::libs::lorawan::SharedLoRaWANState;
 use crate::libs::buzzer::BuzzerPriorityManager;
 
@@ -131,8 +131,11 @@ pub struct DisplayState {
     pub current_screen: Screen,
     /// Whether the display should be updated
     pub should_update: bool,
-    /// QR code generator instance
-    pub qr_generator: Option<Arc<QrCodeGenerator>>,
+    /// Live provisioning session handle. None until [`set_provisioning_session`]
+    /// is called from main. The QR-config screen pulls the current session's
+    /// `QrCodeGenerator` on every frame, so rotating the session updates the
+    /// rendered QR without any further plumbing.
+    pub provisioning_session: Option<SharedProvisioningSession>,
     /// Current network connection status
     pub network_status: NetworkStatus,
     /// Whether a LoRaWAN gateway is present (set from main after detection)
@@ -152,7 +155,7 @@ impl DisplayState {
         Self {
             current_screen: Screen::SensorOverview { page: 0, selected_sensor: None },
             should_update: true,
-            qr_generator: None,
+            provisioning_session: None,
             network_status: NetworkStatus::disconnected(),
             lorawan_gateway_present: false,
             lorawan_state: None,
@@ -211,9 +214,11 @@ impl DisplayState {
             .unwrap_or_default()
     }
 
-    /// Set the QR code generator
-    pub fn set_qr_generator(&mut self, generator: Arc<QrCodeGenerator>) {
-        self.qr_generator = Some(generator);
+    /// Attach the shared provisioning-session handle. The QR-config screen
+    /// reads the inner [`crate::libs::network::ProvisioningSession`] on each
+    /// frame and renders its precomputed QR.
+    pub fn set_provisioning_session(&mut self, session: SharedProvisioningSession) {
+        self.provisioning_session = Some(session);
     }
 
     /// Navigate to next page (works for sensor overview and system info when not in selection mode)

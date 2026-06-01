@@ -7,6 +7,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
+use crate::libs::network::{
+    ProvisioningSession, SharedProvisioningSession, DEFAULT_SESSION_DURATION,
+};
 use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
 use crate::libs::buzzer::BuzzerPriorityManager;
 use super::SharedDisplayStateHandle;
@@ -52,13 +55,26 @@ impl ButtonMonitor {
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
         sensor_state: crate::libs::sensors::SharedSensorStateHandle,
+        provisioning_session: SharedProvisioningSession,
+        mac_address: String,
+        hostname: String,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let sensor_state_clone = sensor_state.clone();
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority, pairing_state, sensor_state_clone);
+            Self::button_loop(
+                shutdown_flag_clone,
+                display_state,
+                pairing_handle,
+                buzzer_priority,
+                pairing_state,
+                sensor_state_clone,
+                provisioning_session,
+                mac_address,
+                hostname,
+            );
         });
 
         Ok(Self {
@@ -75,6 +91,9 @@ impl ButtonMonitor {
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
         sensor_state: crate::libs::sensors::SharedSensorStateHandle,
+        provisioning_session: SharedProvisioningSession,
+        mac_address: String,
+        hostname: String,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -339,6 +358,15 @@ impl ButtonMonitor {
                                 eprintln!("[ButtonMonitor] Countdown restarted");
                             }
                             ButtonMonitorState::ShowingQr => {
+                                // End the provisioning session before tearing
+                                // down BLE — invalidates the token first so a
+                                // racing pairing attempt fails closed.
+                                if let Ok(mut slot) = provisioning_session.write() {
+                                    if slot.is_some() {
+                                        eprintln!("[ButtonMonitor] Provisioning session closed by user");
+                                    }
+                                    *slot = None;
+                                }
                                 // Stop BLE advertising
                                 if let Err(e) = crate::libs::ble::stop_ble_advertising() {
                                     eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
@@ -480,6 +508,31 @@ impl ButtonMonitor {
             // Check countdown completion for ENTER button
             if state == ButtonMonitorState::CountdownActive {
                 if countdown_start.elapsed() >= COUNTDOWN_DURATION {
+                    // Mint a fresh ephemeral provisioning session BEFORE
+                    // starting BLE advertising — the GATT auth path reads
+                    // this on every pairing attempt, so it must be live by
+                    // the time the phone connects.
+                    match ProvisioningSession::new(
+                        &mac_address,
+                        &hostname,
+                        DEFAULT_SESSION_DURATION,
+                    ) {
+                        Ok(session) => {
+                            if let Ok(mut slot) = provisioning_session.write() {
+                                eprintln!(
+                                    "[ButtonMonitor] Provisioning session opened (token={}, exp={})",
+                                    session.token(), session.expires_at_unix(),
+                                );
+                                *slot = Some(session);
+                            } else {
+                                eprintln!("[ButtonMonitor] Failed to lock provisioning session for write");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[ButtonMonitor] Failed to mint provisioning session: {}", e);
+                        }
+                    }
+
                     // Start BLE advertising
                     if let Err(e) = crate::libs::ble::start_ble_advertising() {
                         eprintln!("[ButtonMonitor] Failed to start BLE advertising: {}", e);
@@ -490,6 +543,32 @@ impl ButtonMonitor {
                         eprintln!("[ButtonMonitor] Countdown complete - transitioning to QR code screen");
                     }
                     state = ButtonMonitorState::ShowingQr;
+                }
+            }
+
+            // Expire the provisioning session once its 5-minute TTL elapses:
+            // clear the shared slot, drop BLE advertising, and bounce the
+            // user back to the sensor overview. The display will fall through
+            // to render_qr_session_ended_screen for one frame if the user is
+            // still on the QR screen between the expiry and the screen swap.
+            if state == ButtonMonitorState::ShowingQr {
+                let expired = provisioning_session
+                    .read()
+                    .ok()
+                    .map(|g| g.as_ref().map(|s| s.is_expired()).unwrap_or(true))
+                    .unwrap_or(false);
+                if expired {
+                    eprintln!("[ButtonMonitor] Provisioning session expired - tearing down");
+                    if let Ok(mut slot) = provisioning_session.write() {
+                        *slot = None;
+                    }
+                    if let Err(e) = crate::libs::ble::stop_ble_advertising() {
+                        eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
+                    }
+                    if let Ok(mut display_state_lock) = display_state.lock() {
+                        display_state_lock.show_sensor_overview();
+                    }
+                    state = ButtonMonitorState::Idle;
                 }
             }
 

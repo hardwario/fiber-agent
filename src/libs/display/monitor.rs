@@ -16,7 +16,7 @@ use crate::libs::lorawan::LoRaWANSensorState;
 
 use super::{SharedDisplayStateHandle, Screen};
 use super::screens::{
-    render_sensor_overview, render_qr_code_screen, render_system_info,
+    render_sensor_overview, render_qr_code_screen, render_qr_session_ended_screen, render_system_info,
     render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
     render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
 };
@@ -90,7 +90,15 @@ pub fn display_loop(
                     // Update network status in display state
                     state.network_status = network_status.clone();
                     let tp = state.total_pages();
-                    (state.current_screen.clone(), state.qr_generator.clone(), state.lorawan_gateway_present, tp)
+                    // Pull the active QR generator out of the live provisioning
+                    // session (if any). None ⇒ either prov mode not entered or
+                    // session ended → QR screen will fall through to a notice.
+                    let qr = state.provisioning_session.as_ref().and_then(|s| {
+                        s.read()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
+                    });
+                    (state.current_screen.clone(), qr, state.lorawan_gateway_present, tp)
                 } else {
                     (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2)
                 }
@@ -190,13 +198,16 @@ pub fn display_loop(
                     }
                 }
                 Screen::QrCodeConfig => {
-                    // Render QR code configuration screen
+                    // Render QR code configuration screen. With ephemeral
+                    // provisioning sessions, the QR is only available while
+                    // a session is active; otherwise show a session-ended
+                    // notice so the user knows the QR is no longer valid.
                     if let Some(qr_gen) = qr_generator {
                         if let Err(e) = render_qr_code_screen(&mut display, &led_snapshot, &qr_gen) {
                             eprintln!("[DisplayMonitor] Error rendering QR code display: {}", e);
                         }
-                    } else {
-                        eprintln!("[DisplayMonitor] Warning: QR generator not initialized");
+                    } else if let Err(e) = render_qr_session_ended_screen(&mut display) {
+                        eprintln!("[DisplayMonitor] Error rendering session-ended screen: {}", e);
                     }
                 }
                 Screen::SystemInfo { page } => {

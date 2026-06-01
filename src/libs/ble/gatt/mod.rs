@@ -22,6 +22,7 @@ use std::time::Duration;
 use crossbeam::channel::{self, Receiver, Sender};
 
 use super::config::BleConfig;
+use crate::libs::network::SharedProvisioningSession;
 
 #[derive(Debug, Clone)]
 pub enum BleCommand {
@@ -71,7 +72,10 @@ pub struct BleMonitor {
 }
 
 impl BleMonitor {
-    pub fn new(config: BleConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        config: BleConfig,
+        provisioning_session: SharedProvisioningSession,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
 
@@ -81,7 +85,13 @@ impl BleMonitor {
         let thread_handle = thread::Builder::new()
             .name("ble-monitor".to_string())
             .spawn(move || {
-                Self::thread_main(config, command_rx, event_tx_xbeam, shutdown_flag_clone);
+                Self::thread_main(
+                    config,
+                    provisioning_session,
+                    command_rx,
+                    event_tx_xbeam,
+                    shutdown_flag_clone,
+                );
             })?;
 
         Ok(Self {
@@ -100,6 +110,7 @@ impl BleMonitor {
 
     fn thread_main(
         config: BleConfig,
+        provisioning_session: SharedProvisioningSession,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -118,7 +129,15 @@ impl BleMonitor {
         };
 
         runtime.block_on(async move {
-            if let Err(e) = run_server(config, command_rx, event_tx, shutdown_flag).await {
+            if let Err(e) = run_server(
+                config,
+                provisioning_session,
+                command_rx,
+                event_tx,
+                shutdown_flag,
+            )
+            .await
+            {
                 eprintln!("[BleMonitor] FATAL: GATT server returned error: {:?}", e);
             }
         });
@@ -144,6 +163,7 @@ impl Drop for BleMonitor {
 /// Async GATT server entry point — analogue of run_server() in ble-fiber.
 async fn run_server(
     config: BleConfig,
+    provisioning_session: SharedProvisioningSession,
     command_rx: Receiver<BleCommand>,
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
@@ -160,13 +180,12 @@ async fn run_server(
     let mac_str = mac.to_string();
 
     let hostname = state::get_hostname();
-    let pin = config.pin.clone();
 
     let advertising_name = config.advertising_name.clone().unwrap_or_else(|| hostname.clone());
     adapter.set_alias(advertising_name.clone()).await?;
 
     let state = Arc::new(Mutex::new(state::ServiceState::new(
-        pin,
+        provisioning_session,
         hostname.clone(),
         mac_str.clone(),
     )));
