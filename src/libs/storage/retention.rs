@@ -207,6 +207,51 @@ impl RetentionPolicy {
         record_age_seconds > self.min_age_seconds
     }
 
+    /// Sweep `sensor_readings` — delete raw rows older than
+    /// `retention_seconds` whose minute already exists in
+    /// `sensor_readings_minute`. The aggregator-presence guard means we
+    /// never drop raw data before it has been folded into the long-term
+    /// aggregate; if the aggregator lags, retention slides with it.
+    ///
+    /// Returns the number of rows deleted.
+    pub fn sweep_raw_sensor_readings(
+        conn: &mut Connection,
+        retention_seconds: i64,
+    ) -> StorageResult<i64> {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - retention_seconds;
+
+        let purged = conn
+            .execute(
+                "DELETE FROM sensor_readings
+                 WHERE timestamp < ?1
+                   AND EXISTS (
+                       SELECT 1 FROM sensor_readings_minute m
+                       WHERE m.minute_ts = (sensor_readings.timestamp / 60) * 60
+                         AND m.sensor_line = sensor_readings.sensor_line
+                   )",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| StorageError::DeleteError(
+                format!("sweep_raw_sensor_readings: {}", e),
+            ))? as i64;
+
+        if purged > 0 {
+            let _ = AuditLogger::log_operation(
+                conn,
+                "DELETE",
+                Some("sensor_readings"),
+                Some(purged),
+                None,
+            );
+        }
+
+        Ok(purged)
+    }
+
     /// Sweep the `sticker_readings` table — delete rows older than
     /// `retention_seconds` (by `ts`). Reports how many of the deleted rows
     /// had `id > min(last_exported_id across all destinations for the
@@ -377,5 +422,62 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn raw_sweep_only_deletes_aggregated_rows() {
+        use crate::libs::alarms::AlarmState;
+        use crate::libs::storage::aggregator::aggregate_closed_minutes;
+        use crate::libs::storage::models::SensorReading;
+        use crate::libs::storage::writer::StorageWriter;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let day = 86400i64;
+
+        // Two readings 35 days ago: should be aggregatable + sweepable.
+        for offset in [0, 30] {
+            let r = SensorReading::new(
+                now - 35 * day + offset,
+                0,
+                20.0,
+                true,
+                AlarmState::Normal,
+            );
+            StorageWriter::write_sensor_reading(&conn, &r, None).unwrap();
+        }
+        // One reading 35 days ago for a different sensor that we WON'T aggregate.
+        // It must survive the sweep because no aggregate covers it.
+        let r = SensorReading::new(now - 35 * day, 1, 21.0, true, AlarmState::Normal);
+        StorageWriter::write_sensor_reading(&conn, &r, None).unwrap();
+
+        // Aggregate only the sensor_line=0 readings by deleting any sensor_line=1
+        // rows from the aggregate after running the aggregator.
+        aggregate_closed_minutes(&mut conn, now, None).unwrap();
+        conn.execute(
+            "DELETE FROM sensor_readings_minute WHERE sensor_line = 1",
+            [],
+        )
+        .unwrap();
+
+        let purged =
+            RetentionPolicy::sweep_raw_sensor_readings(&mut conn, 30 * day).unwrap();
+        assert_eq!(purged, 2, "only the aggregated sensor_line=0 rows should drop");
+
+        let surviving_line_1: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sensor_readings WHERE sensor_line = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            surviving_line_1, 1,
+            "unaggregated raw row must not be deleted even if past retention"
+        );
     }
 }

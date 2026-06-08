@@ -337,6 +337,29 @@ pub struct StickerReadingRow {
     pub created_at: i64,
 }
 
+/// Row from the `sensor_readings_minute` table — per-minute aggregate of
+/// raw `sensor_readings` for long-term retention (3 years on a budget that
+/// the raw table cannot fit). Populated by the aggregator and read for
+/// history queries that span more than ~30 days.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinuteAggregateRow {
+    /// Start of the minute (UNIX seconds), aligned: `floor(ts / 60) * 60`.
+    pub minute_ts: i64,
+    pub sensor_line: u8,
+    pub min_c: f64,
+    pub avg_c: f64,
+    pub max_c: f64,
+    pub sample_count: i64,
+    pub disconnect_count: i64,
+    /// Worst alarm state observed in the minute (CRITICAL > DISCONNECTED >
+    /// WARNING > RECONNECTING > NEVER_CONNECTED > NORMAL).
+    pub worst_alarm: String,
+    pub created_at: i64,
+    /// HMAC-SHA256 over the row's canonical fields, or `None` when no
+    /// HMAC secret was configured at aggregation time.
+    pub data_hmac: Option<Vec<u8>>,
+}
+
 /// Row from the `export_cursor` table — tracks per (broker_id, stream) the
 /// highest row id that has been successfully published to the destination.
 #[derive(Debug, Clone, Serialize, Deserialize)]

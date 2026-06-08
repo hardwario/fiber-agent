@@ -4,7 +4,9 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
-use crate::libs::storage::models::{AlarmEvent, SensorReading, StickerReadingRow, StorageStats};
+use crate::libs::storage::models::{
+    AlarmEvent, MinuteAggregateRow, SensorReading, StickerReadingRow, StorageStats,
+};
 
 /// Reader for querying sensor data
 pub struct StorageReader;
@@ -83,6 +85,57 @@ impl StorageReader {
             .map_err(|e| StorageError::QueryError(format!("Failed to collect results: {}", e)))?;
 
         Ok(readings)
+    }
+
+    /// Fetch per-minute aggregates in `[from_ts, to_ts]` for a sensor line,
+    /// in chronological order. Use this for history windows longer than the
+    /// raw-readings retention (~30 days); raw `sensor_readings` will be
+    /// empty for that range.
+    pub fn fetch_minute_aggregates(
+        conn: &Connection,
+        sensor_line: u8,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> StorageResult<Vec<MinuteAggregateRow>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT minute_ts, sensor_line, min_c, avg_c, max_c,
+                        sample_count, disconnect_count, worst_alarm,
+                        created_at, data_hmac
+                 FROM sensor_readings_minute
+                 WHERE sensor_line = ?1 AND minute_ts >= ?2 AND minute_ts <= ?3
+                 ORDER BY minute_ts ASC",
+            )
+            .map_err(|e| StorageError::QueryError(
+                format!("Failed to prepare aggregate query: {}", e),
+            ))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![sensor_line, from_ts, to_ts], |row| {
+                Ok(MinuteAggregateRow {
+                    minute_ts: row.get(0)?,
+                    sensor_line: row.get::<_, i32>(1)? as u8,
+                    min_c: row.get(2)?,
+                    avg_c: row.get(3)?,
+                    max_c: row.get(4)?,
+                    sample_count: row.get(5)?,
+                    disconnect_count: row.get(6)?,
+                    worst_alarm: row.get(7)?,
+                    created_at: row.get(8)?,
+                    data_hmac: row.get(9)?,
+                })
+            })
+            .map_err(|e| StorageError::QueryError(
+                format!("Failed to query aggregates: {}", e),
+            ))?;
+
+        let out: Vec<MinuteAggregateRow> = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(
+                format!("Failed to collect aggregates: {}", e),
+            ))?;
+
+        Ok(out)
     }
 
     /// Get overall storage statistics

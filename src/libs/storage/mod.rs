@@ -34,6 +34,7 @@
 //! thread.join()?;
 //! ```
 
+pub mod aggregator;
 pub mod audit;
 pub mod db;
 pub mod disk;

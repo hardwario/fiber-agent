@@ -175,6 +175,36 @@ pub fn compute_reading_hmac(
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// Compute HMAC-SHA256 for a minute-aggregate row (raw 32B for BLOB storage).
+///
+/// Aggregates outlive raw readings (3y vs 30d retention) so they need their
+/// own tamper-evidence: after the raw rows are pruned the aggregate is the
+/// only remaining record of what the sensor saw that minute.
+pub fn compute_minute_aggregate_hmac(
+    secret: &[u8],
+    minute_ts: i64,
+    sensor_line: u8,
+    min_c: f64,
+    avg_c: f64,
+    max_c: f64,
+    sample_count: i64,
+    disconnect_count: i64,
+    worst_alarm: &str,
+) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(secret)
+        .expect("HMAC accepts any key length");
+    mac.update(&minute_ts.to_le_bytes());
+    mac.update(&[sensor_line]);
+    mac.update(&min_c.to_le_bytes());
+    mac.update(&avg_c.to_le_bytes());
+    mac.update(&max_c.to_le_bytes());
+    mac.update(&sample_count.to_le_bytes());
+    mac.update(&disconnect_count.to_le_bytes());
+    mac.update(&(worst_alarm.len() as u64).to_le_bytes());
+    mac.update(worst_alarm.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
 /// Verify HMAC of a sensor reading using constant-time comparison
 pub fn verify_reading_hmac(
     secret: &[u8],

@@ -497,6 +497,19 @@ impl StorageThread {
         let mut reconnect_backoff = RECONNECT_BACKOFF_INITIAL;
         let mut next_reconnect_attempt: Option<std::time::Instant> = None;
 
+        // Per-minute aggregator: roll closed minutes of raw sensor_readings
+        // into sensor_readings_minute so the raw table can be retention-
+        // trimmed to ~30 days while still answering multi-year queries.
+        let aggregator_interval = Duration::from_secs(60);
+        let mut last_aggregator_run = std::time::Instant::now();
+
+        // Raw retention sweep: every hour, drop raw rows older than 30 days
+        // whose minute has already been folded into the aggregate. Without
+        // this the raw table grows ~90MB/day and fills /data in ~5 weeks.
+        const RAW_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
+        let raw_retention_interval = Duration::from_secs(3600);
+        let mut last_raw_retention_run = std::time::Instant::now();
+
         eprintln!(
             "STORAGE THREAD: Started, database: {}, max size: {}GB",
             db_path, max_size_gb
@@ -526,6 +539,53 @@ impl StorageThread {
                         );
                         audit_summary_count = 0;
                         last_audit_summary = std::time::Instant::now();
+                    }
+                    if last_aggregator_run.elapsed() >= aggregator_interval
+                        && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
+                    {
+                        let now_ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        match crate::libs::storage::aggregator::aggregate_closed_minutes(
+                            &mut conn,
+                            now_ts,
+                            hmac_secret,
+                        ) {
+                            Ok(stats) if stats.rows_inserted > 0 => {
+                                eprintln!(
+                                    "STORAGE THREAD: aggregator rolled {} minute(s) into sensor_readings_minute",
+                                    stats.rows_inserted
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: aggregator failed: {}", e);
+                                consecutive_write_failures =
+                                    consecutive_write_failures.saturating_add(1);
+                            }
+                        }
+                        last_aggregator_run = std::time::Instant::now();
+                    }
+                    if last_raw_retention_run.elapsed() >= raw_retention_interval
+                        && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
+                    {
+                        match RetentionPolicy::sweep_raw_sensor_readings(
+                            &mut conn,
+                            RAW_RETENTION_SECONDS,
+                        ) {
+                            Ok(purged) if purged > 0 => {
+                                eprintln!(
+                                    "STORAGE THREAD: raw retention swept {} sensor_readings rows older than {} days",
+                                    purged, RAW_RETENTION_SECONDS / 86400
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: raw retention sweep failed: {}", e);
+                            }
+                        }
+                        last_raw_retention_run = std::time::Instant::now();
                     }
                     if consecutive_write_failures >= RECONNECT_FAILURE_THRESHOLD
                         && next_reconnect_attempt

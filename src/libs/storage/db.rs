@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::libs::storage::error::{StorageError, StorageResult};
 
 /// Current schema version for migrations
-pub const CURRENT_SCHEMA_VERSION: i32 = 3;
+pub const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 /// SQLite database manager
 pub struct Database {
@@ -304,6 +304,9 @@ impl Database {
                 if v < 3 {
                     self.migrate_v2_to_v3(&conn)?;
                 }
+                if v < 4 {
+                    self.migrate_v3_to_v4(&conn)?;
+                }
                 Ok(())
             }
             Some(v) if v > CURRENT_SCHEMA_VERSION => {
@@ -323,8 +326,9 @@ impl Database {
                     .unwrap_or_default()
                     .as_secs() as i64;
 
-                // Create v3 tables on fresh initialization so DB starts at current version
+                // Create v3+v4 tables on fresh initialization so DB starts at current version
                 self.create_v3_tables(&conn)?;
+                self.create_v4_tables(&conn)?;
 
                 conn.execute(
                     "INSERT INTO schema_version (version, applied_at, description)
@@ -332,7 +336,7 @@ impl Database {
                     rusqlite::params![
                         CURRENT_SCHEMA_VERSION,
                         now,
-                        "Initial schema v3 (save-and-feed + tamper-evidence)"
+                        "Initial schema v4 (save-and-feed + tamper-evidence + minute aggregates)"
                     ],
                 )
                 .map_err(|e| StorageError::DatabaseInitError(
@@ -462,6 +466,69 @@ impl Database {
         AuditLogger::log_schema_change(conn, "Migration v2\u{2192}v3: save-and-feed tables")?;
 
         eprintln!("MIGRATION: Schema upgraded from v2 to v3 (save-and-feed)");
+        Ok(())
+    }
+
+    /// Create v4 tables (sensor_readings_minute).
+    ///
+    /// Holds per-minute aggregates (min/avg/max + sample/disconnect counts +
+    /// worst alarm state) so the raw `sensor_readings` table can be retained
+    /// for ~30 days while history queries spanning months/years are answered
+    /// from the aggregate table instead. WITHOUT ROWID + composite PK keeps
+    /// the row physical size small.
+    fn create_v4_tables(&self, conn: &Connection) -> StorageResult<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sensor_readings_minute (
+                 minute_ts        INTEGER NOT NULL,
+                 sensor_line      INTEGER NOT NULL,
+                 min_c            REAL    NOT NULL,
+                 avg_c            REAL    NOT NULL,
+                 max_c            REAL    NOT NULL,
+                 sample_count     INTEGER NOT NULL,
+                 disconnect_count INTEGER NOT NULL DEFAULT 0,
+                 worst_alarm      TEXT    NOT NULL,
+                 created_at       INTEGER NOT NULL,
+                 data_hmac        BLOB,
+                 PRIMARY KEY (minute_ts, sensor_line)
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS idx_srm_minute_ts
+                 ON sensor_readings_minute(minute_ts DESC);
+             CREATE INDEX IF NOT EXISTS idx_srm_line_minute
+                 ON sensor_readings_minute(sensor_line, minute_ts DESC);"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to create v4 tables: {}", e),
+        ))?;
+        Ok(())
+    }
+
+    /// Migrate database schema from v3 to v4
+    /// Adds sensor_readings_minute for per-minute aggregates.
+    fn migrate_v3_to_v4(&self, conn: &Connection) -> StorageResult<()> {
+        use crate::libs::storage::audit::AuditLogger;
+
+        self.create_v4_tables(conn)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+            rusqlite::params![
+                4,
+                now,
+                "Minute-aggregate table for long-term retention"
+            ],
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to record v4 migration: {}", e),
+        ))?;
+
+        AuditLogger::log_schema_change(conn, "Migration v3\u{2192}v4: sensor_readings_minute")?;
+
+        eprintln!("MIGRATION: Schema upgraded from v3 to v4 (minute aggregates)");
         Ok(())
     }
 
@@ -604,6 +671,7 @@ mod tests {
         assert!(tables.contains(&"sticker_readings".to_string()));
         assert!(tables.contains(&"sticker_provisioning_epoch".to_string()));
         assert!(tables.contains(&"export_cursor".to_string()));
+        assert!(tables.contains(&"sensor_readings_minute".to_string()));
 
         let version: i32 = conn
             .query_row(
@@ -612,6 +680,6 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 }
