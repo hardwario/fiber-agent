@@ -99,8 +99,69 @@ impl MqttSubscriber {
                 }
             }
             "config_confirm" => self.parse_config_confirm(&json),
+            "history_request" => self.parse_history_request(&json),
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
+    }
+
+    /// Parse `history_request` command: viewer asks the device to replay a
+    /// minute-aggregate window on `export/probe_1m_replay/<request_id>/...`.
+    fn parse_history_request(&self, json: &Value) -> Result<MqttCommand, String> {
+        let request_id = json
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'request_id' field".to_string())?;
+        if request_id.is_empty() || request_id.len() > 64 {
+            return Err("request_id must be 1..=64 chars".to_string());
+        }
+
+        let from_ts = json
+            .get("from_ts")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "Missing or invalid 'from_ts' field".to_string())?;
+        let to_ts = json
+            .get("to_ts")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "Missing or invalid 'to_ts' field".to_string())?;
+        if from_ts >= to_ts {
+            return Err(format!(
+                "Invalid range: from_ts ({}) must be < to_ts ({})",
+                from_ts, to_ts,
+            ));
+        }
+        // Reject ranges that would unleash an unbounded amount of MQTT
+        // traffic. 3 years * 366d * 86400s = ~95M seconds is the natural
+        // ceiling (matches the firmware-side retention).
+        const MAX_RANGE_SECS: i64 = 3 * 366 * 86400;
+        if to_ts - from_ts > MAX_RANGE_SECS {
+            return Err(format!(
+                "Range too large: {}s exceeds {}s",
+                to_ts - from_ts, MAX_RANGE_SECS,
+            ));
+        }
+
+        let sensor_line = match json.get("sensor_line") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let line = v
+                    .as_u64()
+                    .ok_or_else(|| "Invalid 'sensor_line' field".to_string())?;
+                if line > 7 {
+                    return Err(format!(
+                        "Invalid sensor_line: {} (must be 0..=7 or null/omitted)", line
+                    ));
+                }
+                Some(line as u8)
+            }
+        };
+
+        Ok(MqttCommand::HistoryRequest {
+            request_id: request_id.to_string(),
+            sensor_line,
+            from_ts,
+            to_ts,
+        })
     }
 
     /// Parse set_threshold command
@@ -688,5 +749,87 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid line number"));
+    }
+
+    #[test]
+    fn test_parse_history_request_with_line() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{
+            "command": "history_request",
+            "request_id": "abc-123",
+            "sensor_line": 3,
+            "from_ts": 1000,
+            "to_ts": 2000
+        }"#;
+        let cmd = subscriber.parse_command("test/commands", payload).unwrap();
+        match cmd {
+            MqttCommand::HistoryRequest { request_id, sensor_line, from_ts, to_ts } => {
+                assert_eq!(request_id, "abc-123");
+                assert_eq!(sensor_line, Some(3));
+                assert_eq!(from_ts, 1000);
+                assert_eq!(to_ts, 2000);
+            }
+            _ => panic!("expected HistoryRequest"),
+        }
+    }
+
+    #[test]
+    fn test_parse_history_request_without_line_means_all_sensors() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        // sensor_line omitted entirely
+        let p1 = br#"{"command": "history_request", "request_id": "r", "from_ts": 0, "to_ts": 60}"#;
+        let cmd = subscriber.parse_command("t", p1).unwrap();
+        match cmd {
+            MqttCommand::HistoryRequest { sensor_line, .. } => assert_eq!(sensor_line, None),
+            _ => panic!("expected HistoryRequest"),
+        }
+        // sensor_line set to null
+        let p2 = br#"{"command": "history_request", "request_id": "r2", "sensor_line": null, "from_ts": 0, "to_ts": 60}"#;
+        let cmd = subscriber.parse_command("t", p2).unwrap();
+        match cmd {
+            MqttCommand::HistoryRequest { sensor_line, .. } => assert_eq!(sensor_line, None),
+            _ => panic!("expected HistoryRequest"),
+        }
+    }
+
+    #[test]
+    fn test_history_request_rejects_inverted_range() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{
+            "command": "history_request",
+            "request_id": "x",
+            "from_ts": 2000,
+            "to_ts": 1000
+        }"#;
+        let err = subscriber.parse_command("t", payload).unwrap_err();
+        assert!(err.contains("must be <"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn test_history_request_rejects_too_large_range() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        // 10 years in seconds — far above the 3yr ceiling.
+        let payload = br#"{
+            "command": "history_request",
+            "request_id": "x",
+            "from_ts": 0,
+            "to_ts": 315576000
+        }"#;
+        let err = subscriber.parse_command("t", payload).unwrap_err();
+        assert!(err.contains("Range too large"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn test_history_request_rejects_invalid_line() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{
+            "command": "history_request",
+            "request_id": "x",
+            "sensor_line": 99,
+            "from_ts": 0,
+            "to_ts": 60
+        }"#;
+        let err = subscriber.parse_command("t", payload).unwrap_err();
+        assert!(err.contains("Invalid sensor_line"), "unexpected error: {}", err);
     }
 }

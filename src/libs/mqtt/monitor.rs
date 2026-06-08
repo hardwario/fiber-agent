@@ -1357,6 +1357,59 @@ impl MqttMonitor {
                                                     }
                                                 }
 
+                                                MqttCommand::HistoryRequest { request_id, sensor_line, from_ts, to_ts } => {
+                                                    // Out-of-band replay: spawn a task that pages
+                                                    // through sensor_readings_minute and publishes
+                                                    // each row on export/probe_1m_replay/... — the
+                                                    // natural drain cursor is NOT touched.
+                                                    match crate::libs::config::Config::load_default() {
+                                                        Ok(main_config) => {
+                                                            let client_for_replay = client.clone();
+                                                            let topics_for_replay = topics.clone();
+                                                            let db_path = main_config.storage.db_path.clone();
+                                                            let max_size_gb = main_config.storage.max_size_gb;
+                                                            eprintln!(
+                                                                "[MQTT Monitor] history_request {} [{}, {}] line={:?}",
+                                                                request_id, from_ts, to_ts, sensor_line,
+                                                            );
+                                                            tokio::spawn(async move {
+                                                                let outcome = crate::libs::mqtt_export::replay::replay_history(
+                                                                    client_for_replay,
+                                                                    topics_for_replay,
+                                                                    db_path,
+                                                                    max_size_gb,
+                                                                    request_id.clone(),
+                                                                    sensor_line,
+                                                                    from_ts,
+                                                                    to_ts,
+                                                                )
+                                                                .await;
+                                                                if outcome.status == "complete" {
+                                                                    eprintln!(
+                                                                        "[MQTT Monitor] history_request {} done: {} rows",
+                                                                        request_id, outcome.rows_sent,
+                                                                    );
+                                                                } else {
+                                                                    eprintln!(
+                                                                        "[MQTT Monitor] history_request {} {} after {} rows: {:?}",
+                                                                        request_id, outcome.status, outcome.rows_sent, outcome.error,
+                                                                    );
+                                                                }
+                                                            });
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("[MQTT Monitor] history_request: failed to load main config: {}", e);
+                                                            if let Err(publish_err) = publisher.publish_error(
+                                                                "history_request",
+                                                                "config_load_error",
+                                                                &format!("Failed to load configuration: {}", e),
+                                                            ).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 _ => {
                                                     // Other commands - TODO: route to appropriate handlers
                                                     eprintln!("[MQTT Monitor] Command received but no handler implemented yet");

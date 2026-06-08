@@ -7,6 +7,7 @@ pub mod config;
 pub mod destination;
 pub mod drain;
 pub mod envelope;
+pub mod replay;
 #[cfg(test)]
 mod integration_tests;
 

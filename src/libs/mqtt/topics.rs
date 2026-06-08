@@ -199,6 +199,16 @@ impl TopicBuilder {
     pub fn responses_interval_config(&self) -> String {
         self.build(&["responses", "interval_config"])
     }
+
+    // Save-and-feed: on-demand history replay topics
+    pub fn export_probe_1m_replay(&self, request_id: &str, sensor_line: u8) -> String {
+        let line_s = sensor_line.to_string();
+        self.build(&["export", "probe_1m_replay", request_id, &line_s])
+    }
+
+    pub fn responses_history(&self) -> String {
+        self.build(&["responses", "history"])
+    }
 }
 
 #[cfg(test)]

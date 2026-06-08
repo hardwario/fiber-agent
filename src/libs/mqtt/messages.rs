@@ -351,6 +351,19 @@ pub enum MqttCommand {
         stream: String,
     },
 
+    /// On-demand replay of `sensor_readings_minute` for a historical window.
+    /// Triggered by the viewer when the user navigates past the 30-day hot
+    /// tier: the device replays the requested range on the
+    /// `export/probe_1m_replay/<request_id>/<sensor_line>` topic without
+    /// touching the natural drain cursor.
+    HistoryRequest {
+        request_id: String,
+        /// `None` means "all sensor lines 0..=7".
+        sensor_line: Option<u8>,
+        from_ts: i64,
+        to_ts: i64,
+    },
+
     /// Add signer (signed via ConfigRequest)
     AddSigner { signer_data: Value },
 
@@ -423,6 +436,7 @@ impl MqttCommand {
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
+            MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",

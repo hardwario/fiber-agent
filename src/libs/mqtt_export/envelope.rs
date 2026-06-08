@@ -57,6 +57,26 @@ pub fn probe_1m_envelope(row: &MinuteAggregateRow) -> (String, String) {
     (topic, payload)
 }
 
+/// One-shot replay envelope for the on-demand history protocol.
+///
+/// Topic shape: `export/probe_1m_replay/<request_id>/<sensor_line>`.
+/// `message_id` includes the `request_id` so two concurrent replays
+/// targeting the same minute don't collide on the viewer's dedup, and so
+/// downstream consumers can match rows back to the originating request.
+pub fn probe_1m_replay_envelope(row: &MinuteAggregateRow, request_id: &str) -> (String, String) {
+    let topic = format!("export/probe_1m_replay/{}/{}", request_id, row.sensor_line);
+    let payload = serde_json::to_string(&serde_json::json!({
+        "message_id":     format!("probe_1m_replay-{}-{}-{}", request_id, row.sensor_line, row.minute_ts),
+        "exported_at":    now_secs(),
+        "stream":         "probe_1m_replay",
+        "stream_version": 1,
+        "request_id":     request_id,
+        "data":           row,
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    (topic, payload)
+}
+
 pub fn alarm_envelope(row: &AlarmEvent) -> (String, String) {
     let topic = match row.sensor_line {
         u8::MAX => "export/alarm/sys".to_string(),
