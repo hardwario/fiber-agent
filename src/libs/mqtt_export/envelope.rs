@@ -6,7 +6,9 @@
 //! schema evolution). Topic shape: `export/{stream}/{key}` where `key` is
 //! the natural per-record identifier (dev_eui, sensor line, or `sys`).
 
-use crate::libs::storage::models::{AlarmEvent, SensorReading, StickerReadingRow};
+use crate::libs::storage::models::{
+    AlarmEvent, MinuteAggregateRow, SensorReading, StickerReadingRow,
+};
 
 pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
     let topic = format!("export/sticker/{}", row.dev_eui);
@@ -35,6 +37,19 @@ pub fn probe_envelope(row: &SensorReading) -> (String, String) {
         "message_id":     format!("probe-{}-{}", row.sensor_line, row.timestamp),
         "exported_at":    now_secs(),
         "stream":         "probe",
+        "stream_version": 1,
+        "data":           row,
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    (topic, payload)
+}
+
+pub fn probe_1m_envelope(row: &MinuteAggregateRow) -> (String, String) {
+    let topic = format!("export/probe_1m/{}", row.sensor_line);
+    let payload = serde_json::to_string(&serde_json::json!({
+        "message_id":     format!("probe_1m-{}-{}", row.sensor_line, row.minute_ts),
+        "exported_at":    now_secs(),
+        "stream":         "probe_1m",
         "stream_version": 1,
         "data":           row,
     }))

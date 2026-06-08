@@ -15,11 +15,17 @@ use rusqlite::Connection;
 use crate::libs::storage::reader::StorageReader;
 use crate::libs::storage::{StorageHandle, StorageResult};
 
-/// One of the three streams exported by the save-and-feed pipeline.
+/// One of the streams exported by the save-and-feed pipeline.
+///
+/// `Probe1m` carries per-minute aggregates of `sensor_readings` and is the
+/// long-term data path: raw `Probe` rows are retention-trimmed at 30 days
+/// but `Probe1m` rows are kept indefinitely so the viewer can answer
+/// multi-year history queries from its mirror.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Stream {
     Sticker,
     Probe,
+    Probe1m,
     Alarm,
 }
 
@@ -28,6 +34,7 @@ impl Stream {
         match self {
             Stream::Sticker => "sticker",
             Stream::Probe => "probe",
+            Stream::Probe1m => "probe_1m",
             Stream::Alarm => "alarm",
         }
     }
@@ -36,6 +43,7 @@ impl Stream {
         match s {
             "sticker" => Some(Stream::Sticker),
             "probe" => Some(Stream::Probe),
+            "probe_1m" => Some(Stream::Probe1m),
             "alarm" => Some(Stream::Alarm),
             _ => None,
         }
@@ -104,6 +112,40 @@ pub async fn drain_one_batch(
                 }
                 last_id = row.id;
             }
+            rows.len()
+        }
+        Stream::Probe1m => {
+            // Cursor is `minute_ts`. Reader returns whole minutes so the
+            // cursor advances on minute boundaries only — partial-minute
+            // failures cause the whole minute to retry, deduplicated
+            // downstream by `message_id`.
+            let rows =
+                StorageReader::fetch_minute_aggregates_after(conn, cursor_in, cfg.batch_size)?;
+            let mut last_completed_minute = cursor_in;
+            let mut current_minute_ok = true;
+            for (i, row) in rows.iter().enumerate() {
+                let starting_new_minute = i == 0
+                    || rows[i - 1].minute_ts != row.minute_ts;
+                if starting_new_minute && i > 0 && current_minute_ok {
+                    last_completed_minute = rows[i - 1].minute_ts;
+                }
+                if starting_new_minute {
+                    current_minute_ok = true;
+                }
+                let (topic, payload) = super::envelope::probe_1m_envelope(row);
+                if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
+                    eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
+                    current_minute_ok = false;
+                    break;
+                }
+            }
+            // Commit the final minute if it finished cleanly.
+            if let Some(last_row) = rows.last() {
+                if current_minute_ok {
+                    last_completed_minute = last_row.minute_ts;
+                }
+            }
+            last_id = last_completed_minute;
             rows.len()
         }
         Stream::Alarm => {
@@ -213,6 +255,68 @@ mod tests {
 
         let cur = StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap();
         assert_eq!(cur, 3, "cursor should be at last successfully published id");
+
+        storage.shutdown().unwrap();
+        join.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_1m_drain_advances_cursor_only_on_whole_minute_boundaries() {
+        use crate::libs::alarms::AlarmState;
+        use crate::libs::storage::aggregator::aggregate_closed_minutes;
+        use crate::libs::storage::models::SensorReading;
+        use crate::libs::storage::writer::StorageWriter;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+        let (storage, join) = StorageThread::spawn(&path, 1).unwrap();
+        // Give the storage thread time to finish schema init before we
+        // open a second connection against the same encrypted DB.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let db = Database::new(&path, 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        // Two complete minutes (600 and 660), two sensors each — total 4 rows.
+        for &m in &[600i64, 660] {
+            for line in 0u8..2 {
+                let r = SensorReading::new(m, line, 20.0, true, AlarmState::Normal);
+                StorageWriter::write_sensor_reading(&conn, &r, None).unwrap();
+            }
+        }
+        // now_ts must be ≥ 660 + 60 so minute 660 is also "closed" and rolled.
+        aggregate_closed_minutes(&mut conn, 780, None).unwrap();
+
+        // Fail on the 3rd publish — i.e. mid-way through minute 660. Minute
+        // 600 must be fully published and the cursor must land on 600.
+        let stub = StubPub {
+            calls: Mutex::new(vec![]),
+            fail_on: Some(2),
+        };
+        let cfg = DrainConfig {
+            broker_id: "remote".into(),
+            db_path: PathBuf::from(&path),
+            batch_size: 10, // ≥ 2 minutes
+            drain_interval_ms: 0,
+        };
+
+        let (_n, new_cursor) =
+            drain_one_batch(&cfg, Stream::Probe1m, &stub, &storage, &conn, 0)
+                .await
+                .unwrap();
+        assert_eq!(stub.calls.lock().unwrap().len(), 2, "two rows published before failure");
+        assert_eq!(new_cursor, 600, "cursor must only advance to the last complete minute");
+
+        // Next pass should retry minute 660 in full (no successes lost upstream).
+        let stub2 = StubPub {
+            calls: Mutex::new(vec![]),
+            fail_on: None,
+        };
+        let (_n2, new_cursor2) =
+            drain_one_batch(&cfg, Stream::Probe1m, &stub2, &storage, &conn, new_cursor)
+                .await
+                .unwrap();
+        assert_eq!(new_cursor2, 660, "second pass finishes minute 660");
+        assert_eq!(stub2.calls.lock().unwrap().len(), 2, "two rows for minute 660");
 
         storage.shutdown().unwrap();
         join.join().unwrap();

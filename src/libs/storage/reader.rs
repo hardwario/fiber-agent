@@ -263,6 +263,71 @@ impl StorageReader {
         Ok(rows)
     }
 
+    /// Fetch minute-aggregate rows whose `minute_ts > cursor_minute_ts`,
+    /// covering up to `max_minutes` distinct minutes, ordered by
+    /// `(minute_ts, sensor_line)`. Returns whole minutes only — never
+    /// splits a minute across batches — so the export drain can advance
+    /// the cursor by minute boundary without losing the
+    /// "either all-sensors-for-this-minute are published or none are"
+    /// invariant. Consumed by the `probe_1m` stream export drain.
+    pub fn fetch_minute_aggregates_after(
+        conn: &Connection,
+        cursor_minute_ts: i64,
+        max_minutes: usize,
+    ) -> StorageResult<Vec<MinuteAggregateRow>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT minute_ts, sensor_line, min_c, avg_c, max_c,
+                        sample_count, disconnect_count, worst_alarm,
+                        created_at, data_hmac
+                 FROM sensor_readings_minute
+                 WHERE minute_ts > ?1
+                   AND minute_ts <= COALESCE(
+                       (SELECT minute_ts FROM (
+                            SELECT DISTINCT minute_ts
+                            FROM sensor_readings_minute
+                            WHERE minute_ts > ?1
+                            ORDER BY minute_ts ASC
+                            LIMIT ?2
+                        ) ORDER BY minute_ts DESC LIMIT 1),
+                       ?1)
+                 ORDER BY minute_ts ASC, sensor_line ASC",
+            )
+            .map_err(|e| StorageError::QueryError(
+                format!("prepare minute_aggregates_after: {}", e),
+            ))?;
+
+        let rows = stmt
+            .query_map(
+                rusqlite::params![cursor_minute_ts, max_minutes as i64],
+                |row| {
+                    Ok(MinuteAggregateRow {
+                        minute_ts: row.get(0)?,
+                        sensor_line: row.get::<_, i32>(1)? as u8,
+                        min_c: row.get(2)?,
+                        avg_c: row.get(3)?,
+                        max_c: row.get(4)?,
+                        sample_count: row.get(5)?,
+                        disconnect_count: row.get(6)?,
+                        worst_alarm: row.get(7)?,
+                        created_at: row.get(8)?,
+                        data_hmac: row.get(9)?,
+                    })
+                },
+            )
+            .map_err(|e| StorageError::QueryError(
+                format!("query minute_aggregates_after: {}", e),
+            ))?;
+
+        let out: Vec<MinuteAggregateRow> = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(
+                format!("collect minute_aggregates_after: {}", e),
+            ))?;
+
+        Ok(out)
+    }
+
     /// Look up the current export cursor for a `(broker_id, stream)` pair.
     /// Returns 0 if no cursor row exists yet — semantically "haven't exported
     /// anything yet", since `sticker_readings.id`/`sensor_readings.id`/

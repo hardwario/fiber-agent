@@ -212,7 +212,12 @@ impl MqttExportThread {
                                 // the drain would keep skipping rows we asked to
                                 // replay.
                                 let _ = storage.reset_export_cursor(broker_id.clone(), stream.clone());
-                                for s in [Stream::Sticker, Stream::Probe, Stream::Alarm] {
+                                for s in [
+                                    Stream::Sticker,
+                                    Stream::Probe,
+                                    Stream::Probe1m,
+                                    Stream::Alarm,
+                                ] {
                                     if s.as_str() == stream {
                                         cursors.insert((broker_id.clone(), s.as_str()), 0);
                                     }
