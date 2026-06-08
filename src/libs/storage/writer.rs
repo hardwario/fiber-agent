@@ -47,11 +47,7 @@ impl StorageWriter {
         );
 
         match result {
-            Ok(_) => {
-                let duration_ms = start.elapsed().as_millis() as i64;
-                let _ = AuditLogger::log_operation(conn, "INSERT", Some("sensor_readings"), Some(1), Some(duration_ms));
-                Ok(conn.last_insert_rowid())
-            }
+            Ok(_) => Ok(conn.last_insert_rowid()),
             Err(e) => {
                 let duration_ms = start.elapsed().as_millis() as i64;
                 let _ = AuditLogger::log_error(
@@ -77,8 +73,6 @@ impl StorageWriter {
         if readings.is_empty() {
             return Ok(0);
         }
-
-        let start = std::time::Instant::now();
 
         let tx = conn
             .transaction()
@@ -118,15 +112,6 @@ impl StorageWriter {
 
         tx.commit()
             .map_err(|e| StorageError::InsertError(format!("Failed to commit batch: {}", e)))?;
-
-        let duration_ms = start.elapsed().as_millis() as i64;
-        let _ = AuditLogger::log_operation(
-            conn,
-            "INSERT",
-            Some("sensor_readings"),
-            Some(inserted_count),
-            Some(duration_ms),
-        );
 
         Ok(inserted_count)
     }

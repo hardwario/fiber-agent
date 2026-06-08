@@ -141,6 +141,18 @@ impl Database {
                 format!("Failed to set cache size: {}", e),
             ))?;
 
+        // Cap WAL growth so a stuck/slow checkpoint cannot eat the partition.
+        // 64MB ceiling on the -wal file; auto-checkpoint every 1000 pages
+        // (~4MB at the default page size). These pragmas return the new
+        // value as a row, so use execute_batch which discards rows.
+        conn.execute_batch(
+            "PRAGMA journal_size_limit = 67108864;
+             PRAGMA wal_autocheckpoint = 1000;",
+        )
+        .map_err(|e| StorageError::DatabaseInitError(
+            format!("Failed to set WAL size pragmas: {}", e),
+        ))?;
+
         Ok(())
     }
 

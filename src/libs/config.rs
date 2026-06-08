@@ -1027,7 +1027,12 @@ impl Config {
             },
             storage: StorageConfig {
                 db_path: "/data/fiber/fiber_medical.db".to_string(),
-                max_size_gb: 5,
+                // 3GB cap on the 5GB /data partition that is shared with
+                // fiber-viewer's DBs. A 5GB cap here would let our DB fill
+                // the whole partition and lock the viewer (and us) out
+                // before retention could run — the failure mode that
+                // produced the "disk I/O error" storm in the field.
+                max_size_gb: 3,
                 hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {

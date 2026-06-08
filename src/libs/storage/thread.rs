@@ -478,6 +478,25 @@ impl StorageThread {
         let flush_interval = Duration::from_millis(100); // Auto-flush every 100ms
         let flush_threshold = 1000; // Auto-flush every 1000 messages
 
+        // Batched audit summary: instead of an audit_log row per sensor INSERT
+        // (which doubled disk churn and got us into the 100% /data incident),
+        // accumulate inserts and emit one INSERT_BATCH row per minute.
+        let audit_summary_interval = Duration::from_secs(60);
+        let mut audit_summary_count = 0i64;
+        let mut last_audit_summary = std::time::Instant::now();
+
+        // Connection self-healing: if N consecutive writes fail (e.g. the
+        // /data filesystem went read-only or was remounted), drop the long-
+        // lived connection and reopen with exponential backoff. Without this
+        // the storage thread loops forever logging "disk I/O error" until
+        // a restart.
+        const RECONNECT_FAILURE_THRESHOLD: u32 = 3;
+        const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+        const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
+        let mut consecutive_write_failures: u32 = 0;
+        let mut reconnect_backoff = RECONNECT_BACKOFF_INITIAL;
+        let mut next_reconnect_attempt: Option<std::time::Instant> = None;
+
         eprintln!(
             "STORAGE THREAD: Started, database: {}, max size: {}GB",
             db_path, max_size_gb
@@ -493,6 +512,51 @@ impl StorageThread {
                         let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
                         pending_writes = 0;
                         last_flush = std::time::Instant::now();
+                    }
+                    if audit_summary_count > 0
+                        && last_audit_summary.elapsed() >= audit_summary_interval
+                    {
+                        let elapsed_ms = last_audit_summary.elapsed().as_millis() as i64;
+                        let _ = crate::libs::storage::audit::AuditLogger::log_operation(
+                            &conn,
+                            "INSERT_BATCH",
+                            Some("sensor_readings"),
+                            Some(audit_summary_count),
+                            Some(elapsed_ms),
+                        );
+                        audit_summary_count = 0;
+                        last_audit_summary = std::time::Instant::now();
+                    }
+                    if consecutive_write_failures >= RECONNECT_FAILURE_THRESHOLD
+                        && next_reconnect_attempt
+                            .map(|t| std::time::Instant::now() >= t)
+                            .unwrap_or(true)
+                    {
+                        eprintln!(
+                            "STORAGE THREAD: {} consecutive write failures, reopening DB connection (backoff {:?})",
+                            consecutive_write_failures, reconnect_backoff
+                        );
+                        match db.connect() {
+                            Ok(new_conn) => {
+                                eprintln!("STORAGE THREAD: Reconnected to database");
+                                conn = new_conn;
+                                consecutive_write_failures = 0;
+                                reconnect_backoff = RECONNECT_BACKOFF_INITIAL;
+                                next_reconnect_attempt = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "STORAGE THREAD: Reconnect failed: {} — retrying in {:?}",
+                                    e, reconnect_backoff
+                                );
+                                next_reconnect_attempt =
+                                    Some(std::time::Instant::now() + reconnect_backoff);
+                                reconnect_backoff = std::cmp::min(
+                                    reconnect_backoff * 2,
+                                    RECONNECT_BACKOFF_MAX,
+                                );
+                            }
+                        }
                     }
                     None
                 }
@@ -523,9 +587,14 @@ impl StorageThread {
                             Ok(_) => {
                                 pending_writes += 1;
                                 message_count += 1;
+                                audit_summary_count += 1;
+                                consecutive_write_failures = 0;
+                                reconnect_backoff = RECONNECT_BACKOFF_INITIAL;
+                                next_reconnect_attempt = None;
                             }
                             Err(e) => {
                                 eprintln!("STORAGE THREAD: Failed to write reading: {}", e);
+                                consecutive_write_failures = consecutive_write_failures.saturating_add(1);
                             }
                         }
                     }
@@ -535,9 +604,14 @@ impl StorageThread {
                             Ok(count) => {
                                 pending_writes += count as usize;
                                 message_count += count as u64;
+                                audit_summary_count += count;
+                                consecutive_write_failures = 0;
+                                reconnect_backoff = RECONNECT_BACKOFF_INITIAL;
+                                next_reconnect_attempt = None;
                             }
                             Err(e) => {
                                 eprintln!("STORAGE THREAD: Failed to write batch: {}", e);
+                                consecutive_write_failures = consecutive_write_failures.saturating_add(1);
                             }
                         }
                     }
