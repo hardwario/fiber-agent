@@ -148,6 +148,11 @@ pub struct DisplayState {
     pub lorawan_detail_page: u8,
     /// Shared LoRa configs handle (for rendering thresholds + location pages).
     pub lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+    /// Button-hold progress in pixels (0..=127). 0 = no hold active; otherwise the
+    /// width of the 1-px progress bar drawn under the header divider on the sensor
+    /// overview. Written by the button monitor thread each poll and read by the
+    /// display monitor.
+    pub hold_bar_pixels: u8,
 }
 
 impl DisplayState {
@@ -162,6 +167,7 @@ impl DisplayState {
             buzzer_priority: None,
             lorawan_detail_page: 0,
             lorawan_configs: None,
+            hold_bar_pixels: 0,
         }
     }
 

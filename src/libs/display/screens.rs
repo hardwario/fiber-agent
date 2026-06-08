@@ -79,6 +79,7 @@ pub fn render_sensor_overview(
     entries: &[OverviewEntry],
     total_pages: usize,
     sensor_silenced: bool,
+    hold_bar_pixels: u8,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -138,6 +139,17 @@ pub fn render_sensor_overview(
         .into_styled(line_style)
         .draw(display)
         .ok();
+
+    // Draw button-hold progress bar (1 px) directly under the separator while
+    // the user is holding ENTER / UP / DOWN. Width grows 0..=127 over the
+    // 5-second countdown.
+    if hold_bar_pixels > 0 {
+        let end_x = (hold_bar_pixels as i32).min(127);
+        Line::new(Point::new(0, 12), Point::new(end_x, 12))
+            .into_styled(line_style)
+            .draw(display)
+            .ok();
+    }
 
     // Calculate x offset for labels (make room for cursor in selection mode)
     let label_x = if selected_sensor.is_some() { 8 } else { 2 };
