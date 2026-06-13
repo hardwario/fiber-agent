@@ -41,6 +41,41 @@ pub fn stop_ble_advertising() -> Result<(), String> {
     Ok(())
 }
 
+/// Register a persistent LE advertisement that announces the in-app GATT
+/// service UUID. Uses btmgmt's `add-adv` (MGMT_OP_ADD_ADVERTISING, 0x003E)
+/// — the legacy advertising path — bypassing bluer/bluez 5.72's extended
+/// advertising selection, which fails on BT 4.2-only controllers like the
+/// BCM4345C0 on the Pi CM4 (kernel returns Invalid Parameters on the
+/// MGMT_OP_ADD_EXT_ADV_DATA command).
+///
+/// Unlike [`start_ble_advertising`] (the button-press pairing flow), this
+/// does NOT power-cycle the controller — at the point this is called the
+/// GATT app has already been registered with bluez and a power cycle would
+/// disrupt that. Synchronous; expected to complete in <100 ms.
+pub fn start_persistent_advertising(service_uuid: &str) -> Result<(), String> {
+    eprintln!("[BLE] Registering persistent LE advertisement for service {}", service_uuid);
+    // Idempotent: clear any previous instance 1 before adding a new one.
+    let _ = run_btmgmt(&["remove-adv", "1"]);
+    run_btmgmt(&[
+        "add-adv",
+        "-c",                 // connectable (peers can open GATT)
+        "-g",                 // general discoverable
+        "-u", service_uuid,   // include service UUID in adv data
+        "-n",                 // include controller name in scan response
+        "1",                  // instance ID
+    ])?;
+    eprintln!("[BLE] Persistent LE advertisement registered (instance 1)");
+    Ok(())
+}
+
+/// Remove the persistent advertisement registered by
+/// [`start_persistent_advertising`]. Synchronous and idempotent.
+pub fn stop_persistent_advertising() -> Result<(), String> {
+    eprintln!("[BLE] Removing persistent LE advertisement");
+    let _ = run_btmgmt(&["remove-adv", "1"]);
+    Ok(())
+}
+
 fn run_btmgmt(args: &[&str]) -> Result<(), String> {
     let output = Command::new("btmgmt")
         .args(args)

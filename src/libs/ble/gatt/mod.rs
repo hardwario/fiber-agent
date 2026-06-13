@@ -174,7 +174,6 @@ async fn run_server(
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
 ) -> bluer::Result<()> {
-    use bluer::adv::Advertisement;
     use futures::{pin_mut, StreamExt};
     use tokio::sync::Mutex;
 
@@ -216,14 +215,19 @@ async fn run_server(
     adapter.set_discoverable(true).await?;
     adapter.set_pairable(true).await?;
 
-    let adv = Advertisement {
-        service_uuids: vec![service::FIBER_SERVICE_UUID].into_iter().collect(),
-        local_name: Some(advertising_name.clone()),
-        discoverable: Some(true),
-        ..Default::default()
-    };
-    let adv_handle = adapter.advertise(adv).await?;
-    eprintln!("[BleMonitor] BLE advertising started (name={}, mac={})", advertising_name, mac_str);
+    // bluer/bluez 5.72 would issue MGMT_OP_ADD_EXT_ADV_DATA here, which the
+    // BT 4.2-only BCM4345C0 on the Pi CM4 rejects with Invalid Parameters.
+    // Drive the legacy advertising path via btmgmt directly instead — the
+    // GATT app is already registered via `serve_gatt_application` above, so
+    // this just attaches the advertising data side. See
+    // crate::libs::ble::advertising::start_persistent_advertising for the
+    // full story.
+    let service_uuid_str = service::FIBER_SERVICE_UUID.hyphenated().to_string();
+    if let Err(e) = crate::libs::ble::advertising::start_persistent_advertising(&service_uuid_str) {
+        eprintln!("[BleMonitor] WARN: failed to start LE advertisement: {}", e);
+    } else {
+        eprintln!("[BleMonitor] BLE advertising started (name={}, mac={})", advertising_name, mac_str);
+    }
 
     let events = adapter.events().await?;
     pin_mut!(events);
@@ -278,7 +282,7 @@ async fn run_server(
     }
 
     eprintln!("[BleMonitor] Cleaning up...");
-    drop(adv_handle);
+    let _ = crate::libs::ble::advertising::stop_persistent_advertising();
     drop(app_handle);
     let _ = adapter.set_discoverable(false).await;
     Ok(())
