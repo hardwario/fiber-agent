@@ -181,27 +181,6 @@ async fn run_server(
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
-    // Register a "Just Works" (NoInputNoOutput) pairing agent. Otherwise,
-    // some phones (Android in particular) initiate BLE SMP bonding on first
-    // GATT connect; with no agent registered bluez rejects the bond and the
-    // phone disconnects + retries in a loop, surfacing as "Pair rejected"
-    // on the phone UI. Accepting authorization unconditionally makes the
-    // bond succeed silently — the actual FIBER auth still happens at the
-    // app layer via the FB01 PIN characteristic; this agent only satisfies
-    // the OS-level BLE bonding handshake.
-    let _agent_handle = session
-        .register_agent(bluer::agent::Agent {
-            request_default: false,
-            request_authorization: Some(Box::new(|_req| {
-                Box::pin(async move { Ok(()) })
-            })),
-            authorize_service: Some(Box::new(|_req| {
-                Box::pin(async move { Ok(()) })
-            })),
-            ..Default::default()
-        })
-        .await?;
-
     let mac = adapter.address().await?;
     let mac_str = mac.to_string();
 
@@ -233,15 +212,22 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    // Pairable=true plus the NoInputNoOutput Just Works agent registered
-    // above lets BLE SMP bonding succeed silently — phones (Android
-    // especially) initiate bonding on first GATT connect and disconnect-loop
-    // if it's rejected. Classic BT Discoverable stays OFF so the device only
-    // appears once on phones (via LE scan only); General Discoverable in the
-    // LE advertisement payload (`btmgmt add-adv -g`) handles LE visibility.
-    // The actual FIBER auth still runs at the app layer via FB01 PIN — the
-    // SMP bond is just satisfying the OS handshake.
-    adapter.set_pairable(true).await?;
+    // FIBER auth is entirely app-level: the GATT characteristics FB00..FB0A
+    // are plain (no encrypt/authenticate flags), and access is gated by an
+    // in-memory `authenticated` flag in ServiceState that flips on once the
+    // phone writes the correct PIN (derived from the QR code shown on the
+    // device) to the FB01 characteristic. BLE SMP bonding adds no security
+    // here — it would only persist an OS-level bond on the phone that
+    // diverges from our app-level credential model.
+    //
+    // We therefore explicitly disable Pairable and don't register a pairing
+    // agent. Phones that proactively try to bond (some Android versions
+    // do this on first GATT connect) will see bluez reject the SMP request.
+    // The GATT connection itself stays up because no characteristic requires
+    // encryption: the phone may briefly surface a "Pair rejected" notice but
+    // the app's PIN/FB01 flow proceeds normally. Classic BT discoverable
+    // stays OFF — LE-only visibility via the LE advertisement payload.
+    adapter.set_pairable(false).await?;
 
     // bluer/bluez 5.72 would issue MGMT_OP_ADD_EXT_ADV_DATA here, which the
     // BT 4.2-only BCM4345C0 on the Pi CM4 rejects with Invalid Parameters.
