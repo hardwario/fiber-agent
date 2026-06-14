@@ -64,14 +64,27 @@ pub fn stop_persistent_advertising() -> Result<(), String> {
     Ok(())
 }
 
+/// Runs `btmgmt <args>` via the `timeout(1)` wrapper so a stuck/hung btmgmt
+/// process (observed with `rm-adv` against a non-existent instance when run
+/// non-interactively from the fiber.service cgroup) cannot wedge the worker
+/// thread waiting on `.output()`. The 5-second cap is well above any normal
+/// btmgmt round-trip (<100 ms) so it only fires on a real hang.
 fn run_btmgmt(args: &[&str]) -> Result<(), String> {
-    let output = Command::new("btmgmt")
-        .args(args)
+    let mut argv: Vec<&str> = vec!["5", "btmgmt"];
+    argv.extend(args.iter().copied());
+    let output = Command::new("timeout")
+        .args(&argv)
         .output()
-        .map_err(|e| format!("Failed to execute btmgmt {}: {}", args.join(" "), e))?;
+        .map_err(|e| format!("Failed to execute timeout 5 btmgmt {}: {}", args.join(" "), e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // timeout(1) exits 124 when the command timed out. Surface that
+        // distinctly so log readers know the wrapper kicked in.
+        let code = output.status.code().unwrap_or(-1);
+        if code == 124 {
+            return Err(format!("btmgmt {} timed out after 5s", args.join(" ")));
+        }
         return Err(format!("btmgmt {} failed: {}", args.join(" "), stderr));
     }
     Ok(())
