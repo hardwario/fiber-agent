@@ -1,43 +1,31 @@
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 
-/// Inicia BLE advertising para pareamento
-/// Runs commands in background thread but waits enough time for completion
+/// Legacy pairing-flow hook called by the button monitor when the user
+/// holds UP to enter the QR/pairing screen.
+///
+/// Previously this function powered the controller off, re-enabled LE, and
+/// powered it back on before re-adding a generic advertisement — needed
+/// when there was no in-app GATT server running. With the BleMonitor now
+/// maintaining a connectable persistent advertisement at all times (see
+/// [`start_persistent_advertising`]), the controller is already advertising
+/// the GATT service: a pairing UI transition needs no MGMT plumbing.
+///
+/// The function is kept (as a no-op) instead of removed from
+/// [`crate::libs::display::buttons`] so the call sites stay symmetric with
+/// [`stop_ble_advertising`] and so any pairing-token security invariants
+/// the caller relies on aren't disturbed.
 pub fn start_ble_advertising() -> Result<(), String> {
-    eprintln!("[BLE] Starting advertising...");
-
-    thread::spawn(|| {
-        if let Err(e) = run_btmgmt(&["power", "off"]) {
-            eprintln!("[BLE] Failed to power off: {}", e);
-        }
-        if let Err(e) = run_btmgmt(&["le", "on"]) {
-            eprintln!("[BLE] Failed to enable LE: {}", e);
-        }
-        if let Err(e) = run_btmgmt(&["power", "on"]) {
-            eprintln!("[BLE] Failed to power on: {}", e);
-        }
-        if let Err(e) = run_btmgmt(&["add-adv", "-g", "1"]) {
-            eprintln!("[BLE] Failed to add advertisement: {}", e);
-        }
-        eprintln!("[BLE] Advertising started successfully");
-    });
-
-    // Wait for BLE commands to complete before returning
-    thread::sleep(Duration::from_secs(3));
-
+    eprintln!("[BLE] start_ble_advertising: no-op (BleMonitor maintains persistent advert)");
     Ok(())
 }
 
-/// Para BLE advertising (non-blocking)
+/// Symmetric counterpart to [`start_ble_advertising`]. Tearing down the
+/// pairing session is owned by the caller (the provisioning_session slot is
+/// cleared in `buttons.rs`); leaving the advertisement up is fine because
+/// pairing is gated by the FB01 auth characteristic + PIN, not by adv
+/// visibility.
 pub fn stop_ble_advertising() -> Result<(), String> {
-    eprintln!("[BLE] Stopping advertising...");
-    thread::spawn(|| {
-        if let Err(e) = run_btmgmt(&["remove-adv", "1"]) {
-            eprintln!("[BLE] Failed to remove advertisement: {}", e);
-        }
-        eprintln!("[BLE] Advertising stopped");
-    });
+    eprintln!("[BLE] stop_ble_advertising: no-op (BleMonitor owns advert lifecycle)");
     Ok(())
 }
 
