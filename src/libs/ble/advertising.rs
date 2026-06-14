@@ -43,7 +43,7 @@ pub fn stop_ble_advertising() -> Result<(), String> {
 pub fn start_persistent_advertising(service_uuid: &str) -> Result<(), String> {
     eprintln!("[BLE] Registering persistent LE advertisement for service {}", service_uuid);
     // Idempotent: clear any previous instance 1 before adding a new one.
-    let _ = run_btmgmt(&["remove-adv", "1"]);
+    let _ = run_btmgmt(&["rm-adv", "1"]);
     run_btmgmt(&[
         "add-adv",
         "-c",                 // connectable (peers can open GATT)
@@ -60,7 +60,7 @@ pub fn start_persistent_advertising(service_uuid: &str) -> Result<(), String> {
 /// [`start_persistent_advertising`]. Synchronous and idempotent.
 pub fn stop_persistent_advertising() -> Result<(), String> {
     eprintln!("[BLE] Removing persistent LE advertisement");
-    let _ = run_btmgmt(&["remove-adv", "1"]);
+    let _ = run_btmgmt(&["rm-adv", "1"]);
     Ok(())
 }
 
