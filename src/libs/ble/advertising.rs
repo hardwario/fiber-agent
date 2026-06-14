@@ -1,33 +1,30 @@
 use std::process::Command;
 
-/// Legacy pairing-flow hook called by the button monitor when the user
-/// holds UP to enter the QR/pairing screen.
+/// Hook from the button monitor: the user just held UP and entered the
+/// QR/pairing screen. Turn the LE advertisement ON so the phone can find
+/// the device for the duration of the QR session.
 ///
-/// Previously this function powered the controller off, re-enabled LE, and
-/// powered it back on before re-adding a generic advertisement — needed
-/// when there was no in-app GATT server running. With the BleMonitor now
-/// maintaining a connectable persistent advertisement at all times (see
-/// [`start_persistent_advertising`]), the controller is already advertising
-/// the GATT service: a pairing UI transition needs no MGMT plumbing.
-///
-/// The function is kept (as a no-op) instead of removed from
-/// [`crate::libs::display::buttons`] so the call sites stay symmetric with
-/// [`stop_ble_advertising`] and so any pairing-token security invariants
-/// the caller relies on aren't disturbed.
+/// Outside this window the device deliberately stays invisible to BLE
+/// scans — that way the Android "Pair" dialog never surfaces ambiently;
+/// it can only appear during an explicit pairing flow that the user
+/// already initiated on the device. Service UUID is hard-coded to FIBER's
+/// FB00 so the call site doesn't need to import the constant.
 pub fn start_ble_advertising() -> Result<(), String> {
-    eprintln!("[BLE] start_ble_advertising: no-op (BleMonitor maintains persistent advert)");
-    Ok(())
+    start_persistent_advertising(FIBER_SERVICE_UUID_STR)
 }
 
-/// Symmetric counterpart to [`start_ble_advertising`]. Tearing down the
-/// pairing session is owned by the caller (the provisioning_session slot is
-/// cleared in `buttons.rs`); leaving the advertisement up is fine because
-/// pairing is gated by the FB01 auth characteristic + PIN, not by adv
-/// visibility.
+/// Hook from the button monitor: the QR session has ended (user cancelled,
+/// session timed out, or user navigated away). Tear the LE advertisement
+/// down so the device returns to invisible state.
 pub fn stop_ble_advertising() -> Result<(), String> {
-    eprintln!("[BLE] stop_ble_advertising: no-op (BleMonitor owns advert lifecycle)");
-    Ok(())
+    stop_persistent_advertising()
 }
+
+/// FIBER GATT service UUID as a string literal. The canonical
+/// [`crate::libs::ble::gatt::service::FIBER_SERVICE_UUID`] is a
+/// `uuid::Uuid` constant; this string mirror exists so this module
+/// doesn't have to depend on the gatt::service module.
+const FIBER_SERVICE_UUID_STR: &str = "0000fb00-0000-1000-8000-00805f9b34fb";
 
 /// Register a persistent LE advertisement that announces the in-app GATT
 /// service UUID. Uses btmgmt's `add-adv` (MGMT_OP_ADD_ADVERTISING, 0x003E)

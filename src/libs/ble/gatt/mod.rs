@@ -233,29 +233,21 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    // Pairable=true plus the NoInputNoOutput Just Works agent registered
-    // above lets BLE SMP bonding succeed silently — phones (Android
-    // especially) initiate bonding on first GATT connect and disconnect-loop
-    // if it's rejected. Classic BT Discoverable stays OFF so the device only
-    // appears once on phones (via LE scan only); General Discoverable in the
-    // LE advertisement payload (`btmgmt add-adv -g`) handles LE visibility.
-    // The actual FIBER auth still runs at the app layer via FB01 PIN — the
-    // SMP bond is just satisfying the OS handshake.
+    // Pairable=true + the Just Works agent registered above lets bonding
+    // succeed silently when the OS does try to bond. Kept on so that if a
+    // phone initiates BLE SMP during the brief QR/pairing window the bond
+    // doesn't get rejected mid-flow.
     adapter.set_pairable(true).await?;
 
-    // bluer/bluez 5.72 would issue MGMT_OP_ADD_EXT_ADV_DATA here, which the
-    // BT 4.2-only BCM4345C0 on the Pi CM4 rejects with Invalid Parameters.
-    // Drive the legacy advertising path via btmgmt directly instead — the
-    // GATT app is already registered via `serve_gatt_application` above, so
-    // this just attaches the advertising data side. See
-    // crate::libs::ble::advertising::start_persistent_advertising for the
-    // full story.
-    let service_uuid_str = service::FIBER_SERVICE_UUID.hyphenated().to_string();
-    if let Err(e) = crate::libs::ble::advertising::start_persistent_advertising(&service_uuid_str) {
-        eprintln!("[BleMonitor] WARN: failed to start LE advertisement: {}", e);
-    } else {
-        eprintln!("[BleMonitor] BLE advertising started (name={}, mac={})", advertising_name, mac_str);
-    }
+    // NOTE: BLE advertising is NOT started here. The device stays invisible
+    // to phone scans by default. Advertising is turned on only while the
+    // user is in the QR/pairing window — driven by the UP button handler
+    // in src/libs/display/buttons.rs via crate::libs::ble::start_ble_advertising
+    // (which calls start_persistent_advertising under the hood), and torn
+    // down when the QR session ends or is cancelled. This way phones never
+    // see a "Pair" prompt outside the explicit pairing flow.
+    eprintln!("[BleMonitor] GATT app registered; advertising is button-gated (UP hold → QR screen)");
+    let _ = (mac_str.as_str(), advertising_name.as_str()); // keep bindings live
 
     let events = adapter.events().await?;
     pin_mut!(events);
@@ -310,6 +302,8 @@ async fn run_server(
     }
 
     eprintln!("[BleMonitor] Cleaning up...");
+    // Belt-and-suspenders: if a QR session was still active when the
+    // monitor is torn down, kill the advertisement here too. Idempotent.
     let _ = crate::libs::ble::advertising::stop_persistent_advertising();
     drop(app_handle);
     Ok(())
