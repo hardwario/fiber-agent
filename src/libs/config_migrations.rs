@@ -146,6 +146,7 @@ fn default_export_block() -> Value {
         Value::Sequence(vec![
             Value::String("sticker".into()),
             Value::String("probe".into()),
+            Value::String("probe_1m".into()),
             Value::String("alarm".into()),
         ]),
     );
@@ -213,6 +214,16 @@ ble:
         // from first boot without operator intervention.
         assert_eq!(export.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
         assert_eq!(export.get(&Value::String("batch_size".into())).unwrap().as_u64(), Some(200));
+        // All four streams must be present — probe_1m is the long-term history
+        // path; if a v0 upgrade drops it the viewer mirror silently loses every
+        // minute-aggregate beyond the 30-day raw retention window.
+        let streams: Vec<&str> = export
+            .get(&Value::String("streams".into())).unwrap()
+            .as_sequence().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(streams, vec!["sticker", "probe", "probe_1m", "alarm"]);
         // And the always-on `local` destination must also default-enabled.
         let dests = export.get(&Value::String("destinations".into())).unwrap().as_sequence().unwrap();
         let local = dests[0].as_mapping().unwrap();
