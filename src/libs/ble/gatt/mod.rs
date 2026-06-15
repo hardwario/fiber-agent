@@ -174,6 +174,7 @@ async fn run_server(
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
 ) -> bluer::Result<()> {
+    use bluer::adv::Advertisement;
     use futures::{pin_mut, StreamExt};
     use tokio::sync::Mutex;
 
@@ -221,15 +222,30 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    // NOTE: BLE advertising is NOT started here. The device stays invisible
-    // to phone scans by default. Advertising is turned on only while the
-    // user is in the QR/pairing window — driven by the UP button handler
-    // in src/libs/display/buttons.rs via crate::libs::ble::start_ble_advertising
-    // (which calls start_persistent_advertising under the hood), and torn
-    // down when the QR session ends or is cancelled. This way phones never
-    // see a "Pair" prompt outside the explicit pairing flow.
-    eprintln!("[BleMonitor] GATT app registered; advertising is button-gated (UP hold → QR screen)");
-    let _ = (mac_str.as_str(), advertising_name.as_str()); // keep bindings live
+    // Drive advertising through bluer (D-Bus to bluez) instead of the
+    // btmgmt CLI. The previous btmgmt approach hangs on this device:
+    // `btmgmt add-adv` blocks for at least 5 s when run from any
+    // process while fiber.service is up. bluer's D-Bus call goes
+    // through the same MGMT path internally but doesn't fork an
+    // external CLI so it doesn't hit the same wedge.
+    //
+    // Default Advertisement is connectable (peripheral), no extended
+    // PHY hints, local_name from the controller alias. With kernel
+    // 6.12.93 (PR #7023, arm,pl011-axi compatible) the BCM4345C0 +
+    // bluez 5.72 combination now responds to extended advertisement
+    // setup MGMT commands too — the regression we worked around with
+    // btmgmt no longer applies.
+    let adv = Advertisement {
+        service_uuids: std::iter::once(service::FIBER_SERVICE_UUID).collect(),
+        local_name: Some(advertising_name.clone()),
+        discoverable: Some(true),
+        ..Default::default()
+    };
+    let adv_handle = adapter.advertise(adv).await?;
+    eprintln!(
+        "[BleMonitor] BLE advertising started (name={}, mac={})",
+        advertising_name, mac_str
+    );
 
     let events = adapter.events().await?;
     pin_mut!(events);
@@ -284,9 +300,7 @@ async fn run_server(
     }
 
     eprintln!("[BleMonitor] Cleaning up...");
-    // Belt-and-suspenders: if a QR session was still active when the
-    // monitor is torn down, kill the advertisement here too. Idempotent.
-    let _ = crate::libs::ble::advertising::stop_persistent_advertising();
+    drop(adv_handle);
     drop(app_handle);
     Ok(())
 }
