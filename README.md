@@ -46,7 +46,7 @@ FIBER monitors up to 8 DS18B20 temperature sensors with a 4-level alarm system, 
 - **QR Code** — BLE pairing info (`ble://{hostname}/{mac}/{pin}`)
 - **System Info** — version, hostname, network, battery, storage, uptime (paginated)
 - **Pairing Mode** — 6-character code display
-- Button navigation: UP/DOWN scroll, ENTER select, UP+DOWN 3s hold enters pairing
+- Button navigation: UP/DOWN scroll, ENTER select, UP+DOWN 2s hold enters pairing
 
 ### MQTT Communication
 - TLS with CA certificate validation (insecure_skip_verify blocked in production)
@@ -64,7 +64,7 @@ FIBER monitors up to 8 DS18B20 temperature sensors with a 4-level alarm system, 
 - Audit trail of every command attempt (success and failure)
 
 ### Device Pairing
-- Initiated by 3-second button hold (UP+DOWN)
+- Initiated by 2-second button hold (UP+DOWN)
 - 6-character code shown on display, entered in viewer app
 - AES-256-GCM encrypted key exchange using pairing code as seed
 - Device CA signs admin Ed25519 certificate for the paired user
