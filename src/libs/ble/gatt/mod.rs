@@ -182,14 +182,72 @@ async fn run_server(
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
-    // Deliberately NOT registering a pairing agent or calling set_pairable.
-    // Empirically, both register_agent and set_pairable(true) appear to
-    // wedge the MGMT socket on this firmware (bluez 5.72 + BCM4345C0):
-    // afterwards even external `btmgmt` commands hang. Since FIBER auth
-    // doesn't use BLE SMP bonding at all — security is the PIN/FB01
-    // characteristic — we don't need either call. Pairable defaults to off,
-    // phone connections proceed without bonding, and the MGMT socket stays
-    // usable so btmgmt-driven advertising (button-gated) works.
+    // Register a pairing agent that auto-accepts incoming bonds. We don't
+    // depend on the SMP bond for security — FIBER auth is the app-layer
+    // FB01 PIN derived from the QR code shown on the device — but some
+    // Android builds proactively call createBond() right after the GATT
+    // connect. Without a registered agent, bluez rejects the SMP and the
+    // user sees a "Pair rejected by FIBER" toast plus a disconnect.
+    //
+    // Capability is *implicit* in bluer 0.17.4: it's derived from which
+    // callbacks are populated (see bluer/src/agent.rs::capability). With
+    // request_confirmation + request_authorization + authorize_service
+    // all set, the published capability is "DisplayYesNo", so bluez
+    // negotiates Numeric Comparison pairing — the phone shows a 6-digit
+    // passkey, user taps Confirm, bond completes. The bond persists on
+    // the phone, so subsequent connections come in silently.
+    //
+    // request_confirmation auto-accepts without comparing the passkey
+    // against anything on the device side (the LCD doesn't display it).
+    // That nominally breaks the MITM-protection part of Numeric
+    // Comparison, but the threat model already assumes the user is
+    // physically at the device (they just scanned the QR code), and the
+    // FB01 PIN flow is the real auth gate.
+    //
+    // History: 546d31b removed all agent / set_pairable calls on
+    // suspicion that they wedged the MGMT socket and broke external
+    // btmgmt invocations. Since 148ccae we no longer call btmgmt at all
+    // (advertising routes through bluer's D-Bus API), so any MGMT-state
+    // side effect from registering the agent is harmless. If
+    // bluer.advertise() turns out to regress, that's the next thing to
+    // check — see the commit message for context.
+    let _agent_handle = session
+        .register_agent(bluer::agent::Agent {
+            request_default: false,
+            request_authorization: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Just Works pairing from {} → accepting",
+                        req.device
+                    );
+                    Ok(())
+                })
+            })),
+            request_confirmation: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Numeric Comparison from {} passkey={:06} → accepting",
+                        req.device, req.passkey
+                    );
+                    Ok(())
+                })
+            })),
+            authorize_service: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Service authorization from {} uuid={} → accepting",
+                        req.device, req.service
+                    );
+                    Ok(())
+                })
+            })),
+            ..Default::default()
+        })
+        .await?;
+
+    // Pairable must be true for the Just Works bond above to actually go
+    // through — otherwise bluez refuses the SMP regardless of the agent.
+    adapter.set_pairable(true).await?;
 
     let mac = adapter.address().await?;
     let mac_str = mac.to_string();
