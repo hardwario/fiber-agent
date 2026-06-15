@@ -140,6 +140,15 @@ pub fn parse_uplink(payload: &[u8]) -> Result<StickerReading, String> {
     let rssi = rx_info.and_then(|r| r.get("rssi")).and_then(|v| v.as_i64()).map(|v| v as i32);
     let snr = rx_info.and_then(|r| r.get("snr")).and_then(|v| v.as_f64()).map(|v| v as f32);
 
+    // LoRaWAN frame counter — ChirpStack v4 surfaces this at the top level of
+    // the uplink event envelope. Inserted into `counters` so `message_id_for`
+    // can include it in the row identity; without it, two uplinks landing in
+    // the same UNIX second collide on `sticker_readings.message_id` and the
+    // second is silently dropped by INSERT OR IGNORE.
+    if let Some(f_cnt) = v.get("fCnt").and_then(|x| x.as_u64()) {
+        counters.insert("fCnt".to_string(), f_cnt);
+    }
+
     Ok(StickerReading {
         dev_eui, device_name, fields, counters, events, rssi, snr, received_at,
     })
@@ -234,6 +243,22 @@ mod tests {
 
         r.counters.remove("fCnt");
         assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-0");
+    }
+
+    #[test]
+    fn parse_uplink_extracts_fcnt_into_counters() {
+        let payload = r#"{
+            "deviceInfo": { "devEui": "AABB" },
+            "fCnt": 137,
+            "object": { "temperature": 20.0 },
+            "time": "2026-05-19T12:00:00Z"
+        }"#;
+        let r = parse_uplink(payload.as_bytes()).unwrap();
+        assert_eq!(r.counters.get("fCnt").copied(), Some(137));
+        // And the message_id derived from it must include the counter so two
+        // uplinks within the same UNIX second don't collide on the UNIQUE
+        // constraint in sticker_readings.
+        assert_eq!(message_id_for(&r, 1716120000), "aabb-1716120000-137");
     }
 
     #[test]
