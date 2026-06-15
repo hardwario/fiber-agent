@@ -68,6 +68,30 @@ impl ConfigApplier {
         })
     }
 
+    /// Fire-and-forget audit-log helper used by every apply_* method that
+    /// mutates the YAML. EU MDR Annex I §17.1 requires a trail of any
+    /// configuration change that affects device behaviour; before this
+    /// helper only `apply_device_label_change` actually wrote a row, so
+    /// the trail had silent gaps for thresholds, names, locations,
+    /// intervals, LoRaWAN sensor/threshold/sticker changes, etc.
+    ///
+    /// Failure to log is reported on stderr but never rolls back the
+    /// just-committed YAML write — same trade-off as `apply_device_label`.
+    fn log_audit(&self, operation: &str, details: String) {
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = storage.log_audit_event(
+                operation.to_string(),
+                Some("config".to_string()),
+                Some(details),
+            ) {
+                eprintln!(
+                    "[ConfigApplier] audit log_audit_event({}) failed: {}",
+                    operation, e,
+                );
+            }
+        }
+    }
+
     /// Apply threshold changes to sensor configuration
     pub fn apply_threshold_change(
         &self,
@@ -200,6 +224,14 @@ impl ConfigApplier {
             line, critical_low, warning_low, warning_high, critical_high
         );
 
+        self.log_audit(
+            "SET_SENSOR_THRESHOLD",
+            format!(
+                r#"{{"line":{},"critical_low":{},"alarm_low":{},"warning_low":{},"warning_high":{},"alarm_high":{},"critical_high":{}}}"#,
+                line, critical_low, alarm_low, warning_low, warning_high, alarm_high, critical_high,
+            ),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -328,6 +360,11 @@ impl ConfigApplier {
             line, name
         );
 
+        self.log_audit(
+            "SET_SENSOR_NAME",
+            format!(r#"{{"line":{},"name":{:?}}}"#, line, name),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -443,6 +480,11 @@ impl ConfigApplier {
         eprintln!(
             "[ConfigApplier] ✓ Sensor location updated for line {}: \"{}\"",
             line, location
+        );
+
+        self.log_audit(
+            "SET_SENSOR_LOCATION",
+            format!(r#"{{"line":{},"location":{:?}}}"#, line, location),
         );
 
         ApplyResult {
@@ -576,6 +618,14 @@ impl ConfigApplier {
             sample_interval_ms, aggregation_interval_ms, report_interval_ms
         );
 
+        self.log_audit(
+            "SET_SENSOR_INTERVAL",
+            format!(
+                r#"{{"sample_interval_ms":{},"aggregation_interval_ms":{},"report_interval_ms":{}}}"#,
+                sample_interval_ms, aggregation_interval_ms, report_interval_ms,
+            ),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -700,6 +750,11 @@ impl ConfigApplier {
         eprintln!(
             "[ConfigApplier] ✓ System info interval updated: {}s",
             interval_seconds
+        );
+
+        self.log_audit(
+            "SET_SYSTEM_INFO_INTERVAL",
+            format!(r#"{{"interval_seconds":{}}}"#, interval_seconds),
         );
 
         ApplyResult {
@@ -961,6 +1016,14 @@ impl ConfigApplier {
             dev_eui
         );
 
+        self.log_audit(
+            "SET_LORAWAN_SENSOR_CONFIG",
+            format!(
+                r#"{{"dev_eui":{:?},"name":{:?},"serial_number":{:?},"location":{:?}}}"#,
+                dev_eui, name, serial_number, location,
+            ),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -1117,6 +1180,11 @@ impl ConfigApplier {
                 );
             }
         }
+
+        self.log_audit(
+            "REMOVE_LORAWAN_SENSOR_CONFIG",
+            format!(r#"{{"dev_eui":{:?}}}"#, dev_eui),
+        );
 
         ApplyResult {
             success: true,
@@ -1423,6 +1491,11 @@ impl ConfigApplier {
 
         eprintln!("[ConfigApplier] ✓ {} updated: {}%", display_name, value);
 
+        self.log_audit(
+            "SET_SYSTEM_FIELD",
+            format!(r#"{{"field":{:?},"value":{}}}"#, field_name, value),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -1575,13 +1648,31 @@ impl ConfigApplier {
                 backup_path: backup_str, error_message: Some(e), applied_at };
         }
 
-        let new_content = serde_yaml::to_string(&cfg).map_err(|e| e.to_string());
-        match new_content.and_then(|c| fs::write(&config_file, c).map_err(|e| e.to_string())) {
-            Ok(_) => ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: None, applied_at },
-            Err(e) => ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at },
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        // Atomic write + rollback on failure, matching every other apply_*
+        // method. fs::write directly would truncate the YAML mid-write on
+        // power loss, leaving the device with an unparseable config — and
+        // there's no rollback path back to the backup we just took.
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
+            }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
         }
+        self.log_audit(
+            "SET_LORAWAN_FIELD_THRESHOLD",
+            format!(
+                r#"{{"dev_eui":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?}}}"#,
+                dev_eui, field, critical_low, warning_low, warning_high, critical_high,
+            ),
+        );
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
     }
 
     /// Remove a per-field threshold from lorawan.sensors[*].field_thresholds.
@@ -1601,14 +1692,34 @@ impl ConfigApplier {
         let backup_path = self.create_backup(&config_file, &content);
         let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
 
-        let _ = self.remove_field_threshold(&mut cfg, &dev_eui, &field);
-        let new_content = serde_yaml::to_string(&cfg).map_err(|e| e.to_string());
-        match new_content.and_then(|c| fs::write(&config_file, c).map_err(|e| e.to_string())) {
-            Ok(_) => ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: None, applied_at },
-            Err(e) => ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at },
+        // Surface whether anything was actually removed so callers can tell
+        // a real delete from a misspelled-dev_eui/no-op. The YAML rewrite
+        // still happens either way because re-serialising is harmless.
+        let removed = self.remove_field_threshold(&mut cfg, &dev_eui, &field).unwrap_or(false);
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
+            }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
         }
+        if !removed {
+            eprintln!(
+                "[ConfigApplier] delete_lorawan_field_threshold: no threshold matched (dev_eui={}, field={}) — wrote yaml anyway",
+                dev_eui, field,
+            );
+        }
+        self.log_audit(
+            "DELETE_LORAWAN_FIELD_THRESHOLD",
+            format!(r#"{{"dev_eui":{:?},"field":{:?},"removed":{}}}"#, dev_eui, field, removed),
+        );
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
     }
 
     fn upsert_field_threshold(
@@ -1673,23 +1784,30 @@ impl ConfigApplier {
         Ok(())
     }
 
-    fn remove_field_threshold(&self, config: &mut Value, dev_eui: &str, field: &str) -> Result<(), String> {
+    /// Returns Ok(true) if a threshold was actually removed, Ok(false) if
+    /// the dev_eui/field pair didn't match anything (no-op).
+    fn remove_field_threshold(&self, config: &mut Value, dev_eui: &str, field: &str) -> Result<bool, String> {
         let lorawan = config.as_mapping_mut()
             .and_then(|m| m.get_mut(&Value::String("lorawan".into())))
             .and_then(|v| v.as_mapping_mut());
-        let Some(lorawan_map) = lorawan else { return Ok(()); };
+        let Some(lorawan_map) = lorawan else { return Ok(false); };
         let Some(sensors) = lorawan_map.get_mut(&Value::String("sensors".into()))
-            .and_then(|v| v.as_sequence_mut()) else { return Ok(()); };
+            .and_then(|v| v.as_sequence_mut()) else { return Ok(false); };
+        let mut removed = false;
         for s in sensors.iter_mut() {
             if s.get("dev_eui").and_then(|v| v.as_str()) != Some(dev_eui) { continue; }
             let sm = match s.as_mapping_mut() { Some(m) => m, None => continue };
             if let Some(thresholds) = sm.get_mut(&Value::String("field_thresholds".into()))
                 .and_then(|v| v.as_sequence_mut())
             {
+                let before = thresholds.len();
                 thresholds.retain(|t| t.get("field").and_then(|v| v.as_str()) != Some(field));
+                if thresholds.len() != before {
+                    removed = true;
+                }
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// Create a timestamped backup of the config file
