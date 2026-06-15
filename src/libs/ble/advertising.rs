@@ -61,39 +61,59 @@ pub fn stop_persistent_advertising() -> Result<(), String> {
     Ok(())
 }
 
-/// Runs `btmgmt <args>` via the `timeout(1)` wrapper so a stuck btmgmt
-/// process cannot wedge the worker thread waiting on `.output()`.
+/// Quote a single argv element for safe inclusion in a `sh -c` command
+/// string. Wraps in single quotes; any embedded single quotes are
+/// terminated, escaped, and reopened (the standard POSIX idiom).
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Runs `btmgmt <args>` via `sh -c "exec timeout 5 btmgmt ARGS </dev/null"`.
 ///
-/// stdin is explicitly closed (Stdio::null()) so btmgmt's underlying
-/// bt_shell readline loop sees EOF and exits right after running the
-/// argv command. Without this, btmgmt inherits stdin from the parent
-/// process (fiber.service via systemd-journald) and waits indefinitely
-/// for the next interactive command — which is what was making
-/// `add-adv` / `rm-adv` hang from inside fiber_app even though the same
-/// command exits cleanly when run by hand in a regular shell.
-///
-/// The 5-second cap is well above any normal btmgmt round-trip
-/// (<100 ms) so the timeout only fires on a real hang.
+/// Why the shell wrapper instead of `Command::new("btmgmt")`:
+///   - btmgmt's underlying bt_shell readline loop waits forever on stdin
+///     when invoked non-interactively if stdin is not at EOF. The shell
+///     redirect `< /dev/null` guarantees an immediately-closed stdin
+///     before `exec` hands off to btmgmt — equivalent to the manual
+///     `btmgmt ... < /dev/null` command that the user verified works.
+///   - Rust's `Stdio::null()` *should* be equivalent but in practice the
+///     systemd-spawned fiber.service still wedges btmgmt; routing through
+///     a fresh shell process with an explicit redirect side-steps any
+///     fd-inheritance subtlety.
+///   - `exec` makes the shell replace itself with timeout, so the
+///     process tree stays clean (no leftover sh wrapper).
+///   - `timeout 5` is a defense in depth: if btmgmt STILL manages to
+///     hang, we get our worker thread back after 5 s with exit 124.
 fn run_btmgmt(args: &[&str]) -> Result<(), String> {
-    let mut argv: Vec<&str> = vec!["5", "btmgmt"];
-    argv.extend(args.iter().copied());
-    let output = Command::new("timeout")
-        .args(&argv)
+    let quoted_args: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    let cmd = format!("exec timeout 5 btmgmt {} </dev/null", quoted_args.join(" "));
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("Failed to execute timeout 5 btmgmt {}: {}", args.join(" "), e))?;
+        .map_err(|e| format!("Failed to execute btmgmt {}: {}", args.join(" "), e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // timeout(1) exits 124 when the command timed out. Surface that
-        // distinctly so log readers know the wrapper kicked in.
         let code = output.status.code().unwrap_or(-1);
         if code == 124 {
             return Err(format!("btmgmt {} timed out after 5s", args.join(" ")));
         }
-        return Err(format!("btmgmt {} failed: {}", args.join(" "), stderr));
+        return Err(format!("btmgmt {} failed (exit {}): {}", args.join(" "), code, stderr));
     }
     Ok(())
 }
