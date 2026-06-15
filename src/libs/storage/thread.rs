@@ -729,7 +729,16 @@ impl StorageThread {
                     }
 
                     StorageMessage::Flush => {
-                        let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
+                        // PASSIVE on the hot path: never blocks new writers
+                        // and never waits for active readers. RESTART (the
+                        // mode we used to issue here) is appropriate at
+                        // shutdown when you want everyone to drop the WAL,
+                        // not for periodic app-driven flushes — under load
+                        // it stalled the storage thread for tens to
+                        // hundreds of ms while reader-side connections
+                        // (export drain, replay) released pages. RESTART is
+                        // still used by the Shutdown handler below.
+                        let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
                         pending_writes = 0;
                         last_flush = std::time::Instant::now();
                     }
