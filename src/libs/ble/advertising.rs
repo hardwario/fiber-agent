@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Hook from the button monitor: the user just held UP and entered the
 /// QR/pairing screen. Turn the LE advertisement ON so the phone can find
@@ -61,16 +61,27 @@ pub fn stop_persistent_advertising() -> Result<(), String> {
     Ok(())
 }
 
-/// Runs `btmgmt <args>` via the `timeout(1)` wrapper so a stuck/hung btmgmt
-/// process (observed with `rm-adv` against a non-existent instance when run
-/// non-interactively from the fiber.service cgroup) cannot wedge the worker
-/// thread waiting on `.output()`. The 5-second cap is well above any normal
-/// btmgmt round-trip (<100 ms) so it only fires on a real hang.
+/// Runs `btmgmt <args>` via the `timeout(1)` wrapper so a stuck btmgmt
+/// process cannot wedge the worker thread waiting on `.output()`.
+///
+/// stdin is explicitly closed (Stdio::null()) so btmgmt's underlying
+/// bt_shell readline loop sees EOF and exits right after running the
+/// argv command. Without this, btmgmt inherits stdin from the parent
+/// process (fiber.service via systemd-journald) and waits indefinitely
+/// for the next interactive command — which is what was making
+/// `add-adv` / `rm-adv` hang from inside fiber_app even though the same
+/// command exits cleanly when run by hand in a regular shell.
+///
+/// The 5-second cap is well above any normal btmgmt round-trip
+/// (<100 ms) so the timeout only fires on a real hang.
 fn run_btmgmt(args: &[&str]) -> Result<(), String> {
     let mut argv: Vec<&str> = vec!["5", "btmgmt"];
     argv.extend(args.iter().copied());
     let output = Command::new("timeout")
         .args(&argv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Failed to execute timeout 5 btmgmt {}: {}", args.join(" "), e))?;
 
