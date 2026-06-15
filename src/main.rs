@@ -1,7 +1,7 @@
 // FIBER Medical Thermometer main application
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
@@ -665,12 +665,39 @@ fn main() -> io::Result<()> {
     // Application is now running with background monitoring
     eprintln!("[main] Application running with medical data persistence. Press Ctrl+C to exit.");
 
-    // Keep the application alive
-    // In a full application, this would run the main event loop
-    // (button handling, display updates, sensor reading, etc.)
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    // Install a signal handler so SIGINT/SIGTERM drives a graceful shutdown
+    // path (flush export cursors, drop background tasks, run Drop impls)
+    // instead of the kernel killing us mid-write. The previous busy-loop
+    // had no exit path, so PowerMonitor/Storage/Export never got to run
+    // their Drop cleanup on a stop signal.
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+    let shutdown_signal_handler = shutdown_signal.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        eprintln!("[main] Shutdown signal received");
+        shutdown_signal_handler.store(true, Ordering::SeqCst);
+    }) {
+        eprintln!("[main] WARN: failed to install signal handler: {} — shutdown will be ungraceful", e);
     }
 
-    // Note: PowerMonitor, AccelerometerMonitor, and SensorMonitor will be dropped here and shutdown gracefully
+    // Wait for signal — background monitors do all the work.
+    while !shutdown_signal.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    eprintln!("[main] Shutting down …");
+
+    // Tell the mqtt_export orchestrator to break its loop. This drops
+    // in-flight publishes and final cursor advances cleanly instead of
+    // the OS reaping the thread mid-write.
+    if let Some(eh) = export_handle_opt.as_ref() {
+        if let Err(e) = eh.shutdown() {
+            eprintln!("[main] export shutdown send failed: {}", e);
+        }
+    }
+
+    // Best-effort: give background threads a short window to finish.
+    // Storage / sensor / display monitors run their Drop on scope exit.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    eprintln!("[main] Goodbye");
+    Ok(())
 }
