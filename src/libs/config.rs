@@ -978,6 +978,20 @@ impl Config {
             }
         }
 
+        // Canonicalize dev_eui to lowercase across all LoRaWAN sensor entries.
+        // ChirpStack lowercases the dev_eui in every uplink (chirpstack.rs ::
+        // parse_uplink), and SQLite's default BINARY collation is
+        // case-sensitive — a YAML carrying "70B3D5…" would never match the
+        // "70b3d5…" rows written by save-and-feed, masking provisioning epoch
+        // bumps and de-provisioning markers. Normalizing on load means every
+        // downstream comparison (config_applier search, lorawan state lookup,
+        // storage writes) sees one canonical form.
+        if let Some(ref mut lorawan) = config.lorawan {
+            for sensor in lorawan.sensors.iter_mut() {
+                sensor.dev_eui = sensor.dev_eui.to_lowercase();
+            }
+        }
+
         Ok(config)
     }
 

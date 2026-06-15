@@ -761,7 +761,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 let name = challenge.params.get("name")
                     .and_then(|v| v.as_str())
@@ -786,7 +786,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
                 let field = challenge.params.get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
@@ -804,7 +804,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
                 let field = challenge.params.get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
@@ -815,7 +815,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 let name = challenge.params.get("name")
                     .and_then(|v| v.as_str())
@@ -897,7 +897,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
             }
