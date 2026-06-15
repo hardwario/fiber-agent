@@ -26,6 +26,7 @@ pub mod monitor;
 pub mod screens;
 pub mod buttons;
 pub mod icons;
+pub mod splash;
 
 pub use buttons::ButtonMonitor;
 

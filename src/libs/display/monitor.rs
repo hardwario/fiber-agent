@@ -47,6 +47,17 @@ pub fn display_loop(
         }
     };
 
+    // Boot splash: render the HARDWARIO logo once and dwell for a short
+    // moment before the normal render loop takes over. Doing it here
+    // (inside the display thread, after St7920::new) keeps main.rs out of
+    // the drawing path — the display is only owned by this thread.
+    display.clear_buffer();
+    super::splash::render_splash(&mut display);
+    if let Err(e) = display.flush() {
+        eprintln!("[DisplayMonitor] Boot splash flush failed: {}", e);
+    }
+    thread::sleep(super::splash::SPLASH_DURATION);
+
     const UPDATE_INTERVAL_MS: u64 = 250; // Update display every 250ms
     let update_interval = Duration::from_millis(UPDATE_INTERVAL_MS);
     let mut last_update = std::time::Instant::now();
