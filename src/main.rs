@@ -310,7 +310,15 @@ fn main() -> io::Result<()> {
     // them to configured destinations at QoS 1. The thread owns its own
     // tokio runtime; we hold the JoinHandle in `_export_thread` so it stays
     // alive for the rest of `main`.
-    let _export_thread: Option<std::thread::JoinHandle<()>> = if config.mqtt
+    //
+    // The ExportHandle is captured back out of the thread via a oneshot so
+    // we can hand it to the MQTT monitor for ResetExportCursor — without
+    // that wiring the orchestrator's in-memory cursor cache survives any
+    // DB-side reset until the daemon restarts.
+    let (export_handle_opt, _export_thread): (
+        Option<fiber_app::libs::mqtt_export::ExportHandle>,
+        Option<std::thread::JoinHandle<()>>,
+    ) = if config.mqtt
         .as_ref()
         .map(|m| m.export.enabled)
         .unwrap_or(false)
@@ -319,6 +327,8 @@ fn main() -> io::Result<()> {
         let db_path = std::path::PathBuf::from(&config.storage.db_path);
         let storage_for_export = storage_handle.clone();
         let host_for_export = hostname.clone();
+        let (handle_tx, handle_rx) =
+            std::sync::mpsc::channel::<fiber_app::libs::mqtt_export::ExportHandle>();
         match std::thread::Builder::new()
             .name("fiber-mqtt-export".into())
             .spawn(move || {
@@ -333,12 +343,17 @@ fn main() -> io::Result<()> {
                     }
                 };
                 rt.block_on(async move {
-                    let (_handle, fut) = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
+                    let (handle, fut) = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
                         export_cfg,
                         db_path,
                         storage_for_export,
                         host_for_export,
                     );
+                    // Hand the orchestrator handle back to main so MQTT
+                    // command dispatch can invalidate the in-memory cursor
+                    // cache on ResetExportCursor. Failure to send means main
+                    // already gave up on us — keep running anyway.
+                    let _ = handle_tx.send(handle);
                     // Drive the orchestrator inline on this thread's runtime.
                     // It loops until it receives Shutdown (which we never send
                     // from here) — effectively for the lifetime of the process.
@@ -348,16 +363,27 @@ fn main() -> io::Result<()> {
         {
             Ok(h) => {
                 eprintln!("[main] mqtt_export thread spawned");
-                Some(h)
+                // Wait for the orchestrator to publish its handle. Short
+                // timeout so a stuck export thread doesn't gate boot.
+                let handle = handle_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .ok();
+                if handle.is_none() {
+                    eprintln!(
+                        "[main] Warning: mqtt_export handle not received within 2s — \
+                         ResetExportCursor cache invalidation will be unavailable"
+                    );
+                }
+                (handle, Some(h))
             }
             Err(e) => {
                 eprintln!("[main] Warning: failed to spawn mqtt_export thread: {}", e);
-                None
+                (None, None)
             }
         }
     } else {
         eprintln!("[main] mqtt.export.enabled=false — exporter not started");
-        None
+        (None, None)
     };
 
     // Build the shared LoRa configs handle from the initial config snapshot.
@@ -402,6 +428,9 @@ fn main() -> io::Result<()> {
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
+                if let Some(ref eh) = export_handle_opt {
+                    monitor.set_export_handle(eh.clone());
+                }
                 let handle = monitor.handle();
                 (Some(handle), Some(monitor))
             }

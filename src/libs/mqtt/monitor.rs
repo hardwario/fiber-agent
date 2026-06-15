@@ -22,11 +22,18 @@ use super::topics::TopicBuilder;
 use crate::libs::authorization::AuthorizationManager;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
+use crate::libs::mqtt_export::ExportHandle;
 use crate::libs::pairing::PairingHandle;
 use std::sync::Mutex;
 
 /// Shared pairing handle that can be set after MQTT monitor is created
 pub type SharedPairingHandle = Arc<Mutex<Option<PairingHandle>>>;
+
+/// Shared mqtt_export handle, populated after the export thread is spawned.
+/// Used by ResetExportCursor to invalidate the orchestrator's in-memory
+/// cursor cache — without it, the cache out-lives a DB-side reset and the
+/// drain silently keeps skipping rows the operator asked to replay.
+pub type SharedExportHandle = Arc<Mutex<Option<ExportHandle>>>;
 
 /// Shared STM bridge for hardware commands
 pub type SharedStmBridge = Arc<Mutex<crate::drivers::StmBridge>>;
@@ -537,6 +544,7 @@ pub struct MqttMonitor {
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
     lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+    export_handle_slot: SharedExportHandle,
 }
 
 impl MqttMonitor {
@@ -611,6 +619,11 @@ impl MqttMonitor {
         let lorawan_configs_clone = lorawan_configs.clone();
         let storage_handle_clone = storage_handle.clone();
 
+        // Slot for the mqtt_export handle. main.rs fills this in after the
+        // export thread is spawned (see `set_export_handle`).
+        let export_handle_slot: SharedExportHandle = Arc::new(Mutex::new(None));
+        let export_handle_slot_clone = export_handle_slot.clone();
+
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
             if let Err(e) = Self::monitor_loop(
@@ -630,6 +643,7 @@ impl MqttMonitor {
                 lorawan_state_slot_clone,
                 lorawan_configs_clone,
                 storage_handle_clone,
+                export_handle_slot_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -649,6 +663,7 @@ impl MqttMonitor {
             buzzer_priority,
             lorawan_state_slot,
             lorawan_configs,
+            export_handle_slot,
         })
     }
 
@@ -665,6 +680,17 @@ impl MqttMonitor {
         if let Ok(mut g) = self.lorawan_state_slot.lock() {
             *g = Some(state);
             eprintln!("[MQTT Monitor] LoRaWAN state handle set");
+        }
+    }
+
+    /// Set the mqtt_export handle (call after MqttExportThread is spawned).
+    /// Without this, ResetExportCursor commands only reset the persisted
+    /// SQLite cursor — the orchestrator's in-memory cache continues to skip
+    /// the rows the operator asked to replay until the process restarts.
+    pub fn set_export_handle(&self, handle: ExportHandle) {
+        if let Ok(mut g) = self.export_handle_slot.lock() {
+            *g = Some(handle);
+            eprintln!("[MQTT Monitor] Export handle set");
         }
     }
 
@@ -696,6 +722,7 @@ impl MqttMonitor {
         lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: Option<crate::libs::storage::StorageHandle>,
+        export_handle_slot: SharedExportHandle,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -1117,6 +1144,7 @@ impl MqttMonitor {
                                                                     &lorawan_state_slot,
                                                                     &lorawan_configs,
                                                                     &storage_handle,
+                                                                    &export_handle_slot,
                                                                 ) {
                                                                     eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
                                                                     if let Err(publish_err) = publisher.publish_error(
@@ -1242,6 +1270,7 @@ impl MqttMonitor {
                                                                         &lorawan_state_slot,
                                                                         &lorawan_configs,
                                                                         &storage_handle,
+                                                                        &export_handle_slot,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
@@ -1900,6 +1929,7 @@ impl MqttMonitor {
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: &Option<crate::libs::storage::StorageHandle>,
+        export_handle_slot: &SharedExportHandle,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -2387,26 +2417,44 @@ impl MqttMonitor {
                 }
             }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
-                // Forward the reset to the storage thread directly. The
-                // export orchestrator's drain loop will observe `cursor=0` on
-                // its next tick and replay the stream from row 1. We don't
-                // require an `ExportHandle` here — going through storage is
-                // simpler and keeps the dispatch path independent of whether
-                // the export orchestrator is running.
+                // The reset is two-phase:
+                //   1. Persisted SQLite cursor → storage handle (so a restart
+                //      reads cursor=0 and replays).
+                //   2. In-memory cache on the export orchestrator → export
+                //      handle. Without this the drain loop keeps using its
+                //      cached cursor value and the operator-issued reset is
+                //      silently a no-op until the daemon restarts.
                 let Some(storage) = storage_handle.as_ref() else {
                     return Err("Storage handle not available for ResetExportCursor".to_string());
                 };
-                if stream == "all" {
-                    for s in ["sticker", "probe", "alarm"] {
-                        if let Err(e) = storage.reset_export_cursor(broker_id.clone(), s.into()) {
+                let export_handle = export_handle_slot.lock().ok().and_then(|g| g.clone());
+                let single = [stream.as_str()];
+                let streams_to_reset: &[&str] = if stream == "all" {
+                    &["sticker", "probe", "probe_1m", "alarm"]
+                } else {
+                    &single
+                };
+                for s in streams_to_reset {
+                    if let Err(e) = storage.reset_export_cursor(broker_id.clone(), s.to_string()) {
+                        eprintln!(
+                            "[MQTT Monitor] reset_export_cursor({}, {}) failed: {}",
+                            broker_id, s, e
+                        );
+                    }
+                    if let Some(eh) = export_handle.as_ref() {
+                        if let Err(e) = eh.reset_cursor(broker_id.clone(), s.to_string()) {
                             eprintln!(
-                                "[MQTT Monitor] reset_export_cursor({}, {}) failed: {}",
+                                "[MQTT Monitor] export_handle.reset_cursor({}, {}) failed: {}",
                                 broker_id, s, e
                             );
                         }
                     }
-                } else if let Err(e) = storage.reset_export_cursor(broker_id.clone(), stream.clone()) {
-                    return Err(format!("reset_export_cursor({}, {}): {}", broker_id, stream, e));
+                }
+                if export_handle.is_none() {
+                    eprintln!(
+                        "[MQTT Monitor] WARN: ResetExportCursor without ExportHandle — \
+                         orchestrator's in-memory cache will keep its stale cursor until restart"
+                    );
                 }
                 eprintln!(
                     "[MQTT Monitor] ✓ Export cursor reset for ({}, {})",
