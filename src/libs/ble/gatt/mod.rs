@@ -222,28 +222,30 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    // Drive advertising through bluer (D-Bus to bluez) instead of the
-    // btmgmt CLI. The previous btmgmt approach hangs on this device:
-    // `btmgmt add-adv` blocks for at least 5 s when run from any
-    // process while fiber.service is up. bluer's D-Bus call goes
-    // through the same MGMT path internally but doesn't fork an
-    // external CLI so it doesn't hit the same wedge.
+    // Minimal Advertisement: only the 128-bit FIBER service UUID.
     //
-    // Default Advertisement is connectable (peripheral), no extended
-    // PHY hints, local_name from the controller alias. With kernel
-    // 6.12.93 (PR #7023, arm,pl011-axi compatible) the BCM4345C0 +
-    // bluez 5.72 combination now responds to extended advertisement
-    // setup MGMT commands too — the regression we worked around with
-    // btmgmt no longer applies.
+    // Why no `local_name` and no `discoverable`: the combined size of
+    // Flags (3 B) + 128-bit ServiceUUID (18 B) + LocalName "fiber-xxxxxxxx"
+    // (18 B) ≈ 39 B exceeds the 31-byte legacy advertising payload limit.
+    // bluez 5.72 then escalates to EXTENDED advertising via
+    // MGMT_OP_ADD_EXT_ADV_DATA, which on the BCM4345C0 still fails (the
+    // remnant of the periphid regression — PR #7023 fixed the BT bringup
+    // path but not the extended-adv-data path through D-Bus).
+    //
+    // Just the service UUID + auto-added Flags fits comfortably in 21 B —
+    // bluez stays on the legacy path and the request succeeds. The phone
+    // discovers the device by FIBER_SERVICE_UUID and uses bluez's adapter
+    // alias (set above) as the display name once connected. If we later
+    // want the name in the scan response and have it survive on legacy,
+    // we'd have to push it into the scan response slot specifically rather
+    // than as a primary-payload `local_name`.
     let adv = Advertisement {
         service_uuids: std::iter::once(service::FIBER_SERVICE_UUID).collect(),
-        local_name: Some(advertising_name.clone()),
-        discoverable: Some(true),
         ..Default::default()
     };
     let adv_handle = adapter.advertise(adv).await?;
     eprintln!(
-        "[BleMonitor] BLE advertising started (name={}, mac={})",
+        "[BleMonitor] BLE advertising started (UUID-only, alias={}, mac={})",
         advertising_name, mac_str
     );
 
