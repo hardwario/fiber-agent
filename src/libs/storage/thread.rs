@@ -510,6 +510,16 @@ impl StorageThread {
         let raw_retention_interval = Duration::from_secs(3600);
         let mut last_raw_retention_run = std::time::Instant::now();
 
+        // Sticker retention sweep: every hour, drop sticker_readings older
+        // than 30 days. The matching aggregate (probe_1m / minute aggregates)
+        // is shipped via the export pipeline and replayed on demand by
+        // viewers, so raw sticker rows past the live window are safe to drop.
+        // Without this the table grew unbounded — the StorageHandle method
+        // exists but had no scheduler hooked up.
+        const STICKER_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
+        let sticker_retention_interval = Duration::from_secs(3600);
+        let mut last_sticker_retention_run = std::time::Instant::now();
+
         eprintln!(
             "STORAGE THREAD: Started, database: {}, max size: {}GB",
             db_path, max_size_gb
@@ -586,6 +596,27 @@ impl StorageThread {
                             }
                         }
                         last_raw_retention_run = std::time::Instant::now();
+                    }
+                    if last_sticker_retention_run.elapsed() >= sticker_retention_interval
+                        && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
+                    {
+                        match RetentionPolicy::default()
+                            .sweep_sticker_readings(&mut conn, STICKER_RETENTION_SECONDS)
+                        {
+                            Ok(stats) if stats.purged > 0 => {
+                                eprintln!(
+                                    "STORAGE THREAD: sticker retention swept {} sticker_readings rows older than {} days (unexported_dropped={})",
+                                    stats.purged,
+                                    STICKER_RETENTION_SECONDS / 86400,
+                                    stats.unexported_dropped,
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: sticker retention sweep failed: {}", e);
+                            }
+                        }
+                        last_sticker_retention_run = std::time::Instant::now();
                     }
                     if consecutive_write_failures >= RECONNECT_FAILURE_THRESHOLD
                         && next_reconnect_attempt
