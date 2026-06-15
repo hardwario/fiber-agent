@@ -181,26 +181,14 @@ async fn run_server(
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
-    // Register a "Just Works" (NoInputNoOutput) pairing agent. Otherwise,
-    // some phones (Android in particular) initiate BLE SMP bonding on first
-    // GATT connect; with no agent registered bluez rejects the bond and the
-    // phone disconnects + retries in a loop, surfacing as "Pair rejected"
-    // on the phone UI. Accepting authorization unconditionally makes the
-    // bond succeed silently — the actual FIBER auth still happens at the
-    // app layer via the FB01 PIN characteristic; this agent only satisfies
-    // the OS-level BLE bonding handshake.
-    let _agent_handle = session
-        .register_agent(bluer::agent::Agent {
-            request_default: false,
-            request_authorization: Some(Box::new(|_req| {
-                Box::pin(async move { Ok(()) })
-            })),
-            authorize_service: Some(Box::new(|_req| {
-                Box::pin(async move { Ok(()) })
-            })),
-            ..Default::default()
-        })
-        .await?;
+    // Deliberately NOT registering a pairing agent or calling set_pairable.
+    // Empirically, both register_agent and set_pairable(true) appear to
+    // wedge the MGMT socket on this firmware (bluez 5.72 + BCM4345C0):
+    // afterwards even external `btmgmt` commands hang. Since FIBER auth
+    // doesn't use BLE SMP bonding at all — security is the PIN/FB01
+    // characteristic — we don't need either call. Pairable defaults to off,
+    // phone connections proceed without bonding, and the MGMT socket stays
+    // usable so btmgmt-driven advertising (button-gated) works.
 
     let mac = adapter.address().await?;
     let mac_str = mac.to_string();
@@ -232,12 +220,6 @@ async fn run_server(
 
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
-
-    // Pairable=true + the Just Works agent registered above lets bonding
-    // succeed silently when the OS does try to bond. Kept on so that if a
-    // phone initiates BLE SMP during the brief QR/pairing window the bond
-    // doesn't get rejected mid-flow.
-    adapter.set_pairable(true).await?;
 
     // NOTE: BLE advertising is NOT started here. The device stays invisible
     // to phone scans by default. Advertising is turned on only while the
