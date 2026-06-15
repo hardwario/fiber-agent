@@ -169,6 +169,12 @@ impl MqttExportThread {
 
             let mut tick =
                 tokio::time::interval(Duration::from_millis(cfg.drain_interval_ms.max(50)));
+            // Without this, a long-blocking drain pass (slow SQLCipher under
+            // load, broker timeout on a QoS-1 publish) leaves the interval
+            // with N missed ticks, which the default Burst behaviour then
+            // replays back-to-back — pegging CPU and re-publishing the same
+            // batches until the backlog clears.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
                 tokio::select! {
