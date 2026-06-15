@@ -37,25 +37,61 @@ impl Database {
             max_size_bytes,
         };
 
-        // Generate DB encryption key if it doesn't exist
+        // Generate DB encryption key if it doesn't exist.
+        //
+        // Production semantics: the systemd/yocto setup pre-creates
+        // /data/fiber/config — so if it exists but we then fail to write
+        // the key (disk full, EROFS, partial mount), that's a real prod
+        // problem and we MUST refuse to continue: otherwise the next
+        // configure_pragmas pass opens the DB without PRAGMA key, the
+        // sqlcipher file is created unencrypted, and the next boot (once
+        // the key lands) can never decrypt it.
+        //
+        // Test/dev semantics: if the parent dir doesn't exist and we can't
+        // create it (sandboxed test env), there's no place to put a key —
+        // fall back to "no encryption" with a loud warning so the test
+        // suite continues to work without becoming a vector for prod
+        // mis-configuration.
         let key_path = std::path::Path::new("/data/fiber/config/db_encryption.key");
         if !key_path.exists() {
-            use rand::Rng;
-            let key: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen()).collect();
-            let hex_key = hex::encode(&key);
-            if let Some(parent) = key_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(key_path, &hex_key);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    key_path,
-                    std::fs::Permissions::from_mode(0o600),
+            let parent = key_path.parent();
+            let parent_ok = parent
+                .map(|p| std::fs::create_dir_all(p).is_ok() && p.exists())
+                .unwrap_or(false);
+            if !parent_ok {
+                eprintln!(
+                    "[storage] WARN: encryption key dir {:?} is unavailable — \
+                     database will be opened WITHOUT SQLCipher encryption \
+                     (acceptable in tests / dev; misconfigured in production)",
+                    parent,
                 );
+            } else {
+                use rand::Rng;
+                let key: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen()).collect();
+                let hex_key = hex::encode(&key);
+                std::fs::write(key_path, &hex_key).map_err(|e| {
+                    StorageError::IoError(format!(
+                        "Failed to write DB encryption key at {:?}: {} \
+                         (refusing to open DB without a key would leave it unencrypted)",
+                        key_path, e,
+                    ))
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        key_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    )
+                    .map_err(|e| {
+                        StorageError::IoError(format!(
+                            "Failed to chmod 0600 the DB encryption key at {:?}: {}",
+                            key_path, e
+                        ))
+                    })?;
+                }
+                eprintln!("Generated new database encryption key");
             }
-            eprintln!("Generated new database encryption key");
         }
 
         // Initialize the database with schema
@@ -100,15 +136,32 @@ impl Database {
     /// - Foreign keys: Referential integrity
     /// - Synchronous: Balance safety and performance
     fn configure_pragmas(&self, conn: &Connection) -> StorageResult<()> {
-        // Encryption key (SQLCipher) — must be first pragma
-        if let Ok(key) = std::fs::read_to_string("/data/fiber/config/db_encryption.key") {
+        // Encryption key (SQLCipher) — must be first pragma. If the key file
+        // exists but is unreadable or empty/non-hex, we refuse to continue —
+        // the alternative is silently opening the DB un-keyed, which then
+        // either creates an unencrypted file (first boot) or fails to read
+        // back any encrypted rows (existing install). Both are worse than a
+        // hard error at startup.
+        let key_path = std::path::Path::new("/data/fiber/config/db_encryption.key");
+        if key_path.exists() {
+            let key = std::fs::read_to_string(key_path).map_err(|e| {
+                StorageError::DatabaseInitError(format!(
+                    "Encryption key at {:?} is unreadable: {}",
+                    key_path, e
+                ))
+            })?;
             let key = key.trim();
-            if !key.is_empty() {
-                conn.execute_batch(&format!("PRAGMA key = '{}';", key))
-                    .map_err(|e| StorageError::DatabaseInitError(
-                        format!("Failed to set encryption key: {}", e),
-                    ))?;
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(StorageError::DatabaseInitError(format!(
+                    "Encryption key at {:?} is empty or not hex; refusing to \
+                     open DB un-keyed",
+                    key_path
+                )));
             }
+            conn.execute_batch(&format!("PRAGMA key = '{}';", key))
+                .map_err(|e| StorageError::DatabaseInitError(
+                    format!("Failed to set encryption key: {}", e),
+                ))?;
         }
 
         // Enable WAL mode for crash-safe operation (required for medical devices)
