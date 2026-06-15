@@ -190,15 +190,50 @@ fn lorawan_loop(
             let publish_interval = Duration::from_secs(config.publish_interval_s);
             let timeout_secs = config.sensor_timeout_s;
 
+            // Dedicated event pump. `EventLoop::poll()` is NOT cancel-safe —
+            // dropping the future mid-read loses bytes from the in-progress
+            // MQTT frame and corrupts the eventloop's state. We previously
+            // wrapped poll() in `tokio::time::timeout(1s, ...)` to also do
+            // periodic work, which silently dropped uplink frames whenever
+            // the timeout fired mid-frame. Now: a dedicated task owns the
+            // eventloop, never cancels poll(), and feeds events through a
+            // bounded mpsc to the periodic-work loop. mpsc::Receiver::recv
+            // IS cancel-safe so the outer select! below is safe.
+            let (event_tx, mut event_rx) =
+                tokio::sync::mpsc::channel::<Result<Event, rumqttc::ConnectionError>>(64);
+            let pump_handle = tokio::spawn(async move {
+                loop {
+                    match eventloop.poll().await {
+                        Ok(ev) => {
+                            if event_tx.send(Ok(ev)).await.is_err() {
+                                break; // receiver dropped (outer reconnect)
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(Err(e)).await;
+                            break;
+                        }
+                    }
+                }
+            });
+
             // Event loop
             loop {
                 if shutdown_flag.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // Poll with a timeout so we can check shutdown and publish periodically
-                match tokio::time::timeout(Duration::from_secs(1), eventloop.poll()).await {
-                    Ok(Ok(Event::Incoming(Incoming::Publish(publish)))) => {
+                // Select between events from the pump and a 1-second tick
+                // for periodic work. event_rx.recv() is cancel-safe; sleep
+                // is cancel-safe; the eventloop itself never gets cancelled.
+                let polled = tokio::select! {
+                    biased;
+                    ev = event_rx.recv() => Some(ev),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => None,
+                };
+
+                match polled {
+                    Some(Some(Ok(Event::Incoming(Incoming::Publish(publish))))) => {
                         let topic = publish.topic.clone();
                         let payload = publish.payload.to_vec();
 
@@ -254,15 +289,21 @@ fn lorawan_loop(
                             }
                         }
                     }
-                    Ok(Ok(_)) => {
+                    Some(Some(Ok(_))) => {
                         // Other MQTT events (ConnAck, SubAck, etc.) - ignore
                     }
-                    Ok(Err(e)) => {
+                    Some(Some(Err(e))) => {
                         eprintln!("[LoRaWAN Monitor] Connection error: {}", e);
                         break; // Reconnect
                     }
-                    Err(_) => {
-                        // Timeout - check timeouts and publish if needed
+                    Some(None) => {
+                        // Pump task exited (channel closed) — treat as
+                        // disconnect and reconnect.
+                        eprintln!("[LoRaWAN Monitor] Event pump closed unexpectedly");
+                        break;
+                    }
+                    None => {
+                        // 1-second tick — check timeouts and publish if needed
                     }
                 }
 
@@ -302,6 +343,10 @@ fn lorawan_loop(
                     publish_lorawan_sensors(&state, &mqtt_tx, &hostname);
                 }
             }
+
+            // Drop the receiver so the pump task notices and exits cleanly.
+            drop(event_rx);
+            let _ = pump_handle.await;
 
             // Wait before reconnecting
             eprintln!("[LoRaWAN Monitor] Disconnected, reconnecting in 5s...");
