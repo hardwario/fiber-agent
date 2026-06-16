@@ -22,8 +22,16 @@ impl Database {
     /// Initialize a new database connection
     /// Creates schema if it doesn't exist
     pub fn new(db_path: impl AsRef<Path>, max_size_gb: i32) -> StorageResult<Self> {
+        Self::with_max_bytes(db_path, (max_size_gb.max(1) as i64) * 1024 * 1024 * 1024)
+    }
+
+    /// Build a Database with a precomputed byte cap. Used when the
+    /// operator config specifies sub-GB granularity via
+    /// `StorageConfig::max_size_mb`; `new(path, gb)` stays as the
+    /// integer-GB convenience constructor.
+    pub fn with_max_bytes(db_path: impl AsRef<Path>, max_size_bytes: i64) -> StorageResult<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        let max_size_bytes = (max_size_gb as i64) * 1024 * 1024 * 1024;
+        let max_size_bytes = max_size_bytes.max(1024 * 1024); // sanity floor: 1 MB
 
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {

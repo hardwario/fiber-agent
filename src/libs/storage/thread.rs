@@ -373,14 +373,39 @@ impl StorageHandle {
 pub struct StorageThread;
 
 impl StorageThread {
-    /// Spawn the background storage thread
+    /// Spawn the background storage thread.
+    ///
+    /// `max_size_gb` is the legacy integer-GB cap. Most call sites use
+    /// this directly; `spawn_with_max_bytes` is the precision variant
+    /// for configs that set `storage.max_size_mb` (e.g. 2500 MB).
     pub fn spawn(db_path: &str, max_size_gb: i32) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         Self::spawn_with_hmac(db_path, max_size_gb, None)
+    }
+
+    /// Spawn with a precomputed byte cap (honors sub-GB granularity).
+    pub fn spawn_with_max_bytes(
+        db_path: &str,
+        max_size_bytes: i64,
+        hmac_secret_path: Option<&str>,
+    ) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
+        Self::spawn_with_hmac_and_max_bytes(db_path, max_size_bytes, hmac_secret_path)
     }
 
     /// Spawn the background storage thread with optional HMAC secret path
     /// If hmac_secret_path is provided, loads the HMAC key for sensor reading integrity (EU MDR)
     pub fn spawn_with_hmac(db_path: &str, max_size_gb: i32, hmac_secret_path: Option<&str>) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
+        Self::spawn_with_hmac_and_max_bytes(
+            db_path,
+            (max_size_gb.max(1) as i64) * 1024 * 1024 * 1024,
+            hmac_secret_path,
+        )
+    }
+
+    fn spawn_with_hmac_and_max_bytes(
+        db_path: &str,
+        max_size_bytes: i64,
+        hmac_secret_path: Option<&str>,
+    ) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         let db_path = db_path.to_string();
 
         // Load HMAC secret at startup; auto-generate if missing (EU MDR requires integrity tags)
@@ -442,7 +467,7 @@ impl StorageThread {
         let thread_handle = thread::Builder::new()
             .name("fiber-storage".to_string())
             .spawn(move || {
-                Self::run(&db_path, max_size_gb, receiver, hmac_secret.as_deref());
+                Self::run(&db_path, max_size_bytes, receiver, hmac_secret.as_deref());
             })
             .expect("Failed to spawn storage thread");
 
@@ -450,9 +475,9 @@ impl StorageThread {
     }
 
     /// Main storage thread loop
-    fn run(db_path: &str, max_size_gb: i32, receiver: Receiver<StorageMessage>, hmac_secret: Option<&[u8]>) {
+    fn run(db_path: &str, max_size_bytes: i64, receiver: Receiver<StorageMessage>, hmac_secret: Option<&[u8]>) {
         // Initialize database
-        let db = match Database::new(db_path, max_size_gb) {
+        let db = match Database::with_max_bytes(db_path, max_size_bytes) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("STORAGE THREAD: Failed to initialize database: {}", e);
@@ -471,7 +496,7 @@ impl StorageThread {
             }
         };
 
-        let retention_policy = RetentionPolicy::new(max_size_gb);
+        let retention_policy = RetentionPolicy::with_max_bytes(max_size_bytes);
         let mut message_count = 0u64;
         let mut pending_writes = 0usize;
         let mut last_flush = std::time::Instant::now();
@@ -521,8 +546,9 @@ impl StorageThread {
         let mut last_sticker_retention_run = std::time::Instant::now();
 
         eprintln!(
-            "STORAGE THREAD: Started, database: {}, max size: {}GB",
-            db_path, max_size_gb
+            "STORAGE THREAD: Started, database: {}, max size: {} MB",
+            db_path,
+            max_size_bytes / (1024 * 1024),
         );
 
         loop {

@@ -288,13 +288,22 @@ fn main() -> io::Result<()> {
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
     _display_monitor.set_buzzer_priority(buzzer_priority_manager.clone());
 
-    // Initialize storage thread for medical data persistence
+    // Initialize storage thread for medical data persistence.
+    // Use the byte-precision cap (config.storage.max_size_mb takes
+    // precedence over the integer-GB field) so we can sit at 2.5 GB
+    // on a 4 GB partition shared with fiber-viewer.
     eprintln!("[main] Starting storage thread...");
-    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_hmac(&config.storage.db_path, config.storage.max_size_gb, Some(&config.storage.hmac_secret_path)) {
+    let storage_max_bytes = config.storage.effective_max_bytes();
+    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_max_bytes(
+        &config.storage.db_path,
+        storage_max_bytes,
+        Some(&config.storage.hmac_secret_path),
+    ) {
         Ok((handle, thread)) => {
             eprintln!(
-                "[main] Storage thread started - database: {}, max size: {}GB",
-                config.storage.db_path, config.storage.max_size_gb
+                "[main] Storage thread started - database: {}, max size: {} MB",
+                config.storage.db_path,
+                storage_max_bytes / (1024 * 1024),
             );
             (handle, thread)
         }

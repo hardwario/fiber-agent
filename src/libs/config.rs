@@ -527,12 +527,34 @@ pub struct StorageConfig {
     /// Path to SQLite database file
     pub db_path: String,
 
-    /// Maximum database size in gigabytes
+    /// Maximum database size in gigabytes (whole-GB granularity).
     pub max_size_gb: i32,
+
+    /// Optional override of `max_size_gb` for sub-GB precision. When
+    /// `Some(n)`, the retention cap is `n` megabytes; when `None` the
+    /// `max_size_gb` field is used. Lets us pick e.g. 2500 (=2.5 GB)
+    /// on a 4 GB partition shared with fiber-viewer without breaking
+    /// the i32-typed `max_size_gb` field for existing YAML configs.
+    #[serde(default)]
+    pub max_size_mb: Option<i32>,
 
     /// Path to HMAC secret key file for sensor reading integrity (EU MDR)
     #[serde(default = "default_hmac_secret_path")]
     pub hmac_secret_path: String,
+}
+
+impl StorageConfig {
+    /// Effective storage cap in bytes. Prefers `max_size_mb` (MB
+    /// granularity) when set, otherwise falls back to the integer
+    /// `max_size_gb`. Both clamped to a positive minimum so a
+    /// misconfigured 0/negative value can't disable retention.
+    pub fn effective_max_bytes(&self) -> i64 {
+        if let Some(mb) = self.max_size_mb {
+            (mb.max(1) as i64) * 1024 * 1024
+        } else {
+            (self.max_size_gb.max(1) as i64) * 1024 * 1024 * 1024
+        }
+    }
 }
 
 /// Per-field threshold (4-level, like DS18B20)
@@ -1041,12 +1063,14 @@ impl Config {
             },
             storage: StorageConfig {
                 db_path: "/data/fiber/fiber_medical.db".to_string(),
-                // 3GB cap on the 5GB /data partition that is shared with
-                // fiber-viewer's DBs. A 5GB cap here would let our DB fill
-                // the whole partition and lock the viewer (and us) out
-                // before retention could run — the failure mode that
-                // produced the "disk I/O error" storm in the field.
+                // 2.5 GB cap on the 4 GB /data partition shared with
+                // fiber-viewer's DBs. Leaves ~1.5 GB headroom for the
+                // viewer (whose lorawan_field_readings table grows
+                // ~7 MB/day at 10 stickers). A higher cap here would
+                // let our DB fill the whole partition and lock the
+                // viewer (and us) out before retention could run.
                 max_size_gb: 3,
+                max_size_mb: Some(2500),
                 hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {

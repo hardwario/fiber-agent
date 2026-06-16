@@ -41,8 +41,16 @@ pub struct StickerRetentionResult {
 impl RetentionPolicy {
     /// Create a new retention policy (5GB with 90% cleanup threshold)
     pub fn new(max_size_gb: i32) -> Self {
+        Self::with_max_bytes((max_size_gb.max(1) as i64) * 1024 * 1024 * 1024)
+    }
+
+    /// Create a retention policy from a precomputed byte cap. Use this
+    /// when the operator config specifies sub-GB precision (via
+    /// `StorageConfig::max_size_mb`); the legacy `new(i32)` constructor
+    /// is fine for whole-GB defaults.
+    pub fn with_max_bytes(max_size_bytes: i64) -> Self {
         Self {
-            max_size_bytes: (max_size_gb as i64) * 1024 * 1024 * 1024,
+            max_size_bytes,
             cleanup_threshold_percent: 90.0,
             min_age_seconds: 60, // Don't delete records less than 1 minute old
         }

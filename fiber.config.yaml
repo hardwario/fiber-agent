@@ -35,7 +35,11 @@ accelerometer:
   logging_enabled: true
 storage:
   db_path: /data/fiber/fiber_medical.db
-  max_size_gb: 5
+  # max_size_mb takes precedence over max_size_gb when set. 2500 MB
+  # (2.5 GB) cap on a typical 4 GB /data partition shared with the
+  # fiber-viewer DB — see StorageConfig::effective_max_bytes.
+  max_size_gb: 3
+  max_size_mb: 2500
 system:
   debug_mode: false
   app_name: FIBER Application
