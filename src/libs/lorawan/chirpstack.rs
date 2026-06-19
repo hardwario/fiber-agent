@@ -14,6 +14,27 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use super::registry::{REGISTRY, FieldKind};
 use super::sticker_payload;
 
+/// fPort 2 (Telemetry) and fPort 85 (Response) payloads are prefixed with a
+/// 1-byte protocol version (`APP_PROTO_VERSION`, mirrors sticker-firmware
+/// `app_cmd.h` / the `ttn.js` `_stripProtoVersion`). fPort 3 (AlarmReport) is
+/// NOT prefixed.
+const APP_PROTO_VERSION: u8 = 0x01;
+
+/// Strip the leading protocol-version byte from an fPort 2/85 payload. Mirrors
+/// `ttn.js`: an unexpected version is logged but still stripped (forward-compat).
+fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8], String> {
+    match bytes.split_first() {
+        Some((&v, rest)) => {
+            if v != APP_PROTO_VERSION {
+                eprintln!("[LoRaWAN] {}: unexpected payload version 0x{:02x} (expected 0x{:02x})",
+                    dev_eui, v, APP_PROTO_VERSION);
+            }
+            Ok(rest)
+        }
+        None => Err("empty payload (no protocol-version byte)".to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StickerEvent {
     #[serde(rename = "type")]
@@ -75,15 +96,18 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
     let data_b64 = v.get("data").and_then(|v| v.as_str());
 
     match (fport, data_b64) {
-        // fPort 2: protobuf Telemetry (#64)
+        // fPort 2: protobuf Telemetry (#64), 1-byte proto-version prefix stripped first.
         (Some(2), Some(b64)) => {
-            let bytes = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
-            let d = sticker_payload::decode_telemetry(&bytes, &received_at)?;
+            let raw = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
+            let bytes = strip_proto_version(&raw, &dev_eui)?;
+            let d = sticker_payload::decode_telemetry(bytes, &received_at)?;
             fields.extend(d.fields);
             counters.extend(d.counters);
             events.extend(d.events);
         }
-        // fPort 3: protobuf AlarmReport (#77)
+        // fPort 3: protobuf AlarmReport (#77). NOT version-prefixed (firmware
+        // app_cmd_build_alarm_report encodes straight to the buffer), unlike
+        // fPort 2/85 — so decode from byte 0 with no strip.
         (Some(3), Some(b64)) => {
             let bytes = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
             events.extend(sticker_payload::decode_alarm_report(&bytes, &received_at)?);
@@ -227,8 +251,15 @@ mod tests {
     use prost::Message;
 
     /// Wrap protobuf bytes in a minimal ChirpStack v4 uplink JSON on `fPort`.
+    /// fPort 2/85 get the 1-byte proto-version prefix (as the firmware sends);
+    /// fPort 3 does not.
     fn chirpstack_uplink(dev_eui: &str, fport: u64, fcnt: u64, proto: &[u8]) -> String {
-        let data = BASE64.encode(proto);
+        let payload: Vec<u8> = if fport == 2 || fport == 85 {
+            std::iter::once(APP_PROTO_VERSION).chain(proto.iter().copied()).collect()
+        } else {
+            proto.to_vec()
+        };
+        let data = BASE64.encode(&payload);
         serde_json::json!({
             "deviceInfo": { "devEui": dev_eui, "deviceName": "sticker-01" },
             "fPort": fport,
@@ -289,6 +320,30 @@ mod tests {
     fn dispatch_unknown_fport_is_skipped() {
         let payload = chirpstack_uplink("aabb", 42, 1, &[0x00]);
         assert!(parse_uplink(payload.as_bytes()).unwrap().is_none());
+    }
+
+    #[test]
+    fn real_v140_fport2_frame_decodes() {
+        // GOLDEN VECTOR: the exact fPort-2 payload composed by firmware v1.4.0
+        // (`ats lrw compose` on a real STICKER), including the leading 0x01
+        // proto-version byte. Guards the version-strip: without it prost fails
+        // with "invalid tag value: 0".
+        let raw: &[u8] = &[
+            0x01, 0x08, 0xae, 0x01, 0x10, 0x01, 0x18, 0xa8, 0x23, 0x20, 0x78,
+            0x90, 0x01, 0x00, 0x98, 0x01, 0x04, 0xa0, 0x01, 0x00, 0xa8, 0x01, 0x04,
+        ];
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "2162164514AABBCC", "deviceName": "sticker-real" },
+            "fPort": 2, "fCnt": 1, "data": BASE64.encode(raw),
+            "rxInfo": [{ "rssi": -77, "snr": 9.0 }],
+            "time": "2026-06-19T12:00:00Z",
+        }).to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(approx(r.fields["voltage"], 3.48));      // 174/50
+        assert!(approx(r.fields["temperature"], 22.6));  // zigzag 4520->2260 /100
+        assert!(approx(r.fields["humidity"], 60.0));     // 120/2
+        assert!(r.events.iter().any(|e| e.event_type == "boot"));
     }
 
     #[test]
