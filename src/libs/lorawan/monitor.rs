@@ -203,7 +203,7 @@ fn lorawan_loop(
                         let payload = publish.payload.to_vec();
 
                         match chirpstack::parse_uplink(&payload) {
-                            Ok(reading) => {
+                            Ok(Some(reading)) => {
                                 eprintln!(
                                     "[LoRaWAN Monitor] Uplink from {} ({}): {} fields, {} counters, rssi={:?}dBm",
                                     reading.device_name,
@@ -248,6 +248,10 @@ fn lorawan_loop(
                                 if let Ok(mut s) = state.write() {
                                     s.update_sensor(&reading);
                                 }
+                            }
+                            Ok(None) => {
+                                // Uplink carried nothing to persist (fPort 85
+                                // command/response, unknown fPort, or empty frame).
                             }
                             Err(e) => {
                                 eprintln!("[LoRaWAN Monitor] Failed to parse uplink from {}: {}", topic, e);
