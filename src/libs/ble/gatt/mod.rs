@@ -280,25 +280,25 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    // Minimal Advertisement: only the 128-bit FIBER service UUID.
+    // Primary AD: Flags + 128-bit FIBER service UUID (~21 B, fits the
+    // legacy 31-byte adv_data buffer). Scan response: the adapter alias,
+    // requested via `Includes = ["local-name"]` rather than the explicit
+    // `LocalName` property.
     //
-    // Why no `local_name` and no `discoverable`: the combined size of
-    // Flags (3 B) + 128-bit ServiceUUID (18 B) + LocalName "fiber-xxxxxxxx"
-    // (18 B) ≈ 39 B exceeds the 31-byte legacy advertising payload limit.
-    // bluez 5.72 then escalates to EXTENDED advertising via
-    // MGMT_OP_ADD_EXT_ADV_DATA, which on the BCM4345C0 still fails (the
-    // remnant of the periphid regression — PR #7023 fixed the BT bringup
-    // path but not the extended-adv-data path through D-Bus).
-    //
-    // Just the service UUID + auto-added Flags fits comfortably in 21 B —
-    // bluez stays on the legacy path and the request succeeds. The phone
-    // discovers the device by FIBER_SERVICE_UUID and uses bluez's adapter
-    // alias (set above) as the display name once connected. If we later
-    // want the name in the scan response and have it survive on legacy,
-    // we'd have to push it into the scan response slot specifically rather
-    // than as a primary-payload `local_name`.
+    // Why `system_includes` instead of `local_name`: setting `LocalName`
+    // makes bluez try to fit the literal string into the primary AD, and
+    // when that overflows it escalates to EXTENDED advertising via
+    // MGMT_OP_ADD_EXT_ADV_DATA — which BCM4345C0 firmware rejects (the
+    // remnant of the periphid regression; PR #7023 fixed the BT bringup
+    // path but not the extended-adv-data path). With `Includes` carrying
+    // the MGMT_ADV_FLAG_LOCAL_NAME hint, the kernel itself places the
+    // alias into the scan-response slot during legacy
+    // MGMT_OP_ADD_ADVERTISING, so the request stays on the legacy path
+    // the chip handles fine — and the phone sees the name in the scan
+    // response before connection (matching app-side name filters).
     let adv = Advertisement {
         service_uuids: std::iter::once(service::FIBER_SERVICE_UUID).collect(),
+        system_includes: std::iter::once(bluer::adv::Feature::LocalName).collect(),
         ..Default::default()
     };
     let adv_handle = adapter.advertise(adv).await?;
