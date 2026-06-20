@@ -135,7 +135,7 @@ pub fn render_sensor_overview(
     .ok();
 
     // Draw horizontal separator line
-    Line::new(Point::new(0, 11), Point::new(127, 11))
+    Line::new(Point::new(0, 14), Point::new(127, 14))
         .into_styled(line_style)
         .draw(display)
         .ok();
@@ -145,7 +145,7 @@ pub fn render_sensor_overview(
     // 5-second countdown.
     if hold_bar_pixels > 0 {
         let end_x = (hold_bar_pixels as i32).min(127);
-        Line::new(Point::new(0, 12), Point::new(end_x, 12))
+        Line::new(Point::new(0, 15), Point::new(end_x, 15))
             .into_styled(line_style)
             .draw(display)
             .ok();
