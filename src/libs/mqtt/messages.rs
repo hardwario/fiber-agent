@@ -138,6 +138,11 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish external LoRaWAN gateway status
+    PublishLoRaWANGatewayData {
+        gateways: Vec<LoRaWANGatewayPayload>,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 
@@ -167,6 +172,15 @@ pub struct LoRaWANSensorPayload {
     pub snr: Option<f32>,
     pub last_seen: Option<String>,
     pub alarm_state: String,
+}
+
+/// External LoRaWAN gateway status payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct LoRaWANGatewayPayload {
+    pub gateway_eui: String,
+    pub name: Option<String>,
+    pub online: bool,
+    pub last_seen: Option<String>,
 }
 
 /// Sensor configuration data for query response
@@ -342,6 +356,17 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Add external LoRaWAN gateway: register in ChirpStack + save gateway config (signed via ConfigRequest)
+    AddExternalGateway {
+        gateway_eui: String,
+        name: String,
+    },
+
+    /// Remove external LoRaWAN gateway: remove gateway config + deregister from ChirpStack (signed via ConfigRequest)
+    RemoveExternalGateway {
+        gateway_eui: String,
+    },
+
     /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
     /// next drain pass replays the stream from row 1. Use after a viewer DB
     /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
@@ -435,6 +460,8 @@ impl MqttCommand {
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::AddExternalGateway { .. } => "add_external_gateway",
+            MqttCommand::RemoveExternalGateway { .. } => "remove_external_gateway",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
