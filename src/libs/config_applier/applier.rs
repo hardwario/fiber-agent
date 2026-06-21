@@ -1195,6 +1195,268 @@ impl ConfigApplier {
         }
     }
 
+    /// Apply an external LoRaWAN gateway entry (eui/name) to the main config's
+    /// `lorawan.gateways` array. Mirrors `apply_lorawan_sensor_config`.
+    pub fn apply_external_gateway(&self, gateway_eui: String, name: Option<String>) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        if gateway_eui.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("gateway_eui cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.update_external_gateway(&mut config, &gateway_eui, name.as_deref()) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ External LoRaWAN gateway config updated for {}",
+            gateway_eui
+        );
+
+        self.log_audit(
+            "ADD_EXTERNAL_GATEWAY",
+            format!(r#"{{"gateway_eui":{:?},"name":{:?}}}"#, gateway_eui, name),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Remove an external LoRaWAN gateway from the main config by gateway_eui.
+    /// Mirrors `remove_lorawan_sensor_config` (no sticker_removed marker — a
+    /// gateway is not a save-and-feed sticker).
+    pub fn remove_external_gateway(&self, gateway_eui: String) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        if gateway_eui.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("gateway_eui cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        let removed = (|| -> Result<bool, String> {
+            let lorawan = config
+                .get_mut("lorawan")
+                .and_then(|v| v.as_mapping_mut())
+                .ok_or_else(|| "Missing 'lorawan' section in config".to_string())?;
+
+            let gateways_key = Value::String("gateways".to_string());
+            let gateways = lorawan
+                .get_mut(&gateways_key)
+                .and_then(|v| v.as_sequence_mut())
+                .ok_or_else(|| "Missing 'lorawan.gateways' array in config".to_string())?;
+
+            let original_len = gateways.len();
+            gateways.retain(|g| {
+                g.get("gateway_eui")
+                    .and_then(|v| v.as_str())
+                    .map(|e| e != gateway_eui)
+                    .unwrap_or(true)
+            });
+
+            Ok(gateways.len() < original_len)
+        })();
+
+        match removed {
+            Ok(false) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Gateway with gateway_eui '{}' not found", gateway_eui)),
+                    applied_at,
+                };
+            }
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(e),
+                    applied_at,
+                };
+            }
+            Ok(true) => {}
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ External LoRaWAN gateway config removed for {}",
+            gateway_eui
+        );
+
+        self.log_audit(
+            "REMOVE_EXTERNAL_GATEWAY",
+            format!(r#"{{"gateway_eui":{:?}}}"#, gateway_eui),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     // --- Private helper methods ---
 
     /// Update thresholds for a specific sensor line in the YAML structure
@@ -1607,6 +1869,77 @@ impl ConfigApplier {
         }
         if let Some(loc) = location {
             sensor_map.insert(Value::String("location".to_string()), Value::String(loc.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Update or insert an external gateway in the lorawan.gateways array.
+    fn update_external_gateway(
+        &self,
+        config: &mut Value,
+        gateway_eui: &str,
+        name: Option<&str>,
+    ) -> Result<(), String> {
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+
+        // Get or create 'lorawan' section
+        let lorawan_key = Value::String("lorawan".to_string());
+        if !config_map.contains_key(&lorawan_key) {
+            let mut lorawan = Mapping::new();
+            lorawan.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            lorawan.insert(Value::String("gateways".to_string()), Value::Sequence(Vec::new()));
+            config_map.insert(lorawan_key.clone(), Value::Mapping(lorawan));
+        }
+
+        let lorawan = config_map
+            .get_mut(&lorawan_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Failed to get 'lorawan' section".to_string())?;
+
+        // Get or create 'gateways' array
+        let gateways_key = Value::String("gateways".to_string());
+        if !lorawan.contains_key(&gateways_key) {
+            lorawan.insert(gateways_key.clone(), Value::Sequence(Vec::new()));
+        }
+
+        let gateways = lorawan
+            .get_mut(&gateways_key)
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(|| "Failed to get 'lorawan.gateways' array".to_string())?;
+
+        // Find existing entry or create new one
+        let entry = gateways.iter_mut().find(|g| {
+            g.get("gateway_eui")
+                .and_then(|v| v.as_str())
+                .map(|e| e == gateway_eui)
+                .unwrap_or(false)
+        });
+
+        let gateway_map = if let Some(existing) = entry {
+            existing
+                .as_mapping_mut()
+                .ok_or_else(|| "Gateway entry is not a mapping".to_string())?
+        } else {
+            let mut new_entry = Mapping::new();
+            new_entry.insert(
+                Value::String("gateway_eui".to_string()),
+                Value::String(gateway_eui.to_string()),
+            );
+            new_entry.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            gateways.push(Value::Mapping(new_entry));
+            gateways
+                .last_mut()
+                .unwrap()
+                .as_mapping_mut()
+                .ok_or_else(|| "Failed to get new gateway entry".to_string())?
+        };
+
+        // Update fields
+        if let Some(n) = name {
+            gateway_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
         }
 
         Ok(())

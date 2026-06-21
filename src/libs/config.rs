@@ -686,6 +686,22 @@ pub struct LoRaWANSensorConfig {
     pub field_thresholds: Vec<FieldThreshold>,
 }
 
+/// External LoRaWAN gateway registered in the on-device ChirpStack.
+/// Lets the FIBER accept uplinks from a gateway forwarding over Semtech UDP :1700.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalGatewayConfig {
+    /// Gateway EUI (16 hex chars, lowercase) — the ChirpStack gateway_id
+    pub gateway_eui: String,
+
+    /// Human-friendly name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Enable this gateway
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 /// LoRaWAN gateway configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANConfig {
@@ -720,6 +736,10 @@ pub struct LoRaWANConfig {
     /// Per-sensor configurations
     #[serde(default)]
     pub sensors: Vec<LoRaWANSensorConfig>,
+
+    /// External LoRaWAN gateways registered in ChirpStack
+    #[serde(default)]
+    pub gateways: Vec<ExternalGatewayConfig>,
 }
 
 impl Default for LoRaWANConfig {
@@ -733,6 +753,7 @@ impl Default for LoRaWANConfig {
             publish_interval_s: 30,
             sensor_timeout_s: 3600, // 1 hour
             sensors: Vec::new(),
+            gateways: Vec::new(),
         }
     }
 }
