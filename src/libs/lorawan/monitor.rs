@@ -48,14 +48,26 @@ impl LoRaWANMonitor {
         buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
         storage: StorageHandle,
     ) -> io::Result<Self> {
-        // Detect gateway hardware
+        // Detect built-in gateway hardware and external-gateway config.
         let detection = detector::detect_gateway();
         let gateway_present = detection.is_present();
+        let has_external = detector::has_external_gateway();
+
+        // `gateway_present` (built-in concentrator presence) drives the display
+        // state. Whether the monitor RUNS is a separate decision: it only needs
+        // ChirpStack + Mosquitto, both of which run independently of the
+        // concentrator. Start it when the concentrator is up, OR ChirpStack is
+        // running (so an external gateway added at runtime is handled without a
+        // reboot), OR an external gateway is already configured.
+        let should_run = gateway_present || detection.chirpstack_running || has_external;
 
         let state = create_shared_lorawan_state(gateway_present);
 
-        if !gateway_present {
-            eprintln!("[LoRaWAN Monitor] No gateway detected, monitor will not start");
+        if !should_run {
+            eprintln!(
+                "[LoRaWAN Monitor] Not starting: concentratord={}, chirpstack={}, external_gateway={}",
+                detection.concentratord_running, detection.chirpstack_running, has_external
+            );
             return Ok(Self {
                 thread_handle: None,
                 shutdown_flag: Arc::new(AtomicBool::new(false)),
@@ -365,6 +377,7 @@ fn lorawan_loop(
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
                     publish_lorawan_sensors(&state, &mqtt_tx, &hostname);
+                    publish_lorawan_gateways(&mqtt_tx).await;
                 }
             }
 
@@ -432,4 +445,48 @@ fn publish_lorawan_sensors(
         .collect();
 
     let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANSensorData { sensors });
+}
+
+/// Publish external LoRaWAN gateway status to the main FIBER MQTT.
+///
+/// Reads the configured gateways fresh each tick (so a gateway added at runtime
+/// is picked up without restarting the monitor) and queries ChirpStack for
+/// online state. The ChirpStack query is blocking network I/O, so it runs on a
+/// blocking thread to keep the async uplink pump responsive.
+async fn publish_lorawan_gateways(mqtt_tx: &Sender<MqttMessage>) {
+    let loaded = match crate::libs::config::Config::load_default() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let enabled: Vec<crate::libs::config::ExternalGatewayConfig> = match loaded.lorawan.as_ref() {
+        Some(l) => l.gateways.iter().filter(|g| g.enabled).cloned().collect(),
+        None => return,
+    };
+
+    // Always publish (even an empty list) so the viewer can reconcile/clear
+    // stale gateway entries — mirrors publish_lorawan_sensors.
+    if enabled.is_empty() {
+        let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData { gateways: Vec::new() });
+        return;
+    }
+
+    let euis: Vec<String> = enabled.iter().map(|g| g.gateway_eui.clone()).collect();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::libs::lorawan::provisioning::get_gateways_status(&euis)
+    })
+    .await
+    .unwrap_or_default();
+    let online_map: std::collections::HashMap<String, bool> = status.into_iter().collect();
+
+    let gateways: Vec<crate::libs::mqtt::messages::LoRaWANGatewayPayload> = enabled
+        .iter()
+        .map(|g| crate::libs::mqtt::messages::LoRaWANGatewayPayload {
+            gateway_eui: g.gateway_eui.clone(),
+            name: g.name.clone(),
+            online: online_map.get(&g.gateway_eui).copied().unwrap_or(false),
+            last_seen: None, // coarse v1: precise last_seen is a follow-up
+        })
+        .collect();
+
+    let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData { gateways });
 }

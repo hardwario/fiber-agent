@@ -212,6 +212,10 @@ impl MqttPublisher {
                 self.publish_lorawan_sensors(sensors).await
             }
 
+            MqttMessage::PublishLoRaWANGatewayData { gateways } => {
+                self.publish_lorawan_gateways(gateways).await
+            }
+
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
@@ -744,6 +748,34 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.lorawan_sensors();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish external LoRaWAN gateway status
+    async fn publish_lorawan_gateways(
+        &self,
+        gateways: Vec<super::messages::LoRaWANGatewayPayload>,
+    ) -> Result<(), String> {
+        let gateways_data: Vec<serde_json::Value> = gateways
+            .iter()
+            .map(|g| {
+                json!({
+                    "gateway_eui": g.gateway_eui,
+                    "name": g.name,
+                    "online": g.online,
+                    "last_seen": g.last_seen,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "gateways": gateways_data,
+        });
+
+        let topic = self.topics.lorawan_gateways();
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
 
         self.publish(topic, payload.to_string(), qos, false).await

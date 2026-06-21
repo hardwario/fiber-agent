@@ -182,6 +182,10 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors"])
     }
 
+    pub fn lorawan_gateways(&self) -> String {
+        self.build(&["lorawan", "gateways"])
+    }
+
     // Error topic
     pub fn errors(&self) -> String {
         self.build(&["errors"])

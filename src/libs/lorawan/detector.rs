@@ -47,6 +47,18 @@ pub fn detect_gateway() -> GatewayDetection {
     detection
 }
 
+/// Returns true if at least one enabled external LoRaWAN gateway is configured.
+///
+/// Used so the LoRaWAN monitor starts even when the built-in concentrator is
+/// absent but an external gateway forwards uplinks over Semtech UDP :1700.
+pub fn has_external_gateway() -> bool {
+    crate::libs::config::Config::load_default()
+        .ok()
+        .and_then(|c| c.lorawan)
+        .map(|l| l.gateways.iter().any(|g| g.enabled))
+        .unwrap_or(false)
+}
+
 /// Check if a systemd service is currently active (running)
 pub fn is_service_running(service_name: &str) -> bool {
     std::process::Command::new("systemctl")
