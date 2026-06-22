@@ -228,7 +228,7 @@ fn lorawan_loop(
                                 let payload_json = serde_json::to_string(&serde_json::json!({
                                     "fields":      reading.fields,
                                     "counters":    reading.counters,
-                                    "events":      reading.events.iter().map(|e| e.event_type.clone()).collect::<Vec<_>>(),
+                                    "events":      reading.events,
                                     "rssi":        reading.rssi,
                                     "snr":         reading.snr,
                                     "received_at": reading.received_at,
