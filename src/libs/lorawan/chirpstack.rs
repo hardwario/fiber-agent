@@ -347,6 +347,27 @@ mod tests {
     }
 
     #[test]
+    fn real_e2e_fport2_frame_decodes() {
+        // END-TO-END GOLDEN VECTOR: a live fPort-2 frame captured from a real
+        // STICKER (DevEUI 5876070000000001) over the full path — RF -> MikroTik
+        // gateway -> chirpstack-gateway-bridge -> ChirpStack 4.16 -> application
+        // event `data`. Codec-free device profile (object=null), so the in-app
+        // decode is the sole source of truth.
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "5876070000000001", "deviceName": "sticker-5876" },
+            "fPort": 2, "fCnt": 3, "data": "AQiuARAAGM4mIGqQAQCYAQSgAQCoAQQ=",
+            "rxInfo": [{ "rssi": -69, "snr": 10.0 }],
+            "time": "2026-06-23T05:40:19Z",
+        }).to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert_eq!(r.dev_eui, "5876070000000001");
+        assert!(approx(r.fields["voltage"], 3.48));        // 174/50
+        assert!(approx(r.fields["temperature"], 24.71));   // zigzag 4942->2471 /100
+        assert!(approx(r.fields["humidity"], 53.0));       // 106/2
+    }
+
+    #[test]
     fn legacy_object_fallback_without_fport() {
         let payload = r#"{
             "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
