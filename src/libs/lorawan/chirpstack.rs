@@ -20,9 +20,21 @@ use super::sticker_payload;
 /// over the air — every in-app-decoded port carries the prefix.
 const APP_PROTO_VERSION: u8 = 0x01;
 
-/// Strip the leading protocol-version byte from an fPort 2/85 payload. Mirrors
+/// Extract `(fPort, application-payload bytes)` from a ChirpStack v4 uplink
+/// event JSON. Used by the monitor to route fPort-85 Responses (#34) — telemetry
+/// (fPort 2/3) goes through `parse_uplink`. Returns `None` if fPort or data is
+/// absent.
+pub fn extract_fport_data(payload: &[u8]) -> Option<(u64, Vec<u8>)> {
+    let v: Value = serde_json::from_slice(payload).ok()?;
+    let fport = v.get("fPort").and_then(|x| x.as_u64())?;
+    let b64 = v.get("data").and_then(|x| x.as_str())?;
+    let data = BASE64.decode(b64).ok()?;
+    Some((fport, data))
+}
+
+/// Strip the leading protocol-version byte from an fPort 2/3/85 payload. Mirrors
 /// `ttn.js`: an unexpected version is logged but still stripped (forward-compat).
-fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8], String> {
+pub fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8], String> {
     match bytes.split_first() {
         Some((&v, rest)) => {
             if v != APP_PROTO_VERSION {
