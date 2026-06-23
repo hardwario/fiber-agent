@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use fiber_app::libs::config::Config;
 use fiber_app::libs::control::server::{serve, ControlContext};
-use fiber_app::libs::leds::state::SharedLedStateWithNotify;
 use fiber_app::libs::power::PowerStatus;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use std::sync::Mutex;
@@ -30,8 +29,7 @@ fn start_server() -> (tempfile::TempDir, String) {
         Duration::from_millis(200),
     )
     .with_power(Arc::new(Mutex::new(PowerStatus::new(3700, 5000))))
-    .with_sensors(create_shared_sensor_state())
-    .with_led(Arc::new(SharedLedStateWithNotify::new()));
+    .with_sensors(create_shared_sensor_state());
     let p = path.clone();
     std::thread::spawn(move || {
         let _ = serve(ctx, &p);
@@ -147,14 +145,6 @@ fn fiberctl_sensors_read() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["sensors"].as_array().unwrap().len(), 8);
-}
-
-#[test]
-fn fiberctl_led_set() {
-    let (_d, sock) = start_server();
-    let out = fiberctl(&sock, &["led", "set", "green", "--blink"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("green"));
 }
 
 #[test]

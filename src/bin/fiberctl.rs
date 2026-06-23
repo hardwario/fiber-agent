@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use fiber_app::libs::control::client;
-use fiber_app::libs::control::protocol::{Command, LedColor, LorawanSimpleCommand, Request, Response};
+use fiber_app::libs::control::protocol::{Command, LorawanSimpleCommand, Request, Response};
 
 #[derive(Parser)]
 #[command(
@@ -50,47 +50,12 @@ enum TopCmd {
     },
     /// Battery / DC power status.
     Power,
-    /// Drive the power LED (hardware bring-up).
-    Led {
-        #[command(subcommand)]
-        action: LedCmd,
-    },
 }
 
 #[derive(Subcommand)]
 enum SensorsCmd {
     /// Print current sensor readings.
     Read,
-}
-
-#[derive(Subcommand)]
-enum LedCmd {
-    /// Set the power LED colour.
-    Set {
-        color: LedColorArg,
-        /// Blink instead of solid.
-        #[arg(long)]
-        blink: bool,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum LedColorArg {
-    Green,
-    Yellow,
-    Lime,
-    Off,
-}
-
-impl From<LedColorArg> for LedColor {
-    fn from(c: LedColorArg) -> Self {
-        match c {
-            LedColorArg::Green => LedColor::Green,
-            LedColorArg::Yellow => LedColor::Yellow,
-            LedColorArg::Lime => LedColor::Lime,
-            LedColorArg::Off => LedColor::Off,
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -195,9 +160,6 @@ fn build_command(cmd: TopCmd) -> Result<Command, String> {
             SensorsCmd::Read => Command::SensorsRead,
         },
         TopCmd::Power => Command::PowerStatus,
-        TopCmd::Led { action } => match action {
-            LedCmd::Set { color, blink } => Command::LedSet { color: color.into(), blink },
-        },
     })
 }
 

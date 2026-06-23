@@ -85,22 +85,6 @@ pub enum Command {
     SensorsRead,
     /// Battery / DC power status.
     PowerStatus,
-    /// Drive the power LED (HW bring-up). `blink` defaults to off.
-    LedSet {
-        color: LedColor,
-        #[serde(default)]
-        blink: bool,
-    },
-}
-
-/// Power-LED colours exposed by `led set` (mirror `leds::PowerLedColor`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LedColor {
-    Green,
-    Yellow,
-    Lime,
-    Off,
 }
 
 /// No-argument fPort-85 commands exposed by `lorawan send`.

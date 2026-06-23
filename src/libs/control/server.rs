@@ -22,16 +22,12 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 use serde_json::{json, Value};
 
 use crate::libs::config::Config;
-use crate::libs::leds::state::PowerLedColor;
-use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::lorawan::sticker_command as sc;
 use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue, ResponseKind};
 use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::LoRaWANHandle;
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::sensors::SharedSensorStateHandle;
-
-use super::protocol::LedColor;
 
 use super::protocol::{Command, LorawanSimpleCommand, Request, Response, PROTOCOL_VERSION};
 
@@ -50,7 +46,6 @@ pub struct ControlContext {
     pub lorawan_lock: Arc<Mutex<()>>,
     pub power: Option<SharedPowerStatus>,
     pub sensors: Option<SharedSensorStateHandle>,
-    pub led: Option<SharedLedStateHandle>,
 }
 
 impl ControlContext {
@@ -72,7 +67,6 @@ impl ControlContext {
             lorawan_lock: Arc::new(Mutex::new(())),
             power: None,
             sensors: None,
-            led: None,
         }
     }
 
@@ -82,10 +76,6 @@ impl ControlContext {
     }
     pub fn with_sensors(mut self, s: SharedSensorStateHandle) -> Self {
         self.sensors = Some(s);
-        self
-    }
-    pub fn with_led(mut self, l: SharedLedStateHandle) -> Self {
-        self.led = Some(l);
         self
     }
 }
@@ -174,7 +164,6 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
         Command::ConfigGet { key } => config_get(ctx, &key),
         Command::SensorsRead => sensors_read(ctx),
         Command::PowerStatus => power_status(ctx),
-        Command::LedSet { color, blink } => led_set(ctx, color, blink),
         Command::LorawanSetParam { dev_eui, fields, save, force } => {
             lorawan_set_param(ctx, &dev_eui, fields, save, force)
         }
@@ -209,10 +198,12 @@ fn status(ctx: &ControlContext) -> Response {
     }))
 }
 
-/// Battery/DC snapshot as JSON, or `null` if the power subsystem is absent.
+/// Battery/DC snapshot as JSON, or `null` ONLY if the power subsystem is absent.
+/// A poisoned lock is recovered (the data has no broken invariant), matching the
+/// rest of the codebase — so `null` unambiguously means "not enabled".
 fn power_json(ctx: &ControlContext) -> Value {
     let Some(p) = &ctx.power else { return Value::Null };
-    let Ok(g) = p.lock() else { return Value::Null };
+    let g = p.lock().unwrap_or_else(|e| e.into_inner());
     json!({
         "vbat_mv": g.vbat_mv,
         "battery_percent": g.battery_percent,
@@ -221,10 +212,11 @@ fn power_json(ctx: &ControlContext) -> Value {
     })
 }
 
-/// Per-line sensor snapshot as a JSON array, or `null` if absent.
+/// Per-line sensor snapshot as a JSON array, or `null` ONLY if absent (poison
+/// recovered, as above).
 fn sensors_json(ctx: &ControlContext) -> Value {
     let Some(s) = &ctx.sensors else { return Value::Null };
-    let Ok(g) = s.read() else { return Value::Null };
+    let g = s.read().unwrap_or_else(|e| e.into_inner());
     let lines: Vec<Value> = (0u8..8)
         .map(|i| {
             let name = g.get_name(i);
@@ -233,7 +225,8 @@ fn sensors_json(ctx: &ControlContext) -> Value {
                 Some(r) => json!({
                     "line": i, "name": name, "location": location,
                     "connected": r.is_connected, "temperature": r.temperature,
-                    "alarm_state": format!("{:?}", r.alarm_state),
+                    // Display impl = canonical SCREAMING_SNAKE (matches MQTT alarm events).
+                    "alarm_state": r.alarm_state.to_string(),
                 }),
                 None => json!({ "line": i, "name": name, "location": location, "connected": false }),
             }
@@ -254,21 +247,6 @@ fn power_status(ctx: &ControlContext) -> Response {
         Value::Null => Response::err_coded("not_enabled", "power subsystem not available", json!(null)),
         v => Response::ok(v),
     }
-}
-
-fn led_set(ctx: &ControlContext, color: LedColor, blink: bool) -> Response {
-    let Some(led) = &ctx.led else {
-        return Response::err_coded("not_enabled", "LED subsystem not available", json!(null));
-    };
-    let c = match color {
-        LedColor::Green => PowerLedColor::Green,
-        LedColor::Yellow => PowerLedColor::Yellow,
-        LedColor::Lime => PowerLedColor::Lime,
-        LedColor::Off => PowerLedColor::Off,
-    };
-    led.set_power_leds(c, blink);
-    eprintln!("[control] AUDIT t={} led set color={color:?} blink={blink}", now_unix());
-    Response::ok(json!({ "color": format!("{color:?}").to_ascii_lowercase(), "blink": blink }))
 }
 
 fn config_get(ctx: &ControlContext, key: &str) -> Response {
@@ -723,8 +701,8 @@ mod tests {
 
     #[test]
     fn observe_commands_not_enabled_when_absent() {
-        let ctx = test_ctx(); // power/sensors/led all None
-        for cmd in [Command::SensorsRead, Command::PowerStatus, Command::LedSet { color: LedColor::Green, blink: false }] {
+        let ctx = test_ctx(); // power/sensors all None
+        for cmd in [Command::SensorsRead, Command::PowerStatus] {
             let r = dispatch(&ctx, cmd);
             assert!(!r.ok);
             assert_eq!(r.error_code.as_deref(), Some("not_enabled"));
@@ -757,13 +735,21 @@ mod tests {
     }
 
     #[test]
-    fn led_set_ok_when_present() {
-        use crate::libs::leds::state::SharedLedStateWithNotify;
-        let ctx = test_ctx().with_led(Arc::new(SharedLedStateWithNotify::new()));
-        let r = dispatch(&ctx, Command::LedSet { color: LedColor::Green, blink: true });
-        assert!(r.ok, "led set failed: {:?}", r.error);
-        assert_eq!(r.data["color"], "green");
-        assert_eq!(r.data["blink"], true);
+    fn power_recovers_from_poisoned_lock() {
+        use crate::libs::power::PowerStatus;
+        let power = Arc::new(Mutex::new(PowerStatus::new(3700, 5000)));
+        let p2 = power.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = p2.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(power.is_poisoned());
+        let ctx = test_ctx().with_power(power);
+        let r = dispatch(&ctx, Command::PowerStatus);
+        // a poisoned (but structurally valid) lock must NOT masquerade as not_enabled
+        assert!(r.ok, "should recover from poison; got {:?}", r.error_code);
+        assert_eq!(r.data["vbat_mv"], 3700);
     }
 
     #[test]
