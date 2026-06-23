@@ -482,6 +482,35 @@ mod tests {
     }
 
     #[test]
+    fn real_e2e_fport85_config_dump_decodes() {
+        // GOLDEN VECTOR: live fPort-85 Response{ConfigDump} from a STICKER,
+        // captured as the on-wire payload (incl. 0x01 proto-version byte) the
+        // firmware queues for fPort 85. Produced by a selective GetParam
+        // requesting lorawan{region,adr,activation}, application{interval_report,
+        // history_enable}, sensors{cap_hall_left} (GetParam, not GetConfig: the
+        // full-dump GetConfig overflows the device stack in fw v1.4.0). Confirms
+        // the in-app ConfigDump decode against real firmware output.
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        let raw = B64.decode("AQgJIhUQARoGCAAgASgAIgUYhAcgASoCCAE=").unwrap();
+        let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
+        assert_eq!(d.seq, 9);
+        match d.kind {
+            ResponseKind::ConfigDump { page_index, page_count, config } => {
+                assert_eq!((page_index, page_count), (0, 1));
+                assert_eq!(config["lorawan.region"], ConfigValue::Enum("EU868".into()));
+                assert_eq!(config["lorawan.adr"], ConfigValue::Bool(true));
+                assert_eq!(config["lorawan.activation"], ConfigValue::Enum("OTAA".into()));
+                assert_eq!(config["application.interval_report"], ConfigValue::Uint(900));
+                assert_eq!(config["application.history_enable"], ConfigValue::Bool(true));
+                assert_eq!(config["sensors.cap_hall_left"], ConfigValue::Bool(true));
+                // nothing we didn't request leaked in
+                assert_eq!(config.len(), 6);
+            }
+            other => panic!("expected ConfigDump, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn config_paging_merge() {
         // page 1: lorawan; page 2: sensors. The merged map is their union.
         let page1 = response::ConfigDump {
