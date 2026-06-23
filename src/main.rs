@@ -641,13 +641,13 @@ fn main() -> io::Result<()> {
     // driven by the `fiberctl` binary. Disable with FIBER_CONTROL_DISABLE=1.
     if std::env::var("FIBER_CONTROL_DISABLE").is_err() {
         use fiber_app::libs::control::{protocol, server};
-        let ctx = server::ControlContext {
-            app_version: control_config.system.app_version.clone(),
-            config: control_config.clone(),
-            lorawan: _lorawan_monitor.as_ref().map(|m| m.handle()),
-            lorawan_state: _lorawan_monitor.as_ref().map(|m| m.state.clone()),
-            command_timeout: std::time::Duration::from_secs(30),
-        };
+        let ctx = server::ControlContext::new(
+            control_config.system.app_version.clone(),
+            control_config.clone(),
+            _lorawan_monitor.as_ref().map(|m| m.handle()),
+            _lorawan_monitor.as_ref().map(|m| m.state.clone()),
+            std::time::Duration::from_secs(30),
+        );
         let path = protocol::socket_path();
         match std::thread::Builder::new()
             .name("control-server".into())

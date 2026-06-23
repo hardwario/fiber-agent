@@ -22,7 +22,10 @@ pub fn send_to(path: &str, req: &Request) -> Result<Response, String> {
              (is the fiber_app daemon running with the control server enabled?)"
         )
     })?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    // Generous read timeout: the server may run several sequential fPort-85
+    // round-trips for one request (multi-batch set-param), each up to the
+    // daemon's per-command timeout. Keep this well above n_batches * that.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(300)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
     let mut line = serde_json::to_string(req).map_err(|e| format!("encode request: {e}"))?;

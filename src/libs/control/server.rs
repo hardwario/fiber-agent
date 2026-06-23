@@ -8,12 +8,16 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Hard cap on a single request line (root-only socket, but don't allow a
+/// malformed client to make us allocate without bound).
+const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 
 use serde_json::{json, Value};
 
@@ -35,18 +39,52 @@ pub struct ControlContext {
     pub lorawan_state: Option<SharedLoRaWANState>,
     /// Per-command timeout for fPort-85 round-trips.
     pub command_timeout: Duration,
+    /// Serializes device-mutating LoRaWAN operations so concurrent control
+    /// requests don't interleave downlinks/reboots to the same STICKER.
+    pub lorawan_lock: Arc<Mutex<()>>,
+}
+
+impl ControlContext {
+    /// Build a context with a fresh command lock.
+    pub fn new(
+        app_version: String,
+        config: Arc<Config>,
+        lorawan: Option<LoRaWANHandle>,
+        lorawan_state: Option<SharedLoRaWANState>,
+        command_timeout: Duration,
+    ) -> Self {
+        ControlContext {
+            app_version,
+            config,
+            lorawan,
+            lorawan_state,
+            command_timeout,
+            lorawan_lock: Arc::new(Mutex::new(())),
+        }
+    }
 }
 
 /// Bind the control socket and serve forever (blocking). Intended to run on its
 /// own thread. Recreates the socket (removing a stale one) and locks it to
 /// `0600` so only the daemon's user (root) can talk to it.
 pub fn serve(ctx: ControlContext, path: &str) -> std::io::Result<()> {
+    // The parent dir is the primary access control: 0700 means non-root cannot
+    // even traverse to the socket, which closes the window between bind() and the
+    // socket chmod below.
     if let Some(parent) = Path::new(path).parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("create control dir {parent:?}: {e}")))?;
+        // tighten perms in case the dir pre-existed looser
+        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
     let _ = fs::remove_file(path); // clear stale socket from a previous run
     let listener = UnixListener::bind(path)?;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    // Refuse to serve if we cannot lock the socket down to owner-only.
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|e| std::io::Error::new(e.kind(), format!("chmod control socket {path}: {e}")))?;
     eprintln!("[control] listening on {path}");
 
     for conn in listener.incoming() {
@@ -68,7 +106,8 @@ pub fn serve(ctx: ControlContext, path: &str) -> std::io::Result<()> {
 
 fn handle_conn(stream: UnixStream, ctx: &ControlContext) -> std::io::Result<()> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
-    let mut reader = BufReader::new(&stream);
+    // Cap the request size so a malformed client can't make us allocate without bound.
+    let mut reader = BufReader::new(&stream).take(MAX_REQUEST_BYTES);
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(()); // client closed without sending
@@ -99,7 +138,10 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
     match cmd {
         Command::Status => status(ctx),
         Command::ConfigShow => match serde_json::to_value(&*ctx.config) {
-            Ok(v) => Response::ok(v),
+            Ok(mut v) => {
+                redact_secrets(&mut v);
+                Response::ok(v)
+            }
             Err(e) => Response::err(format!("serialize config: {e}")),
         },
         Command::ConfigGet { key } => config_get(ctx, &key),
@@ -141,13 +183,49 @@ fn config_get(ctx: &ControlContext, key: &str) -> Response {
         Err(e) => return Response::err(format!("serialize config: {e}")),
     };
     let mut cur = &root;
+    let mut last = "";
     for part in key.split('.') {
         match cur.get(part) {
-            Some(v) => cur = v,
+            Some(v) => {
+                cur = v;
+                last = part;
+            }
             None => return Response::err(format!("no such config key: {key}")),
         }
     }
-    Response::ok(cur.clone())
+    let mut out = cur.clone();
+    // redact a secret subtree, and a secret leaf addressed directly
+    redact_secrets(&mut out);
+    if is_secret_key(last) && !out.is_object() && !out.is_array() && !out.is_null() {
+        out = json!("***");
+    }
+    Response::ok(out)
+}
+
+/// True for config keys whose values must never be exposed over the control
+/// plane (terminals/CI logs). Conservative substring match.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "appkey", "nwkkey", "appskey", "nwkskey", "private_key"]
+        .iter()
+        .any(|needle| k.contains(needle))
+}
+
+/// Recursively replace scalar values held under secret-looking keys with "***".
+fn redact_secrets(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map.iter_mut() {
+                if is_secret_key(k) && !child.is_object() && !child.is_array() && !child.is_null() {
+                    *child = json!("***");
+                } else {
+                    redact_secrets(child);
+                }
+            }
+        }
+        Value::Array(arr) => arr.iter_mut().for_each(redact_secrets),
+        _ => {}
+    }
 }
 
 // --- LoRaWAN ---
@@ -156,6 +234,10 @@ fn lorawan_handle(ctx: &ControlContext) -> Result<&LoRaWANHandle, Response> {
     ctx.lorawan
         .as_ref()
         .ok_or_else(|| Response::err("LoRaWAN is not enabled on this device"))
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 fn cv_to_json(v: &ConfigValue) -> Value {
@@ -196,7 +278,7 @@ fn lorawan_set_param(
         return Response { ok: false, data: json!({ "errors": parse_errors }), error: Some("invalid field value(s)".into()) };
     }
 
-    let commands = match sc::build_set_param(&config, sc::DR0_COMMAND_BUDGET) {
+    let commands = match sc::build_set_param(&config, sc::DR0_COMMAND_BUDGET, save) {
         Ok(c) => c,
         Err(errs) => {
             let errors: Vec<Value> =
@@ -204,6 +286,14 @@ fn lorawan_set_param(
             return Response { ok: false, data: json!({ "errors": errors }), error: Some("validation failed".into()) };
         }
     };
+
+    // Serialize device-mutating ops, and audit every attempt (staging or commit).
+    let _guard = ctx.lorawan_lock.lock();
+    eprintln!(
+        "[control] AUDIT t={} set-param dev_eui={dev_eui} save={save} force={force} fields={:?}",
+        now_unix(),
+        fields.keys().collect::<Vec<_>>()
+    );
 
     let sent_keys: Vec<&str> = config.keys().map(|s| s.as_str()).collect();
     let mut batches = Vec::new();
@@ -226,9 +316,6 @@ fn lorawan_set_param(
         }
     }
 
-    if save {
-        eprintln!("[control] AUDIT set-param dev_eui={dev_eui} save=true fields={:?}", fields.keys().collect::<Vec<_>>());
-    }
     Response { ok: all_ok, data: json!({ "batches": batches, "save": save }), error: None }
 }
 
@@ -242,6 +329,7 @@ fn lorawan_get_param(
         Ok(h) => h,
         Err(r) => return r,
     };
+    let _guard = ctx.lorawan_lock.lock(); // serialize with other device ops
     let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     let command = sc::build_get_param(&key_refs);
     let dr = match handle.send_command(dev_eui, command, ctx.command_timeout) {
@@ -299,6 +387,7 @@ fn lorawan_send(
         Ok(h) => h,
         Err(r) => return r,
     };
+    let _guard = ctx.lorawan_lock.lock(); // serialize with other device ops
     let proto_cmd = match command {
         LorawanSimpleCommand::GetInfo => sc::build_get_info(),
         LorawanSimpleCommand::Reboot => sc::build_reboot(),
@@ -309,9 +398,11 @@ fn lorawan_send(
             sc::build_clock_sync(now)
         }
     };
-    if command.is_destructive() {
-        eprintln!("[control] AUDIT lorawan send dev_eui={dev_eui} command={command:?}");
-    }
+    eprintln!(
+        "[control] AUDIT t={} lorawan send dev_eui={dev_eui} command={command:?} destructive={} force={force}",
+        now_unix(),
+        command.is_destructive()
+    );
     match handle.send_command(dev_eui, proto_cmd, ctx.command_timeout) {
         Ok(dr) => Response::ok(decoded_to_json(&dr, &[])),
         Err(e) => {
@@ -339,10 +430,12 @@ fn decoded_to_json(
     use crate::libs::lorawan::sticker_response::ResponseKind as K;
     let kind = match &dr.kind {
         K::Ack => json!({ "kind": "ack" }),
+        // claim_token is a provisioning secret — deliberately omitted from the
+        // control-plane projection (would otherwise land in terminals/CI logs).
         K::Info { fw_version, build_type, serial_number, uptime_s, unix_time, debug, claim_token } => json!({
             "kind": "info", "fw_version": fw_version, "build_type": build_type,
             "serial_number": serial_number, "uptime_s": uptime_s, "unix_time": unix_time,
-            "debug": debug, "claim_token": claim_token,
+            "debug": debug, "has_claim_token": claim_token.is_some(),
         }),
         K::Error { code, fault_field, detail } => json!({
             "kind": "error", "code": code, "fault_field": fault_field,
@@ -370,13 +463,13 @@ mod tests {
     use std::time::Duration;
 
     fn test_ctx() -> ControlContext {
-        ControlContext {
-            app_version: "9.9.9".to_string(),
-            config: Arc::new(crate::libs::config::Config::default_config()),
-            lorawan: None, // no device in unit tests
-            lorawan_state: None,
-            command_timeout: Duration::from_millis(200),
-        }
+        ControlContext::new(
+            "9.9.9".to_string(),
+            Arc::new(crate::libs::config::Config::default_config()),
+            None, // no device in unit tests
+            None,
+            Duration::from_millis(200),
+        )
     }
 
     /// Spawn the server on a temp socket and wait until it accepts connections.
@@ -486,6 +579,57 @@ mod tests {
         .unwrap();
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("destructive"));
+    }
+
+    #[test]
+    fn config_show_redacts_secrets() {
+        // seed a config with a broker password, ensure it is not exposed
+        let mut config = crate::libs::config::Config::default_config();
+        if let Some(mqtt) = config.mqtt.as_mut() {
+            mqtt.broker.password = Some("hunter2-supersecret".to_string());
+        }
+        let ctx = ControlContext::new(
+            "9.9.9".into(),
+            Arc::new(config),
+            None,
+            None,
+            Duration::from_millis(200),
+        );
+        let resp = dispatch(&ctx, Command::ConfigShow);
+        assert!(resp.ok);
+        let dumped = serde_json::to_string(&resp.data).unwrap();
+        assert!(!dumped.contains("hunter2-supersecret"), "secret leaked: {dumped}");
+        assert!(dumped.contains("***"), "expected redaction marker");
+    }
+
+    #[test]
+    fn redact_helper_masks_secret_keys_only() {
+        let mut v = serde_json::json!({
+            "broker": { "host": "h", "password": "p", "username": "u" },
+            "lorawan": { "appkey": "deadbeef", "deveui": "0011" },
+            "interval": 600,
+        });
+        redact_secrets(&mut v);
+        assert_eq!(v["broker"]["password"], "***");
+        assert_eq!(v["broker"]["host"], "h"); // non-secret untouched
+        assert_eq!(v["broker"]["username"], "u");
+        assert_eq!(v["lorawan"]["appkey"], "***");
+        assert_eq!(v["lorawan"]["deveui"], "0011"); // identifier, not secret
+        assert_eq!(v["interval"], 600);
+    }
+
+    #[test]
+    fn malformed_json_request_rejected() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        let (_d, path) = start_server();
+        let stream = UnixStream::connect(&path).unwrap();
+        (&stream).write_all(b"this is not json\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let resp: Response = serde_json::from_str(line.trim()).unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("malformed request"));
     }
 
     #[test]

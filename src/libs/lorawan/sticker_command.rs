@@ -158,14 +158,20 @@ fn set_param_command(sp: command::SetParam) -> Command {
 
 /// Build the `SetParam` downlink(s) for a desired config. Validates first
 /// (fail-fast). Fields are greedily packed so each encoded `Command` stays
-/// within `max_command_len`; `save=true` is set on the **last** message only,
-/// so the device stages every batch and commits (then reboots) once.
+/// within `max_command_len`.
 ///
-/// Returns `Command`s with `seq = 0` — the sender stamps the real seq. An empty
-/// input yields a single bare `SettingsSave`-equivalent `SetParam{save:true}`.
+/// `save` controls the COMMIT semantics, and therefore what the device does:
+/// - `save = true`  → the **last** batch carries `save=true`, so the device
+///   stages every batch and then persists + **reboots** once (destructive).
+/// - `save = false` → no batch carries `save`, so the values are only staged in
+///   the device's RAM and are reverted on the next reboot (non-destructive dry
+///   run / inspect-before-commit).
+///
+/// Returns `Command`s with `seq = 0` — the sender stamps the real seq.
 pub fn build_set_param(
     config: &BTreeMap<String, ConfigValue>,
     max_command_len: usize,
+    save: bool,
 ) -> Result<Vec<Command>, Vec<ConfigError>> {
     let fields = validate(config)?;
 
@@ -180,7 +186,7 @@ pub fn build_set_param(
         let fits = set_param_command(trial.clone()).encoded_len() <= max_command_len;
 
         if !fits && current_has {
-            // flush the current batch (not the last → save stays unset)
+            // flush the current batch (never the last → save stays unset)
             commands.push(set_param_command(std::mem::take(&mut current)));
             current_has = false;
             apply(&mut current, key, value);
@@ -191,8 +197,10 @@ pub fn build_set_param(
         }
     }
 
-    // final batch carries save=true (commit + reboot)
-    current.save = Some(true);
+    // Only the final batch commits, and only when the caller asked to save.
+    if save {
+        current.save = Some(true);
+    }
     commands.push(set_param_command(current));
     Ok(commands)
 }
@@ -307,6 +315,7 @@ mod tests {
                 ("alarms.alarm_limit", ConfigValue::Uint(300)),
             ]),
             DR0_COMMAND_BUDGET,
+            true,
         )
         .unwrap();
         assert_eq!(cmds.len(), 1); // small config → one downlink
@@ -316,6 +325,21 @@ mod tests {
         assert_eq!(app.interval_report, Some(1200));
         assert_eq!(app.history_enable, Some(true));
         assert_eq!(sp.alarms.unwrap().alarm_limit, Some(300));
+    }
+
+    #[test]
+    fn save_false_does_not_commit() {
+        // save=false → values staged only, no batch carries save (no reboot).
+        let cmds = build_set_param(
+            &cfg(&[("application.interval_report", ConfigValue::Uint(600))]),
+            DR0_COMMAND_BUDGET,
+            false,
+        )
+        .unwrap();
+        assert_eq!(cmds.len(), 1);
+        let sp = decode_set_param(&cmds[0]);
+        assert_eq!(sp.save, None, "save=false must not set the commit flag");
+        assert_eq!(sp.application.unwrap().interval_report, Some(600));
     }
 
     #[test]
@@ -329,6 +353,7 @@ mod tests {
                 ("alarms.alarm_limit", ConfigValue::Uint(300)),
             ]),
             budget,
+            true,
         )
         .unwrap();
         assert!(cmds.len() >= 2, "expected multiple batches, got {}", cmds.len());
@@ -383,7 +408,7 @@ mod tests {
             ("application.interval_report", ConfigValue::Uint(1200)),
             ("application.history_enable", ConfigValue::Bool(true)),
         ]);
-        let mut cmds = build_set_param(&config, DR0_COMMAND_BUDGET).unwrap();
+        let mut cmds = build_set_param(&config, DR0_COMMAND_BUDGET, true).unwrap();
         assert_eq!(cmds.len(), 1);
         cmds[0].seq = 9; // sender stamps the seq
         assert_eq!(hex(&cmds[0].encode_to_vec()), "08091209120518b00920011801");

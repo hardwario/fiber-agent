@@ -14,13 +14,17 @@ use fiber_app::libs::control::server::{serve, ControlContext};
 fn start_server() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("control.sock").to_string_lossy().to_string();
-    let ctx = ControlContext {
-        app_version: "1.2.3-test".to_string(),
-        config: Arc::new(Config::default_config()),
-        lorawan: None,
-        lorawan_state: None,
-        command_timeout: Duration::from_millis(200),
-    };
+    let mut config = Config::default_config();
+    if let Some(mqtt) = config.mqtt.as_mut() {
+        mqtt.broker.password = Some("e2e-secret-password".to_string());
+    }
+    let ctx = ControlContext::new(
+        "1.2.3-test".to_string(),
+        Arc::new(config),
+        None,
+        None,
+        Duration::from_millis(200),
+    );
     let p = path.clone();
     std::thread::spawn(move || {
         let _ = serve(ctx, &p);
@@ -69,6 +73,15 @@ fn fiberctl_config_get() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("0.1.0"), "stdout: {stdout}"); // config default value
+}
+
+#[test]
+fn fiberctl_config_show_does_not_leak_secret() {
+    let (_d, sock) = start_server();
+    let out = fiberctl(&sock, &["config", "show"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("e2e-secret-password"), "secret leaked to CLI output");
 }
 
 #[test]
