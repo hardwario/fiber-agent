@@ -367,6 +367,28 @@ mod tests {
     }
 
     #[test]
+    fn real_e2e_fport85_unsolicited_info_on_join() {
+        // GOLDEN VECTOR: the unsolicited device-info the STICKER sends as its FIRST
+        // uplink after every join (fCnt=1, seq=0), captured live on a FIBER device
+        // after `ats device reboot`. seq=0 => no pending command; the monitor logs
+        // it as an unmatched response. Confirms the unsolicited-Info path.
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        let raw = B64.decode("ARooCAEQBCACKKKGgIcIMBE4pPLo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==").unwrap();
+        let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
+        assert_eq!(d.seq, 0); // unsolicited
+        match d.kind {
+            ResponseKind::Info { fw_version, build_type, serial_number, debug, claim_token, .. } => {
+                assert_eq!(fw_version, "1.4.0");
+                assert_eq!(build_type, "custom");
+                assert_eq!(serial_number, 2162164514);
+                assert!(debug);
+                assert_eq!(claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+            }
+            other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn real_e2e_fport85_history_frame_decodes() {
         // GOLDEN VECTOR: live fPort-85 Response{HistoryFrame} captured from a
         // STICKER (ReqHistory reply) over RF -> local RAK gateway -> ChirpStack
