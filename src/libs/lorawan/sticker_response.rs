@@ -146,6 +146,10 @@ pub enum ResponseKind {
     ConfigDump {
         page_index: u32,
         page_count: u32,
+        /// Decoded config read-back, flattened to `group.field` keys (#70).
+        /// Only fields actually present in this page appear; secret LoRaWAN keys
+        /// (nwkkey/appkey/nwkskey/appskey) are intentionally never surfaced.
+        config: BTreeMap<String, ConfigValue>,
     },
     HistoryFrame {
         frame_index: u32,
@@ -165,6 +169,198 @@ pub enum ResponseKind {
     },
     /// Response with no body set (forward-compat / unknown variant).
     Empty,
+}
+
+/// A single decoded config value. Mirrors `ttn.js` `_decodeCfgGroup` value
+/// kinds: symbolic enum, scalar uint/bool, or raw bytes rendered as hex.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigValue {
+    Bool(bool),
+    Uint(u64),
+    Enum(String),
+    Hex(String),
+}
+
+/// One desired-vs-actual config disagreement (#70). `actual == None` means the
+/// key was absent from the dumped config entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigMismatch {
+    pub key: String,
+    pub desired: ConfigValue,
+    pub actual: Option<ConfigValue>,
+}
+
+fn region_name(v: i32) -> &'static str {
+    match v {
+        0 => "EU868",
+        1 => "US915",
+        2 => "AU915",
+        _ => "unknown",
+    }
+}
+
+fn network_name(v: i32) -> &'static str {
+    match v {
+        0 => "PUBLIC",
+        1 => "PRIVATE",
+        _ => "unknown",
+    }
+}
+
+fn activation_name(v: i32) -> &'static str {
+    match v {
+        0 => "OTAA",
+        1 => "ABP",
+        _ => "unknown",
+    }
+}
+
+fn motion_name(v: i32) -> &'static str {
+    match v {
+        0 => "OFF",
+        1 => "LOW",
+        2 => "MEDIUM",
+        3 => "HIGH",
+        _ => "unknown",
+    }
+}
+
+/// Flatten a `ConfigDump` page into `group.field` → value entries. Only fields
+/// present on the wire are emitted (every config field is `optional`, so prost
+/// preserves present-vs-absent). Mirrors the `ttn.js` config-decode name maps.
+fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
+    let mut m: BTreeMap<String, ConfigValue> = BTreeMap::new();
+
+    macro_rules! ins_bool {
+        ($src:expr, $grp:literal, $field:ident) => {
+            if let Some(v) = $src.$field {
+                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Bool(v));
+            }
+        };
+    }
+    macro_rules! ins_uint {
+        ($src:expr, $grp:literal, $field:ident) => {
+            if let Some(v) = $src.$field {
+                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Uint(v as u64));
+            }
+        };
+    }
+    macro_rules! ins_enum {
+        ($src:expr, $grp:literal, $field:ident, $namer:expr) => {
+            if let Some(v) = $src.$field {
+                m.insert(
+                    concat!($grp, ".", stringify!($field)).to_string(),
+                    ConfigValue::Enum($namer(v).to_string()),
+                );
+            }
+        };
+    }
+    macro_rules! ins_hex {
+        ($src:expr, $grp:literal, $field:ident) => {
+            if let Some(v) = &$src.$field {
+                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Hex(hex(v)));
+            }
+        };
+    }
+
+    if let Some(l) = &c.lorawan {
+        ins_enum!(l, "lorawan", region, region_name);
+        ins_uint!(l, "lorawan", sub_band);
+        ins_enum!(l, "lorawan", network, network_name);
+        ins_bool!(l, "lorawan", adr);
+        ins_enum!(l, "lorawan", activation, activation_name);
+        ins_hex!(l, "lorawan", deveui);
+        ins_hex!(l, "lorawan", joineui);
+        ins_hex!(l, "lorawan", devaddr);
+        ins_uint!(l, "lorawan", link_check_interval);
+        ins_uint!(l, "lorawan", link_check_fail_rejoin);
+        // nwkkey/appkey/nwkskey/appskey deliberately omitted (secrets).
+    }
+    if let Some(a) = &c.application {
+        ins_bool!(a, "application", calibration);
+        ins_uint!(a, "application", interval_sample);
+        ins_uint!(a, "application", interval_report);
+        ins_bool!(a, "application", history_enable);
+        ins_uint!(a, "application", history_sensors);
+    }
+    if let Some(s) = &c.sensors {
+        ins_bool!(s, "sensors", cap_hall_left);
+        ins_bool!(s, "sensors", cap_hall_right);
+        ins_bool!(s, "sensors", cap_input_a);
+        ins_bool!(s, "sensors", cap_input_b);
+        ins_bool!(s, "sensors", cap_light_sensor);
+        ins_bool!(s, "sensors", cap_barometer);
+        ins_bool!(s, "sensors", cap_pir_detector);
+        ins_bool!(s, "sensors", cap_w1_sensors);
+        ins_bool!(s, "sensors", cap_accelerometer);
+        ins_enum!(s, "sensors", accel_motion_sensitivity, motion_name);
+        ins_hex!(s, "sensors", sensor1_rom);
+        ins_hex!(s, "sensors", sensor2_rom);
+        ins_hex!(s, "sensors", sensor3_rom);
+        ins_hex!(s, "sensors", sensor4_rom);
+        ins_bool!(s, "sensors", hall_left_counter);
+        ins_bool!(s, "sensors", hall_right_counter);
+        ins_bool!(s, "sensors", input_a_counter);
+        ins_bool!(s, "sensors", input_b_counter);
+    }
+    if let Some(al) = &c.alarms {
+        ins_uint!(al, "alarms", alarm_limit);
+        ins_uint!(al, "alarms", alarm_notif_time);
+        ins_hex!(al, "alarms", alarm_0);
+        ins_hex!(al, "alarms", alarm_1);
+        ins_hex!(al, "alarms", alarm_2);
+        ins_hex!(al, "alarms", alarm_3);
+        ins_hex!(al, "alarms", alarm_4);
+        ins_hex!(al, "alarms", alarm_5);
+        ins_hex!(al, "alarms", alarm_6);
+        ins_hex!(al, "alarms", alarm_7);
+        ins_hex!(al, "alarms", alarm_8);
+        ins_hex!(al, "alarms", alarm_9);
+        ins_hex!(al, "alarms", alarm_10);
+        ins_hex!(al, "alarms", alarm_11);
+        ins_hex!(al, "alarms", alarm_12);
+        ins_hex!(al, "alarms", alarm_13);
+        ins_hex!(al, "alarms", alarm_14);
+        ins_hex!(al, "alarms", alarm_15);
+    }
+    m
+}
+
+/// Merge paged `ConfigDump`s (one `Response` per `page_index`) into a single
+/// config map. Later pages override/extend earlier ones; a full dump is the
+/// union of all `page_count` pages.
+pub fn merge_config_dumps<'a, I>(pages: I) -> BTreeMap<String, ConfigValue>
+where
+    I: IntoIterator<Item = &'a BTreeMap<String, ConfigValue>>,
+{
+    let mut out = BTreeMap::new();
+    for page in pages {
+        for (k, v) in page {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// Compare a `desired` config against the device's `actual` (dumped) config.
+/// Reports every desired key whose actual value differs or is missing. Keys
+/// present only in `actual` are ignored (we only enforce what we intend to set).
+pub fn diff_config(
+    desired: &BTreeMap<String, ConfigValue>,
+    actual: &BTreeMap<String, ConfigValue>,
+) -> Vec<ConfigMismatch> {
+    desired
+        .iter()
+        .filter_map(|(k, dv)| match actual.get(k) {
+            Some(av) if av == dv => None,
+            Some(av) => Some(ConfigMismatch {
+                key: k.clone(),
+                desired: dv.clone(),
+                actual: Some(av.clone()),
+            }),
+            None => Some(ConfigMismatch { key: k.clone(), desired: dv.clone(), actual: None }),
+        })
+        .collect()
 }
 
 fn hex(b: &[u8]) -> String {
@@ -210,6 +406,7 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
         Some(response::Body::ConfigDump(c)) => ResponseKind::ConfigDump {
             page_index: c.page_index,
             page_count: c.page_count,
+            config: decode_config(&c),
         },
         Some(response::Body::HistoryFrame(h)) => ResponseKind::HistoryFrame {
             frame_index: h.frame_index,
@@ -235,7 +432,99 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::libs::lorawan::sticker_proto::app_config_message::{self, Application, Lorawan, Sensors};
     use crate::libs::lorawan::sticker_proto::{response, Response};
+
+    #[test]
+    fn config_dump_round_trip() {
+        // A ConfigDump page carrying a lorawan + application group; verify the
+        // flat key->value model (enum symbolic names, present-only fields).
+        let resp = Response {
+            seq: 5,
+            body: Some(response::Body::ConfigDump(response::ConfigDump {
+                page_index: 1,
+                page_count: 2,
+                lorawan: Some(Lorawan {
+                    region: Some(app_config_message::lorawan::Region::Eu868 as i32),
+                    activation: Some(app_config_message::lorawan::Activation::Otaa as i32),
+                    adr: Some(true),
+                    deveui: Some(vec![0x58, 0x76, 0x07, 0, 0, 0, 0, 0x01]),
+                    ..Default::default()
+                }),
+                application: Some(Application {
+                    interval_report: Some(3600),
+                    history_enable: Some(true),
+                    ..Default::default()
+                }),
+                sensors: None,
+                alarms: None,
+            })),
+        };
+        let d = decode_response(&resp.encode_to_vec()).unwrap();
+        assert_eq!(d.seq, 5);
+        match d.kind {
+            ResponseKind::ConfigDump { page_index, page_count, config } => {
+                assert_eq!((page_index, page_count), (1, 2));
+                assert_eq!(config["lorawan.region"], ConfigValue::Enum("EU868".into()));
+                assert_eq!(config["lorawan.activation"], ConfigValue::Enum("OTAA".into()));
+                assert_eq!(config["lorawan.adr"], ConfigValue::Bool(true));
+                assert_eq!(config["lorawan.deveui"], ConfigValue::Hex("5876070000000001".into()));
+                assert_eq!(config["application.interval_report"], ConfigValue::Uint(3600));
+                assert_eq!(config["application.history_enable"], ConfigValue::Bool(true));
+                // absent fields must not appear
+                assert!(!config.contains_key("lorawan.sub_band"));
+                assert!(!config.contains_key("application.calibration"));
+                // secrets are never surfaced even though the proto carries them
+                assert!(!config.contains_key("lorawan.appkey"));
+            }
+            other => panic!("expected ConfigDump, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_paging_merge() {
+        // page 1: lorawan; page 2: sensors. The merged map is their union.
+        let page1 = response::ConfigDump {
+            page_index: 1,
+            page_count: 2,
+            lorawan: Some(Lorawan { adr: Some(true), ..Default::default() }),
+            ..Default::default()
+        };
+        let page2 = response::ConfigDump {
+            page_index: 2,
+            page_count: 2,
+            sensors: Some(Sensors { cap_hall_left: Some(true), ..Default::default() }),
+            ..Default::default()
+        };
+        let m1 = decode_config(&page1);
+        let m2 = decode_config(&page2);
+        let merged = merge_config_dumps([&m1, &m2]);
+        assert_eq!(merged["lorawan.adr"], ConfigValue::Bool(true));
+        assert_eq!(merged["sensors.cap_hall_left"], ConfigValue::Bool(true));
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn config_diff_reports_mismatch_and_missing() {
+        let desired = BTreeMap::from([
+            ("application.interval_report".to_string(), ConfigValue::Uint(3600)),
+            ("lorawan.adr".to_string(), ConfigValue::Bool(true)),
+            ("sensors.cap_pir_detector".to_string(), ConfigValue::Bool(true)),
+        ]);
+        let actual = BTreeMap::from([
+            ("application.interval_report".to_string(), ConfigValue::Uint(900)), // differs
+            ("lorawan.adr".to_string(), ConfigValue::Bool(true)),               // matches
+            // cap_pir_detector absent -> missing
+            ("lorawan.region".to_string(), ConfigValue::Enum("EU868".into())),  // extra, ignored
+        ]);
+        let mut diffs = diff_config(&desired, &actual);
+        diffs.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0].key, "application.interval_report");
+        assert_eq!(diffs[0].actual, Some(ConfigValue::Uint(900)));
+        assert_eq!(diffs[1].key, "sensors.cap_pir_detector");
+        assert_eq!(diffs[1].actual, None);
+    }
 
     #[test]
     fn info_round_trip() {
