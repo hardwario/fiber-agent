@@ -655,6 +655,11 @@ fn main() -> io::Result<()> {
         } else {
             ctx
         };
+        let ctx = if let Some(ref a) = ble_config_applier {
+            ctx.with_config_applier(a.clone())
+        } else {
+            ctx
+        };
         let path = protocol::socket_path();
         match std::thread::Builder::new()
             .name("control-server".into())

@@ -22,6 +22,7 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 use serde_json::{json, Value};
 
 use crate::libs::config::Config;
+use crate::libs::config_applier::ConfigApplier;
 use crate::libs::lorawan::sticker_command as sc;
 use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue, ResponseKind};
 use crate::libs::lorawan::state::SharedLoRaWANState;
@@ -29,6 +30,8 @@ use crate::libs::lorawan::LoRaWANHandle;
 use crate::libs::mqtt::{ConnectionState, SharedConnectionState};
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::sensors::SharedSensorStateHandle;
+
+use super::protocol::ConfigSetting;
 
 use super::protocol::{Command, LorawanSimpleCommand, Request, Response, PROTOCOL_VERSION};
 
@@ -48,6 +51,7 @@ pub struct ControlContext {
     pub power: Option<SharedPowerStatus>,
     pub sensors: Option<SharedSensorStateHandle>,
     pub mqtt_connection: Option<SharedConnectionState>,
+    pub config_applier: Option<Arc<ConfigApplier>>,
 }
 
 impl ControlContext {
@@ -70,6 +74,7 @@ impl ControlContext {
             power: None,
             sensors: None,
             mqtt_connection: None,
+            config_applier: None,
         }
     }
 
@@ -83,6 +88,10 @@ impl ControlContext {
     }
     pub fn with_mqtt_connection(mut self, c: SharedConnectionState) -> Self {
         self.mqtt_connection = Some(c);
+        self
+    }
+    pub fn with_config_applier(mut self, a: Arc<ConfigApplier>) -> Self {
+        self.config_applier = Some(a);
         self
     }
 }
@@ -172,6 +181,7 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
         Command::SensorsRead => sensors_read(ctx),
         Command::PowerStatus => power_status(ctx),
         Command::MqttStatus => mqtt_status(ctx),
+        Command::ConfigSet { setting, force } => config_set(ctx, setting, force),
         Command::LorawanSetParam { dev_eui, fields, save, force } => {
             lorawan_set_param(ctx, &dev_eui, fields, save, force)
         }
@@ -275,6 +285,58 @@ fn mqtt_status(ctx: &ControlContext) -> Response {
         "state": connection_state_str(st),
         "connected": matches!(st, ConnectionState::Connected),
     }))
+}
+
+/// Apply a persistent config change via `ConfigApplier` (atomic write + backup +
+/// live reload; serialized + range-checked in the applier per #81). Destructive
+/// → requires `force`; always audited.
+fn config_set(ctx: &ControlContext, setting: ConfigSetting, force: bool) -> Response {
+    if !force {
+        return Response::err_coded(
+            "forbidden",
+            "config set is destructive (persists to disk + reloads); pass --force",
+            json!(null),
+        );
+    }
+    // Server-side range check up front — honest `validation` code, and works
+    // independently of whether the applier validates.
+    if let Some(reason) = setting.validate() {
+        return Response::err_coded("validation", reason, json!(null));
+    }
+    let Some(applier) = &ctx.config_applier else {
+        return Response::err_coded("not_enabled", "config applier not available", json!(null));
+    };
+    eprintln!("[control] AUDIT t={} config set {} force={force}", now_unix(), setting.audit_label());
+
+    let result = match &setting {
+        ConfigSetting::DeviceLabel { label } => applier.apply_device_label_change(label.clone()),
+        ConfigSetting::SensorName { line, name } => applier.apply_name_change(*line, name.clone()),
+        ConfigSetting::SensorLocation { line, location } => {
+            applier.apply_location_change(*line, location.clone())
+        }
+        ConfigSetting::LedBrightness { value } => applier.apply_led_brightness_change(*value),
+        ConfigSetting::ScreenBrightness { value } => applier.apply_screen_brightness_change(*value),
+        ConfigSetting::BuzzerVolume { value } => applier.apply_buzzer_volume_change(*value),
+        ConfigSetting::SystemInfoInterval { seconds } => {
+            applier.apply_system_info_interval_change(*seconds)
+        }
+    };
+
+    let data = json!({
+        "setting": setting.audit_label(),
+        "file_path": result.file_path,
+        "backup_path": result.backup_path,
+        "applied_at": result.applied_at,
+    });
+    if result.success {
+        Response::ok(data)
+    } else {
+        Response::err_coded(
+            "apply_failed",
+            result.error_message.clone().unwrap_or_else(|| "apply failed".into()),
+            data,
+        )
+    }
 }
 
 fn config_get(ctx: &ControlContext, key: &str) -> Response {
@@ -776,6 +838,45 @@ mod tests {
         assert!(r.ok);
         assert_eq!(r.data["connected"], true);
         assert_eq!(r.data["state"], "connected");
+    }
+
+    #[test]
+    fn config_set_gating_and_validation() {
+        let ctx = test_ctx(); // no applier
+        // without force -> forbidden (before applier/validation)
+        let f = dispatch(&ctx, Command::ConfigSet {
+            setting: ConfigSetting::DeviceLabel { label: "Lab A".into() },
+            force: false,
+        });
+        assert_eq!(f.error_code.as_deref(), Some("forbidden"));
+        // out-of-range brightness, force -> validation (server-side, no applier needed)
+        let v = dispatch(&ctx, Command::ConfigSet {
+            setting: ConfigSetting::LedBrightness { value: 250 },
+            force: true,
+        });
+        assert_eq!(v.error_code.as_deref(), Some("validation"));
+        // valid setting, force, but no applier wired -> not_enabled
+        let n = dispatch(&ctx, Command::ConfigSet {
+            setting: ConfigSetting::DeviceLabel { label: "Lab A".into() },
+            force: true,
+        });
+        assert_eq!(n.error_code.as_deref(), Some("not_enabled"));
+    }
+
+    #[test]
+    fn config_set_applies_via_real_applier() {
+        use crate::libs::config_applier::ConfigApplier;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fiber.config.yaml"), "system:\n  device_label: \"OLD\"\n").unwrap();
+        let ctx = test_ctx().with_config_applier(Arc::new(ConfigApplier::new(dir.path()).unwrap()));
+
+        let r = dispatch(&ctx, Command::ConfigSet {
+            setting: ConfigSetting::DeviceLabel { label: "Ward 9".into() },
+            force: true,
+        });
+        assert!(r.ok, "config set failed: {:?}", r.error);
+        let c = std::fs::read_to_string(dir.path().join("fiber.config.yaml")).unwrap();
+        assert!(c.contains("Ward 9") && !c.contains("OLD"), "config not updated: {c}");
     }
 
     #[test]

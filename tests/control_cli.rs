@@ -163,6 +163,22 @@ fn fiberctl_mqtt_status() {
 }
 
 #[test]
+fn fiberctl_config_set_requires_force() {
+    let (_d, sock) = start_server();
+    let out = fiberctl(&sock, &["config", "set", "device-label", "Lab A"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("force"));
+}
+
+#[test]
+fn fiberctl_config_set_rejects_out_of_range() {
+    let (_d, sock) = start_server();
+    let out = fiberctl(&sock, &["config", "set", "led-brightness", "250", "--force"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("0-100"));
+}
+
+#[test]
 fn fiberctl_status_includes_power() {
     let (_d, sock) = start_server();
     let out = fiberctl(&sock, &["--json", "status"]);

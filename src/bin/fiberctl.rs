@@ -10,7 +10,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use fiber_app::libs::control::client;
-use fiber_app::libs::control::protocol::{Command, LorawanSimpleCommand, Request, Response};
+use fiber_app::libs::control::protocol::{
+    Command, ConfigSetting, LorawanSimpleCommand, Request, Response,
+};
 
 #[derive(Parser)]
 #[command(
@@ -75,6 +77,41 @@ enum ConfigCmd {
     Show,
     /// Read one dotted key, e.g. `system.app_version`.
     Get { key: String },
+    /// Apply a persistent config change (atomic write + reload). Destructive.
+    Set {
+        #[command(subcommand)]
+        setting: ConfigSetCmd,
+        /// Required: config set persists to disk and reloads live. May appear
+        /// before or after the setting (e.g. `config set --force ...` or
+        /// `config set led-brightness 80 --force`).
+        #[arg(long, global = true)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigSetCmd {
+    DeviceLabel { label: String },
+    Name { line: u8, name: String },
+    Location { line: u8, location: String },
+    LedBrightness { value: u8 },
+    ScreenBrightness { value: u8 },
+    BuzzerVolume { value: u8 },
+    SystemInfoInterval { seconds: u64 },
+}
+
+impl From<ConfigSetCmd> for ConfigSetting {
+    fn from(c: ConfigSetCmd) -> Self {
+        match c {
+            ConfigSetCmd::DeviceLabel { label } => ConfigSetting::DeviceLabel { label },
+            ConfigSetCmd::Name { line, name } => ConfigSetting::SensorName { line, name },
+            ConfigSetCmd::Location { line, location } => ConfigSetting::SensorLocation { line, location },
+            ConfigSetCmd::LedBrightness { value } => ConfigSetting::LedBrightness { value },
+            ConfigSetCmd::ScreenBrightness { value } => ConfigSetting::ScreenBrightness { value },
+            ConfigSetCmd::BuzzerVolume { value } => ConfigSetting::BuzzerVolume { value },
+            ConfigSetCmd::SystemInfoInterval { seconds } => ConfigSetting::SystemInfoInterval { seconds },
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -149,6 +186,7 @@ fn build_command(cmd: TopCmd) -> Result<Command, String> {
         TopCmd::Config { action } => match action {
             ConfigCmd::Show => Command::ConfigShow,
             ConfigCmd::Get { key } => Command::ConfigGet { key },
+            ConfigCmd::Set { setting, force } => Command::ConfigSet { setting: setting.into(), force },
         },
         TopCmd::Lorawan { action } => match action {
             LorawanCmd::SetParam { dev_eui, fields, save, force } => Command::LorawanSetParam {

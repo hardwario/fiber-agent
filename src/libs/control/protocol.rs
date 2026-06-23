@@ -87,6 +87,63 @@ pub enum Command {
     PowerStatus,
     /// MQTT broker connection state.
     MqttStatus,
+    /// Apply a persistent config change (atomic write + reload). Destructive
+    /// (mutates the on-disk config), so it requires `force`.
+    ConfigSet {
+        setting: ConfigSetting,
+        #[serde(default)]
+        force: bool,
+    },
+}
+
+/// A settable config item, mapping 1:1 onto a `ConfigApplier::apply_*` method
+/// (each does an atomic file write + backup + live reload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConfigSetting {
+    DeviceLabel { label: String },
+    SensorName { line: u8, name: String },
+    SensorLocation { line: u8, location: String },
+    LedBrightness { value: u8 },
+    ScreenBrightness { value: u8 },
+    BuzzerVolume { value: u8 },
+    SystemInfoInterval { seconds: u64 },
+}
+
+impl ConfigSetting {
+    /// Short label for audit logging.
+    pub fn audit_label(&self) -> &'static str {
+        match self {
+            ConfigSetting::DeviceLabel { .. } => "device_label",
+            ConfigSetting::SensorName { .. } => "sensor_name",
+            ConfigSetting::SensorLocation { .. } => "sensor_location",
+            ConfigSetting::LedBrightness { .. } => "led_brightness",
+            ConfigSetting::ScreenBrightness { .. } => "screen_brightness",
+            ConfigSetting::BuzzerVolume { .. } => "buzzer_volume",
+            ConfigSetting::SystemInfoInterval { .. } => "system_info_interval",
+        }
+    }
+
+    /// Client-independent server-side range check (defense in depth, and honest
+    /// `validation` errors regardless of whether the ConfigApplier validates).
+    /// Returns the offending reason, or None if acceptable.
+    pub fn validate(&self) -> Option<String> {
+        match self {
+            ConfigSetting::LedBrightness { value }
+            | ConfigSetting::ScreenBrightness { value }
+            | ConfigSetting::BuzzerVolume { value }
+                if *value > 100 =>
+            {
+                Some(format!("{} must be 0-100, got {}", self.audit_label(), value))
+            }
+            ConfigSetting::SensorName { line, .. } | ConfigSetting::SensorLocation { line, .. }
+                if *line > 7 =>
+            {
+                Some(format!("line must be 0-7, got {}", line))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// No-argument fPort-85 commands exposed by `lorawan send`.
