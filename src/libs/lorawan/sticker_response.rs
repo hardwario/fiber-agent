@@ -5,9 +5,124 @@
 //! Like fPort 2/3, the wire payload is prefixed with the 1-byte
 //! `APP_PROTO_VERSION`; the caller strips it before calling `decode_response`.
 
+use std::collections::BTreeMap;
+
 use prost::Message;
 
 use super::sticker_proto::{response, Response};
+
+/// One expanded history record (timestamp + decoded sensor values), produced
+/// from a `HistoryFrame.samples` blob (#39).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryRecord {
+    /// Unix time of this record (`t0_unix + index * interval_s`).
+    pub time: u32,
+    /// Scaled analog values (temperature/humidity). Absent when the firmware
+    /// wrote a sentinel (no valid sample for that channel in this record).
+    pub fields: BTreeMap<String, f64>,
+    /// Pulse counters (hall/input/motion).
+    pub counters: BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Copy)]
+enum Enc {
+    Temp,  // int16 LE, /100, sentinel 0x7fff
+    Hum,   // uint8, /2, sentinel 0xff
+    Count, // uint32 LE
+}
+
+/// `present`-mask bit order → (name, encoding). Mirrors `app_history_sensor`
+/// enum in sticker-firmware `app_history.c` / the `ttn.js` `_HIST_SENSORS` table.
+const HIST_SENSORS: &[(&str, Enc)] = &[
+    ("temperature", Enc::Temp),
+    ("humidity", Enc::Hum),
+    ("s1_temperature", Enc::Temp),
+    ("s1_humidity", Enc::Hum),
+    ("s2_temperature", Enc::Temp),
+    ("s2_humidity", Enc::Hum),
+    ("s3_temperature", Enc::Temp),
+    ("s3_humidity", Enc::Hum),
+    ("s4_temperature", Enc::Temp),
+    ("s4_humidity", Enc::Hum),
+    ("hall_left_count", Enc::Count),
+    ("hall_right_count", Enc::Count),
+    ("input_a_count", Enc::Count),
+    ("input_b_count", Enc::Count),
+    ("motion_count", Enc::Count),
+];
+
+const HIST_TEMP_SENTINEL: u16 = 0x7fff;
+const HIST_HUM_SENTINEL: u8 = 0xff;
+
+/// Expand a `HistoryFrame.samples` blob into timestamped records. Each record is
+/// a fixed-size, values-only run of the `present` channels (in bit order); record
+/// `j`'s time is `t0_unix + j*interval_s`. Sentinel values decode to "absent".
+pub fn expand_history_frame(
+    t0_unix: u32,
+    interval_s: u32,
+    present: u32,
+    samples: &[u8],
+) -> Vec<HistoryRecord> {
+    let mut rec_size = 0usize;
+    for (s, (_, enc)) in HIST_SENSORS.iter().enumerate() {
+        if present & (1 << s) == 0 {
+            continue;
+        }
+        rec_size += match enc {
+            Enc::Temp => 2,
+            Enc::Hum => 1,
+            Enc::Count => 4,
+        };
+    }
+    if rec_size == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut p = 0usize;
+    let mut j = 0u32;
+    while p + rec_size <= samples.len() {
+        let mut rec = HistoryRecord {
+            time: t0_unix.wrapping_add(j.wrapping_mul(interval_s)),
+            fields: BTreeMap::new(),
+            counters: BTreeMap::new(),
+        };
+        for (k, (name, enc)) in HIST_SENSORS.iter().enumerate() {
+            if present & (1 << k) == 0 {
+                continue;
+            }
+            match enc {
+                Enc::Temp => {
+                    let raw = u16::from_le_bytes([samples[p], samples[p + 1]]);
+                    p += 2;
+                    if raw != HIST_TEMP_SENTINEL {
+                        rec.fields.insert((*name).to_string(), raw as i16 as f64 / 100.0);
+                    }
+                }
+                Enc::Hum => {
+                    let hv = samples[p];
+                    p += 1;
+                    if hv != HIST_HUM_SENTINEL {
+                        rec.fields.insert((*name).to_string(), hv as f64 / 2.0);
+                    }
+                }
+                Enc::Count => {
+                    let v = u32::from_le_bytes([
+                        samples[p],
+                        samples[p + 1],
+                        samples[p + 2],
+                        samples[p + 3],
+                    ]);
+                    p += 4;
+                    rec.counters.insert((*name).to_string(), v as u64);
+                }
+            }
+        }
+        out.push(rec);
+        j += 1;
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedResponse {
@@ -38,7 +153,7 @@ pub enum ResponseKind {
         t0_unix: u32,
         present: u32,
         interval_s: u32,
-        samples_len: usize,
+        records: Vec<HistoryRecord>,
     },
     Error {
         code: &'static str,
@@ -102,7 +217,7 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
             t0_unix: h.t0_unix,
             present: h.present,
             interval_s: h.interval_s,
-            samples_len: h.samples.len(),
+            records: expand_history_frame(h.t0_unix, h.interval_s, h.present, &h.samples),
         },
         Some(response::Body::Error(e)) => ResponseKind::Error {
             code: error_code_name(e.code),
@@ -191,6 +306,63 @@ mod tests {
                 assert_eq!(claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
             }
             other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_expand_temp_hum() {
+        // present = temperature(bit0) + humidity(bit1); record = 2B temp + 1B hum.
+        let t0 = 1_780_000_000u32;
+        let interval = 900u32;
+        let present = 0b11u32;
+        // rec0: temp 23.50 C (2350 = 0x092e LE), hum 50% (100 = 0x64)
+        // rec1: temp -5.50 C (-550 = 0xfdda LE), hum sentinel 0xff -> absent
+        let samples = [0x2e, 0x09, 0x64, 0xda, 0xfd, 0xff];
+        let recs = expand_history_frame(t0, interval, present, &samples);
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].time, t0);
+        assert_eq!(recs[0].fields["temperature"], 23.5);
+        assert_eq!(recs[0].fields["humidity"], 50.0);
+        assert_eq!(recs[1].time, t0 + interval);
+        assert_eq!(recs[1].fields["temperature"], -5.5);
+        assert!(!recs[1].fields.contains_key("humidity")); // sentinel -> absent
+    }
+
+    #[test]
+    fn history_expand_counter() {
+        // present = motion_count (bit 14); record = 4B uint32 LE.
+        let present = 1u32 << 14;
+        let samples = [0x7b, 0x00, 0x00, 0x00]; // 123
+        let recs = expand_history_frame(1000, 60, present, &samples);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].counters["motion_count"], 123);
+        assert_eq!(recs[0].time, 1000);
+    }
+
+    #[test]
+    fn history_frame_via_decode_response() {
+        let samples = vec![0x2e, 0x09, 0x64]; // one record: 23.5 C, 50 %
+        let resp = Response {
+            seq: 11,
+            body: Some(response::Body::HistoryFrame(response::HistoryFrame {
+                frame_index: 0,
+                frame_count: 1,
+                t0_unix: 1_780_000_000,
+                samples,
+                present: 0b11,
+                interval_s: 900,
+            })),
+        };
+        let d = decode_response(&resp.encode_to_vec()).unwrap();
+        assert_eq!(d.seq, 11);
+        match d.kind {
+            ResponseKind::HistoryFrame { records, frame_count, .. } => {
+                assert_eq!(frame_count, 1);
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].fields["temperature"], 23.5);
+                assert_eq!(records[0].fields["humidity"], 50.0);
+            }
+            other => panic!("expected HistoryFrame, got {other:?}"),
         }
     }
 }
