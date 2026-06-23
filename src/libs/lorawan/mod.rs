@@ -11,6 +11,7 @@ pub mod registry;
 pub mod state;
 pub mod sticker_payload;
 pub mod sticker_proto;
+pub mod sticker_response;
 
 pub use monitor::{LoRaWANMonitor, LoRaWANHandle};
 pub use state::{
