@@ -22,10 +22,16 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 use serde_json::{json, Value};
 
 use crate::libs::config::Config;
+use crate::libs::leds::state::PowerLedColor;
+use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::lorawan::sticker_command as sc;
 use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue, ResponseKind};
 use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::LoRaWANHandle;
+use crate::libs::power::SharedPowerStatus;
+use crate::libs::sensors::SharedSensorStateHandle;
+
+use super::protocol::LedColor;
 
 use super::protocol::{Command, LorawanSimpleCommand, Request, Response, PROTOCOL_VERSION};
 
@@ -42,10 +48,14 @@ pub struct ControlContext {
     /// Serializes device-mutating LoRaWAN operations so concurrent control
     /// requests don't interleave downlinks/reboots to the same STICKER.
     pub lorawan_lock: Arc<Mutex<()>>,
+    pub power: Option<SharedPowerStatus>,
+    pub sensors: Option<SharedSensorStateHandle>,
+    pub led: Option<SharedLedStateHandle>,
 }
 
 impl ControlContext {
-    /// Build a context with a fresh command lock.
+    /// Build a context with a fresh command lock. Optional subsystem handles
+    /// (power/sensors/led) default to absent — attach them with the builders.
     pub fn new(
         app_version: String,
         config: Arc<Config>,
@@ -60,7 +70,23 @@ impl ControlContext {
             lorawan_state,
             command_timeout,
             lorawan_lock: Arc::new(Mutex::new(())),
+            power: None,
+            sensors: None,
+            led: None,
         }
+    }
+
+    pub fn with_power(mut self, p: SharedPowerStatus) -> Self {
+        self.power = Some(p);
+        self
+    }
+    pub fn with_sensors(mut self, s: SharedSensorStateHandle) -> Self {
+        self.sensors = Some(s);
+        self
+    }
+    pub fn with_led(mut self, l: SharedLedStateHandle) -> Self {
+        self.led = Some(l);
+        self
     }
 }
 
@@ -114,12 +140,13 @@ fn handle_conn(stream: UnixStream, ctx: &ControlContext) -> std::io::Result<()> 
     }
 
     let resp = match serde_json::from_str::<Request>(line.trim_end()) {
-        Ok(req) if req.v > PROTOCOL_VERSION => Response::err(format!(
-            "unsupported protocol version {} (server speaks {})",
-            req.v, PROTOCOL_VERSION
-        )),
+        Ok(req) if req.v > PROTOCOL_VERSION => Response::err_coded(
+            "unsupported_version",
+            format!("unsupported protocol version {} (server speaks {})", req.v, PROTOCOL_VERSION),
+            json!(null),
+        ),
         Ok(req) => dispatch(ctx, req.cmd),
-        Err(e) => Response::err(format!("malformed request: {e}")),
+        Err(e) => Response::err_coded("bad_request", format!("malformed request: {e}"), json!(null)),
     };
 
     let mut out = serde_json::to_string(&resp).unwrap_or_else(|e| {
@@ -142,9 +169,12 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
                 redact_secrets(&mut v);
                 Response::ok(v)
             }
-            Err(e) => Response::err(format!("serialize config: {e}")),
+            Err(e) => Response::err_coded("internal", format!("serialize config: {e}"), json!(null)),
         },
         Command::ConfigGet { key } => config_get(ctx, &key),
+        Command::SensorsRead => sensors_read(ctx),
+        Command::PowerStatus => power_status(ctx),
+        Command::LedSet { color, blink } => led_set(ctx, color, blink),
         Command::LorawanSetParam { dev_eui, fields, save, force } => {
             lorawan_set_param(ctx, &dev_eui, fields, save, force)
         }
@@ -174,13 +204,77 @@ fn status(ctx: &ControlContext) -> Response {
     Response::ok(json!({
         "app_version": ctx.app_version,
         "lorawan": lorawan,
+        "power": power_json(ctx),
+        "sensors": sensors_json(ctx),
     }))
+}
+
+/// Battery/DC snapshot as JSON, or `null` if the power subsystem is absent.
+fn power_json(ctx: &ControlContext) -> Value {
+    let Some(p) = &ctx.power else { return Value::Null };
+    let Ok(g) = p.lock() else { return Value::Null };
+    json!({
+        "vbat_mv": g.vbat_mv,
+        "battery_percent": g.battery_percent,
+        "vin_mv": g.vin_mv,
+        "on_dc_power": g.on_dc_power,
+    })
+}
+
+/// Per-line sensor snapshot as a JSON array, or `null` if absent.
+fn sensors_json(ctx: &ControlContext) -> Value {
+    let Some(s) = &ctx.sensors else { return Value::Null };
+    let Ok(g) = s.read() else { return Value::Null };
+    let lines: Vec<Value> = (0u8..8)
+        .map(|i| {
+            let name = g.get_name(i);
+            let location = g.get_location(i);
+            match &g.readings[i as usize] {
+                Some(r) => json!({
+                    "line": i, "name": name, "location": location,
+                    "connected": r.is_connected, "temperature": r.temperature,
+                    "alarm_state": format!("{:?}", r.alarm_state),
+                }),
+                None => json!({ "line": i, "name": name, "location": location, "connected": false }),
+            }
+        })
+        .collect();
+    json!(lines)
+}
+
+fn sensors_read(ctx: &ControlContext) -> Response {
+    match sensors_json(ctx) {
+        Value::Null => Response::err_coded("not_enabled", "sensor subsystem not available", json!(null)),
+        v => Response::ok(json!({ "sensors": v })),
+    }
+}
+
+fn power_status(ctx: &ControlContext) -> Response {
+    match power_json(ctx) {
+        Value::Null => Response::err_coded("not_enabled", "power subsystem not available", json!(null)),
+        v => Response::ok(v),
+    }
+}
+
+fn led_set(ctx: &ControlContext, color: LedColor, blink: bool) -> Response {
+    let Some(led) = &ctx.led else {
+        return Response::err_coded("not_enabled", "LED subsystem not available", json!(null));
+    };
+    let c = match color {
+        LedColor::Green => PowerLedColor::Green,
+        LedColor::Yellow => PowerLedColor::Yellow,
+        LedColor::Lime => PowerLedColor::Lime,
+        LedColor::Off => PowerLedColor::Off,
+    };
+    led.set_power_leds(c, blink);
+    eprintln!("[control] AUDIT t={} led set color={color:?} blink={blink}", now_unix());
+    Response::ok(json!({ "color": format!("{color:?}").to_ascii_lowercase(), "blink": blink }))
 }
 
 fn config_get(ctx: &ControlContext, key: &str) -> Response {
     let root = match serde_json::to_value(&*ctx.config) {
         Ok(v) => v,
-        Err(e) => return Response::err(format!("serialize config: {e}")),
+        Err(e) => return Response::err_coded("internal", format!("serialize config: {e}"), json!(null)),
     };
     let mut cur = &root;
     let mut last = "";
@@ -190,7 +284,7 @@ fn config_get(ctx: &ControlContext, key: &str) -> Response {
                 cur = v;
                 last = part;
             }
-            None => return Response::err(format!("no such config key: {key}")),
+            None => return Response::err_coded("not_found", format!("no such config key: {key}"), json!(null)),
         }
     }
     let mut out = cur.clone();
@@ -231,9 +325,9 @@ fn redact_secrets(v: &mut Value) {
 // --- LoRaWAN ---
 
 fn lorawan_handle(ctx: &ControlContext) -> Result<&LoRaWANHandle, Response> {
-    ctx.lorawan
-        .as_ref()
-        .ok_or_else(|| Response::err("LoRaWAN is not enabled on this device"))
+    ctx.lorawan.as_ref().ok_or_else(|| {
+        Response::err_coded("not_enabled", "LoRaWAN is not enabled on this device", json!(null))
+    })
 }
 
 fn now_unix() -> u64 {
@@ -256,7 +350,11 @@ fn lorawan_set_param(
     force: bool,
 ) -> Response {
     if save && !force {
-        return Response::err("set-param with --save is destructive (persists + reboots the device); pass --force");
+        return Response::err_coded(
+            "forbidden",
+            "set-param with --save is destructive (persists + reboots the device); pass --force",
+            json!(null),
+        );
     }
     let handle = match lorawan_handle(ctx) {
         Ok(h) => h,
@@ -275,7 +373,7 @@ fn lorawan_set_param(
         }
     }
     if !parse_errors.is_empty() {
-        return Response { ok: false, data: json!({ "errors": parse_errors }), error: Some("invalid field value(s)".into()) };
+        return Response::err_coded("validation", "invalid field value(s)", json!({ "errors": parse_errors }));
     }
 
     let commands = match sc::build_set_param(&config, sc::DR0_COMMAND_BUDGET, save) {
@@ -283,7 +381,7 @@ fn lorawan_set_param(
         Err(errs) => {
             let errors: Vec<Value> =
                 errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
-            return Response { ok: false, data: json!({ "errors": errors }), error: Some("validation failed".into()) };
+            return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
         }
     };
 
@@ -316,7 +414,12 @@ fn lorawan_set_param(
         }
     }
 
-    Response { ok: all_ok, data: json!({ "batches": batches, "save": save }), error: None }
+    let data = json!({ "batches": batches, "save": save });
+    if all_ok {
+        Response::ok(data)
+    } else {
+        Response::err_coded("transport", "one or more batches failed", data)
+    }
 }
 
 fn lorawan_get_param(
@@ -334,11 +437,11 @@ fn lorawan_get_param(
     let command = sc::build_get_param(&key_refs);
     let dr = match handle.send_command(dev_eui, command, ctx.command_timeout) {
         Ok(dr) => dr,
-        Err(e) => return Response::err(format!("no response from device: {e}")),
+        Err(e) => return Response::err_coded("transport", format!("no response from device: {e}"), json!(null)),
     };
 
     let ResponseKind::ConfigDump { config, page_index, page_count } = dr.kind else {
-        return Response::err(format!("expected ConfigDump, got {:?}", dr.kind));
+        return Response::err_coded("unexpected_response", format!("expected ConfigDump, got {:?}", dr.kind), json!(null));
     };
 
     let config_json: BTreeMap<String, Value> =
@@ -364,7 +467,7 @@ fn lorawan_get_param(
             }
         }
         if !perr.is_empty() {
-            return Response { ok: false, data: json!({ "errors": perr }), error: Some("invalid desired value(s)".into()) };
+            return Response::err_coded("validation", "invalid desired value(s)", json!({ "errors": perr }));
         }
         let mismatches = crate::libs::lorawan::sticker_response::diff_config(&want, &config);
         data["diff"] = json!(mismatches.iter().map(mismatch_to_json).collect::<Vec<_>>());
@@ -381,7 +484,7 @@ fn lorawan_send(
     force: bool,
 ) -> Response {
     if command.is_destructive() && !force {
-        return Response::err(format!("{command:?} is destructive; pass --force"));
+        return Response::err_coded("forbidden", format!("{command:?} is destructive; pass --force"), json!(null));
     }
     let handle = match lorawan_handle(ctx) {
         Ok(h) => h,
@@ -409,7 +512,7 @@ fn lorawan_send(
             if matches!(command, LorawanSimpleCommand::Reboot) {
                 Response::ok(json!({ "note": "no reply (reboot); expect unsolicited Info on rejoin", "transport_error": e }))
             } else {
-                Response::err(format!("no response from device: {e}"))
+                Response::err_coded("transport", format!("no response from device: {e}"), json!(null))
             }
         }
     }
@@ -616,6 +719,64 @@ mod tests {
         assert_eq!(v["lorawan"]["appkey"], "***");
         assert_eq!(v["lorawan"]["deveui"], "0011"); // identifier, not secret
         assert_eq!(v["interval"], 600);
+    }
+
+    #[test]
+    fn observe_commands_not_enabled_when_absent() {
+        let ctx = test_ctx(); // power/sensors/led all None
+        for cmd in [Command::SensorsRead, Command::PowerStatus, Command::LedSet { color: LedColor::Green, blink: false }] {
+            let r = dispatch(&ctx, cmd);
+            assert!(!r.ok);
+            assert_eq!(r.error_code.as_deref(), Some("not_enabled"));
+        }
+    }
+
+    #[test]
+    fn status_and_power_report_seeded_values() {
+        use crate::libs::power::PowerStatus;
+        let power = Arc::new(Mutex::new(PowerStatus::new(3700, 5000)));
+        let ctx = test_ctx().with_power(power);
+        // dedicated power command
+        let p = dispatch(&ctx, Command::PowerStatus);
+        assert!(p.ok);
+        assert_eq!(p.data["vbat_mv"], 3700);
+        assert_eq!(p.data["vin_mv"], 5000);
+        // status embeds the same snapshot
+        let s = dispatch(&ctx, Command::Status);
+        assert_eq!(s.data["power"]["vbat_mv"], 3700);
+    }
+
+    #[test]
+    fn sensors_read_returns_eight_lines() {
+        use crate::libs::sensors::create_shared_sensor_state;
+        let ctx = test_ctx().with_sensors(create_shared_sensor_state());
+        let r = dispatch(&ctx, Command::SensorsRead);
+        assert!(r.ok);
+        assert_eq!(r.data["sensors"].as_array().unwrap().len(), 8);
+        assert_eq!(r.data["sensors"][0]["line"], 0);
+    }
+
+    #[test]
+    fn led_set_ok_when_present() {
+        use crate::libs::leds::state::SharedLedStateWithNotify;
+        let ctx = test_ctx().with_led(Arc::new(SharedLedStateWithNotify::new()));
+        let r = dispatch(&ctx, Command::LedSet { color: LedColor::Green, blink: true });
+        assert!(r.ok, "led set failed: {:?}", r.error);
+        assert_eq!(r.data["color"], "green");
+        assert_eq!(r.data["blink"], true);
+    }
+
+    #[test]
+    fn errors_carry_stable_codes() {
+        let ctx = test_ctx();
+        let nf = dispatch(&ctx, Command::ConfigGet { key: "no.such".into() });
+        assert_eq!(nf.error_code.as_deref(), Some("not_found"));
+        let val = dispatch(&ctx, Command::LorawanSend {
+            dev_eui: "x".into(),
+            command: LorawanSimpleCommand::Reboot,
+            force: false,
+        });
+        assert_eq!(val.error_code.as_deref(), Some("forbidden"));
     }
 
     #[test]

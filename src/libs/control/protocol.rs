@@ -80,6 +80,27 @@ pub enum Command {
     ConfigShow,
     /// Read a single config key (dotted path).
     ConfigGet { key: String },
+
+    /// Current DS18B20 / line sensor readings.
+    SensorsRead,
+    /// Battery / DC power status.
+    PowerStatus,
+    /// Drive the power LED (HW bring-up). `blink` defaults to off.
+    LedSet {
+        color: LedColor,
+        #[serde(default)]
+        blink: bool,
+    },
+}
+
+/// Power-LED colours exposed by `led set` (mirror `leds::PowerLedColor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LedColor {
+    Green,
+    Yellow,
+    Lime,
+    Off,
 }
 
 /// No-argument fPort-85 commands exposed by `lorawan send`.
@@ -111,14 +132,22 @@ pub struct Response {
     pub data: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Stable machine-readable error category (e.g. "not_enabled",
+    /// "validation", "transport") so clients can branch on failure kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 impl Response {
     pub fn ok(data: serde_json::Value) -> Self {
-        Response { ok: true, data, error: None }
+        Response { ok: true, data, error: None, error_code: None }
     }
     pub fn err(msg: impl Into<String>) -> Self {
-        Response { ok: false, data: serde_json::Value::Null, error: Some(msg.into()) }
+        Response { ok: false, data: serde_json::Value::Null, error: Some(msg.into()), error_code: None }
+    }
+    /// Error with a stable code + optional structured detail (e.g. validation list).
+    pub fn err_coded(code: impl Into<String>, msg: impl Into<String>, data: serde_json::Value) -> Self {
+        Response { ok: false, data, error: Some(msg.into()), error_code: Some(code.into()) }
     }
 }
 

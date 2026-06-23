@@ -647,7 +647,10 @@ fn main() -> io::Result<()> {
             _lorawan_monitor.as_ref().map(|m| m.handle()),
             _lorawan_monitor.as_ref().map(|m| m.state.clone()),
             std::time::Duration::from_secs(30),
-        );
+        )
+        .with_power(power_status.clone())
+        .with_sensors(sensor_state.clone())
+        .with_led(led_state.clone());
         let path = protocol::socket_path();
         match std::thread::Builder::new()
             .name("control-server".into())
