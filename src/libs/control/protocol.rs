@@ -85,6 +85,8 @@ pub enum Command {
     SensorsRead,
     /// Battery / DC power status.
     PowerStatus,
+    /// MQTT broker connection state.
+    MqttStatus,
 }
 
 /// No-argument fPort-85 commands exposed by `lorawan send`.

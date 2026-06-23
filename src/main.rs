@@ -650,6 +650,11 @@ fn main() -> io::Result<()> {
         )
         .with_power(power_status.clone())
         .with_sensors(sensor_state.clone());
+        let ctx = if let Some(ref m) = _mqtt_monitor {
+            ctx.with_mqtt_connection(m.connection_state())
+        } else {
+            ctx
+        };
         let path = protocol::socket_path();
         match std::thread::Builder::new()
             .name("control-server".into())

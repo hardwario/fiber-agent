@@ -50,12 +50,23 @@ enum TopCmd {
     },
     /// Battery / DC power status.
     Power,
+    /// MQTT broker connection.
+    Mqtt {
+        #[command(subcommand)]
+        action: MqttCmd,
+    },
 }
 
 #[derive(Subcommand)]
 enum SensorsCmd {
     /// Print current sensor readings.
     Read,
+}
+
+#[derive(Subcommand)]
+enum MqttCmd {
+    /// Show the MQTT connection state.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -160,6 +171,9 @@ fn build_command(cmd: TopCmd) -> Result<Command, String> {
             SensorsCmd::Read => Command::SensorsRead,
         },
         TopCmd::Power => Command::PowerStatus,
+        TopCmd::Mqtt { action } => match action {
+            MqttCmd::Status => Command::MqttStatus,
+        },
     })
 }
 

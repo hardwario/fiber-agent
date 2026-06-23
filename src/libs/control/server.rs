@@ -26,6 +26,7 @@ use crate::libs::lorawan::sticker_command as sc;
 use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue, ResponseKind};
 use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::LoRaWANHandle;
+use crate::libs::mqtt::{ConnectionState, SharedConnectionState};
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::sensors::SharedSensorStateHandle;
 
@@ -46,6 +47,7 @@ pub struct ControlContext {
     pub lorawan_lock: Arc<Mutex<()>>,
     pub power: Option<SharedPowerStatus>,
     pub sensors: Option<SharedSensorStateHandle>,
+    pub mqtt_connection: Option<SharedConnectionState>,
 }
 
 impl ControlContext {
@@ -67,6 +69,7 @@ impl ControlContext {
             lorawan_lock: Arc::new(Mutex::new(())),
             power: None,
             sensors: None,
+            mqtt_connection: None,
         }
     }
 
@@ -76,6 +79,10 @@ impl ControlContext {
     }
     pub fn with_sensors(mut self, s: SharedSensorStateHandle) -> Self {
         self.sensors = Some(s);
+        self
+    }
+    pub fn with_mqtt_connection(mut self, c: SharedConnectionState) -> Self {
+        self.mqtt_connection = Some(c);
         self
     }
 }
@@ -164,6 +171,7 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
         Command::ConfigGet { key } => config_get(ctx, &key),
         Command::SensorsRead => sensors_read(ctx),
         Command::PowerStatus => power_status(ctx),
+        Command::MqttStatus => mqtt_status(ctx),
         Command::LorawanSetParam { dev_eui, fields, save, force } => {
             lorawan_set_param(ctx, &dev_eui, fields, save, force)
         }
@@ -247,6 +255,26 @@ fn power_status(ctx: &ControlContext) -> Response {
         Value::Null => Response::err_coded("not_enabled", "power subsystem not available", json!(null)),
         v => Response::ok(v),
     }
+}
+
+fn connection_state_str(s: ConnectionState) -> &'static str {
+    match s {
+        ConnectionState::Disconnected => "disconnected",
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Connected => "connected",
+        ConnectionState::Error => "error",
+    }
+}
+
+fn mqtt_status(ctx: &ControlContext) -> Response {
+    let Some(c) = &ctx.mqtt_connection else {
+        return Response::err_coded("not_enabled", "MQTT is not enabled on this device", json!(null));
+    };
+    let st = c.lock().unwrap_or_else(|e| e.into_inner()).state();
+    Response::ok(json!({
+        "state": connection_state_str(st),
+        "connected": matches!(st, ConnectionState::Connected),
+    }))
 }
 
 fn config_get(ctx: &ControlContext, key: &str) -> Response {
@@ -732,6 +760,22 @@ mod tests {
         assert!(r.ok);
         assert_eq!(r.data["sensors"].as_array().unwrap().len(), 8);
         assert_eq!(r.data["sensors"][0]["line"], 0);
+    }
+
+    #[test]
+    fn mqtt_status_present_and_absent() {
+        use crate::libs::mqtt::connection::ConnectionStateHandle;
+        // absent
+        let absent = dispatch(&test_ctx(), Command::MqttStatus);
+        assert_eq!(absent.error_code.as_deref(), Some("not_enabled"));
+        // present + connected
+        let cs = Arc::new(Mutex::new(ConnectionStateHandle::new()));
+        cs.lock().unwrap().set_state(ConnectionState::Connected);
+        let ctx = test_ctx().with_mqtt_connection(cs);
+        let r = dispatch(&ctx, Command::MqttStatus);
+        assert!(r.ok);
+        assert_eq!(r.data["connected"], true);
+        assert_eq!(r.data["state"], "connected");
     }
 
     #[test]

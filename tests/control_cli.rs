@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use fiber_app::libs::config::Config;
 use fiber_app::libs::control::server::{serve, ControlContext};
+use fiber_app::libs::mqtt::connection::ConnectionStateHandle;
+use fiber_app::libs::mqtt::ConnectionState;
 use fiber_app::libs::power::PowerStatus;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use std::sync::Mutex;
@@ -30,6 +32,9 @@ fn start_server() -> (tempfile::TempDir, String) {
     )
     .with_power(Arc::new(Mutex::new(PowerStatus::new(3700, 5000))))
     .with_sensors(create_shared_sensor_state());
+    let conn = Arc::new(Mutex::new(ConnectionStateHandle::new()));
+    conn.lock().unwrap().set_state(ConnectionState::Connected);
+    let ctx = ctx.with_mqtt_connection(conn);
     let p = path.clone();
     std::thread::spawn(move || {
         let _ = serve(ctx, &p);
@@ -145,6 +150,16 @@ fn fiberctl_sensors_read() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["sensors"].as_array().unwrap().len(), 8);
+}
+
+#[test]
+fn fiberctl_mqtt_status() {
+    let (_d, sock) = start_server();
+    let out = fiberctl(&sock, &["--json", "mqtt", "status"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["connected"], true);
+    assert_eq!(v["data"]["state"], "connected");
 }
 
 #[test]
