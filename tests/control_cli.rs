@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fiber_app::libs::config::Config;
+use fiber_app::libs::config_applier::ConfigApplier;
 use fiber_app::libs::control::server::{serve, ControlContext};
 use fiber_app::libs::mqtt::connection::ConnectionStateHandle;
 use fiber_app::libs::mqtt::ConnectionState;
@@ -34,7 +35,12 @@ fn start_server() -> (tempfile::TempDir, String) {
     .with_sensors(create_shared_sensor_state());
     let conn = Arc::new(Mutex::new(ConnectionStateHandle::new()));
     conn.lock().unwrap().set_state(ConnectionState::Connected);
-    let ctx = ctx.with_mqtt_connection(conn);
+    // Wire a real ConfigApplier on a config file in the same tempdir so e2e
+    // `config set` actually applies (tests read it back via the returned dir).
+    std::fs::write(dir.path().join("fiber.config.yaml"), "system:\n  device_label: \"OLD\"\n").unwrap();
+    let ctx = ctx
+        .with_mqtt_connection(conn)
+        .with_config_applier(Arc::new(ConfigApplier::new(dir.path()).unwrap()));
     let p = path.clone();
     std::thread::spawn(move || {
         let _ = serve(ctx, &p);
@@ -176,6 +182,26 @@ fn fiberctl_config_set_rejects_out_of_range() {
     let out = fiberctl(&sock, &["config", "set", "led-brightness", "250", "--force"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("0-100"));
+}
+
+#[test]
+fn fiberctl_config_set_applies_to_real_config() {
+    // --force AFTER the setting; real applier wired -> the file is updated.
+    let (d, sock) = start_server();
+    let out = fiberctl(&sock, &["config", "set", "device-label", "Ward 9", "--force"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let c = std::fs::read_to_string(d.path().join("fiber.config.yaml")).unwrap();
+    assert!(c.contains("Ward 9") && !c.contains("OLD"), "config not updated: {c}");
+}
+
+#[test]
+fn fiberctl_config_set_force_before_setting_also_works() {
+    // --force BEFORE the setting (global flag) parses and applies too.
+    let (d, sock) = start_server();
+    let out = fiberctl(&sock, &["config", "set", "--force", "device-label", "Bay 2"]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let c = std::fs::read_to_string(d.path().join("fiber.config.yaml")).unwrap();
+    assert!(c.contains("Bay 2"), "config not updated: {c}");
 }
 
 #[test]
