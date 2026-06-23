@@ -365,4 +365,32 @@ mod tests {
             other => panic!("expected HistoryFrame, got {other:?}"),
         }
     }
+
+    #[test]
+    fn real_e2e_fport85_history_frame_decodes() {
+        // GOLDEN VECTOR: live fPort-85 Response{HistoryFrame} captured from a
+        // STICKER (ReqHistory reply) over RF -> local RAK gateway -> ChirpStack
+        // on a FIBER device. Validates expand_history_frame against real output.
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        let raw = B64.decode("AQgBKhsQARjp3+jRBiILgAluAAAAAAAAAAAogxgwhAc=").unwrap();
+        let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
+        assert_eq!(d.seq, 1);
+        match d.kind {
+            ResponseKind::HistoryFrame {
+                frame_count, t0_unix, interval_s, present, records, ..
+            } => {
+                assert_eq!(frame_count, 1);
+                assert_eq!(t0_unix, 1_782_198_249);
+                assert_eq!(interval_s, 900);
+                assert_eq!(present, 0xc03); // temperature+humidity+hall_left+hall_right
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].time, 1_782_198_249);
+                assert_eq!(records[0].fields["temperature"], 24.32);
+                assert_eq!(records[0].fields["humidity"], 55.0);
+                assert_eq!(records[0].counters["hall_left_count"], 0);
+                assert_eq!(records[0].counters["hall_right_count"], 0);
+            }
+            other => panic!("expected HistoryFrame, got {other:?}"),
+        }
+    }
 }
