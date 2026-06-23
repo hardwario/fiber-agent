@@ -14,10 +14,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use super::registry::{REGISTRY, FieldKind};
 use super::sticker_payload;
 
-/// fPort 2 (Telemetry) and fPort 85 (Response) payloads are prefixed with a
-/// 1-byte protocol version (`APP_PROTO_VERSION`, mirrors sticker-firmware
-/// `app_cmd.h` / the `ttn.js` `_stripProtoVersion`). fPort 3 (AlarmReport) is
-/// NOT prefixed.
+/// fPort 2 (Telemetry), fPort 3 (AlarmReport) and fPort 85 (Response) payloads
+/// are all prefixed with a 1-byte protocol version (`APP_PROTO_VERSION`, mirrors
+/// sticker-firmware `app_cmd.h`). Confirmed against real device frames captured
+/// over the air — every in-app-decoded port carries the prefix.
 const APP_PROTO_VERSION: u8 = 0x01;
 
 /// Strip the leading protocol-version byte from an fPort 2/85 payload. Mirrors
@@ -105,12 +105,13 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
             counters.extend(d.counters);
             events.extend(d.events);
         }
-        // fPort 3: protobuf AlarmReport (#77). NOT version-prefixed (firmware
-        // app_cmd_build_alarm_report encodes straight to the buffer), unlike
-        // fPort 2/85 — so decode from byte 0 with no strip.
+        // fPort 3: protobuf AlarmReport (#77), 1-byte proto-version prefix stripped
+        // first — same as fPort 2 (confirmed against a real device frame; the
+        // firmware send path prepends the version on the alarm port too).
         (Some(3), Some(b64)) => {
-            let bytes = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
-            events.extend(sticker_payload::decode_alarm_report(&bytes, &received_at)?);
+            let raw = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
+            let bytes = strip_proto_version(&raw, &dev_eui)?;
+            events.extend(sticker_payload::decode_alarm_report(bytes, &received_at)?);
         }
         // fPort 85: command/response, handled by the seq-correlation stream (#34).
         (Some(85), _) => return Ok(None),
@@ -254,7 +255,7 @@ mod tests {
     /// fPort 2/85 get the 1-byte proto-version prefix (as the firmware sends);
     /// fPort 3 does not.
     fn chirpstack_uplink(dev_eui: &str, fport: u64, fcnt: u64, proto: &[u8]) -> String {
-        let payload: Vec<u8> = if fport == 2 || fport == 85 {
+        let payload: Vec<u8> = if matches!(fport, 2 | 3 | 85) {
             std::iter::once(APP_PROTO_VERSION).chain(proto.iter().copied()).collect()
         } else {
             proto.to_vec()
@@ -365,6 +366,35 @@ mod tests {
         assert!(approx(r.fields["voltage"], 3.48));        // 174/50
         assert!(approx(r.fields["temperature"], 24.71));   // zigzag 4942->2471 /100
         assert!(approx(r.fields["humidity"], 53.0));       // 106/2
+    }
+
+    #[test]
+    fn real_e2e_fport3_alarm_decodes() {
+        // Live fPort-3 AlarmReport captured from the STICKER (onboard-temperature
+        // out-of-band alarm). Carries the same 0x01 proto-version prefix as fPort 2
+        // — guards the alarm-port strip that a synthetic prost vector would miss.
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "5876070000000001" },
+            "fPort": 3, "fCnt": 6, "data": "AQjlu+jRBhABGgUYASjMJg==",
+            "rxInfo": [{ "rssi": -69, "snr": 10.0 }], "time": "2026-06-23T05:42:00Z",
+        }).to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        let alarms: Vec<_> = r.events.iter().filter(|e| e.event_type == "alarm").collect();
+        assert_eq!(alarms.len(), 1, "expected exactly one alarm event");
+        assert!(alarms[0].extra.get("value").is_some());
+    }
+
+    #[test]
+    fn real_e2e_fport85_response_is_skipped() {
+        // Live fPort-85 Response (get_info -> Info), captured from the STICKER.
+        // The command/response stream is owned by #34, so parse_uplink skips it.
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "5876070000000001" },
+            "fPort": 85, "fCnt": 8,
+            "data": "AQgDGikIARAEIAIoooaAhwgwigQ467vo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==",
+            "rxInfo": [{ "rssi": -69, "snr": 10.0 }], "time": "2026-06-23T05:42:10Z",
+        }).to_string();
+        assert!(parse_uplink(payload.as_bytes()).unwrap().is_none());
     }
 
     #[test]
