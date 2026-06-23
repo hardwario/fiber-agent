@@ -223,6 +223,44 @@ pub fn build_get_info() -> Command {
     cmd(command::Body::GetInfo(command::GetInfo::default()))
 }
 
+pub fn build_reboot() -> Command {
+    cmd(command::Body::Reboot(command::Reboot::default()))
+}
+
+pub fn build_force_send() -> Command {
+    cmd(command::Body::ForceSend(command::ForceSend::default()))
+}
+
+/// Empty `ResetCounters` = reset every pulse counter channel.
+pub fn build_reset_counters() -> Command {
+    cmd(command::Body::ResetCounters(command::ResetCounters::default()))
+}
+
+/// `ClockSync` carrying an explicit wall-clock (Unix seconds) to push to the device.
+pub fn build_clock_sync(unix_time: u32) -> Command {
+    cmd(command::Body::ClockSync(command::ClockSync { unix_time: Some(unix_time) }))
+}
+
+/// Parse a raw `key=value` string into a [`ConfigValue`] of the type the field
+/// expects (bool vs unsigned), per the [`SETTABLE`] spec. Range validation
+/// happens later in [`build_set_param`]/[`validate`]; this only fixes the type.
+pub fn parse_value(key: &str, raw: &str) -> Result<ConfigValue, ConfigError> {
+    let err = |reason: String| ConfigError { key: key.to_string(), reason };
+    let (_, kind) = spec(key).ok_or_else(|| err("not a remotely settable parameter".into()))?;
+    match kind {
+        Kind::Bool => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "on" | "yes" => Ok(ConfigValue::Bool(true)),
+            "false" | "0" | "off" | "no" => Ok(ConfigValue::Bool(false)),
+            _ => Err(err(format!("expected a boolean (true/false), got {raw:?}"))),
+        },
+        Kind::Uint { .. } | Kind::Bitmask => raw
+            .trim()
+            .parse::<u64>()
+            .map(ConfigValue::Uint)
+            .map_err(|_| err(format!("expected an unsigned integer, got {raw:?}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

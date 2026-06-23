@@ -125,6 +125,10 @@ fn main() -> io::Result<()> {
         .unwrap_or(env!("CARGO_PKG_VERSION"))
         .to_string();
 
+    // Snapshot the full config for the control server (#79) before individual
+    // fields get moved into subsystem monitors below (e.g. config.sensors).
+    let control_config = std::sync::Arc::new(config.clone());
+
     // Persist app_version back to the YAML so external readers see the running
     // version after a RAUC bundle install. Surgical line edit preserves comments
     // and key order; only writes if the value actually changed (avoids needless
@@ -631,6 +635,32 @@ fn main() -> io::Result<()> {
     // Wire LoRaWAN state into MQTT monitor now that both exist.
     if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
         mqtt_mon.set_lorawan_state(lr_mon.state.clone());
+    }
+
+    // Control socket server (#79): local CLI control plane for dev/testing,
+    // driven by the `fiberctl` binary. Disable with FIBER_CONTROL_DISABLE=1.
+    if std::env::var("FIBER_CONTROL_DISABLE").is_err() {
+        use fiber_app::libs::control::{protocol, server};
+        let ctx = server::ControlContext {
+            app_version: control_config.system.app_version.clone(),
+            config: control_config.clone(),
+            lorawan: _lorawan_monitor.as_ref().map(|m| m.handle()),
+            lorawan_state: _lorawan_monitor.as_ref().map(|m| m.state.clone()),
+            command_timeout: std::time::Duration::from_secs(30),
+        };
+        let path = protocol::socket_path();
+        match std::thread::Builder::new()
+            .name("control-server".into())
+            .spawn(move || {
+                if let Err(e) = server::serve(ctx, &path) {
+                    eprintln!("[main] control server exited: {}", e);
+                }
+            }) {
+            Ok(_) => eprintln!("[main] control server thread spawned"),
+            Err(e) => eprintln!("[main] Warning: failed to spawn control server: {}", e),
+        }
+    } else {
+        eprintln!("[main] control server disabled (FIBER_CONTROL_DISABLE set)");
     }
 
     // Application is now running with background monitoring
