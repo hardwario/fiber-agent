@@ -319,3 +319,94 @@ mod tests {
         assert!(schema.description.contains("Initial"));
     }
 }
+
+/// Row from the `sticker_readings` table — one row per LoRaWAN uplink or
+/// sticker_removed marker. Used by the save-and-feed pipeline so the firmware
+/// DB is the authoritative store of every sticker event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickerReadingRow {
+    pub id: i64,
+    pub dev_eui: String,
+    pub provisioning_epoch: i64,
+    pub ts: i64,
+    pub received_at: i64,
+    pub message_id: String,
+    /// "uplink" | "sticker_removed"
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: i64,
+}
+
+/// Row from the `sensor_readings_minute` table — per-minute aggregate of
+/// raw `sensor_readings` for long-term retention (3 years on a budget that
+/// the raw table cannot fit). Populated by the aggregator and read for
+/// history queries that span more than ~30 days.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinuteAggregateRow {
+    /// Start of the minute (UNIX seconds), aligned: `floor(ts / 60) * 60`.
+    pub minute_ts: i64,
+    pub sensor_line: u8,
+    pub min_c: f64,
+    pub avg_c: f64,
+    pub max_c: f64,
+    pub sample_count: i64,
+    pub disconnect_count: i64,
+    /// Worst alarm state observed in the minute (CRITICAL > DISCONNECTED >
+    /// WARNING > RECONNECTING > NEVER_CONNECTED > NORMAL).
+    pub worst_alarm: String,
+    pub created_at: i64,
+    /// HMAC-SHA256 over the row's canonical fields, or `None` when no
+    /// HMAC secret was configured at aggregation time.
+    pub data_hmac: Option<Vec<u8>>,
+}
+
+/// Row from the `export_cursor` table — tracks per (broker_id, stream) the
+/// highest row id that has been successfully published to the destination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportCursorRow {
+    pub broker_id: String,
+    /// "sticker" | "probe" | "alarm"
+    pub stream: String,
+    pub last_exported_id: i64,
+    pub updated_at: i64,
+}
+
+#[cfg(test)]
+mod sticker_model_tests {
+    use super::*;
+
+    #[test]
+    fn sticker_row_roundtrips_through_serde() {
+        let row = StickerReadingRow {
+            id: 42,
+            dev_eui: "70b3d5".into(),
+            provisioning_epoch: 2,
+            ts: 1716120000,
+            received_at: 1716120001,
+            message_id: "70b3d5-1716120000-7".into(),
+            event_type: "uplink".into(),
+            payload_json: r#"{"fields":{"temp":21.0}}"#.into(),
+            created_at: 1716120001,
+        };
+        let s = serde_json::to_string(&row).unwrap();
+        let parsed: StickerReadingRow = serde_json::from_str(&s).unwrap();
+        assert_eq!(row.id, parsed.id);
+        assert_eq!(row.dev_eui, parsed.dev_eui);
+        assert_eq!(row.message_id, parsed.message_id);
+    }
+
+    #[test]
+    fn export_cursor_row_roundtrips_through_serde() {
+        let row = ExportCursorRow {
+            broker_id: "local".into(),
+            stream: "sticker".into(),
+            last_exported_id: 17,
+            updated_at: 1716120000,
+        };
+        let s = serde_json::to_string(&row).unwrap();
+        let parsed: ExportCursorRow = serde_json::from_str(&s).unwrap();
+        assert_eq!(row.broker_id, parsed.broker_id);
+        assert_eq!(row.stream, parsed.stream);
+        assert_eq!(row.last_exported_id, parsed.last_exported_id);
+    }
+}

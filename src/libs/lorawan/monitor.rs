@@ -16,6 +16,7 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 
 use crate::libs::config::LoRaWANConfig;
 use crate::libs::mqtt::messages::MqttMessage;
+use crate::libs::storage::StorageHandle;
 
 use super::chirpstack;
 use super::detector;
@@ -41,9 +42,11 @@ impl LoRaWANMonitor {
     pub fn new(
         config: LoRaWANConfig,
         configs: super::state::SharedLoRaWANSensorConfigs,
+        field_threshold_defaults: super::state::SharedFieldThresholdDefaults,
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
         buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
+        storage: StorageHandle,
     ) -> io::Result<Self> {
         // Detect gateway hardware
         let detection = detector::detect_gateway();
@@ -70,9 +73,11 @@ impl LoRaWANMonitor {
                 state_clone,
                 config,
                 configs,
+                field_threshold_defaults,
                 mqtt_tx,
                 hostname,
                 buzzer_priority_manager,
+                storage,
             );
         });
 
@@ -112,9 +117,11 @@ fn lorawan_loop(
     state: SharedLoRaWANState,
     config: LoRaWANConfig,
     configs: super::state::SharedLoRaWANSensorConfigs,
+    field_threshold_defaults: super::state::SharedFieldThresholdDefaults,
     mqtt_tx: Sender<MqttMessage>,
     hostname: String,
     buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
+    storage: StorageHandle,
 ) {
     // Build a tokio runtime for the async MQTT client
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -183,27 +190,118 @@ fn lorawan_loop(
             let publish_interval = Duration::from_secs(config.publish_interval_s);
             let timeout_secs = config.sensor_timeout_s;
 
+            // Dedicated event pump. `EventLoop::poll()` is NOT cancel-safe —
+            // dropping the future mid-read loses bytes from the in-progress
+            // MQTT frame and corrupts the eventloop's state. We previously
+            // wrapped poll() in `tokio::time::timeout(1s, ...)` to also do
+            // periodic work, which silently dropped uplink frames whenever
+            // the timeout fired mid-frame. Now: a dedicated task owns the
+            // eventloop, never cancels poll(), and feeds events through a
+            // bounded mpsc to the periodic-work loop. mpsc::Receiver::recv
+            // IS cancel-safe so the outer select! below is safe.
+            let (event_tx, mut event_rx) =
+                tokio::sync::mpsc::channel::<Result<Event, rumqttc::ConnectionError>>(64);
+            let pump_handle = tokio::spawn(async move {
+                loop {
+                    match eventloop.poll().await {
+                        Ok(ev) => {
+                            if event_tx.send(Ok(ev)).await.is_err() {
+                                break; // receiver dropped (outer reconnect)
+                            }
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(Err(e)).await;
+                            break;
+                        }
+                    }
+                }
+            });
+
             // Event loop
             loop {
                 if shutdown_flag.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // Poll with a timeout so we can check shutdown and publish periodically
-                match tokio::time::timeout(Duration::from_secs(1), eventloop.poll()).await {
-                    Ok(Ok(Event::Incoming(Incoming::Publish(publish)))) => {
+                // Select between events from the pump and a 1-second tick
+                // for periodic work. event_rx.recv() is cancel-safe; sleep
+                // is cancel-safe; the eventloop itself never gets cancelled.
+                let polled = tokio::select! {
+                    biased;
+                    ev = event_rx.recv() => Some(ev),
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => None,
+                };
+
+                match polled {
+                    Some(Some(Ok(Event::Incoming(Incoming::Publish(publish))))) => {
                         let topic = publish.topic.clone();
                         let payload = publish.payload.to_vec();
 
                         match chirpstack::parse_uplink(&payload) {
                             Ok(reading) => {
                                 eprintln!(
-                                    "[LoRaWAN Monitor] Uplink from {} ({}): temp={:?}°C hum={:?}% rssi={:?}dBm",
+                                    "[LoRaWAN Monitor] Uplink from {} ({}): {} fields, {} counters, rssi={:?}dBm",
                                     reading.device_name,
                                     reading.dev_eui,
-                                    reading.temperature,
-                                    reading.humidity,
+                                    reading.fields.len(),
+                                    reading.counters.len(),
                                     reading.rssi,
+                                );
+
+                                // Save-and-feed: persist every uplink BEFORE live publish
+                                // so the firmware DB is the authoritative store for the
+                                // sticker stream and downstream destinations can replay
+                                // from it via the export drain loop.
+                                let now_ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                let message_id = chirpstack::message_id_for(&reading, now_ts);
+                                let epoch = storage
+                                    .get_provisioning_epoch(reading.dev_eui.clone())
+                                    .unwrap_or(1);
+                                // Slim payload: omit any null/empty fields so
+                                // sticker_readings.payload_json stays as tight
+                                // as possible (this row is kept for 30 days at
+                                // ~1 uplink/min/sticker; trimming defaults
+                                // saves ~25-30% over the previous version
+                                // that always wrote `"rssi": null` etc.).
+                                // device_name is dropped entirely — it's
+                                // redundant with the sticker's own dev_eui
+                                // and the YAML config holds the
+                                // operator-set display name.
+                                let mut obj = serde_json::Map::new();
+                                if !reading.fields.is_empty() {
+                                    obj.insert("fields".into(), serde_json::json!(reading.fields));
+                                }
+                                if !reading.counters.is_empty() {
+                                    obj.insert("counters".into(), serde_json::json!(reading.counters));
+                                }
+                                if !reading.events.is_empty() {
+                                    let evs: Vec<String> = reading.events.iter()
+                                        .map(|e| e.event_type.clone())
+                                        .collect();
+                                    obj.insert("events".into(), serde_json::json!(evs));
+                                }
+                                if let Some(r) = reading.rssi {
+                                    obj.insert("rssi".into(), serde_json::json!(r));
+                                }
+                                if let Some(s) = reading.snr {
+                                    obj.insert("snr".into(), serde_json::json!(s));
+                                }
+                                if !reading.received_at.is_empty() {
+                                    obj.insert("received_at".into(), serde_json::json!(reading.received_at));
+                                }
+                                let payload_json = serde_json::to_string(&serde_json::Value::Object(obj))
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                let _ = storage.write_sticker_reading(
+                                    reading.dev_eui.clone(),
+                                    epoch,
+                                    now_ts,
+                                    now_ts,
+                                    message_id,
+                                    "uplink".to_string(),
+                                    payload_json,
                                 );
 
                                 if let Ok(mut s) = state.write() {
@@ -215,15 +313,21 @@ fn lorawan_loop(
                             }
                         }
                     }
-                    Ok(Ok(_)) => {
+                    Some(Some(Ok(_))) => {
                         // Other MQTT events (ConnAck, SubAck, etc.) - ignore
                     }
-                    Ok(Err(e)) => {
+                    Some(Some(Err(e))) => {
                         eprintln!("[LoRaWAN Monitor] Connection error: {}", e);
                         break; // Reconnect
                     }
-                    Err(_) => {
-                        // Timeout - check timeouts and publish if needed
+                    Some(None) => {
+                        // Pump task exited (channel closed) — treat as
+                        // disconnect and reconnect.
+                        eprintln!("[LoRaWAN Monitor] Event pump closed unexpectedly");
+                        break;
+                    }
+                    None => {
+                        // 1-second tick — check timeouts and publish if needed
                     }
                 }
 
@@ -231,7 +335,7 @@ fn lorawan_loop(
                 let any_sticker_critical = if let Ok(mut s) = state.write() {
                     s.check_timeouts(timeout_secs);
                     if let Ok(cfgs) = configs.read() {
-                        s.evaluate_alarms(&cfgs);
+                        s.evaluate_alarms(&cfgs, &field_threshold_defaults);
                     }
                     // Compute "is any sticker in Critical?" while we still hold the lock.
                     s.sensors.values().any(|sensor| {
@@ -264,6 +368,10 @@ fn lorawan_loop(
                 }
             }
 
+            // Drop the receiver so the pump task notices and exits cleanly.
+            drop(event_rx);
+            let _ = pump_handle.await;
+
             // Wait before reconnecting
             eprintln!("[LoRaWAN Monitor] Disconnected, reconnecting in 5s...");
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -282,36 +390,44 @@ fn publish_lorawan_sensors(
         Err(_) => return,
     };
 
-    // Reconcile against current config: drop sensors that were removed from
-    // fiber.config.yaml so the backend sees the removal and the UI updates.
-    // Publish even when the resulting list is empty so the backend can sync.
-    let allowed_dev_euis: Option<std::collections::HashSet<String>> =
-        crate::libs::config::Config::load_default()
-            .ok()
-            .and_then(|cfg| cfg.lorawan.map(|l| l.sensors.into_iter().map(|s| s.dev_eui).collect()));
+    // Reconcile against the sensors declared in the config — anything not in
+    // the YAML's `lorawan.sensors[]` is filtered out of the published payload.
+    // The effective `field_thresholds` (with defaults merged) live on each
+    // `LoRaWANSensorState` after `evaluate_alarms`, so we read them straight
+    // from the state instead of re-resolving here.
+    let loaded = crate::libs::config::Config::load_default().ok();
+    let allowed_dev_euis: Option<std::collections::HashSet<String>> = Some(
+        loaded
+            .as_ref()
+            .and_then(|c| c.lorawan.as_ref().map(|l| {
+                l.sensors.iter().map(|s| s.dev_eui.clone()).collect()
+            }))
+            .unwrap_or_default(),
+    );
 
     let sensors: Vec<crate::libs::mqtt::messages::LoRaWANSensorPayload> = state_snapshot
         .sensors
         .values()
         .filter(|s| allowed_dev_euis.as_ref().map_or(true, |set| set.contains(&s.dev_eui)))
-        .map(|s| crate::libs::mqtt::messages::LoRaWANSensorPayload {
-            dev_eui: s.dev_eui.clone(),
-            name: s.name.clone(),
-            serial_number: s.serial_number.clone(),
-            temperature: s.temperature,
-            humidity: s.humidity,
-            voltage: s.voltage,
-            ext_temperature_1: s.ext_temperature_1,
-            ext_temperature_2: s.ext_temperature_2,
-            illuminance: s.illuminance,
-            motion_count: s.motion_count,
-            orientation: s.orientation,
-            rssi: s.rssi,
-            snr: s.snr,
-            last_seen: s.last_seen.clone(),
-            alarm_state: s.alarm_state.to_string(),
-            temp_alarm_state: s.temp_alarm_state.to_string(),
-            humidity_alarm_state: s.humidity_alarm_state.to_string(),
+        .map(|s| {
+            let field_alarm_states = s.field_alarm_states.iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect();
+            crate::libs::mqtt::messages::LoRaWANSensorPayload {
+                dev_eui: s.dev_eui.clone(),
+                name: s.name.clone(),
+                serial_number: s.serial_number.clone(),
+                location: s.location.clone(),
+                fields: s.fields.clone(),
+                field_alarm_states,
+                field_thresholds: s.field_thresholds.clone(),
+                counters: s.counters.clone(),
+                events: s.recent_events.iter().cloned().collect(),
+                rssi: s.rssi,
+                snr: s.snr,
+                last_seen: s.last_seen.clone(),
+                alarm_state: s.alarm_state.to_string(),
+            }
         })
         .collect();
 

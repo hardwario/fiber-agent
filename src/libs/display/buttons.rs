@@ -7,6 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
+use crate::libs::network::{ProvisioningSession, SharedProvisioningSession};
 use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
 use crate::libs::buzzer::BuzzerPriorityManager;
 use super::SharedDisplayStateHandle;
@@ -16,15 +17,15 @@ use super::SharedDisplayStateHandle;
 enum ButtonMonitorState {
     /// Normal operation - waiting for button input
     Idle,
-    /// ENTER button pressed, counting down for 2.5 seconds
+    /// ENTER button pressed, counting down for 2 seconds
     CountdownActive,
     /// QR code screen is displayed
     ShowingQr,
-    /// DOWN button being held, counting down for 2.5 seconds
+    /// DOWN button being held, counting down for 2 seconds
     DownHoldActive,
     /// System info screen is displayed
     ShowingSystem,
-    /// UP button being held, counting down for 2.5 seconds for pairing
+    /// UP button being held, counting down for 2 seconds for pairing
     UpHoldActive,
     /// Pairing screen is displayed
     ShowingPairing,
@@ -32,6 +33,16 @@ enum ButtonMonitorState {
     SelectionMode,
     /// Viewing sensor detail screen
     ShowingDetail,
+}
+
+/// Map elapsed/total to a 1-pixel-tall progress bar width in the 0..=127 range.
+/// Saturates at 127 once the hold completes.
+fn progress_pixels(elapsed: Duration, total: Duration) -> u8 {
+    if total.is_zero() {
+        return 0;
+    }
+    let ratio = (elapsed.as_millis() as f64 / total.as_millis() as f64).clamp(0.0, 1.0);
+    (ratio * 127.0).round() as u8
 }
 
 /// Button monitor thread for controlling display navigation
@@ -45,20 +56,33 @@ impl ButtonMonitor {
     ///
     /// The thread will continuously monitor button input and update the display page
     /// when UP/DOWN buttons are pressed. The ENTER button is reserved for future use.
-    /// If a pairing_handle is provided, UP held for 2.5 seconds triggers pairing mode.
+    /// If a pairing_handle is provided, UP held for 2 seconds triggers pairing mode.
     pub fn new(
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
         sensor_state: crate::libs::sensors::SharedSensorStateHandle,
+        provisioning_session: SharedProvisioningSession,
+        mac_address: String,
+        hostname: String,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
         let sensor_state_clone = sensor_state.clone();
         let thread_handle = thread::spawn(move || {
-            Self::button_loop(shutdown_flag_clone, display_state, pairing_handle, buzzer_priority, pairing_state, sensor_state_clone);
+            Self::button_loop(
+                shutdown_flag_clone,
+                display_state,
+                pairing_handle,
+                buzzer_priority,
+                pairing_state,
+                sensor_state_clone,
+                provisioning_session,
+                mac_address,
+                hostname,
+            );
         });
 
         Ok(Self {
@@ -75,6 +99,9 @@ impl ButtonMonitor {
         buzzer_priority: Option<Arc<BuzzerPriorityManager>>,
         pairing_state: Option<SharedPairingStateHandle>,
         sensor_state: crate::libs::sensors::SharedSensorStateHandle,
+        provisioning_session: SharedProvisioningSession,
+        mac_address: String,
+        hostname: String,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -91,7 +118,7 @@ impl ButtonMonitor {
         eprintln!("[ButtonMonitor] Started button monitoring with 50ms poll interval");
 
         let poll_interval = Duration::from_millis(50);
-        const COUNTDOWN_DURATION: Duration = Duration::from_millis(2500);
+        const COUNTDOWN_DURATION: Duration = Duration::from_millis(2000);
         const SELECTION_TIMEOUT: Duration = Duration::from_secs(15);
         const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
 
@@ -160,7 +187,7 @@ impl ButtonMonitor {
                                     // Start UP hold countdown (for pairing if handle available)
                                     state = ButtonMonitorState::UpHoldActive;
                                     up_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] UP hold started - counting 2.5 seconds for pairing");
+                                    eprintln!("[ButtonMonitor] UP hold started - counting 2 seconds for pairing");
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
@@ -217,7 +244,7 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
-                            // If >= 2.5 seconds, already transitioned to ShowingPairing
+                            // If >= 2 seconds, already transitioned to ShowingPairing
                         }
                     }
                     ButtonEvent::Press(Button::Down) => {
@@ -252,7 +279,7 @@ impl ButtonMonitor {
                                     // Start DOWN hold countdown
                                     state = ButtonMonitorState::DownHoldActive;
                                     down_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 2.5 seconds");
+                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 2 seconds");
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
@@ -307,7 +334,7 @@ impl ButtonMonitor {
                                 }
                                 state = ButtonMonitorState::Idle;
                             }
-                            // If >= 2.5 seconds, already transitioned to ShowingSystem
+                            // If >= 2 seconds, already transitioned to ShowingSystem
                         }
                     }
                     ButtonEvent::Press(Button::Enter) => {
@@ -331,7 +358,7 @@ impl ButtonMonitor {
                                 // Start countdown
                                 state = ButtonMonitorState::CountdownActive;
                                 countdown_start = Instant::now();
-                                eprintln!("[ButtonMonitor] Starting 2.5-second countdown to QR code screen");
+                                eprintln!("[ButtonMonitor] Starting 2-second countdown to QR code screen");
                             }
                             ButtonMonitorState::CountdownActive => {
                                 // ENTER pressed again during countdown - restart
@@ -339,6 +366,15 @@ impl ButtonMonitor {
                                 eprintln!("[ButtonMonitor] Countdown restarted");
                             }
                             ButtonMonitorState::ShowingQr => {
+                                // End the provisioning session before tearing
+                                // down BLE — invalidates the token first so a
+                                // racing pairing attempt fails closed.
+                                if let Ok(mut slot) = provisioning_session.write() {
+                                    if slot.is_some() {
+                                        eprintln!("[ButtonMonitor] Provisioning session closed by user");
+                                    }
+                                    *slot = None;
+                                }
                                 // Stop BLE advertising
                                 if let Err(e) = crate::libs::ble::stop_ble_advertising() {
                                     eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
@@ -418,7 +454,7 @@ impl ButtonMonitor {
                                         state = ButtonMonitorState::Idle;
                                     }
                                 }
-                                // If >= 2.5 seconds, already transitioned to ShowingQr
+                                // If >= 2 seconds, already transitioned to ShowingQr
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - check for double-click to exit
@@ -480,6 +516,27 @@ impl ButtonMonitor {
             // Check countdown completion for ENTER button
             if state == ButtonMonitorState::CountdownActive {
                 if countdown_start.elapsed() >= COUNTDOWN_DURATION {
+                    // Mint a fresh ephemeral provisioning session BEFORE
+                    // starting BLE advertising — the GATT auth path reads
+                    // this on every pairing attempt, so it must be live by
+                    // the time the phone connects.
+                    match ProvisioningSession::new(&mac_address, &hostname) {
+                        Ok(session) => {
+                            if let Ok(mut slot) = provisioning_session.write() {
+                                eprintln!(
+                                    "[ButtonMonitor] Provisioning session opened (token={}, created_at={})",
+                                    session.token(), session.created_at_unix(),
+                                );
+                                *slot = Some(session);
+                            } else {
+                                eprintln!("[ButtonMonitor] Failed to lock provisioning session for write");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[ButtonMonitor] Failed to mint provisioning session: {}", e);
+                        }
+                    }
+
                     // Start BLE advertising
                     if let Err(e) = crate::libs::ble::start_ble_advertising() {
                         eprintln!("[ButtonMonitor] Failed to start BLE advertising: {}", e);
@@ -493,13 +550,42 @@ impl ButtonMonitor {
                 }
             }
 
+            // Expire the provisioning session once it has sat idle for
+            // IDLE_TIMEOUT (no BLE GATT activity from the phone). Active
+            // sessions stay alive — each FB0x op bumps last_activity, so
+            // a user mid-flow won't get kicked out. We clear the shared
+            // slot, drop BLE advertising, and bounce the user back to the
+            // sensor overview. The display will fall through to
+            // render_qr_session_ended_screen for one frame if the user is
+            // still on the QR screen between the expiry and the screen swap.
+            if state == ButtonMonitorState::ShowingQr {
+                let expired = provisioning_session
+                    .read()
+                    .ok()
+                    .map(|g| g.as_ref().map(|s| s.is_expired()).unwrap_or(true))
+                    .unwrap_or(false);
+                if expired {
+                    eprintln!("[ButtonMonitor] Provisioning session idle for 5min - tearing down");
+                    if let Ok(mut slot) = provisioning_session.write() {
+                        *slot = None;
+                    }
+                    if let Err(e) = crate::libs::ble::stop_ble_advertising() {
+                        eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
+                    }
+                    if let Ok(mut display_state_lock) = display_state.lock() {
+                        display_state_lock.show_sensor_overview();
+                    }
+                    state = ButtonMonitorState::Idle;
+                }
+            }
+
             // Check countdown completion for DOWN button hold
             if state == ButtonMonitorState::DownHoldActive {
                 if down_hold_start.elapsed() >= COUNTDOWN_DURATION {
                     // Transition to system info screen
                     if let Ok(mut display_state_lock) = display_state.lock() {
                         display_state_lock.show_system_info();
-                        eprintln!("[ButtonMonitor] DOWN hold complete (2.5s) - transitioning to system info screen");
+                        eprintln!("[ButtonMonitor] DOWN hold complete (3s) - transitioning to system info screen");
                     }
                     state = ButtonMonitorState::ShowingSystem;
                 }
@@ -522,10 +608,10 @@ impl ButtonMonitor {
                         state = ButtonMonitorState::Idle;
                     } else if let Some(ref ph) = pairing_handle {
                         ph.start_pairing();
-                        eprintln!("[ButtonMonitor] UP hold complete (2.5s) - triggering pairing mode");
+                        eprintln!("[ButtonMonitor] UP hold complete (3s) - triggering pairing mode");
                         state = ButtonMonitorState::ShowingPairing;
                     } else {
-                        eprintln!("[ButtonMonitor] UP hold complete (2.5s) - pairing not available (MQTT disabled)");
+                        eprintln!("[ButtonMonitor] UP hold complete (3s) - pairing not available (MQTT disabled)");
                         state = ButtonMonitorState::Idle;
                     }
                 }
@@ -541,6 +627,27 @@ impl ButtonMonitor {
                     eprintln!("[ButtonMonitor] Selection mode timeout (15s) - returning to normal view");
                 }
                 state = ButtonMonitorState::Idle;
+            }
+
+            // Publish the current hold progress (0..=127) so the display monitor
+            // can render a 1-px progress bar under the header divider while a
+            // button is held. Cleared to 0 whenever no hold is in progress.
+            let bar_pixels = match state {
+                ButtonMonitorState::CountdownActive => {
+                    progress_pixels(countdown_start.elapsed(), COUNTDOWN_DURATION)
+                }
+                ButtonMonitorState::DownHoldActive => {
+                    progress_pixels(down_hold_start.elapsed(), COUNTDOWN_DURATION)
+                }
+                ButtonMonitorState::UpHoldActive => {
+                    progress_pixels(up_hold_start.elapsed(), COUNTDOWN_DURATION)
+                }
+                _ => 0,
+            };
+            if let Ok(mut ds) = display_state.lock() {
+                if ds.hold_bar_pixels != bar_pixels {
+                    ds.hold_bar_pixels = bar_pixels;
+                }
             }
 
             // Sleep before next poll

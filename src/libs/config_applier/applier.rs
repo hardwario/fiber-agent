@@ -1,6 +1,6 @@
 //! Configuration applier with atomic updates and rollback
 
-use super::validation::ConfigValidator;
+use super::validation::{validate_device_label, ConfigValidator};
 use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::io::Write;
@@ -33,11 +33,27 @@ pub struct ConfigApplier {
 
     /// Directory for backups
     backup_dir: PathBuf,
+
+    /// Optional storage handle for save-and-feed side effects (e.g. appending
+    /// `sticker_removed` markers on sensor removal). `None` in test or
+    /// pre-storage-init contexts; `Some` in the live runtime.
+    storage: Option<crate::libs::storage::StorageHandle>,
 }
 
 impl ConfigApplier {
-    /// Create a new configuration applier
+    /// Create a new configuration applier without storage hook. Tests and
+    /// callers that don't care about save-and-feed side effects use this.
     pub fn new(config_dir: &Path) -> Result<Self, String> {
+        Self::new_with_storage(config_dir, None)
+    }
+
+    /// Create a new configuration applier wired to the storage thread so
+    /// removal-style commands can record their side effects to the firmware
+    /// DB (sticker_removed markers, etc.).
+    pub fn new_with_storage(
+        config_dir: &Path,
+        storage: Option<crate::libs::storage::StorageHandle>,
+    ) -> Result<Self, String> {
         let config_dir = config_dir.to_path_buf();
         let backup_dir = config_dir.join(".backups");
 
@@ -48,7 +64,32 @@ impl ConfigApplier {
         Ok(Self {
             config_dir,
             backup_dir,
+            storage,
         })
+    }
+
+    /// Fire-and-forget audit-log helper used by every apply_* method that
+    /// mutates the YAML. EU MDR Annex I §17.1 requires a trail of any
+    /// configuration change that affects device behaviour; before this
+    /// helper only `apply_device_label_change` actually wrote a row, so
+    /// the trail had silent gaps for thresholds, names, locations,
+    /// intervals, LoRaWAN sensor/threshold/sticker changes, etc.
+    ///
+    /// Failure to log is reported on stderr but never rolls back the
+    /// just-committed YAML write — same trade-off as `apply_device_label`.
+    fn log_audit(&self, operation: &str, details: String) {
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = storage.log_audit_event(
+                operation.to_string(),
+                Some("config".to_string()),
+                Some(details),
+            ) {
+                eprintln!(
+                    "[ConfigApplier] audit log_audit_event({}) failed: {}",
+                    operation, e,
+                );
+            }
+        }
     }
 
     /// Apply threshold changes to sensor configuration
@@ -183,6 +224,14 @@ impl ConfigApplier {
             line, critical_low, warning_low, warning_high, critical_high
         );
 
+        self.log_audit(
+            "SET_SENSOR_THRESHOLD",
+            format!(
+                r#"{{"line":{},"critical_low":{},"alarm_low":{},"warning_low":{},"warning_high":{},"alarm_high":{},"critical_high":{}}}"#,
+                line, critical_low, alarm_low, warning_low, warning_high, alarm_high, critical_high,
+            ),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -311,6 +360,11 @@ impl ConfigApplier {
             line, name
         );
 
+        self.log_audit(
+            "SET_SENSOR_NAME",
+            format!(r#"{{"line":{},"name":{:?}}}"#, line, name),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -426,6 +480,11 @@ impl ConfigApplier {
         eprintln!(
             "[ConfigApplier] ✓ Sensor location updated for line {}: \"{}\"",
             line, location
+        );
+
+        self.log_audit(
+            "SET_SENSOR_LOCATION",
+            format!(r#"{{"line":{},"location":{:?}}}"#, line, location),
         );
 
         ApplyResult {
@@ -559,6 +618,14 @@ impl ConfigApplier {
             sample_interval_ms, aggregation_interval_ms, report_interval_ms
         );
 
+        self.log_audit(
+            "SET_SENSOR_INTERVAL",
+            format!(
+                r#"{{"sample_interval_ms":{},"aggregation_interval_ms":{},"report_interval_ms":{}}}"#,
+                sample_interval_ms, aggregation_interval_ms, report_interval_ms,
+            ),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -685,6 +752,11 @@ impl ConfigApplier {
             interval_seconds
         );
 
+        self.log_audit(
+            "SET_SYSTEM_INFO_INTERVAL",
+            format!(r#"{{"interval_seconds":{}}}"#, interval_seconds),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -701,22 +773,16 @@ impl ConfigApplier {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        // 1. Validate label (1-64 characters, printable)
-        if label.is_empty() {
+        // 1. Validate label. We intentionally enforce the same policy on
+        //    every entry path (BLE FB0A and MQTT SetDeviceLabel) so that
+        //    nobody can sneak a malformed label in through one channel and
+        //    break the other — most importantly, MQTT topic publishing.
+        if let Err(msg) = validate_device_label(&label) {
             return ApplyResult {
                 success: false,
                 file_path: String::new(),
                 backup_path: None,
-                error_message: Some("Device label cannot be empty".to_string()),
-                applied_at,
-            };
-        }
-        if label.len() > 64 {
-            return ApplyResult {
-                success: false,
-                file_path: String::new(),
-                backup_path: None,
-                error_message: Some("Device label must be at most 64 characters".to_string()),
+                error_message: Some(msg),
                 applied_at,
             };
         }
@@ -811,6 +877,23 @@ impl ConfigApplier {
             label
         );
 
+        // 9. Audit. Fire-and-forget — if the storage thread isn't wired up
+        //    (tests, early boot) the failure is logged but doesn't roll
+        //    back the on-disk change, which has already succeeded.
+        if let Some(storage) = self.storage.as_ref() {
+            let details = format!(r#"{{"new_label":{:?}}}"#, label);
+            if let Err(e) = storage.log_audit_event(
+                "SET_DEVICE_LABEL".to_string(),
+                Some("config".to_string()),
+                Some(details),
+            ) {
+                eprintln!(
+                    "[ConfigApplier] audit log_audit_event(SET_DEVICE_LABEL) failed: {}",
+                    e
+                );
+            }
+        }
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -820,21 +903,14 @@ impl ConfigApplier {
         }
     }
 
-    /// Apply LoRaWAN sensor configuration change to main config
+    /// Apply LoRaWAN sensor metadata change (name/serial/location) to main config.
+    /// Per-field thresholds use `apply_lorawan_field_threshold` / `delete_lorawan_field_threshold`.
     pub fn apply_lorawan_sensor_config(
         &self,
         dev_eui: String,
         name: Option<String>,
         serial_number: Option<String>,
         location: Option<String>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
     ) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -899,8 +975,6 @@ impl ConfigApplier {
             name.as_deref(),
             serial_number.as_deref(),
             location.as_deref(),
-            temp_critical_low, temp_warning_low, temp_warning_high, temp_critical_high,
-            humidity_critical_low, humidity_warning_low, humidity_warning_high, humidity_critical_high,
         ) {
             return ApplyResult {
                 success: false,
@@ -940,6 +1014,14 @@ impl ConfigApplier {
         eprintln!(
             "[ConfigApplier] ✓ LoRaWAN sensor config updated for {}",
             dev_eui
+        );
+
+        self.log_audit(
+            "SET_LORAWAN_SENSOR_CONFIG",
+            format!(
+                r#"{{"dev_eui":{:?},"name":{:?},"serial_number":{:?},"location":{:?}}}"#,
+                dev_eui, name, serial_number, location,
+            ),
         );
 
         ApplyResult {
@@ -1084,6 +1166,24 @@ impl ConfigApplier {
         eprintln!(
             "[ConfigApplier] ✓ LoRaWAN sensor config removed for {}",
             dev_eui
+        );
+
+        // Save-and-feed: record a `sticker_removed` marker in the firmware DB
+        // so downstream destinations (replaying via the export drain loop)
+        // can see the deprovisioning event and avoid mis-attributing a later
+        // re-provisioned incarnation to the old epoch.
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = storage.append_sticker_removed(dev_eui.clone(), applied_at) {
+                eprintln!(
+                    "[ConfigApplier] WARN: failed to append sticker_removed for {}: {}",
+                    dev_eui, e
+                );
+            }
+        }
+
+        self.log_audit(
+            "REMOVE_LORAWAN_SENSOR_CONFIG",
+            format!(r#"{{"dev_eui":{:?}}}"#, dev_eui),
         );
 
         ApplyResult {
@@ -1391,6 +1491,11 @@ impl ConfigApplier {
 
         eprintln!("[ConfigApplier] ✓ {} updated: {}%", display_name, value);
 
+        self.log_audit(
+            "SET_SYSTEM_FIELD",
+            format!(r#"{{"field":{:?},"value":{}}}"#, field_name, value),
+        );
+
         ApplyResult {
             success: true,
             file_path: config_file.to_string_lossy().to_string(),
@@ -1427,8 +1532,7 @@ impl ConfigApplier {
         Ok(())
     }
 
-    /// Update or insert a LoRaWAN sensor config in lorawan.sensors array
-    #[allow(clippy::too_many_arguments)]
+    /// Update or insert a LoRaWAN sensor config in lorawan.sensors array (metadata only)
     fn update_lorawan_sensor_config(
         &self,
         config: &mut Value,
@@ -1436,14 +1540,6 @@ impl ConfigApplier {
         name: Option<&str>,
         serial_number: Option<&str>,
         location: Option<&str>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
     ) -> Result<(), String> {
         let config_map = config
             .as_mapping_mut()
@@ -1513,25 +1609,205 @@ impl ConfigApplier {
             sensor_map.insert(Value::String("location".to_string()), Value::String(loc.to_string()));
         }
 
-        // Helper to set or remove optional f32 threshold
-        let set_opt_f32 = |map: &mut Mapping, key: &str, val: Option<f32>| {
-            let k = Value::String(key.to_string());
-            match val {
-                Some(v) => { map.insert(k, Value::Number(serde_yaml::Number::from(v as f64))); }
-                None => { map.remove(&k); }
+        Ok(())
+    }
+
+    /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
+    pub fn apply_lorawan_field_threshold(
+        &self,
+        dev_eui: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    ) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        if dev_eui.is_empty() {
+            return ApplyResult { success: false, file_path: String::new(), backup_path: None,
+                error_message: Some("dev_eui cannot be empty".into()), applied_at };
+        }
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.upsert_field_threshold(&mut cfg, &dev_eui, &field,
+            critical_low, warning_low, warning_high, critical_high)
+        {
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        // Atomic write + rollback on failure, matching every other apply_*
+        // method. fs::write directly would truncate the YAML mid-write on
+        // power loss, leaving the device with an unparseable config — and
+        // there's no rollback path back to the backup we just took.
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
             }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+        self.log_audit(
+            "SET_LORAWAN_FIELD_THRESHOLD",
+            format!(
+                r#"{{"dev_eui":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?}}}"#,
+                dev_eui, field, critical_low, warning_low, warning_high, critical_high,
+            ),
+        );
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
+    }
+
+    /// Remove a per-field threshold from lorawan.sensors[*].field_thresholds.
+    pub fn delete_lorawan_field_threshold(&self, dev_eui: String, field: String) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // Surface whether anything was actually removed so callers can tell
+        // a real delete from a misspelled-dev_eui/no-op. The YAML rewrite
+        // still happens either way because re-serialising is harmless.
+        let removed = self.remove_field_threshold(&mut cfg, &dev_eui, &field).unwrap_or(false);
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
+            }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+        if !removed {
+            eprintln!(
+                "[ConfigApplier] delete_lorawan_field_threshold: no threshold matched (dev_eui={}, field={}) — wrote yaml anyway",
+                dev_eui, field,
+            );
+        }
+        self.log_audit(
+            "DELETE_LORAWAN_FIELD_THRESHOLD",
+            format!(r#"{{"dev_eui":{:?},"field":{:?},"removed":{}}}"#, dev_eui, field, removed),
+        );
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
+    }
+
+    fn upsert_field_threshold(
+        &self, config: &mut Value, dev_eui: &str, field: &str,
+        critical_low: Option<f64>, warning_low: Option<f64>,
+        warning_high: Option<f64>, critical_high: Option<f64>,
+    ) -> Result<(), String> {
+        let lorawan_key = Value::String("lorawan".to_string());
+        let sensors_key = Value::String("sensors".to_string());
+        let ft_key = Value::String("field_thresholds".to_string());
+
+        let lorawan = config.as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?
+            .entry(lorawan_key.clone())
+            .or_insert_with(|| {
+                let mut m = Mapping::new();
+                m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+                m.insert(sensors_key.clone(), Value::Sequence(Vec::new()));
+                Value::Mapping(m)
+            });
+        let lorawan_map = lorawan.as_mapping_mut().ok_or_else(|| "lorawan is not a mapping".to_string())?;
+        let sensors = lorawan_map.entry(sensors_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "sensors is not a sequence".to_string())?;
+
+        // Find or create sensor entry
+        let idx = sensors.iter().position(|s| s.get("dev_eui").and_then(|v| v.as_str()) == Some(dev_eui));
+        let sensor_map = if let Some(i) = idx {
+            sensors[i].as_mapping_mut().ok_or_else(|| "sensor entry is not a mapping".to_string())?
+        } else {
+            let mut m = Mapping::new();
+            m.insert(Value::String("dev_eui".to_string()), Value::String(dev_eui.to_string()));
+            m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            sensors.push(Value::Mapping(m));
+            sensors.last_mut().unwrap().as_mapping_mut().unwrap()
         };
 
-        set_opt_f32(sensor_map, "temp_critical_low", temp_critical_low);
-        set_opt_f32(sensor_map, "temp_warning_low", temp_warning_low);
-        set_opt_f32(sensor_map, "temp_warning_high", temp_warning_high);
-        set_opt_f32(sensor_map, "temp_critical_high", temp_critical_high);
-        set_opt_f32(sensor_map, "humidity_critical_low", humidity_critical_low);
-        set_opt_f32(sensor_map, "humidity_warning_low", humidity_warning_low);
-        set_opt_f32(sensor_map, "humidity_warning_high", humidity_warning_high);
-        set_opt_f32(sensor_map, "humidity_critical_high", humidity_critical_high);
+        let thresholds = sensor_map.entry(ft_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
 
+        let make_entry = || -> Value {
+            let mut m = Mapping::new();
+            m.insert(Value::String("field".to_string()), Value::String(field.to_string()));
+            for (k, v) in [("critical_low", critical_low), ("warning_low", warning_low),
+                           ("warning_high", warning_high), ("critical_high", critical_high)] {
+                if let Some(v) = v {
+                    m.insert(Value::String(k.to_string()),
+                        Value::Number(serde_yaml::Number::from(v)));
+                }
+            }
+            Value::Mapping(m)
+        };
+
+        if let Some(existing) = thresholds.iter_mut()
+            .find(|t| t.get("field").and_then(|v| v.as_str()) == Some(field))
+        {
+            *existing = make_entry();
+        } else {
+            thresholds.push(make_entry());
+        }
         Ok(())
+    }
+
+    /// Returns Ok(true) if a threshold was actually removed, Ok(false) if
+    /// the dev_eui/field pair didn't match anything (no-op).
+    fn remove_field_threshold(&self, config: &mut Value, dev_eui: &str, field: &str) -> Result<bool, String> {
+        let lorawan = config.as_mapping_mut()
+            .and_then(|m| m.get_mut(&Value::String("lorawan".into())))
+            .and_then(|v| v.as_mapping_mut());
+        let Some(lorawan_map) = lorawan else { return Ok(false); };
+        let Some(sensors) = lorawan_map.get_mut(&Value::String("sensors".into()))
+            .and_then(|v| v.as_sequence_mut()) else { return Ok(false); };
+        let mut removed = false;
+        for s in sensors.iter_mut() {
+            if s.get("dev_eui").and_then(|v| v.as_str()) != Some(dev_eui) { continue; }
+            let sm = match s.as_mapping_mut() { Some(m) => m, None => continue };
+            if let Some(thresholds) = sm.get_mut(&Value::String("field_thresholds".into()))
+                .and_then(|v| v.as_sequence_mut())
+            {
+                let before = thresholds.len();
+                thresholds.retain(|t| t.get("field").and_then(|v| v.as_str()) != Some(field));
+                if thresholds.len() != before {
+                    removed = true;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Create a timestamped backup of the config file
@@ -1617,5 +1893,148 @@ mod tests {
         assert!(result.success);
         assert!(result.backup_path.is_some());
         assert!(result.error_message.is_none());
+    }
+
+    #[test]
+    fn remove_lorawan_sensor_config_appends_sticker_removed_event() {
+        use crate::libs::storage::db::Database;
+        use crate::libs::storage::thread::StorageThread;
+
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+
+        let (storage, join) = StorageThread::spawn(&db_path, 1).unwrap();
+
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        let config_file = tmp_config_dir.path().join("fiber.config.yaml");
+        std::fs::write(
+            &config_file,
+            "lorawan:\n  sensors:\n    - dev_eui: '70b3d5'\n      name: test\n      enabled: true\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new_with_storage(tmp_config_dir.path(), Some(storage.clone())).unwrap();
+        let result = applier.remove_lorawan_sensor_config("70b3d5".to_string());
+        assert!(result.success, "removal should succeed: {:?}", result.error_message);
+
+        storage.flush().unwrap();
+        storage.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&db_path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sticker_readings WHERE dev_eui = '70b3d5' AND event_type = 'sticker_removed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n >= 1, "expected a sticker_removed row to be appended");
+    }
+
+    // ---- device label apply-path tests -----------------------------------------
+
+    fn write_minimal_main_config(dir: &std::path::Path) {
+        let yaml = "system:\n  device_label: \"OLD-LABEL\"\n";
+        std::fs::write(dir.join("fiber.config.yaml"), yaml).unwrap();
+    }
+
+    #[test]
+    fn apply_device_label_change_persists_new_value() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier.apply_device_label_change("Ward 3 Freezer".to_string());
+        assert!(result.success, "{:?}", result.error_message);
+
+        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        assert!(contents.contains("Ward 3 Freezer"), "got: {contents}");
+        assert!(!contents.contains("OLD-LABEL"), "old value should be gone: {contents}");
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_empty() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change(String::new());
+        assert!(!result.success);
+        assert!(
+            result.error_message.unwrap().to_lowercase().contains("empty"),
+        );
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_mqtt_chars() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change("bad/label".to_string());
+        assert!(!result.success);
+        assert!(result.error_message.unwrap().to_lowercase().contains("mqtt"));
+
+        // And the on-disk file is untouched.
+        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        assert!(contents.contains("OLD-LABEL"));
+    }
+
+    #[test]
+    fn apply_device_label_change_rejects_unicode() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        let result = applier.apply_device_label_change("Câmara".to_string());
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn apply_device_label_change_writes_audit_entry() {
+        use crate::libs::storage::db::Database;
+        use crate::libs::storage::thread::StorageThread;
+
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let db_path = tmp_db.path().to_str().unwrap().to_string();
+        let (storage, join) = StorageThread::spawn(&db_path, 1).unwrap();
+
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        write_minimal_main_config(tmp_config_dir.path());
+        let applier = ConfigApplier::new_with_storage(
+            tmp_config_dir.path(),
+            Some(storage.clone()),
+        )
+        .unwrap();
+
+        let result = applier.apply_device_label_change("New Label".to_string());
+        assert!(result.success, "{:?}", result.error_message);
+
+        storage.flush().unwrap();
+        storage.shutdown().unwrap();
+        join.join().unwrap();
+
+        let db = Database::new(&db_path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE operation = 'SET_DEVICE_LABEL'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n >= 1, "expected an SET_DEVICE_LABEL audit row to be written");
+
+        let details: Option<String> = conn
+            .query_row(
+                "SELECT details FROM audit_log WHERE operation = 'SET_DEVICE_LABEL' ORDER BY timestamp DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let details = details.expect("details should be Some");
+        assert!(details.contains("New Label"), "details should carry new label: {details}");
     }
 }

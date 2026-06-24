@@ -151,26 +151,22 @@ pub enum MqttMessage {
     Shutdown,
 }
 
-/// LoRaWAN sensor data payload for MQTT publishing
+/// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
 #[derive(Debug, Clone)]
 pub struct LoRaWANSensorPayload {
     pub dev_eui: String,
     pub name: String,
     pub serial_number: Option<String>,
-    pub temperature: Option<f32>,
-    pub humidity: Option<f32>,
-    pub voltage: Option<f32>,
-    pub ext_temperature_1: Option<f32>,
-    pub ext_temperature_2: Option<f32>,
-    pub illuminance: Option<u32>,
-    pub motion_count: Option<u32>,
-    pub orientation: Option<u8>,
+    pub location: Option<String>,
+    pub fields: std::collections::HashMap<String, f64>,
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+    pub counters: std::collections::HashMap<String, u64>,
+    pub events: Vec<crate::libs::lorawan::chirpstack::StickerEvent>,
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
     pub last_seen: Option<String>,
     pub alarm_state: String,
-    pub temp_alarm_state: String,
-    pub humidity_alarm_state: String,
 }
 
 /// Sensor configuration data for query response
@@ -184,7 +180,7 @@ pub struct SensorConfigData {
     pub thresholds: AlarmThreshold,
 }
 
-/// LoRaWAN sensor configuration data for config state publishing
+/// LoRaWAN sensor configuration data for config state publishing (v2)
 #[derive(Debug, Clone)]
 pub struct LoRaWANSensorConfigData {
     pub dev_eui: String,
@@ -192,14 +188,31 @@ pub struct LoRaWANSensorConfigData {
     pub serial_number: Option<String>,
     pub location: Option<String>,
     pub enabled: bool,
-    pub temp_critical_low: Option<f32>,
-    pub temp_warning_low: Option<f32>,
-    pub temp_warning_high: Option<f32>,
-    pub temp_critical_high: Option<f32>,
-    pub humidity_critical_low: Option<f32>,
-    pub humidity_warning_low: Option<f32>,
-    pub humidity_warning_high: Option<f32>,
-    pub humidity_critical_high: Option<f32>,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+}
+
+fn default_join_eui() -> String {
+    "0000000000000000".to_string()
+}
+
+/// LoRaWAN activation mode for STICKER registration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ActivationMode {
+    /// OTAA: device joins the network using AppKey + JoinEUI.
+    Otaa {
+        app_key: String,
+        /// 16 hex chars. Defaults to all-zeros for compatibility with viewers
+        /// that pre-date the configurable JoinEUI field.
+        #[serde(default = "default_join_eui")]
+        join_eui: String,
+    },
+    /// ABP: device pre-personalised with session keys.
+    Abp {
+        devaddr: String,
+        nwkskey: String,
+        appskey: String,
+    },
 }
 
 /// Commands received from MQTT broker
@@ -291,20 +304,29 @@ pub enum MqttCommand {
         dns_secondary: Option<String>,
     },
 
-    /// Set LoRaWAN sensor configuration (signed via ConfigRequest)
+    /// Set LoRaWAN sensor metadata (name/serial/location) — signed via ConfigRequest.
+    /// Per-field thresholds live in dedicated commands (`SetLoRaWANFieldThreshold` / `DeleteLoRaWANFieldThreshold`).
     SetLoRaWANSensorConfig {
         dev_eui: String,
         name: Option<String>,
         serial_number: Option<String>,
         location: Option<String>,
-        temp_critical_low: Option<f32>,
-        temp_warning_low: Option<f32>,
-        temp_warning_high: Option<f32>,
-        temp_critical_high: Option<f32>,
-        humidity_critical_low: Option<f32>,
-        humidity_warning_low: Option<f32>,
-        humidity_warning_high: Option<f32>,
-        humidity_critical_high: Option<f32>,
+    },
+
+    /// Set a single per-field threshold for a LoRaWAN sensor
+    SetLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    },
+
+    /// Remove a per-field threshold for a LoRaWAN sensor
+    DeleteLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
     },
 
     /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
@@ -312,14 +334,34 @@ pub enum MqttCommand {
         dev_eui: String,
         name: String,
         serial_number: String,
-        devaddr: String,
-        nwkskey: String,
-        appskey: String,
+        activation: ActivationMode,
     },
 
     /// Remove LoRaWAN sticker: remove sensor config (signed via ConfigRequest)
     RemoveLoRaWANSticker {
         dev_eui: String,
+    },
+
+    /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
+    /// next drain pass replays the stream from row 1. Use after a viewer DB
+    /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
+    /// "alarm" | "all".
+    ResetExportCursor {
+        broker_id: String,
+        stream: String,
+    },
+
+    /// On-demand replay of `sensor_readings_minute` for a historical window.
+    /// Triggered by the viewer when the user navigates past the 30-day hot
+    /// tier: the device replays the requested range on the
+    /// `export/probe_1m_replay/<request_id>/<sensor_line>` topic without
+    /// touching the natural drain cursor.
+    HistoryRequest {
+        request_id: String,
+        /// `None` means "all sensor lines 0..=7".
+        sensor_line: Option<u8>,
+        from_ts: i64,
+        to_ts: i64,
     },
 
     /// Add signer (signed via ConfigRequest)
@@ -389,8 +431,12 @@ impl MqttCommand {
             MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
+            MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
+            MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
+            MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
             MqttCommand::UpdateSigner { .. } => "update_signer",
@@ -421,5 +467,82 @@ mod tests {
 
         let cmd2 = MqttCommand::FlushStorage;
         assert_eq!(cmd2.name(), "flush_storage");
+    }
+
+    #[test]
+    fn reset_export_cursor_command_has_name_and_carries_fields() {
+        // MqttCommand isn't serde-derived (other variants carry non-serde
+        // types), so we exercise the variant directly rather than via JSON
+        // roundtrip. Parsing from JSON is the subscriber's job.
+        let cmd = MqttCommand::ResetExportCursor {
+            broker_id: "local".into(),
+            stream: "all".into(),
+        };
+        assert_eq!(cmd.name(), "reset_export_cursor");
+        match cmd {
+            MqttCommand::ResetExportCursor { broker_id, stream } => {
+                assert_eq!(broker_id, "local");
+                assert_eq!(stream, "all");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn activation_mode_otaa_roundtrip() {
+        let app_key: String = "ab".repeat(16);
+        let join_eui: String = "cd".repeat(8);
+        let v = ActivationMode::Otaa {
+            app_key: app_key.clone(),
+            join_eui: join_eui.clone(),
+        };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            s,
+            serde_json::json!({"mode": "otaa", "app_key": app_key, "join_eui": join_eui})
+        );
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_otaa_legacy_payload_defaults_join_eui_to_zeros() {
+        // Old viewers send {"mode": "otaa", "app_key": "..."} with no join_eui.
+        let app_key: String = "ab".repeat(16);
+        let payload = serde_json::json!({"mode": "otaa", "app_key": app_key});
+        let back: ActivationMode = serde_json::from_value(payload).unwrap();
+        match back {
+            ActivationMode::Otaa { join_eui, .. } => {
+                assert_eq!(join_eui, "0000000000000000");
+            }
+            _ => panic!("expected Otaa"),
+        }
+    }
+
+    #[test]
+    fn activation_mode_abp_roundtrip() {
+        let nwkskey: String = "0".repeat(32);
+        let appskey: String = "f".repeat(32);
+        let v = ActivationMode::Abp {
+            devaddr: "01020304".to_string(),
+            nwkskey: nwkskey.clone(),
+            appskey: appskey.clone(),
+        };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(s, serde_json::json!({
+            "mode": "abp",
+            "devaddr": "01020304",
+            "nwkskey": nwkskey,
+            "appskey": appskey,
+        }));
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_unknown_mode_rejected() {
+        let s = serde_json::json!({"mode": "xyz"});
+        let r: Result<ActivationMode, _> = serde_json::from_value(s);
+        assert!(r.is_err());
     }
 }

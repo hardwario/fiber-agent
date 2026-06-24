@@ -53,7 +53,7 @@ pub fn ordered_sensors(
         all.push(OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active });
     }
     for (i, s) in lorawan_sensors.iter().enumerate() {
-        let has_reading = s.temperature.is_some() || s.humidity.is_some();
+        let has_reading = !s.fields.is_empty();
         let connected = !matches!(s.alarm_state, LoRaWANAlarmState::Disconnected);
         let active = has_reading && connected;
         all.push(OverviewEntry { kind: OverviewKind::LoRa, global_idx: 8 + i, active });
@@ -79,6 +79,7 @@ pub fn render_sensor_overview(
     entries: &[OverviewEntry],
     total_pages: usize,
     sensor_silenced: bool,
+    hold_bar_pixels: u8,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
 
@@ -134,10 +135,21 @@ pub fn render_sensor_overview(
     .ok();
 
     // Draw horizontal separator line
-    Line::new(Point::new(0, 11), Point::new(127, 11))
+    Line::new(Point::new(0, 14), Point::new(127, 14))
         .into_styled(line_style)
         .draw(display)
         .ok();
+
+    // Draw button-hold progress bar (1 px) directly under the separator while
+    // the user is holding ENTER / UP / DOWN. Width grows 0..=127 over the
+    // 5-second countdown.
+    if hold_bar_pixels > 0 {
+        let end_x = (hold_bar_pixels as i32).min(127);
+        Line::new(Point::new(0, 15), Point::new(end_x, 15))
+            .into_styled(line_style)
+            .draw(display)
+            .ok();
+    }
 
     // Calculate x offset for labels (make room for cursor in selection mode)
     let label_x = if selected_sensor.is_some() { 8 } else { 2 };
@@ -156,10 +168,10 @@ pub fn render_sensor_overview(
                 let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
                     match reading.alarm_state {
                         AlarmState::NeverConnected => ("-", false),
-                        AlarmState::Disconnected => ("E", true),
-                        AlarmState::Reconnecting => ("W", true),
+                        AlarmState::Disconnected => ("E", false),
+                        AlarmState::Reconnecting => ("W", false),
                         AlarmState::Normal => ("N", false),
-                        AlarmState::Warning => ("W", true),
+                        AlarmState::Warning => ("W", false),
                         AlarmState::Critical => ("C", true),
                     }
                 } else {
@@ -189,13 +201,13 @@ pub fn render_sensor_overview(
                 let sensor = &lorawan_sensors[lr_idx];
                 let (status_char, is_alarm) = match sensor.alarm_state {
                     LoRaWANAlarmState::Normal => ("N", false),
-                    LoRaWANAlarmState::Warning => ("W", true),
+                    LoRaWANAlarmState::Warning => ("W", false),
                     LoRaWANAlarmState::Critical => ("C", true),
-                    LoRaWANAlarmState::Disconnected => ("E", true),
+                    LoRaWANAlarmState::Disconnected => ("E", false),
                 };
-                let name = if sensor.name.len() > 6 { &sensor.name[..6] } else { &sensor.name };
-                let temp_str = sensor.temperature.map(|t| format!("{:.1}", t)).unwrap_or_else(|| "--.-".to_string());
-                let hum_str = sensor.humidity.map(|h| format!("{:.0}%", h)).unwrap_or_else(|| "--%".to_string());
+                let name = truncate_chars(&sensor.name, 6);
+                let temp_str = sensor.fields.get("temperature").map(|t| format!("{:.1}", t)).unwrap_or_else(|| "--.-".to_string());
+                let hum_str = sensor.fields.get("humidity").map(|h| format!("{:.0}%", h)).unwrap_or_else(|| "--%".to_string());
                 let label = format!("{:6} {}° {}", name, temp_str, hum_str);
                 draw_sensor_row_wide(display, y, label_x, is_selected, is_alarm, &label, status_char, &text_style);
             }
@@ -214,7 +226,7 @@ pub fn render_lorawan_sensor_detail(
 ) -> anyhow::Result<()> {
     match detail_page {
         0 => render_lorawan_detail_page_readings(display, sensor),
-        1 => render_lorawan_detail_page_thresholds(display, sensor, config),
+        1 => render_lorawan_detail_page_thresholds(display, sensor),
         _ => render_lorawan_detail_page_location(display, sensor, config),
     }
 }
@@ -304,29 +316,30 @@ fn render_lorawan_detail_page_readings(
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     render_lorawan_detail_header(display, sensor, "1/3");
 
-    // Line 1 (y=24): Temperature and alarm state
-    let temp_str = sensor.temperature
-        .map(|t| format!("{:.1}C", t))
-        .unwrap_or_else(|| "--.-C".to_string());
-    let temp_alarm = match sensor.temp_alarm_state {
+    let alarm_glyph = |s: &LoRaWANAlarmState| match s {
         LoRaWANAlarmState::Normal => "N",
         LoRaWANAlarmState::Warning => "W",
         LoRaWANAlarmState::Critical => "C",
         LoRaWANAlarmState::Disconnected => "E",
     };
+
+    // Line 1 (y=24): Temperature and alarm state
+    let temp_str = sensor.fields.get("temperature")
+        .map(|t| format!("{:.1}C", t))
+        .unwrap_or_else(|| "--.-C".to_string());
+    let temp_alarm = alarm_glyph(
+        sensor.field_alarm_states.get("temperature").unwrap_or(&LoRaWANAlarmState::Normal),
+    );
     Text::new(&format!("Temp:{} [{}]", temp_str, temp_alarm), Point::new(2, 24), text_style)
         .draw(display).ok();
 
     // Line 2 (y=37): Humidity and alarm state
-    let hum_str = sensor.humidity
+    let hum_str = sensor.fields.get("humidity")
         .map(|h| format!("{:.1}%", h))
         .unwrap_or_else(|| "--.--%".to_string());
-    let hum_alarm = match sensor.humidity_alarm_state {
-        LoRaWANAlarmState::Normal => "N",
-        LoRaWANAlarmState::Warning => "W",
-        LoRaWANAlarmState::Critical => "C",
-        LoRaWANAlarmState::Disconnected => "E",
-    };
+    let hum_alarm = alarm_glyph(
+        sensor.field_alarm_states.get("humidity").unwrap_or(&LoRaWANAlarmState::Normal),
+    );
     Text::new(&format!("Hum:{} [{}]", hum_str, hum_alarm), Point::new(2, 37), text_style)
         .draw(display).ok();
 
@@ -357,26 +370,34 @@ fn render_lorawan_detail_page_readings(
 fn render_lorawan_detail_page_thresholds(
     display: &mut St7920,
     sensor: &LoRaWANSensorState,
-    config: Option<&crate::libs::config::LoRaWANSensorConfig>,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     render_lorawan_detail_header(display, sensor, "2/3");
 
-    let (tcl, twl, twh, tch, hcl, hwl, hwh, hch) = match config {
-        Some(c) => (
-            fmt_thresh_temp(c.temp_critical_low),
-            fmt_thresh_temp(c.temp_warning_low),
-            fmt_thresh_temp(c.temp_warning_high),
-            fmt_thresh_temp(c.temp_critical_high),
-            fmt_thresh_hum(c.humidity_critical_low),
-            fmt_thresh_hum(c.humidity_warning_low),
-            fmt_thresh_hum(c.humidity_warning_high),
-            fmt_thresh_hum(c.humidity_critical_high),
+    // Effective thresholds (override + YAML defaults merged) live on the state
+    // after `evaluate_alarms`, so the display reads them directly instead of
+    // re-resolving them from the per-sensor config.
+    let find_thr = |field: &str| -> Option<&crate::libs::config::FieldThreshold> {
+        sensor.field_thresholds.iter().find(|t| t.field == field)
+    };
+    let temp_thr = find_thr("temperature");
+    let hum_thr = find_thr("humidity");
+    let f32_opt = |v: Option<f64>| v.map(|x| x as f32);
+    let (tcl, twl, twh, tch, hcl, hwl, hwh, hch) = match (temp_thr, hum_thr) {
+        (None, None) => (
+            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
+            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
         ),
-        None => (
-            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
-            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
+        (t, h) => (
+            fmt_thresh_temp(f32_opt(t.and_then(|t| t.critical_low))),
+            fmt_thresh_temp(f32_opt(t.and_then(|t| t.warning_low))),
+            fmt_thresh_temp(f32_opt(t.and_then(|t| t.warning_high))),
+            fmt_thresh_temp(f32_opt(t.and_then(|t| t.critical_high))),
+            fmt_thresh_hum(f32_opt(h.and_then(|h| h.critical_low))),
+            fmt_thresh_hum(f32_opt(h.and_then(|h| h.warning_low))),
+            fmt_thresh_hum(f32_opt(h.and_then(|h| h.warning_high))),
+            fmt_thresh_hum(f32_opt(h.and_then(|h| h.critical_high))),
         ),
     };
 
@@ -629,6 +650,49 @@ pub fn render_qr_code_screen(
         .draw(display)
         .ok();
     }
+
+    display.flush()
+}
+
+/// Render a placeholder when the QR config screen is requested but no
+/// provisioning session is active (e.g., user just opened it before the
+/// session was minted, or the 5-minute expiry has passed). Visually distinct
+/// from the live QR so users know not to scan stale photos.
+pub fn render_qr_session_ended_screen(display: &mut St7920) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment(
+        "Scan WiFi Config",
+        Point::new(64, 9),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    Text::with_alignment(
+        "Session ended",
+        Point::new(64, 32),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
+    Text::with_alignment(
+        "Hold ENTER again",
+        Point::new(64, 48),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
 
     display.flush()
 }
@@ -1062,24 +1126,22 @@ mod ordering_tests {
     }
 
     fn lora(name: &str, temp: Option<f32>, alarm: LoRaWANAlarmState) -> LoRaWANSensorState {
+        let mut fields = std::collections::HashMap::new();
+        if let Some(t) = temp { fields.insert("temperature".to_string(), t as f64); }
         LoRaWANSensorState {
             dev_eui: name.to_string(),
             name: name.to_string(),
             serial_number: None,
-            temperature: temp,
-            humidity: None,
-            voltage: None,
-            ext_temperature_1: None,
-            ext_temperature_2: None,
-            illuminance: None,
-            motion_count: None,
-            orientation: None,
+            location: None,
+            fields,
+            field_alarm_states: std::collections::HashMap::new(),
+            field_thresholds: Vec::new(),
+            counters: std::collections::HashMap::new(),
+            recent_events: std::collections::VecDeque::new(),
             rssi: None,
             snr: None,
             last_seen: None,
-            alarm_state: alarm.clone(),
-            temp_alarm_state: alarm.clone(),
-            humidity_alarm_state: alarm,
+            alarm_state: alarm,
         }
     }
 

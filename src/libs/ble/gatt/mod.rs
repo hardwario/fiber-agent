@@ -22,6 +22,8 @@ use std::time::Duration;
 use crossbeam::channel::{self, Receiver, Sender};
 
 use super::config::BleConfig;
+use crate::libs::config_applier::ConfigApplier;
+use crate::libs::network::SharedProvisioningSession;
 
 #[derive(Debug, Clone)]
 pub enum BleCommand {
@@ -71,7 +73,11 @@ pub struct BleMonitor {
 }
 
 impl BleMonitor {
-    pub fn new(config: BleConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        config: BleConfig,
+        provisioning_session: SharedProvisioningSession,
+        config_applier: Option<Arc<ConfigApplier>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
 
@@ -81,7 +87,14 @@ impl BleMonitor {
         let thread_handle = thread::Builder::new()
             .name("ble-monitor".to_string())
             .spawn(move || {
-                Self::thread_main(config, command_rx, event_tx_xbeam, shutdown_flag_clone);
+                Self::thread_main(
+                    config,
+                    provisioning_session,
+                    config_applier,
+                    command_rx,
+                    event_tx_xbeam,
+                    shutdown_flag_clone,
+                );
             })?;
 
         Ok(Self {
@@ -100,6 +113,8 @@ impl BleMonitor {
 
     fn thread_main(
         config: BleConfig,
+        provisioning_session: SharedProvisioningSession,
+        config_applier: Option<Arc<ConfigApplier>>,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -118,7 +133,16 @@ impl BleMonitor {
         };
 
         runtime.block_on(async move {
-            if let Err(e) = run_server(config, command_rx, event_tx, shutdown_flag).await {
+            if let Err(e) = run_server(
+                config,
+                provisioning_session,
+                config_applier,
+                command_rx,
+                event_tx,
+                shutdown_flag,
+            )
+            .await
+            {
                 eprintln!("[BleMonitor] FATAL: GATT server returned error: {:?}", e);
             }
         });
@@ -144,6 +168,8 @@ impl Drop for BleMonitor {
 /// Async GATT server entry point — analogue of run_server() in ble-fiber.
 async fn run_server(
     config: BleConfig,
+    provisioning_session: SharedProvisioningSession,
+    config_applier: Option<Arc<ConfigApplier>>,
     command_rx: Receiver<BleCommand>,
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
@@ -156,19 +182,86 @@ async fn run_server(
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
 
+    // Register a pairing agent that auto-accepts incoming bonds. We don't
+    // depend on the SMP bond for security — FIBER auth is the app-layer
+    // FB01 PIN derived from the QR code shown on the device — but some
+    // Android builds proactively call createBond() right after the GATT
+    // connect. Without a registered agent, bluez rejects the SMP and the
+    // user sees a "Pair rejected by FIBER" toast plus a disconnect.
+    //
+    // Capability is *implicit* in bluer 0.17.4: it's derived from which
+    // callbacks are populated (see bluer/src/agent.rs::capability). With
+    // request_confirmation + request_authorization + authorize_service
+    // all set, the published capability is "DisplayYesNo", so bluez
+    // negotiates Numeric Comparison pairing — the phone shows a 6-digit
+    // passkey, user taps Confirm, bond completes. The bond persists on
+    // the phone, so subsequent connections come in silently.
+    //
+    // request_confirmation auto-accepts without comparing the passkey
+    // against anything on the device side (the LCD doesn't display it).
+    // That nominally breaks the MITM-protection part of Numeric
+    // Comparison, but the threat model already assumes the user is
+    // physically at the device (they just scanned the QR code), and the
+    // FB01 PIN flow is the real auth gate.
+    //
+    // History: 546d31b removed all agent / set_pairable calls on
+    // suspicion that they wedged the MGMT socket and broke external
+    // btmgmt invocations. Since 148ccae we no longer call btmgmt at all
+    // (advertising routes through bluer's D-Bus API), so any MGMT-state
+    // side effect from registering the agent is harmless. If
+    // bluer.advertise() turns out to regress, that's the next thing to
+    // check — see the commit message for context.
+    let _agent_handle = session
+        .register_agent(bluer::agent::Agent {
+            request_default: false,
+            request_authorization: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Just Works pairing from {} → accepting",
+                        req.device
+                    );
+                    Ok(())
+                })
+            })),
+            request_confirmation: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Numeric Comparison from {} passkey={:06} → accepting",
+                        req.device, req.passkey
+                    );
+                    Ok(())
+                })
+            })),
+            authorize_service: Some(Box::new(|req| {
+                Box::pin(async move {
+                    eprintln!(
+                        "[BleAgent] Service authorization from {} uuid={} → accepting",
+                        req.device, req.service
+                    );
+                    Ok(())
+                })
+            })),
+            ..Default::default()
+        })
+        .await?;
+
+    // Pairable must be true for the Just Works bond above to actually go
+    // through — otherwise bluez refuses the SMP regardless of the agent.
+    adapter.set_pairable(true).await?;
+
     let mac = adapter.address().await?;
     let mac_str = mac.to_string();
 
     let hostname = state::get_hostname();
-    let pin = config.pin.clone();
 
     let advertising_name = config.advertising_name.clone().unwrap_or_else(|| hostname.clone());
     adapter.set_alias(advertising_name.clone()).await?;
 
     let state = Arc::new(Mutex::new(state::ServiceState::new(
-        pin,
+        provisioning_session,
         hostname.clone(),
         mac_str.clone(),
+        config_applier,
     )));
 
     // Bridge crossbeam Sender to a tokio mpsc that GATT closures can move into.
@@ -187,17 +280,32 @@ async fn run_server(
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
 
-    adapter.set_discoverable(true).await?;
-    adapter.set_pairable(true).await?;
-
+    // Primary AD: Flags + 128-bit FIBER service UUID (~21 B, fits the
+    // legacy 31-byte adv_data buffer). Scan response: the adapter alias,
+    // requested via `Includes = ["local-name"]` rather than the explicit
+    // `LocalName` property.
+    //
+    // Why `system_includes` instead of `local_name`: setting `LocalName`
+    // makes bluez try to fit the literal string into the primary AD, and
+    // when that overflows it escalates to EXTENDED advertising via
+    // MGMT_OP_ADD_EXT_ADV_DATA — which BCM4345C0 firmware rejects (the
+    // remnant of the periphid regression; PR #7023 fixed the BT bringup
+    // path but not the extended-adv-data path). With `Includes` carrying
+    // the MGMT_ADV_FLAG_LOCAL_NAME hint, the kernel itself places the
+    // alias into the scan-response slot during legacy
+    // MGMT_OP_ADD_ADVERTISING, so the request stays on the legacy path
+    // the chip handles fine — and the phone sees the name in the scan
+    // response before connection (matching app-side name filters).
     let adv = Advertisement {
-        service_uuids: vec![service::FIBER_SERVICE_UUID].into_iter().collect(),
-        local_name: Some(advertising_name.clone()),
-        discoverable: Some(true),
+        service_uuids: std::iter::once(service::FIBER_SERVICE_UUID).collect(),
+        system_includes: std::iter::once(bluer::adv::Feature::LocalName).collect(),
         ..Default::default()
     };
     let adv_handle = adapter.advertise(adv).await?;
-    eprintln!("[BleMonitor] BLE advertising started (name={}, mac={})", advertising_name, mac_str);
+    eprintln!(
+        "[BleMonitor] BLE advertising started (UUID-only, alias={}, mac={})",
+        advertising_name, mac_str
+    );
 
     let events = adapter.events().await?;
     pin_mut!(events);
@@ -254,6 +362,5 @@ async fn run_server(
     eprintln!("[BleMonitor] Cleaning up...");
     drop(adv_handle);
     drop(app_handle);
-    let _ = adapter.set_discoverable(false).await;
     Ok(())
 }

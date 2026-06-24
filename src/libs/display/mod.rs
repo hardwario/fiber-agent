@@ -14,7 +14,7 @@ use rppal::gpio::Gpio;
 
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
-use crate::libs::network::{QrCodeGenerator, NetworkStatus};
+use crate::libs::network::{NetworkStatus, SharedProvisioningSession};
 use crate::libs::lorawan::SharedLoRaWANState;
 use crate::libs::buzzer::BuzzerPriorityManager;
 
@@ -26,6 +26,7 @@ pub mod monitor;
 pub mod screens;
 pub mod buttons;
 pub mod icons;
+pub mod splash;
 
 pub use buttons::ButtonMonitor;
 
@@ -131,8 +132,11 @@ pub struct DisplayState {
     pub current_screen: Screen,
     /// Whether the display should be updated
     pub should_update: bool,
-    /// QR code generator instance
-    pub qr_generator: Option<Arc<QrCodeGenerator>>,
+    /// Live provisioning session handle. None until [`set_provisioning_session`]
+    /// is called from main. The QR-config screen pulls the current session's
+    /// `QrCodeGenerator` on every frame, so rotating the session updates the
+    /// rendered QR without any further plumbing.
+    pub provisioning_session: Option<SharedProvisioningSession>,
     /// Current network connection status
     pub network_status: NetworkStatus,
     /// Whether a LoRaWAN gateway is present (set from main after detection)
@@ -145,6 +149,11 @@ pub struct DisplayState {
     pub lorawan_detail_page: u8,
     /// Shared LoRa configs handle (for rendering thresholds + location pages).
     pub lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+    /// Button-hold progress in pixels (0..=127). 0 = no hold active; otherwise the
+    /// width of the 1-px progress bar drawn under the header divider on the sensor
+    /// overview. Written by the button monitor thread each poll and read by the
+    /// display monitor.
+    pub hold_bar_pixels: u8,
 }
 
 impl DisplayState {
@@ -152,13 +161,14 @@ impl DisplayState {
         Self {
             current_screen: Screen::SensorOverview { page: 0, selected_sensor: None },
             should_update: true,
-            qr_generator: None,
+            provisioning_session: None,
             network_status: NetworkStatus::disconnected(),
             lorawan_gateway_present: false,
             lorawan_state: None,
             buzzer_priority: None,
             lorawan_detail_page: 0,
             lorawan_configs: None,
+            hold_bar_pixels: 0,
         }
     }
 
@@ -211,9 +221,11 @@ impl DisplayState {
             .unwrap_or_default()
     }
 
-    /// Set the QR code generator
-    pub fn set_qr_generator(&mut self, generator: Arc<QrCodeGenerator>) {
-        self.qr_generator = Some(generator);
+    /// Attach the shared provisioning-session handle. The QR-config screen
+    /// reads the inner [`crate::libs::network::ProvisioningSession`] on each
+    /// frame and renders its precomputed QR.
+    pub fn set_provisioning_session(&mut self, session: SharedProvisioningSession) {
+        self.provisioning_session = Some(session);
     }
 
     /// Navigate to next page (works for sensor overview and system info when not in selection mode)

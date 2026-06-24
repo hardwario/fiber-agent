@@ -4,7 +4,7 @@
 //!
 //! # Protocol Flow
 //!
-//! 1. User triggers pairing mode (UP+DOWN buttons held for 3 seconds)
+//! 1. User triggers pairing mode (UP+DOWN buttons held for 2 seconds)
 //! 2. Device generates 6-character code and displays on LCD
 //! 3. User enters code in viewer application
 //! 4. Viewer backend sends pairing request via MQTT

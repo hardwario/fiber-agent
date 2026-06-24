@@ -685,14 +685,7 @@ impl MqttPublisher {
                     "serial_number": s.serial_number,
                     "location": s.location,
                     "enabled": s.enabled,
-                    "temp_critical_low": s.temp_critical_low,
-                    "temp_warning_low": s.temp_warning_low,
-                    "temp_warning_high": s.temp_warning_high,
-                    "temp_critical_high": s.temp_critical_high,
-                    "humidity_critical_low": s.humidity_critical_low,
-                    "humidity_warning_low": s.humidity_warning_low,
-                    "humidity_warning_high": s.humidity_warning_high,
-                    "humidity_critical_high": s.humidity_critical_high,
+                    "field_thresholds": s.field_thresholds,
                 })
             })
             .collect();
@@ -731,20 +724,16 @@ impl MqttPublisher {
                     "dev_eui": s.dev_eui,
                     "name": s.name,
                     "serial_number": s.serial_number,
-                    "temperature": s.temperature,
-                    "humidity": s.humidity,
-                    "voltage": s.voltage,
-                    "ext_temperature_1": s.ext_temperature_1,
-                    "ext_temperature_2": s.ext_temperature_2,
-                    "illuminance": s.illuminance,
-                    "motion_count": s.motion_count,
-                    "orientation": s.orientation,
+                    "location": s.location,
+                    "fields": s.fields,
+                    "field_alarm_states": s.field_alarm_states,
+                    "field_thresholds": s.field_thresholds,
+                    "counters": s.counters,
+                    "events": s.events,
                     "rssi": s.rssi,
                     "snr": s.snr,
                     "last_seen": s.last_seen,
                     "alarm_state": s.alarm_state,
-                    "temp_alarm_state": s.temp_alarm_state,
-                    "humidity_alarm_state": s.humidity_alarm_state,
                 })
             })
             .collect();

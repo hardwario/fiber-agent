@@ -1,6 +1,7 @@
 // Configuration management for FIBER Medical Thermometer
 // Loads and provides access to configuration from fiber.config.yaml
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -208,6 +209,13 @@ pub struct SensorFileConfig {
     /// Common (default) alarm thresholds for all lines
     pub common_alarms: SensorAlarmConfig,
 
+    /// Default per-field thresholds for LoRaWAN stickers, keyed by field name
+    /// (matches `registry::REGISTRY`). Used as a fallback for every sticker that
+    /// has no explicit override, on a per-bound basis. Empty map disables
+    /// auto-alarming for stickers.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub common_lorawan_field_thresholds: HashMap<String, FieldThresholdBounds>,
+
     /// Per-line sensor configurations
     pub lines: Vec<SensorLineConfig>,
 }
@@ -314,6 +322,7 @@ impl SensorFileConfig {
                 high_alarm_celsius: 100.0, // disabled - defaults
                 critical_high_celsius: 40.0,
             },
+            common_lorawan_field_thresholds: HashMap::new(),
             lines: vec![
                 SensorLineConfig {
                     line: 0,
@@ -518,15 +527,139 @@ pub struct StorageConfig {
     /// Path to SQLite database file
     pub db_path: String,
 
-    /// Maximum database size in gigabytes
+    /// Maximum database size in gigabytes (whole-GB granularity).
     pub max_size_gb: i32,
+
+    /// Optional override of `max_size_gb` for sub-GB precision. When
+    /// `Some(n)`, the retention cap is `n` megabytes; when `None` the
+    /// `max_size_gb` field is used. Lets us pick e.g. 2500 (=2.5 GB)
+    /// on a 4 GB partition shared with fiber-viewer without breaking
+    /// the i32-typed `max_size_gb` field for existing YAML configs.
+    #[serde(default)]
+    pub max_size_mb: Option<i32>,
 
     /// Path to HMAC secret key file for sensor reading integrity (EU MDR)
     #[serde(default = "default_hmac_secret_path")]
     pub hmac_secret_path: String,
 }
 
-/// Per-sensor LoRaWAN configuration (mirrors SensorLineConfig pattern)
+impl StorageConfig {
+    /// Effective storage cap in bytes. Prefers `max_size_mb` (MB
+    /// granularity) when set, otherwise falls back to the integer
+    /// `max_size_gb`. Both clamped to a positive minimum so a
+    /// misconfigured 0/negative value can't disable retention.
+    pub fn effective_max_bytes(&self) -> i64 {
+        if let Some(mb) = self.max_size_mb {
+            (mb.max(1) as i64) * 1024 * 1024
+        } else {
+            (self.max_size_gb.max(1) as i64) * 1024 * 1024 * 1024
+        }
+    }
+}
+
+/// Per-field threshold (4-level, like DS18B20)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FieldThreshold {
+    /// Field name from the LoRaWAN field registry (e.g., "temperature")
+    pub field: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_high: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_high: Option<f64>,
+}
+
+/// Bounds-only form of a field threshold, used for the YAML defaults map
+/// where the field name is the map key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FieldThresholdBounds {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_low: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_high: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_high: Option<f64>,
+}
+
+impl FieldThresholdBounds {
+    /// True if any bound is set.
+    pub fn is_set(&self) -> bool {
+        self.critical_low.is_some()
+            || self.warning_low.is_some()
+            || self.warning_high.is_some()
+            || self.critical_high.is_some()
+    }
+}
+
+/// Resolve the effective threshold for a single field on a sticker, merging the
+/// per-sensor override (if present) over the YAML defaults (if present) on a
+/// per-bound basis. Returns `None` only when neither side provides any bound.
+pub fn resolve_field_threshold(
+    field: &str,
+    sensor_override: Option<&FieldThreshold>,
+    default: Option<&FieldThresholdBounds>,
+) -> Option<FieldThreshold> {
+    match (sensor_override, default) {
+        (None, None) => None,
+        (Some(o), None) => Some(o.clone()),
+        (None, Some(d)) if d.is_set() => Some(FieldThreshold {
+            field: field.to_string(),
+            critical_low: d.critical_low,
+            warning_low: d.warning_low,
+            warning_high: d.warning_high,
+            critical_high: d.critical_high,
+        }),
+        (None, Some(_)) => None,
+        (Some(o), Some(d)) => {
+            let merged = FieldThreshold {
+                field: field.to_string(),
+                critical_low: o.critical_low.or(d.critical_low),
+                warning_low: o.warning_low.or(d.warning_low),
+                warning_high: o.warning_high.or(d.warning_high),
+                critical_high: o.critical_high.or(d.critical_high),
+            };
+            if merged.critical_low.is_none()
+                && merged.warning_low.is_none()
+                && merged.warning_high.is_none()
+                && merged.critical_high.is_none()
+            {
+                None
+            } else {
+                Some(merged)
+            }
+        }
+    }
+}
+
+/// Compute the full list of effective thresholds for a sticker, considering
+/// both the per-sensor `field_thresholds` and the YAML defaults map. Every
+/// field that has at least one bound from either source is included.
+pub fn effective_field_thresholds(
+    sensor: Option<&LoRaWANSensorConfig>,
+    defaults: &HashMap<String, FieldThresholdBounds>,
+) -> Vec<FieldThreshold> {
+    let mut fields: std::collections::BTreeSet<String> = defaults.keys().cloned().collect();
+    if let Some(s) = sensor {
+        for t in &s.field_thresholds {
+            fields.insert(t.field.clone());
+        }
+    }
+    fields
+        .into_iter()
+        .filter_map(|f| {
+            let override_ = sensor.and_then(|s| s.field_thresholds.iter().find(|t| t.field == f));
+            let default = defaults.get(&f);
+            resolve_field_threshold(&f, override_, default)
+        })
+        .collect()
+}
+
+/// Per-sensor LoRaWAN configuration (generic field-driven thresholds)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANSensorConfig {
     /// Device EUI (unique identifier)
@@ -548,25 +681,9 @@ pub struct LoRaWANSensorConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    // Temperature thresholds (4-level, same as DS18B20)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_critical_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_warning_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_warning_high: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temp_critical_high: Option<f32>,
-
-    // Humidity thresholds (4-level, same pattern)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_critical_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_warning_low: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_warning_high: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub humidity_critical_high: Option<f32>,
+    /// Per-field thresholds (replaces temp_*/humidity_* fixed columns)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_thresholds: Vec<FieldThreshold>,
 }
 
 /// LoRaWAN gateway configuration
@@ -613,7 +730,7 @@ impl Default for LoRaWANConfig {
             chirpstack_mqtt_port: 1883,
             chirpstack_mqtt_username: None,
             chirpstack_mqtt_password: None,
-            publish_interval_s: 5,
+            publish_interval_s: 30,
             sensor_timeout_s: 3600, // 1 hour
             sensors: Vec::new(),
         }
@@ -622,7 +739,7 @@ impl Default for LoRaWANConfig {
 
 fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
 fn default_chirpstack_mqtt_port() -> u16 { 1883 }
-fn default_lorawan_publish_interval() -> u64 { 5 }
+fn default_lorawan_publish_interval() -> u64 { 30 }
 fn default_lorawan_sensor_timeout() -> u64 { 3600 }
 
 /// MQTT broker configuration
@@ -773,6 +890,12 @@ pub struct MqttConfig {
 
     /// Last Will and Testament
     pub last_will: LastWillConfig,
+
+    /// Save-and-feed: multi-destination store-and-forward export config.
+    /// Defaults to disabled with no destinations — backwards-compatible
+    /// with configs that don't carry an `export` block.
+    #[serde(default)]
+    pub export: crate::libs::mqtt_export::ExportConfig,
 }
 
 // Default alarm pattern for backward compatibility (alarm level disabled)
@@ -850,15 +973,44 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from a YAML file
+    /// Load configuration from a YAML file.
+    ///
+    /// Runs forward migrations on the file first (see
+    /// `crate::libs::config_migrations`) — older yaml shapes on persisted
+    /// device installs are upgraded in place with a backup so subsequent
+    /// boots read the new shape natively.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
+        let content = match crate::libs::config_migrations::migrate_and_persist(path.as_ref()) {
+            Ok(s) => s,
+            Err(e) => {
+                // Migration failed (e.g. file unreadable or yaml newer than
+                // firmware). Fall back to raw read so the typed parser can
+                // produce a more user-friendly error if the file is just
+                // malformed, or surface the migration error if it's fatal.
+                eprintln!("[config] migration failed: {} — falling back to direct read", e);
+                fs::read_to_string(path.as_ref())?
+            }
+        };
         let mut config: Config = serde_yaml::from_str(&content)?;
 
         // Validate TLS config for production safety (EU MDR Annex I, 17.2)
         if let Some(ref mut mqtt) = config.mqtt {
             if let Some(ref mut tls) = mqtt.tls {
                 tls.validate();
+            }
+        }
+
+        // Canonicalize dev_eui to lowercase across all LoRaWAN sensor entries.
+        // ChirpStack lowercases the dev_eui in every uplink (chirpstack.rs ::
+        // parse_uplink), and SQLite's default BINARY collation is
+        // case-sensitive — a YAML carrying "70B3D5…" would never match the
+        // "70b3d5…" rows written by save-and-feed, masking provisioning epoch
+        // bumps and de-provisioning markers. Normalizing on load means every
+        // downstream comparison (config_applier search, lorawan state lookup,
+        // storage writes) sees one canonical form.
+        if let Some(ref mut lorawan) = config.lorawan {
+            for sensor in lorawan.sensors.iter_mut() {
+                sensor.dev_eui = sensor.dev_eui.to_lowercase();
             }
         }
 
@@ -911,7 +1063,14 @@ impl Config {
             },
             storage: StorageConfig {
                 db_path: "/data/fiber/fiber_medical.db".to_string(),
-                max_size_gb: 5,
+                // 2.5 GB cap on the 4 GB /data partition shared with
+                // fiber-viewer's DBs. Leaves ~1.5 GB headroom for the
+                // viewer (whose lorawan_field_readings table grows
+                // ~7 MB/day at 10 stickers). A higher cap here would
+                // let our DB fill the whole partition and lock the
+                // viewer (and us) out before retention could run.
+                max_size_gb: 3,
+                max_size_mb: Some(2500),
                 hmac_secret_path: default_hmac_secret_path(),
             },
             system: SystemConfig {
@@ -958,6 +1117,57 @@ mod tests {
         assert_eq!(config.serial.port, "/dev/ttyAMA4");
         assert_eq!(config.serial.baud_rate, 115200u32);
     }
+
+    #[test]
+    fn shipped_sensors_yaml_has_voltage_low_only_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path)
+            .expect("shipped fiber.sensors.config.yaml must parse");
+        let v = cfg
+            .common_lorawan_field_thresholds
+            .get("voltage")
+            .expect("voltage default present");
+        assert_eq!(v.warning_low, Some(2.5));
+        assert_eq!(v.critical_low, Some(2.2));
+        assert!(v.warning_high.is_none(), "low_only field should not have warning_high");
+        assert!(v.critical_high.is_none(), "low_only field should not have critical_high");
+    }
+
+    #[test]
+    fn shipped_sensors_yaml_mirrors_temperature_for_external_probes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path).unwrap();
+        let temp = cfg
+            .common_lorawan_field_thresholds
+            .get("temperature")
+            .expect("temperature default present");
+        for name in ["ext_temperature_1", "ext_temperature_2",
+                     "machine_probe_temperature_1", "machine_probe_temperature_2"] {
+            let other = cfg
+                .common_lorawan_field_thresholds
+                .get(name)
+                .unwrap_or_else(|| panic!("{} default missing", name));
+            assert_eq!(other.critical_low, temp.critical_low, "{}", name);
+            assert_eq!(other.warning_low,  temp.warning_low, "{}", name);
+            assert_eq!(other.warning_high, temp.warning_high, "{}", name);
+            assert_eq!(other.critical_high, temp.critical_high, "{}", name);
+        }
+    }
+
+    #[test]
+    fn shipped_sensors_yaml_omits_defaults_for_unbounded_fields() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fiber.sensors.config.yaml");
+        let cfg = SensorFileConfig::from_file(&path).unwrap();
+        for name in ["illuminance", "pressure", "altitude"] {
+            assert!(
+                cfg.common_lorawan_field_thresholds.get(name).is_none(),
+                "{} should NOT have a global default", name
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -993,16 +1203,29 @@ name: "Fridge"
             serial_number: None,
             location: None,
             enabled: true,
-            temp_critical_low: None,
-            temp_warning_low: None,
-            temp_warning_high: None,
-            temp_critical_high: None,
-            humidity_critical_low: None,
-            humidity_warning_low: None,
-            humidity_warning_high: None,
-            humidity_critical_high: None,
+            field_thresholds: Vec::new(),
         };
         let out = serde_yaml::to_string(&cfg).unwrap();
         assert!(!out.contains("location"));
+    }
+
+    #[test]
+    fn lorawan_sensor_config_deserializes_field_thresholds() {
+        let yaml = r#"
+dev_eui: "aabb"
+name: "Sticker"
+field_thresholds:
+  - field: temperature
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 35.0
+    critical_high: 40.0
+  - field: ext_temperature_1
+    critical_high: 80.0
+"#;
+        let cfg: LoRaWANSensorConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.field_thresholds.len(), 2);
+        assert_eq!(cfg.field_thresholds[0].field, "temperature");
+        assert_eq!(cfg.field_thresholds[1].critical_high, Some(80.0));
     }
 }

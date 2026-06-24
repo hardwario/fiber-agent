@@ -65,6 +65,64 @@ impl AuditLogger {
         Ok(())
     }
 
+    /// Log a successful operation with a free-form `details` payload.
+    /// Mirrors [`log_operation`] but persists the `details` string into the
+    /// audit row (and into the hash chain) so callers can record what
+    /// changed beyond just the operation name. Used by config-applier
+    /// paths (e.g. device label updates) that need to leave a trail of
+    /// "before/after" or similar context.
+    pub fn log_operation_with_details(
+        conn: &Connection,
+        operation: &str,
+        table_name: Option<&str>,
+        details: &str,
+    ) -> StorageResult<()> {
+        let thread_id = std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let previous_hash = integrity::get_latest_audit_hash(conn)?;
+        let record_hash = integrity::compute_audit_record_hash(
+            now,
+            operation,
+            table_name,
+            None,
+            None,
+            &thread_id,
+            Some(details),
+            None,
+            previous_hash.as_deref(),
+        );
+
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg, record_hash, previous_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                now,
+                operation,
+                table_name,
+                None::<i64>,
+                None::<i64>,
+                thread_id,
+                details,
+                None::<String>,
+                record_hash,
+                previous_hash,
+            ],
+        )
+        .map_err(|e| StorageError::AuditError(
+            format!("Failed to log operation with details: {}", e),
+        ))?;
+
+        Ok(())
+    }
+
     /// Log a failed operation to the audit trail (with error details)
     /// Computes SHA-256 hash-chain linking this entry to the previous one
     pub fn log_error(

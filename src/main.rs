@@ -1,11 +1,11 @@
 // FIBER Medical Thermometer main application
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, QrCodeGenerator, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router};
+use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router, new_shared_provisioning_session};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -192,11 +192,6 @@ fn main() -> io::Result<()> {
     let sensor_state = create_shared_sensor_state();
     eprintln!("[main] Sensor state initialized");
 
-    // Initialize QR code generator for Bluetooth/WiFi configuration
-    eprintln!("[main] Initializing QR code generator...");
-
-    let pin = config.ble.pin.clone();
-
     // Read MAC address directly from the BLE adapter via bluer
     let mac_address = match read_mac_from_bluer() {
         Ok(m) => {
@@ -222,17 +217,12 @@ fn main() -> io::Result<()> {
         }
     };
 
-    let qr_generator = match QrCodeGenerator::new(mac_address, pin, hostname.clone()) {
-        Ok(gen) => {
-            eprintln!("[main] QR code generator initialized successfully");
-            eprintln!("[main] QR content: {}", gen.get_content());
-            Arc::new(gen)
-        }
-        Err(e) => {
-            eprintln!("[main] Failed to initialize QR code generator: {}", e);
-            return Err(io::Error::new(io::ErrorKind::Other, format!("QR code generation failed: {}", e)));
-        }
-    };
+    // Ephemeral BLE provisioning session — empty at boot, populated when
+    // the user holds ENTER to enter provisioning mode. Shared between the
+    // button monitor (writer), the display thread (reader, renders QR), and
+    // the BLE GATT server (reader, gates pairing).
+    let provisioning_session = new_shared_provisioning_session();
+    eprintln!("[main] Provisioning session slot created (empty)");
 
     // Create shared power status for power monitoring and display
     eprintln!("[main] Initializing shared power status...");
@@ -261,17 +251,27 @@ fn main() -> io::Result<()> {
     )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
-    // Set QR code generator in display state
+    // Attach the provisioning-session handle to the display state so the
+    // QR-config screen can pull the current session's QR each frame.
     {
         if let Ok(mut state) = _display_monitor.display_state.lock() {
-            state.set_qr_generator(qr_generator.clone());
-            eprintln!("[main] QR code generator attached to display state");
+            state.set_provisioning_session(provisioning_session.clone());
+            eprintln!("[main] Provisioning session attached to display state");
         }
     }
 
     // Create and spawn button monitor thread for screen navigation (initially without pairing)
     eprintln!("[main] Starting button monitor...");
-    let _button_monitor = ButtonMonitor::new(_display_monitor.display_state.clone(), None, None, None, sensor_state.clone())?;
+    let _button_monitor = ButtonMonitor::new(
+        _display_monitor.display_state.clone(),
+        None,
+        None,
+        None,
+        sensor_state.clone(),
+        provisioning_session.clone(),
+        mac_address.clone(),
+        hostname.clone(),
+    )?;
     eprintln!("[main] Button monitor started");
 
     // Create shared buzzer volume (0 = muted, 1-100 = active)
@@ -288,13 +288,22 @@ fn main() -> io::Result<()> {
     let buzzer_priority_manager = Arc::new(BuzzerPriorityManager::new(power_buzzer.clone()));
     _display_monitor.set_buzzer_priority(buzzer_priority_manager.clone());
 
-    // Initialize storage thread for medical data persistence
+    // Initialize storage thread for medical data persistence.
+    // Use the byte-precision cap (config.storage.max_size_mb takes
+    // precedence over the integer-GB field) so we can sit at 2.5 GB
+    // on a 4 GB partition shared with fiber-viewer.
     eprintln!("[main] Starting storage thread...");
-    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_hmac(&config.storage.db_path, config.storage.max_size_gb, Some(&config.storage.hmac_secret_path)) {
+    let storage_max_bytes = config.storage.effective_max_bytes();
+    let (storage_handle, _storage_thread) = match StorageThread::spawn_with_max_bytes(
+        &config.storage.db_path,
+        storage_max_bytes,
+        Some(&config.storage.hmac_secret_path),
+    ) {
         Ok((handle, thread)) => {
             eprintln!(
-                "[main] Storage thread started - database: {}, max size: {}GB",
-                config.storage.db_path, config.storage.max_size_gb
+                "[main] Storage thread started - database: {}, max size: {} MB",
+                config.storage.db_path,
+                storage_max_bytes / (1024 * 1024),
             );
             (handle, thread)
         }
@@ -303,6 +312,87 @@ fn main() -> io::Result<()> {
             eprintln!("[main] Continuing without persistent storage");
             return Err(io::Error::new(io::ErrorKind::Other, format!("Storage initialization failed: {}", e)));
         }
+    };
+
+    // Save-and-feed: spawn the multi-destination MQTT exporter when enabled.
+    // The exporter drains rows past per-(broker, stream) cursors and ships
+    // them to configured destinations at QoS 1. The thread owns its own
+    // tokio runtime; we hold the JoinHandle in `_export_thread` so it stays
+    // alive for the rest of `main`.
+    //
+    // The ExportHandle is captured back out of the thread via a oneshot so
+    // we can hand it to the MQTT monitor for ResetExportCursor — without
+    // that wiring the orchestrator's in-memory cursor cache survives any
+    // DB-side reset until the daemon restarts.
+    let (export_handle_opt, _export_thread): (
+        Option<fiber_app::libs::mqtt_export::ExportHandle>,
+        Option<std::thread::JoinHandle<()>>,
+    ) = if config.mqtt
+        .as_ref()
+        .map(|m| m.export.enabled)
+        .unwrap_or(false)
+    {
+        let export_cfg = config.mqtt.as_ref().unwrap().export.clone();
+        let db_path = std::path::PathBuf::from(&config.storage.db_path);
+        let storage_for_export = storage_handle.clone();
+        let host_for_export = hostname.clone();
+        let (handle_tx, handle_rx) =
+            std::sync::mpsc::channel::<fiber_app::libs::mqtt_export::ExportHandle>();
+        match std::thread::Builder::new()
+            .name("fiber-mqtt-export".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("[main] mqtt_export: failed to build tokio runtime: {}", e);
+                        return;
+                    }
+                };
+                rt.block_on(async move {
+                    let (handle, fut) = fiber_app::libs::mqtt_export::MqttExportThread::spawn(
+                        export_cfg,
+                        db_path,
+                        storage_for_export,
+                        host_for_export,
+                    );
+                    // Hand the orchestrator handle back to main so MQTT
+                    // command dispatch can invalidate the in-memory cursor
+                    // cache on ResetExportCursor. Failure to send means main
+                    // already gave up on us — keep running anyway.
+                    let _ = handle_tx.send(handle);
+                    // Drive the orchestrator inline on this thread's runtime.
+                    // It loops until it receives Shutdown (which we never send
+                    // from here) — effectively for the lifetime of the process.
+                    fut.await;
+                });
+            })
+        {
+            Ok(h) => {
+                eprintln!("[main] mqtt_export thread spawned");
+                // Wait for the orchestrator to publish its handle. Short
+                // timeout so a stuck export thread doesn't gate boot.
+                let handle = handle_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .ok();
+                if handle.is_none() {
+                    eprintln!(
+                        "[main] Warning: mqtt_export handle not received within 2s — \
+                         ResetExportCursor cache invalidation will be unavailable"
+                    );
+                }
+                (handle, Some(h))
+            }
+            Err(e) => {
+                eprintln!("[main] Warning: failed to spawn mqtt_export thread: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        eprintln!("[main] mqtt.export.enabled=false — exporter not started");
+        (None, None)
     };
 
     // Build the shared LoRa configs handle from the initial config snapshot.
@@ -343,9 +433,13 @@ fn main() -> io::Result<()> {
             Some(buzzer_priority_manager.clone()),
             None,
             Some(lorawan_configs.clone()),
+            Some(storage_handle.clone()),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] MQTT monitor started with STM bridge, screen brightness, and buzzer volume control");
+                if let Some(ref eh) = export_handle_opt {
+                    monitor.set_export_handle(eh.clone());
+                }
                 let handle = monitor.handle();
                 (Some(handle), Some(monitor))
             }
@@ -387,11 +481,37 @@ fn main() -> io::Result<()> {
     // Store MQTT monitor to keep it alive (after pairing handle is set)
     let _mqtt_monitor = mqtt_monitor;
 
+    // Build a ConfigApplier for the BLE side so authenticated FB0A writes
+    // can update fiber.config.yaml::system.device_label. Shares
+    // /data/fiber/config with MQTT's own applier; on-disk writes are
+    // atomic so racing the two is safe.
+    let ble_config_applier: Option<Arc<fiber_app::ConfigApplier>> =
+        match fiber_app::ConfigApplier::new_with_storage(
+            std::path::Path::new("/data/fiber/config"),
+            Some(storage_handle.clone()),
+        ) {
+            Ok(applier) => {
+                eprintln!("[main] BLE-side ConfigApplier initialized");
+                Some(Arc::new(applier))
+            }
+            Err(e) => {
+                eprintln!(
+                    "[main] Warning: BLE-side ConfigApplier failed to init: {} (FB0A writes will be rejected)",
+                    e
+                );
+                None
+            }
+        };
+
     // Create and spawn BLE monitor if enabled.
     // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
     let (_ble_monitor, ble_handle) = if config.ble.enabled {
         eprintln!("[main] Starting BLE monitor (in-app GATT server)...");
-        match BleMonitor::new(config.ble.clone()) {
+        match BleMonitor::new(
+            config.ble.clone(),
+            provisioning_session.clone(),
+            ble_config_applier.clone(),
+        ) {
             Ok(monitor) => {
                 eprintln!("[main] BLE monitor started");
                 let h = monitor.handle();
@@ -426,6 +546,9 @@ fn main() -> io::Result<()> {
         Some(buzzer_priority_manager.clone()),
         _pairing_monitor.as_ref().map(|p| p.state()),
         sensor_state.clone(),
+        provisioning_session.clone(),
+        mac_address.clone(),
+        hostname.clone(),
     )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 
@@ -465,7 +588,7 @@ fn main() -> io::Result<()> {
 
     // Create and spawn sensor monitoring thread (pass MQTT handle)
     eprintln!("[main] Starting sensor monitor...");
-    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle)) {
+    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle.clone())) {
         Ok(monitor) => {
             eprintln!("[main] Sensor monitor started");
             Some(monitor)
@@ -499,12 +622,23 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
+        // Load YAML defaults for sticker per-field thresholds. These give newly
+        // paired stickers automatic alarming (mirrors DS18B20 `common_alarms`).
+        let lorawan_field_defaults: fiber_app::libs::lorawan::SharedFieldThresholdDefaults =
+            Arc::new(
+                fiber_app::libs::config::SensorFileConfig::load_default()
+                    .ok()
+                    .map(|c| c.common_lorawan_field_thresholds)
+                    .unwrap_or_default(),
+            );
         match LoRaWANMonitor::new(
             lorawan_config,
             lorawan_configs.clone(),
+            lorawan_field_defaults,
             handle.sender(),
             hostname.clone(),
             Some(buzzer_priority_manager.clone()),
+            storage_handle.clone(),
         ) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state
@@ -540,12 +674,39 @@ fn main() -> io::Result<()> {
     // Application is now running with background monitoring
     eprintln!("[main] Application running with medical data persistence. Press Ctrl+C to exit.");
 
-    // Keep the application alive
-    // In a full application, this would run the main event loop
-    // (button handling, display updates, sensor reading, etc.)
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    // Install a signal handler so SIGINT/SIGTERM drives a graceful shutdown
+    // path (flush export cursors, drop background tasks, run Drop impls)
+    // instead of the kernel killing us mid-write. The previous busy-loop
+    // had no exit path, so PowerMonitor/Storage/Export never got to run
+    // their Drop cleanup on a stop signal.
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+    let shutdown_signal_handler = shutdown_signal.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+        eprintln!("[main] Shutdown signal received");
+        shutdown_signal_handler.store(true, Ordering::SeqCst);
+    }) {
+        eprintln!("[main] WARN: failed to install signal handler: {} — shutdown will be ungraceful", e);
     }
 
-    // Note: PowerMonitor, AccelerometerMonitor, and SensorMonitor will be dropped here and shutdown gracefully
+    // Wait for signal — background monitors do all the work.
+    while !shutdown_signal.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    eprintln!("[main] Shutting down …");
+
+    // Tell the mqtt_export orchestrator to break its loop. This drops
+    // in-flight publishes and final cursor advances cleanly instead of
+    // the OS reaping the thread mid-write.
+    if let Some(eh) = export_handle_opt.as_ref() {
+        if let Err(e) = eh.shutdown() {
+            eprintln!("[main] export shutdown send failed: {}", e);
+        }
+    }
+
+    // Best-effort: give background threads a short window to finish.
+    // Storage / sensor / display monitors run their Drop on scope exit.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    eprintln!("[main] Goodbye");
+    Ok(())
 }

@@ -16,7 +16,7 @@ use crate::libs::lorawan::LoRaWANSensorState;
 
 use super::{SharedDisplayStateHandle, Screen};
 use super::screens::{
-    render_sensor_overview, render_qr_code_screen, render_system_info,
+    render_sensor_overview, render_qr_code_screen, render_qr_session_ended_screen, render_system_info,
     render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
     render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
 };
@@ -46,6 +46,17 @@ pub fn display_loop(
             return;
         }
     };
+
+    // Boot splash: render the HARDWARIO logo once and dwell for a short
+    // moment before the normal render loop takes over. Doing it here
+    // (inside the display thread, after St7920::new) keeps main.rs out of
+    // the drawing path — the display is only owned by this thread.
+    display.clear_buffer();
+    super::splash::render_splash(&mut display);
+    if let Err(e) = display.flush() {
+        eprintln!("[DisplayMonitor] Boot splash flush failed: {}", e);
+    }
+    thread::sleep(super::splash::SPLASH_DURATION);
 
     const UPDATE_INTERVAL_MS: u64 = 250; // Update display every 250ms
     let update_interval = Duration::from_millis(UPDATE_INTERVAL_MS);
@@ -83,16 +94,24 @@ pub fn display_loop(
             let network_status = get_network_status();
 
             // Get current display state (screen and page)
-            let (current_screen, qr_generator, lorawan_gateway_present, total_pages) = {
+            let (current_screen, qr_generator, lorawan_gateway_present, total_pages, hold_bar_pixels) = {
                 if let Ok(mut state) = display_state.lock() {
                     // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
                     state.tick_timed_screens();
                     // Update network status in display state
                     state.network_status = network_status.clone();
                     let tp = state.total_pages();
-                    (state.current_screen.clone(), state.qr_generator.clone(), state.lorawan_gateway_present, tp)
+                    // Pull the active QR generator out of the live provisioning
+                    // session (if any). None ⇒ either prov mode not entered or
+                    // session ended → QR screen will fall through to a notice.
+                    let qr = state.provisioning_session.as_ref().and_then(|s| {
+                        s.read()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
+                    });
+                    (state.current_screen.clone(), qr, state.lorawan_gateway_present, tp, state.hold_bar_pixels)
                 } else {
-                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2)
+                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2, 0)
                 }
             };
 
@@ -144,7 +163,7 @@ pub fn display_loop(
                     );
 
                     // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, &entries, total_pages, sensor_silenced) {
+                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, &entries, total_pages, sensor_silenced, hold_bar_pixels) {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }
@@ -190,13 +209,16 @@ pub fn display_loop(
                     }
                 }
                 Screen::QrCodeConfig => {
-                    // Render QR code configuration screen
+                    // Render QR code configuration screen. With ephemeral
+                    // provisioning sessions, the QR is only available while
+                    // a session is active; otherwise show a session-ended
+                    // notice so the user knows the QR is no longer valid.
                     if let Some(qr_gen) = qr_generator {
                         if let Err(e) = render_qr_code_screen(&mut display, &led_snapshot, &qr_gen) {
                             eprintln!("[DisplayMonitor] Error rendering QR code display: {}", e);
                         }
-                    } else {
-                        eprintln!("[DisplayMonitor] Warning: QR generator not initialized");
+                    } else if let Err(e) = render_qr_session_ended_screen(&mut display) {
+                        eprintln!("[DisplayMonitor] Error rendering session-ended screen: {}", e);
                     }
                 }
                 Screen::SystemInfo { page } => {

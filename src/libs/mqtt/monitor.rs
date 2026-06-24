@@ -22,11 +22,18 @@ use super::topics::TopicBuilder;
 use crate::libs::authorization::AuthorizationManager;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
+use crate::libs::mqtt_export::ExportHandle;
 use crate::libs::pairing::PairingHandle;
 use std::sync::Mutex;
 
 /// Shared pairing handle that can be set after MQTT monitor is created
 pub type SharedPairingHandle = Arc<Mutex<Option<PairingHandle>>>;
+
+/// Shared mqtt_export handle, populated after the export thread is spawned.
+/// Used by ResetExportCursor to invalidate the orchestrator's in-memory
+/// cursor cache — without it, the cache out-lives a DB-side reset and the
+/// drain silently keeps skipping rows the operator asked to replay.
+pub type SharedExportHandle = Arc<Mutex<Option<ExportHandle>>>;
 
 /// Shared STM bridge for hardware commands
 pub type SharedStmBridge = Arc<Mutex<crate::drivers::StmBridge>>;
@@ -537,12 +544,13 @@ pub struct MqttMonitor {
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
     lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+    export_handle_slot: SharedExportHandle,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None)
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -557,6 +565,7 @@ impl MqttMonitor {
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         lorawan_state: Option<crate::libs::lorawan::SharedLoRaWANState>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: Option<crate::libs::storage::StorageHandle>,
     ) -> io::Result<Self> {
         eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
         eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
@@ -608,6 +617,12 @@ impl MqttMonitor {
         let lorawan_state_slot = std::sync::Arc::new(std::sync::Mutex::new(lorawan_state));
         let lorawan_state_slot_clone = lorawan_state_slot.clone();
         let lorawan_configs_clone = lorawan_configs.clone();
+        let storage_handle_clone = storage_handle.clone();
+
+        // Slot for the mqtt_export handle. main.rs fills this in after the
+        // export thread is spawned (see `set_export_handle`).
+        let export_handle_slot: SharedExportHandle = Arc::new(Mutex::new(None));
+        let export_handle_slot_clone = export_handle_slot.clone();
 
         // Spawn monitoring thread
         let thread_handle = thread::spawn(move || {
@@ -627,6 +642,8 @@ impl MqttMonitor {
                 reconnected_flag_clone,
                 lorawan_state_slot_clone,
                 lorawan_configs_clone,
+                storage_handle_clone,
+                export_handle_slot_clone,
             ) {
                 eprintln!("[MQTT Monitor] Error in monitor loop: {}", e);
             }
@@ -646,6 +663,7 @@ impl MqttMonitor {
             buzzer_priority,
             lorawan_state_slot,
             lorawan_configs,
+            export_handle_slot,
         })
     }
 
@@ -662,6 +680,17 @@ impl MqttMonitor {
         if let Ok(mut g) = self.lorawan_state_slot.lock() {
             *g = Some(state);
             eprintln!("[MQTT Monitor] LoRaWAN state handle set");
+        }
+    }
+
+    /// Set the mqtt_export handle (call after MqttExportThread is spawned).
+    /// Without this, ResetExportCursor commands only reset the persisted
+    /// SQLite cursor — the orchestrator's in-memory cache continues to skip
+    /// the rows the operator asked to replay until the process restarts.
+    pub fn set_export_handle(&self, handle: ExportHandle) {
+        if let Ok(mut g) = self.export_handle_slot.lock() {
+            *g = Some(handle);
+            eprintln!("[MQTT Monitor] Export handle set");
         }
     }
 
@@ -692,6 +721,8 @@ impl MqttMonitor {
         reconnected_flag: Arc<AtomicBool>,
         lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: Option<crate::libs::storage::StorageHandle>,
+        export_handle_slot: SharedExportHandle,
     ) -> Result<(), String> {
         // Validate and prepare client_id
         let client_id = if config.broker.client_id.is_empty() {
@@ -768,7 +799,10 @@ impl MqttMonitor {
             None
         };
 
-        let config_applier = match ConfigApplier::new(std::path::Path::new("/data/fiber/config")) {
+        let config_applier = match ConfigApplier::new_with_storage(
+            std::path::Path::new("/data/fiber/config"),
+            storage_handle.clone(),
+        ) {
             Ok(applier) => {
                 eprintln!("[MQTT Monitor] Configuration applier initialized");
                 Some(Arc::new(applier))
@@ -1109,6 +1143,8 @@ impl MqttMonitor {
                                                                     &led_brightness_tracker,
                                                                     &lorawan_state_slot,
                                                                     &lorawan_configs,
+                                                                    &storage_handle,
+                                                                    &export_handle_slot,
                                                                 ) {
                                                                     eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
                                                                     if let Err(publish_err) = publisher.publish_error(
@@ -1233,6 +1269,8 @@ impl MqttMonitor {
                                                                         &led_brightness_tracker,
                                                                         &lorawan_state_slot,
                                                                         &lorawan_configs,
+                                                                        &storage_handle,
+                                                                        &export_handle_slot,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
@@ -1345,6 +1383,59 @@ impl MqttMonitor {
                                                     if let Some(bp) = &buzzer_priority {
                                                         bp.silence();
                                                         eprintln!("[MQTT Monitor] ✓ Buzzer silenced by alarm ACK");
+                                                    }
+                                                }
+
+                                                MqttCommand::HistoryRequest { request_id, sensor_line, from_ts, to_ts } => {
+                                                    // Out-of-band replay: spawn a task that pages
+                                                    // through sensor_readings_minute and publishes
+                                                    // each row on export/probe_1m_replay/... — the
+                                                    // natural drain cursor is NOT touched.
+                                                    match crate::libs::config::Config::load_default() {
+                                                        Ok(main_config) => {
+                                                            let client_for_replay = client.clone();
+                                                            let topics_for_replay = topics.clone();
+                                                            let db_path = main_config.storage.db_path.clone();
+                                                            let max_size_gb = main_config.storage.max_size_gb;
+                                                            eprintln!(
+                                                                "[MQTT Monitor] history_request {} [{}, {}] line={:?}",
+                                                                request_id, from_ts, to_ts, sensor_line,
+                                                            );
+                                                            tokio::spawn(async move {
+                                                                let outcome = crate::libs::mqtt_export::replay::replay_history(
+                                                                    client_for_replay,
+                                                                    topics_for_replay,
+                                                                    db_path,
+                                                                    max_size_gb,
+                                                                    request_id.clone(),
+                                                                    sensor_line,
+                                                                    from_ts,
+                                                                    to_ts,
+                                                                )
+                                                                .await;
+                                                                if outcome.status == "complete" {
+                                                                    eprintln!(
+                                                                        "[MQTT Monitor] history_request {} done: {} rows",
+                                                                        request_id, outcome.rows_sent,
+                                                                    );
+                                                                } else {
+                                                                    eprintln!(
+                                                                        "[MQTT Monitor] history_request {} {} after {} rows: {:?}",
+                                                                        request_id, outcome.status, outcome.rows_sent, outcome.error,
+                                                                    );
+                                                                }
+                                                            });
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("[MQTT Monitor] history_request: failed to load main config: {}", e);
+                                                            if let Err(publish_err) = publisher.publish_error(
+                                                                "history_request",
+                                                                "config_load_error",
+                                                                &format!("Failed to load configuration: {}", e),
+                                                            ).await {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", publish_err);
+                                                            }
+                                                        }
                                                     }
                                                 }
 
@@ -1837,6 +1928,8 @@ impl MqttMonitor {
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+        export_handle_slot: &SharedExportHandle,
     ) -> Result<(), String> {
         match cmd {
             MqttCommand::SetSensorThreshold {
@@ -2058,14 +2151,6 @@ impl MqttMonitor {
                 name,
                 serial_number,
                 location,
-                temp_critical_low,
-                temp_warning_low,
-                temp_warning_high,
-                temp_critical_high,
-                humidity_critical_low,
-                humidity_warning_low,
-                humidity_warning_high,
-                humidity_critical_high,
             } => {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_sensor_config(
@@ -2073,18 +2158,8 @@ impl MqttMonitor {
                         name.clone(),
                         serial_number.clone(),
                         location.clone(),
-                        temp_critical_low,
-                        temp_warning_low,
-                        temp_warning_high,
-                        temp_critical_high,
-                        humidity_critical_low,
-                        humidity_warning_low,
-                        humidity_warning_high,
-                        humidity_critical_high,
                     );
                     if result.success {
-                        // Mirror to in-memory shared configs so the LoRa monitor
-                        // and display pick up the new thresholds without a restart.
                         if let Some(cfgs) = lorawan_configs.as_ref() {
                             if let Ok(mut v) = cfgs.write() {
                                 if let Some(existing) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
@@ -2093,14 +2168,6 @@ impl MqttMonitor {
                                     if location.is_some() {
                                         existing.location = location.clone();
                                     }
-                                    existing.temp_critical_low = temp_critical_low;
-                                    existing.temp_warning_low = temp_warning_low;
-                                    existing.temp_warning_high = temp_warning_high;
-                                    existing.temp_critical_high = temp_critical_high;
-                                    existing.humidity_critical_low = humidity_critical_low;
-                                    existing.humidity_warning_low = humidity_warning_low;
-                                    existing.humidity_warning_high = humidity_warning_high;
-                                    existing.humidity_critical_high = humidity_critical_high;
                                 } else {
                                     v.push(crate::libs::config::LoRaWANSensorConfig {
                                         dev_eui: dev_eui.clone(),
@@ -2108,14 +2175,7 @@ impl MqttMonitor {
                                         serial_number: serial_number.clone(),
                                         location: location.clone(),
                                         enabled: true,
-                                        temp_critical_low,
-                                        temp_warning_low,
-                                        temp_warning_high,
-                                        temp_critical_high,
-                                        humidity_critical_low,
-                                        humidity_warning_low,
-                                        humidity_warning_high,
-                                        humidity_critical_high,
+                                        field_thresholds: Vec::new(),
                                     });
                                 }
                             }
@@ -2129,21 +2189,126 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetLoRaWANFieldThreshold {
+                dev_eui, field,
+                critical_low, warning_low, warning_high, critical_high,
+            } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_lorawan_field_threshold(
+                        dev_eui.clone(), field.clone(),
+                        critical_low, warning_low, warning_high, critical_high,
+                    );
+                    if result.success {
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                let entry = match v.iter_mut().find(|c| c.dev_eui == dev_eui) {
+                                    Some(e) => e,
+                                    None => {
+                                        v.push(crate::libs::config::LoRaWANSensorConfig {
+                                            dev_eui: dev_eui.clone(),
+                                            name: None, serial_number: None, location: None,
+                                            enabled: true, field_thresholds: Vec::new(),
+                                        });
+                                        v.last_mut().unwrap()
+                                    }
+                                };
+                                let new_t = crate::libs::config::FieldThreshold {
+                                    field: field.clone(),
+                                    critical_low, warning_low, warning_high, critical_high,
+                                };
+                                if let Some(t) = entry.field_thresholds.iter_mut().find(|t| t.field == field) {
+                                    *t = new_t;
+                                } else {
+                                    entry.field_thresholds.push(new_t);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ Field threshold {}/{} applied", dev_eui, field);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field } => {
+                if let Some(applier) = config_applier {
+                    let result = applier.delete_lorawan_field_threshold(dev_eui.clone(), field.clone());
+                    if result.success {
+                        if let Some(cfgs) = lorawan_configs.as_ref() {
+                            if let Ok(mut v) = cfgs.write() {
+                                if let Some(entry) = v.iter_mut().find(|c| c.dev_eui == dev_eui) {
+                                    entry.field_thresholds.retain(|t| t.field != field);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ Field threshold {}/{} removed", dev_eui, field);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             MqttCommand::AddLoRaWANSticker {
                 dev_eui,
                 name,
                 serial_number,
-                devaddr,
-                nwkskey,
-                appskey,
+                activation,
             } => {
-                // Step 1: Provision in ChirpStack (create device + ABP activate)
-                eprintln!("[MQTT Monitor] Provisioning sticker {} in ChirpStack...", dev_eui);
-                match crate::libs::lorawan::provisioning::provision_sticker(
-                    &dev_eui, &name, &serial_number, &devaddr, &nwkskey, &appskey,
-                ) {
+                let mode_label = match &activation {
+                    crate::libs::mqtt::messages::ActivationMode::Otaa { .. } => "OTAA",
+                    crate::libs::mqtt::messages::ActivationMode::Abp { .. } => "ABP",
+                };
+                eprintln!("[MQTT Monitor] Provisioning sticker {} in ChirpStack ({})...", dev_eui, mode_label);
+                let provision_result = match &activation {
+                    crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui } => {
+                        crate::libs::lorawan::provisioning::provision_sticker_otaa(
+                            &dev_eui, &name, &serial_number, app_key, join_eui,
+                        )
+                    }
+                    crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey } => {
+                        crate::libs::lorawan::provisioning::provision_sticker(
+                            &dev_eui, &name, &serial_number, devaddr, nwkskey, appskey,
+                        )
+                    }
+                };
+                match provision_result {
                     Ok(()) => {
                         eprintln!("[MQTT Monitor] ✓ Sticker {} provisioned in ChirpStack", dev_eui);
+
+                        // Save-and-feed: bump the provisioning epoch only when this
+                        // dev_eui was previously absent OR its most recent event was
+                        // a sticker_removed marker. That way re-provisioning an
+                        // already-active sticker is idempotent (no spurious epoch
+                        // change), while a remove → re-add cycle creates a new
+                        // epoch so the downstream pipeline can tell the new
+                        // sticker apart from the old one.
+                        if let Some(storage) = storage_handle.as_ref() {
+                            match storage.dev_eui_last_event_was_removal_or_absent(dev_eui.clone()) {
+                                Ok(true) => {
+                                    match storage.bump_provisioning_epoch(dev_eui.clone()) {
+                                        Ok(new_epoch) => eprintln!(
+                                            "[MQTT Monitor] sticker {} provisioning epoch bumped to {}",
+                                            dev_eui, new_epoch
+                                        ),
+                                        Err(e) => eprintln!(
+                                            "[MQTT Monitor] bump_provisioning_epoch({}) failed: {}",
+                                            dev_eui, e
+                                        ),
+                                    }
+                                }
+                                Ok(false) => {
+                                    // Re-provision of an already-active sticker; no bump.
+                                }
+                                Err(e) => eprintln!(
+                                    "[MQTT Monitor] dev_eui_last_event lookup for {} failed: {}",
+                                    dev_eui, e
+                                ),
+                            }
+                        }
                     }
                     Err(e) => {
                         // Log but continue - ChirpStack may be down or device may already exist
@@ -2158,8 +2323,6 @@ impl MqttMonitor {
                         Some(name.clone()),
                         Some(serial_number.clone()),
                         None,  // location: not set at provisioning
-                        None, None, None, None,  // temp thresholds: use defaults
-                        None, None, None, None,  // humidity thresholds: use defaults
                     );
                     if result.success {
                         if let Some(cfgs) = lorawan_configs.as_ref() {
@@ -2171,14 +2334,7 @@ impl MqttMonitor {
                                         serial_number: Some(serial_number.clone()),
                                         location: None,
                                         enabled: true,
-                                        temp_critical_low: None,
-                                        temp_warning_low: None,
-                                        temp_warning_high: None,
-                                        temp_critical_high: None,
-                                        humidity_critical_low: None,
-                                        humidity_warning_low: None,
-                                        humidity_warning_high: None,
-                                        humidity_critical_high: None,
+                                        field_thresholds: Vec::new(),
                                     });
                                 }
                             }
@@ -2196,20 +2352,16 @@ impl MqttMonitor {
                                         dev_eui: dev_eui.clone(),
                                         name: name.clone(),
                                         serial_number: Some(serial_number.clone()),
-                                        temperature: None,
-                                        humidity: None,
-                                        voltage: None,
-                                        ext_temperature_1: None,
-                                        ext_temperature_2: None,
-                                        illuminance: None,
-                                        motion_count: None,
-                                        orientation: None,
+                                        location: None,
+                                        fields: std::collections::HashMap::new(),
+                                        field_alarm_states: std::collections::HashMap::new(),
+                                        field_thresholds: Vec::new(),
+                                        counters: std::collections::HashMap::new(),
+                                        recent_events: std::collections::VecDeque::new(),
                                         rssi: None,
                                         snr: None,
                                         last_seen: None,
                                         alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
-                                        temp_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
-                                        humidity_alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
                                     });
                             }
                         }
@@ -2263,6 +2415,52 @@ impl MqttMonitor {
                 } else {
                     Err("Config applier not initialized".to_string())
                 }
+            }
+            MqttCommand::ResetExportCursor { broker_id, stream } => {
+                // The reset is two-phase:
+                //   1. Persisted SQLite cursor → storage handle (so a restart
+                //      reads cursor=0 and replays).
+                //   2. In-memory cache on the export orchestrator → export
+                //      handle. Without this the drain loop keeps using its
+                //      cached cursor value and the operator-issued reset is
+                //      silently a no-op until the daemon restarts.
+                let Some(storage) = storage_handle.as_ref() else {
+                    return Err("Storage handle not available for ResetExportCursor".to_string());
+                };
+                let export_handle = export_handle_slot.lock().ok().and_then(|g| g.clone());
+                let single = [stream.as_str()];
+                let streams_to_reset: &[&str] = if stream == "all" {
+                    &["sticker", "probe", "probe_1m", "alarm"]
+                } else {
+                    &single
+                };
+                for s in streams_to_reset {
+                    if let Err(e) = storage.reset_export_cursor(broker_id.clone(), s.to_string()) {
+                        eprintln!(
+                            "[MQTT Monitor] reset_export_cursor({}, {}) failed: {}",
+                            broker_id, s, e
+                        );
+                    }
+                    if let Some(eh) = export_handle.as_ref() {
+                        if let Err(e) = eh.reset_cursor(broker_id.clone(), s.to_string()) {
+                            eprintln!(
+                                "[MQTT Monitor] export_handle.reset_cursor({}, {}) failed: {}",
+                                broker_id, s, e
+                            );
+                        }
+                    }
+                }
+                if export_handle.is_none() {
+                    eprintln!(
+                        "[MQTT Monitor] WARN: ResetExportCursor without ExportHandle — \
+                         orchestrator's in-memory cache will keep its stale cursor until restart"
+                    );
+                }
+                eprintln!(
+                    "[MQTT Monitor] ✓ Export cursor reset for ({}, {})",
+                    broker_id, stream
+                );
+                Ok(())
             }
             // Signer management is handled by the CA platform in CA-based trust model
             MqttCommand::AddSigner { .. }
@@ -2339,14 +2537,7 @@ impl MqttMonitor {
                         serial_number: s.serial_number.clone(),
                         location: s.location.clone(),
                         enabled: s.enabled,
-                        temp_critical_low: s.temp_critical_low,
-                        temp_warning_low: s.temp_warning_low,
-                        temp_warning_high: s.temp_warning_high,
-                        temp_critical_high: s.temp_critical_high,
-                        humidity_critical_low: s.humidity_critical_low,
-                        humidity_warning_low: s.humidity_warning_low,
-                        humidity_warning_high: s.humidity_warning_high,
-                        humidity_critical_high: s.humidity_critical_high,
+                        field_thresholds: s.field_thresholds.clone(),
                     })
                     .collect()
             })
@@ -2577,6 +2768,7 @@ mod tests {
                 qos: 1,
                 retain: true,
             },
+            export: Default::default(),
         }
     }
 

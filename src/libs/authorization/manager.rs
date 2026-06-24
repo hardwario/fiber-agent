@@ -466,6 +466,10 @@ impl AuthorizationManager {
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
+
+            "set_lorawan_field_threshold" => "set_threshold",
+            "delete_lorawan_field_threshold" => "set_threshold",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -551,7 +555,8 @@ impl AuthorizationManager {
             "add_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                format!("Add HARDWARIO STICKER {} (name: \"{}\")", dev_eui, name)
+                let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("?").to_uppercase();
+                format!("Add HARDWARIO STICKER {} via {} (name: \"{}\")", dev_eui, mode, name)
             }
             "remove_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -756,7 +761,7 @@ impl AuthorizationManager {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 let name = challenge.params.get("name")
                     .and_then(|v| v.as_str())
@@ -770,35 +775,47 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let temp_critical_low = challenge.params.get("temp_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_warning_low = challenge.params.get("temp_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_warning_high = challenge.params.get("temp_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let temp_critical_high = challenge.params.get("temp_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_critical_low = challenge.params.get("humidity_critical_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_warning_low = challenge.params.get("humidity_warning_low").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_warning_high = challenge.params.get("humidity_warning_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-                let humidity_critical_high = challenge.params.get("humidity_critical_high").and_then(|v| v.as_f64()).map(|v| v as f32);
-
                 Ok(MqttCommand::SetLoRaWANSensorConfig {
                     dev_eui,
                     name,
                     serial_number,
                     location,
-                    temp_critical_low,
-                    temp_warning_low,
-                    temp_warning_high,
-                    temp_critical_high,
-                    humidity_critical_low,
-                    humidity_warning_low,
-                    humidity_warning_high,
-                    humidity_critical_high,
                 })
+            }
+            "set_lorawan_field_threshold" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_lowercase();
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
+                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
+                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                Ok(MqttCommand::SetLoRaWANFieldThreshold {
+                    dev_eui, field,
+                    critical_low, warning_low, warning_high, critical_high,
+                })
+            }
+            "delete_lorawan_field_threshold" => {
+                let dev_eui = challenge.params.get("dev_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
+                    .to_lowercase();
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                Ok(MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field })
             }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 let name = challenge.params.get("name")
                     .and_then(|v| v.as_str())
@@ -810,35 +827,77 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing serial_number".to_string()))?
                     .to_string();
 
-                let devaddr = challenge.params.get("devaddr")
+                let mode = challenge.params.get("mode")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr".to_string()))?
-                    .to_string();
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mode".to_string()))?;
 
-                let nwkskey = challenge.params.get("nwkskey")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey".to_string()))?
-                    .to_string();
-
-                let appskey = challenge.params.get("appskey")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing appskey".to_string()))?
-                    .to_string();
+                let activation = match mode {
+                    "otaa" => {
+                        let app_key = challenge.params.get("app_key")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing app_key for OTAA".to_string()))?
+                            .to_string();
+                        if app_key.len() != 32 || !app_key.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand(
+                                "app_key must be exactly 32 hex characters".to_string()
+                            ));
+                        }
+                        // join_eui: required from new viewers; absent payloads
+                        // (legacy viewer) fall back to all-zeros for compatibility.
+                        let join_eui = challenge.params.get("join_eui")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("0000000000000000")
+                            .to_string();
+                        if join_eui.len() != 16 || !join_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand(
+                                "join_eui must be exactly 16 hex characters".to_string()
+                            ));
+                        }
+                        crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui }
+                    }
+                    "abp" => {
+                        let devaddr = challenge.params.get("devaddr")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr for ABP".to_string()))?
+                            .to_string();
+                        let nwkskey = challenge.params.get("nwkskey")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey for ABP".to_string()))?
+                            .to_string();
+                        let appskey = challenge.params.get("appskey")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| AuthError::InvalidCommand("Missing appskey for ABP".to_string()))?
+                            .to_string();
+                        if devaddr.len() != 8 || !devaddr.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("devaddr must be 8 hex".into()));
+                        }
+                        if nwkskey.len() != 32 || !nwkskey.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("nwkskey must be 32 hex".into()));
+                        }
+                        if appskey.len() != 32 || !appskey.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Err(AuthError::InvalidCommand("appskey must be 32 hex".into()));
+                        }
+                        crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey }
+                    }
+                    other => {
+                        return Err(AuthError::InvalidCommand(
+                            format!("Unknown activation mode: {}", other)
+                        ));
+                    }
+                };
 
                 Ok(MqttCommand::AddLoRaWANSticker {
                     dev_eui,
                     name,
                     serial_number,
-                    devaddr,
-                    nwkskey,
-                    appskey,
+                    activation,
                 })
             }
             "remove_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
-                    .to_string();
+                    .to_lowercase();
 
                 Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
             }
