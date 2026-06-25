@@ -9,6 +9,8 @@
 
 pub mod auth;
 pub mod device_info;
+pub mod lan;
+pub mod net_error;
 pub mod service;
 pub mod state;
 pub mod terminal;
@@ -41,6 +43,8 @@ pub enum BleEvent {
     WifiConnecting { ssid: String },
     WifiConnected { ssid: String, ip: String },
     WifiFailed { error: String },
+    LanConfigured { mode: String, ip: String },
+    LanFailed { error: String },
 }
 
 #[derive(Clone)]
