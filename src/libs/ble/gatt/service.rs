@@ -39,6 +39,8 @@ const WIFI_DISCONNECT_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB08_0000_1000_8000_00805F9B34FB);
 const DEVICE_LABEL_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0A_0000_1000_8000_00805F9B34FB);
+const STICKER_ADD_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0D_0000_1000_8000_00805F9B34FB);
 
 // --- Application builder -----------------------------------------------------
 
@@ -380,6 +382,114 @@ pub async fn create_gatt_app(
         ..Default::default()
     };
 
+    // --- Sticker Add characteristic (FB0D) ------------------------------------
+    // Write {"deveui","joineui","appkey","name","serial_number"} to enroll a
+    // LoRaWAN sticker (OTAA) into the local ChirpStack via the shared add path
+    // (same as MQTT's AddLoRaWANSticker). Read returns the structured result of
+    // the most recent write. Auth-gated, mirrors FB09/FB01.
+    let sticker_add_char = Characteristic {
+        uuid: STICKER_ADD_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let deps = state_guard.sticker_deps();
+                        drop(state_guard);
+
+                        let req: crate::libs::ble::gatt::sticker::StickerAddRequest =
+                            match serde_json::from_slice(&new_value) {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    // Record the failure so the FB0D read does
+                                    // not surface a stale prior result.
+                                    crate::libs::ble::gatt::sticker::set_last_result(
+                                        crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                            success: false,
+                                            message: "invalid json".to_string(),
+                                            deveui: String::new(),
+                                        },
+                                    );
+                                    return Err(ReqError::InvalidValueLength);
+                                }
+                            };
+
+                        let prepared = match crate::libs::ble::gatt::sticker::prepare(&req) {
+                            Ok(p) => p,
+                            Err(msg) => {
+                                crate::libs::ble::gatt::sticker::set_last_result(
+                                    crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                        success: false,
+                                        message: msg,
+                                        deveui: req.deveui.trim().to_lowercase(),
+                                    },
+                                );
+                                return Err(ReqError::Failed);
+                            }
+                        };
+
+                        // add_lorawan_sticker drives ChirpStack gRPC + disk
+                        // writes synchronously — offload it so the BLE worker
+                        // thread is not blocked (mirrors the LAN FB09 fix).
+                        let dev_eui = prepared.dev_eui.clone();
+                        let add_result = tokio::task::spawn_blocking(move || {
+                            crate::libs::lorawan::add_lorawan_sticker(
+                                &deps,
+                                prepared.dev_eui,
+                                prepared.name,
+                                prepared.serial_number,
+                                prepared.activation,
+                            )
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("internal task error".to_string()));
+
+                        let (success, message) = match &add_result {
+                            Ok(()) => (true, "sticker enrolled".to_string()),
+                            Err(e) => (false, e.clone()),
+                        };
+                        crate::libs::ble::gatt::sticker::set_last_result(
+                            crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                success,
+                                message,
+                                deveui: dev_eui,
+                            },
+                        );
+                        add_result.map_err(|_| ReqError::Failed)
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+                        let resp = crate::libs::ble::gatt::sticker::last_result();
+                        Ok(serde_json::to_vec(&resp).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     // --- Terminal TX characteristic (FB05) ------------------------------------
     let terminal_tx_char = Characteristic {
         uuid: TERMINAL_TX_CHAR_UUID.into(),
@@ -539,6 +649,7 @@ pub async fn create_gatt_app(
         wifi_status_char,
         device_info_char,
         device_label_char,
+        sticker_add_char,
     ];
 
     if enable_terminal {

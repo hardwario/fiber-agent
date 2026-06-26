@@ -2258,121 +2258,16 @@ impl MqttMonitor {
                 serial_number,
                 activation,
             } => {
-                let mode_label = match &activation {
-                    crate::libs::mqtt::messages::ActivationMode::Otaa { .. } => "OTAA",
-                    crate::libs::mqtt::messages::ActivationMode::Abp { .. } => "ABP",
+                let lorawan_state = lorawan_state_slot.lock().ok().and_then(|g| g.clone());
+                let deps = crate::libs::lorawan::StickerAddDeps {
+                    config_applier: config_applier.clone(),
+                    storage: storage_handle.clone(),
+                    lorawan_configs: lorawan_configs.clone(),
+                    lorawan_state,
                 };
-                eprintln!("[MQTT Monitor] Provisioning sticker {} in ChirpStack ({})...", dev_eui, mode_label);
-                let provision_result = match &activation {
-                    crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui } => {
-                        crate::libs::lorawan::provisioning::provision_sticker_otaa(
-                            &dev_eui, &name, &serial_number, app_key, join_eui,
-                        )
-                    }
-                    crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey } => {
-                        crate::libs::lorawan::provisioning::provision_sticker(
-                            &dev_eui, &name, &serial_number, devaddr, nwkskey, appskey,
-                        )
-                    }
-                };
-                match provision_result {
-                    Ok(()) => {
-                        eprintln!("[MQTT Monitor] ✓ Sticker {} provisioned in ChirpStack", dev_eui);
-
-                        // Save-and-feed: bump the provisioning epoch only when this
-                        // dev_eui was previously absent OR its most recent event was
-                        // a sticker_removed marker. That way re-provisioning an
-                        // already-active sticker is idempotent (no spurious epoch
-                        // change), while a remove → re-add cycle creates a new
-                        // epoch so the downstream pipeline can tell the new
-                        // sticker apart from the old one.
-                        if let Some(storage) = storage_handle.as_ref() {
-                            match storage.dev_eui_last_event_was_removal_or_absent(dev_eui.clone()) {
-                                Ok(true) => {
-                                    match storage.bump_provisioning_epoch(dev_eui.clone()) {
-                                        Ok(new_epoch) => eprintln!(
-                                            "[MQTT Monitor] sticker {} provisioning epoch bumped to {}",
-                                            dev_eui, new_epoch
-                                        ),
-                                        Err(e) => eprintln!(
-                                            "[MQTT Monitor] bump_provisioning_epoch({}) failed: {}",
-                                            dev_eui, e
-                                        ),
-                                    }
-                                }
-                                Ok(false) => {
-                                    // Re-provision of an already-active sticker; no bump.
-                                }
-                                Err(e) => eprintln!(
-                                    "[MQTT Monitor] dev_eui_last_event lookup for {} failed: {}",
-                                    dev_eui, e
-                                ),
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // Log but continue - ChirpStack may be down or device may already exist
-                        eprintln!("[MQTT Monitor] ⚠ ChirpStack provisioning for {}: {}", dev_eui, e);
-                    }
-                }
-
-                // Step 2: Save sensor config to YAML (always, even if ChirpStack failed)
-                if let Some(applier) = config_applier {
-                    let result = applier.apply_lorawan_sensor_config(
-                        dev_eui.clone(),
-                        Some(name.clone()),
-                        Some(serial_number.clone()),
-                        None,  // location: not set at provisioning
-                    );
-                    if result.success {
-                        if let Some(cfgs) = lorawan_configs.as_ref() {
-                            if let Ok(mut v) = cfgs.write() {
-                                if !v.iter().any(|c| c.dev_eui == dev_eui) {
-                                    v.push(crate::libs::config::LoRaWANSensorConfig {
-                                        dev_eui: dev_eui.clone(),
-                                        name: Some(name.clone()),
-                                        serial_number: Some(serial_number.clone()),
-                                        location: None,
-                                        enabled: true,
-                                        field_thresholds: Vec::new(),
-                                    });
-                                }
-                            }
-                        }
-                        // Insert a stub in shared state so the next periodic publish
-                        // includes the sticker even before its first uplink arrives.
-                        // Without this, the backend's sync would consider the
-                        // optimistic entry stale and drop it.
-                        let state_opt: Option<crate::libs::lorawan::SharedLoRaWANState> =
-                            lorawan_state_slot.lock().ok().and_then(|g| g.clone());
-                        if let Some(state) = state_opt {
-                            if let Ok(mut s) = state.write() {
-                                s.sensors.entry(dev_eui.clone())
-                                    .or_insert_with(|| crate::libs::lorawan::LoRaWANSensorState {
-                                        dev_eui: dev_eui.clone(),
-                                        name: name.clone(),
-                                        serial_number: Some(serial_number.clone()),
-                                        location: None,
-                                        fields: std::collections::HashMap::new(),
-                                        field_alarm_states: std::collections::HashMap::new(),
-                                        field_thresholds: Vec::new(),
-                                        counters: std::collections::HashMap::new(),
-                                        recent_events: std::collections::VecDeque::new(),
-                                        rssi: None,
-                                        snr: None,
-                                        last_seen: None,
-                                        alarm_state: crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected,
-                                    });
-                            }
-                        }
-                        eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} config saved", dev_eui);
-                        Ok(())
-                    } else {
-                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
-                    }
-                } else {
-                    Err("Config applier not initialized".to_string())
-                }
+                crate::libs::lorawan::add_lorawan_sticker(
+                    &deps, dev_eui, name, serial_number, activation,
+                )
             }
             MqttCommand::RemoveLoRaWANSticker { dev_eui } => {
                 eprintln!("[MQTT Monitor] Removing sticker {} ...", dev_eui);
