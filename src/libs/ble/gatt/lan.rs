@@ -193,17 +193,40 @@ fn read_mac(iface: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Find the NetworkManager connection profile bound to `iface`, if any.
+/// Read the static `connection.interface-name` property of a profile.
+fn connection_interface_name(conn: &str) -> Option<String> {
+    let output = Command::new("nmcli")
+        .args(["-g", "connection.interface-name", "connection", "show", conn])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Find the NetworkManager connection profile bound to `iface`, returning its
+/// UUID, if any.
+///
+/// Matches on the **static** `connection.interface-name` property rather than
+/// the runtime `DEVICE` column: `DEVICE` is empty for an *inactive* profile
+/// (e.g. an unplugged cable), which would make the caller miss an existing
+/// profile and create a duplicate on the same interface (verified on hardware).
+/// Profiles are identified by UUID — UUIDs never contain ':', so this also
+/// sidesteps ':'-escaping in display names.
 fn find_eth_connection_name(iface: &str) -> Option<String> {
     let output = Command::new("nmcli")
-        .args(["-t", "-f", "NAME,DEVICE", "connection", "show"])
+        .args(["-t", "-f", "UUID,TYPE", "connection", "show"])
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() >= 2 && parts[1] == iface && !parts[0].is_empty() {
-            return Some(parts[0].to_string());
+        // UUID is the first field and never contains ':', so split_once is safe.
+        let Some((uuid, ctype)) = line.split_once(':') else {
+            continue;
+        };
+        if ctype == "802-3-ethernet"
+            && connection_interface_name(uuid).as_deref() == Some(iface)
+        {
+            return Some(uuid.to_string());
         }
     }
     None
