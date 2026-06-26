@@ -28,6 +28,7 @@ use fiber_app::ConfigApplier;
 fn simulate_fb0d_write(deps: &StickerAddDeps, req: &StickerAddRequest) -> StickerAddResponse {
     let resp = match sticker::prepare(req) {
         Err(msg) => StickerAddResponse {
+            pending: false,
             success: false,
             message: msg,
             deveui: req.deveui.trim().to_lowercase(),
@@ -43,11 +44,17 @@ fn simulate_fb0d_write(deps: &StickerAddDeps, req: &StickerAddRequest) -> Sticke
             );
             match result {
                 Ok(()) => StickerAddResponse {
+                    pending: false,
                     success: true,
                     message: "sticker enrolled".to_string(),
                     deveui: dev_eui,
                 },
-                Err(e) => StickerAddResponse { success: false, message: e, deveui: dev_eui },
+                Err(e) => StickerAddResponse {
+                    pending: false,
+                    success: false,
+                    message: e,
+                    deveui: dev_eui,
+                },
             }
         }
     };

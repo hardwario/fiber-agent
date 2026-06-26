@@ -33,9 +33,17 @@ pub struct StickerAddRequest {
     pub serial_number: String,
 }
 
-/// FB0D read payload — the result of the most recent enrollment.
+/// FB0D read payload — the state of the most recent enrollment.
+///
+/// The write returns immediately (the add — ChirpStack gRPC + disk — can take
+/// seconds, longer than a BLE write-response ACK), so the enrollment runs in
+/// the background. The client polls this via FB0D read: `pending=true` while it
+/// runs, then `pending=false` with the final `success`/`message`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StickerAddResponse {
+    /// True while the enrollment is still running (poll again).
+    #[serde(default)]
+    pub pending: bool,
     pub success: bool,
     pub message: String,
     pub deveui: String,
@@ -190,12 +198,14 @@ mod tests {
     #[test]
     fn last_result_roundtrip() {
         set_last_result(StickerAddResponse {
+            pending: false,
             success: true,
             message: "ok".to_string(),
             deveui: "0011223344556677".to_string(),
         });
         let r = last_result();
         assert!(r.success);
+        assert!(!r.pending);
         assert_eq!(r.deveui, "0011223344556677");
     }
 }

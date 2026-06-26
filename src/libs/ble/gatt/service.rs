@@ -412,6 +412,7 @@ pub async fn create_gatt_app(
                                     // not surface a stale prior result.
                                     crate::libs::ble::gatt::sticker::set_last_result(
                                         crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                            pending: false,
                                             success: false,
                                             message: "invalid json".to_string(),
                                             deveui: String::new(),
@@ -426,6 +427,7 @@ pub async fn create_gatt_app(
                             Err(msg) => {
                                 crate::libs::ble::gatt::sticker::set_last_result(
                                     crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                        pending: false,
                                         success: false,
                                         message: msg,
                                         deveui: req.deveui.trim().to_lowercase(),
@@ -436,33 +438,48 @@ pub async fn create_gatt_app(
                         };
 
                         // add_lorawan_sticker drives ChirpStack gRPC + disk
-                        // writes synchronously — offload it so the BLE worker
-                        // thread is not blocked (mirrors the LAN FB09 fix).
+                        // writes that take seconds — longer than the BLE
+                        // write-response ACK. So we ACK the write immediately
+                        // and run the enrollment in the background; the client
+                        // polls FB0D read (pending=true → final result). A
+                        // synchronous wait here returned a GATT UNLIKELY_ERROR
+                        // on a real device even though the add succeeded.
                         let dev_eui = prepared.dev_eui.clone();
-                        let add_result = tokio::task::spawn_blocking(move || {
-                            crate::libs::lorawan::add_lorawan_sticker(
-                                &deps,
-                                prepared.dev_eui,
-                                prepared.name,
-                                prepared.serial_number,
-                                prepared.activation,
-                            )
-                        })
-                        .await
-                        .unwrap_or_else(|_| Err("internal task error".to_string()));
-
-                        let (success, message) = match &add_result {
-                            Ok(()) => (true, "sticker enrolled".to_string()),
-                            Err(e) => (false, e.clone()),
-                        };
                         crate::libs::ble::gatt::sticker::set_last_result(
                             crate::libs::ble::gatt::sticker::StickerAddResponse {
-                                success,
-                                message,
-                                deveui: dev_eui,
+                                pending: true,
+                                success: false,
+                                message: "enrolling".to_string(),
+                                deveui: dev_eui.clone(),
                             },
                         );
-                        add_result.map_err(|_| ReqError::Failed)
+                        tokio::spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                crate::libs::lorawan::add_lorawan_sticker(
+                                    &deps,
+                                    prepared.dev_eui,
+                                    prepared.name,
+                                    prepared.serial_number,
+                                    prepared.activation,
+                                )
+                            })
+                            .await
+                            .unwrap_or_else(|_| Err("internal task error".to_string()));
+
+                            let (success, message) = match &result {
+                                Ok(()) => (true, "sticker enrolled".to_string()),
+                                Err(e) => (false, e.clone()),
+                            };
+                            crate::libs::ble::gatt::sticker::set_last_result(
+                                crate::libs::ble::gatt::sticker::StickerAddResponse {
+                                    pending: false,
+                                    success,
+                                    message,
+                                    deveui: dev_eui,
+                                },
+                            );
+                        });
+                        Ok(())
                     })
                 }
             })),
