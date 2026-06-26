@@ -409,7 +409,18 @@ pub async fn create_gatt_app(
                             serde_json::from_slice(&new_value)
                                 .map_err(|_| ReqError::InvalidValueLength)?;
 
-                        match crate::libs::ble::gatt::lan::apply_lan_config(&request) {
+                        // apply_lan_config drives nmcli synchronously and `up`
+                        // can block for seconds — offload it so the async BLE
+                        // worker thread is not tied up while NM works.
+                        let apply_result = tokio::task::spawn_blocking(move || {
+                            crate::libs::ble::gatt::lan::apply_lan_config(&request)
+                        })
+                        .await
+                        .unwrap_or(Err(
+                            crate::libs::ble::gatt::net_error::NetworkErrorCategory::Other,
+                        ));
+
+                        match apply_result {
                             Ok(()) => {
                                 let status = crate::libs::ble::gatt::lan::get_lan_status();
                                 let _ = event_tx.try_send(super::BleEvent::LanConfigured {

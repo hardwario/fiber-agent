@@ -10,6 +10,7 @@
 
 use std::net::Ipv4Addr;
 use std::process::Command;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,25 @@ use super::net_error::{categorize, NetworkErrorCategory};
 /// Candidate wired-interface names, in priority order. Mirrors the list used
 /// by `crate::libs::network::status`.
 const ETH_INTERFACES: &[&str] = &["eth0", "enp0s3", "enp4s0", "enp0s31f6", "end0"];
+
+/// Last LAN configuration error, surfaced in FB0C `error` so a failed FB09
+/// write is observable on a subsequent status read. Set on every
+/// `apply_lan_config` (cleared on success, set to the category on failure).
+static LAST_LAN_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_last_error(err: Option<String>) {
+    if let Ok(mut guard) = LAST_LAN_ERROR.lock() {
+        *guard = err;
+    }
+}
+
+fn last_error() -> String {
+    LAST_LAN_ERROR
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
 
 // --- Wire types --------------------------------------------------------------
 
@@ -45,7 +65,7 @@ pub struct LanConfigRequest {
     pub ipv4: Option<Ipv4Config>,
 }
 
-/// FB0C payload. `link` (carrier/operstate) is distinct from `connected`
+/// FB0C payload. `link` (physical carrier) is distinct from `connected`
 /// (has an IP): `link=false` → cable unplugged, `link=true,connected=false`
 /// → configured but not up yet / failed, both true → OK.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +171,21 @@ pub fn detect_lan_interface() -> Option<String> {
     None
 }
 
+/// Read the physical link (carrier) state of an interface from sysfs.
+///
+/// `/sys/class/net/<if>/carrier` is "1" when a cable is plugged in and "0"
+/// when not. It is the truth source for `link` — unlike `operstate`, which on
+/// wired NICs (e.g. the RPi CM4) frequently reports "unknown" even with a live
+/// cable, so deriving `link` from operstate would falsely report "unplugged".
+/// `carrier` is only readable while the interface is administratively up
+/// (EINVAL otherwise); a down interface has no usable link, so an unreadable
+/// value maps to `false`.
+fn read_link(iface: &str) -> bool {
+    std::fs::read_to_string(format!("/sys/class/net/{}/carrier", iface))
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
 /// Read the MAC address of an interface from sysfs.
 fn read_mac(iface: &str) -> String {
     std::fs::read_to_string(format!("/sys/class/net/{}/address", iface))
@@ -191,9 +226,13 @@ fn read_connection_mode(conn: &str) -> String {
 
 /// Ensure a connection profile exists for `iface`, creating one with an
 /// add-fallback (`nmcli connection add type ethernet`) when none is bound.
-fn ensure_eth_connection(iface: &str) -> Result<String, NetworkErrorCategory> {
+///
+/// Returns the profile name and whether it was freshly created — the caller
+/// deletes a just-created stub if the subsequent `modify` fails, while leaving
+/// an existing profile intact.
+fn ensure_eth_connection(iface: &str) -> Result<(String, bool), NetworkErrorCategory> {
     if let Some(conn) = find_eth_connection_name(iface) {
-        return Ok(conn);
+        return Ok((conn, false));
     }
     eprintln!("[LAN] No profile for {}; creating one", iface);
     let out = Command::new("nmcli")
@@ -213,11 +252,30 @@ fn ensure_eth_connection(iface: &str) -> Result<String, NetworkErrorCategory> {
             NetworkErrorCategory::Other
         })?;
     if out.status.success() {
-        Ok(iface.to_string())
+        Ok((iface.to_string(), true))
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         eprintln!("[LAN] connection add FAILED: {}", stderr.trim());
         Err(categorize(&stderr))
+    }
+}
+
+/// Clean up after a failed `connection modify`. A freshly-created profile is
+/// an empty stub with no usable config, so it is deleted. An existing profile
+/// is left untouched: `nmcli modify` is transactional (a failed modify leaves
+/// the profile unchanged), so we must not clobber the user's previous working
+/// config. Best-effort — failures are logged but do not mask the original error.
+///
+/// Note: this is intentionally NOT called on a failed `up`. Once `modify`
+/// succeeds the profile holds a validated config; an `up` failure is usually
+/// just "no carrier yet" (the legitimate configure-first-plug-in-later flow),
+/// so the config must stay written for the next boot / cable insertion.
+fn cleanup_failed_modify(conn: &str, created: bool) {
+    if created {
+        eprintln!("[LAN] modify failed; deleting freshly-created profile {}", conn);
+        let _ = Command::new("nmcli")
+            .args(["connection", "delete", conn])
+            .output();
     }
 }
 
@@ -240,9 +298,28 @@ fn run_nmcli(args: &[String]) -> Result<(), NetworkErrorCategory> {
 
 /// Apply a LAN configuration via NetworkManager.
 ///
+/// Thin wrapper over `apply_lan_config_inner` that records the outcome in
+/// `LAST_LAN_ERROR` so FB0C can surface the reason of a failed FB09 write.
+pub fn apply_lan_config(req: &LanConfigRequest) -> Result<(), NetworkErrorCategory> {
+    let result = apply_lan_config_inner(req);
+    match &result {
+        Ok(()) => set_last_error(None),
+        Err(cat) => set_last_error(Some(cat.as_str().to_string())),
+    }
+    result
+}
+
+/// Apply a LAN configuration via NetworkManager.
+///
 /// Steps: detect interface → (static) validate → find/create the connection
 /// profile → `nmcli connection modify` → `nmcli connection up`.
-pub fn apply_lan_config(req: &LanConfigRequest) -> Result<(), NetworkErrorCategory> {
+///
+/// Rollback policy: a failed `modify` deletes a just-created stub profile (an
+/// existing one is left intact — modify is transactional). A failed `up` does
+/// NOT roll back: the config is already validated and written, and an `up`
+/// failure is typically just a missing carrier, so the config stays put for
+/// the next boot / cable insertion. The failure is still surfaced via FB0C.
+fn apply_lan_config_inner(req: &LanConfigRequest) -> Result<(), NetworkErrorCategory> {
     let iface = detect_lan_interface().ok_or(NetworkErrorCategory::NotFound)?;
     eprintln!("[LAN] Configure requested: iface={} mode={:?}", iface, req.mode);
 
@@ -251,13 +328,27 @@ pub fn apply_lan_config(req: &LanConfigRequest) -> Result<(), NetworkErrorCatego
         validate_static_config(cfg)?;
     }
 
-    let conn = ensure_eth_connection(&iface)?;
-    run_nmcli(&build_nmcli_modify_args(&conn, req))?;
-    run_nmcli(&[
+    let (conn, created) = ensure_eth_connection(&iface)?;
+
+    if let Err(e) = run_nmcli(&build_nmcli_modify_args(&conn, req)) {
+        cleanup_failed_modify(&conn, created);
+        return Err(e);
+    }
+    // `--wait` bounds how long `up` blocks: bringing the link up on a dead
+    // cable (a legitimate "configure first, plug in later" flow) would
+    // otherwise hang on nmcli's ~90 s default and tie up the worker thread.
+    // We keep the (validated) config written even if `up` fails for exactly
+    // that flow — see the rollback policy above.
+    if let Err(e) = run_nmcli(&[
+        "--wait".to_string(),
+        "20".to_string(),
         "connection".to_string(),
         "up".to_string(),
         conn.clone(),
-    ])?;
+    ]) {
+        eprintln!("[LAN] 'up' failed on {} (config kept for next link/boot)", conn);
+        return Err(e);
+    }
 
     eprintln!("[LAN] Applied {:?} on {} (conn={})", req.mode, iface, conn);
     Ok(())
@@ -265,33 +356,34 @@ pub fn apply_lan_config(req: &LanConfigRequest) -> Result<(), NetworkErrorCatego
 
 /// Current LAN status for FB0C.
 ///
-/// Reuses `get_network_status()` (operstate → `link`, IP presence →
-/// `connected`); `mode` comes from the bound connection's `ipv4.method`.
+/// `link` is the physical carrier (`/sys/class/net/<if>/carrier`) and
+/// `connected` is "has an IP" — read **independently** so the three states
+/// stay distinguishable: unplugged (`link=false`), configured-but-not-up
+/// (`link=true, connected=false`), OK (both true). `mode` comes from the bound
+/// connection's `ipv4.method`; `error` carries the last `apply_lan_config`
+/// failure (empty after a success).
 pub fn get_lan_status() -> LanStatusResponse {
-    let iface = detect_lan_interface();
-    let status = crate::libs::network::get_network_status();
-
-    let link = status.ethernet_connected;
-    let ip = status.ethernet_ip.unwrap_or_default();
-    let connected = !ip.is_empty();
-
-    let (mac, mode) = match iface.as_deref() {
-        Some(i) => {
-            let mode = find_eth_connection_name(i)
+    match detect_lan_interface() {
+        Some(iface) => {
+            let link = read_link(&iface);
+            let ip = crate::libs::network::status::get_interface_ip(&iface).unwrap_or_default();
+            let connected = !ip.is_empty();
+            let mode = find_eth_connection_name(&iface)
                 .map(|c| read_connection_mode(&c))
                 .unwrap_or_default();
-            (read_mac(i), mode)
+            LanStatusResponse {
+                connected,
+                link,
+                ip_address: ip,
+                mac: read_mac(&iface),
+                mode,
+                error: last_error(),
+            }
         }
-        None => (String::new(), String::new()),
-    };
-
-    LanStatusResponse {
-        connected,
-        link,
-        ip_address: ip,
-        mac,
-        mode,
-        error: String::new(),
+        None => LanStatusResponse {
+            error: last_error(),
+            ..Default::default()
+        },
     }
 }
 
@@ -439,5 +531,18 @@ mod tests {
     fn method_to_mode_maps() {
         assert_eq!(method_to_mode("manual"), "static");
         assert_eq!(method_to_mode("auto"), "dhcp");
+    }
+
+    // Single test owns the LAST_LAN_ERROR global so it can't race other tests.
+    #[test]
+    fn last_error_surfaces_in_status_then_clears() {
+        // A recorded failure is observable on a subsequent FB0C read…
+        set_last_error(Some("gateway_unreachable".to_string()));
+        assert_eq!(last_error(), "gateway_unreachable");
+        assert_eq!(get_lan_status().error, "gateway_unreachable");
+        // …and a success clears it (no stale error leaks to the next read).
+        set_last_error(None);
+        assert_eq!(last_error(), "");
+        assert_eq!(get_lan_status().error, "");
     }
 }
