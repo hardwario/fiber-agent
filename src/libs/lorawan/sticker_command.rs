@@ -216,6 +216,14 @@ fn cmd(body: command::Body) -> Command {
 /// Unknown keys are skipped. The full-dump `GetConfig` is avoided on purpose
 /// (it overflows the device stack in fw v1.4.0, hardware/sticker-firmware#176).
 pub fn build_get_param(keys: &[&str]) -> Command {
+    build_get_param_page(keys, 0)
+}
+
+/// Like [`build_get_param`] but requests a specific ConfigDump `page`. The
+/// device pages the response: the host reads page 0, learns `page_count` from
+/// the `ConfigDump`, then fetches the rest. `page == 0` encodes no page field,
+/// so it is wire-identical to a plain [`build_get_param`].
+pub fn build_get_param_page(keys: &[&str], page: u32) -> Command {
     let mut gp = command::GetParam::default();
     for k in keys {
         match spec(k).map(|(f, _)| f) {
@@ -224,7 +232,16 @@ pub fn build_get_param(keys: &[&str]) -> Command {
             _ => {}
         }
     }
+    if page > 0 {
+        gp.page = Some(page);
+    }
     cmd(command::Body::GetParam(gp))
+}
+
+/// Every remotely-settable `group.field` key, in canonical [`SETTABLE`] order.
+/// Used to read back the full settable set when no specific keys are requested.
+pub fn all_settable_keys() -> Vec<&'static str> {
+    SETTABLE.iter().map(|(k, _, _)| *k).collect()
 }
 
 pub fn build_get_info() -> Command {

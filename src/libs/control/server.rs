@@ -24,7 +24,8 @@ use serde_json::{json, Value};
 use crate::libs::config::Config;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::lorawan::sticker_command as sc;
-use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue, ResponseKind};
+use crate::libs::lorawan::sticker_config::{self, BatchOutcome};
+use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue};
 use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::LoRaWANHandle;
 use crate::libs::mqtt::{ConnectionState, SharedConnectionState};
@@ -444,14 +445,14 @@ fn lorawan_set_param(
         return Response::err_coded("validation", "invalid field value(s)", json!({ "errors": parse_errors }));
     }
 
-    let commands = match sc::build_set_param(&config, sc::DR0_COMMAND_BUDGET, save) {
-        Ok(c) => c,
-        Err(errs) => {
-            let errors: Vec<Value> =
-                errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
-            return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
-        }
-    };
+    // Fail-fast on invalid values before taking the device lock or auditing
+    // (write_config re-validates internally; this preserves the original
+    // pre-lock validation-failure path).
+    if let Err(errs) = sc::validate(&config) {
+        let errors: Vec<Value> =
+            errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
+        return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
+    }
 
     // Serialize device-mutating ops, and audit every attempt (staging or commit).
     let _guard = ctx.lorawan_lock.lock();
@@ -462,28 +463,30 @@ fn lorawan_set_param(
     );
 
     let sent_keys: Vec<&str> = config.keys().map(|s| s.as_str()).collect();
-    let mut batches = Vec::new();
-    let mut all_ok = true;
-    let n = commands.len();
-    for (i, command) in commands.into_iter().enumerate() {
-        let is_last = i + 1 == n;
-        match handle.send_command(dev_eui, command, ctx.command_timeout) {
-            Ok(dr) => batches.push(decoded_to_json(&dr, &sent_keys)),
-            Err(e) => {
-                // The final (save) batch reboots the device; a missing reply there
-                // is expected rather than a hard failure.
-                if is_last && save {
-                    batches.push(json!({ "note": "no reply after save (device reboots; expect unsolicited Info on rejoin)", "transport_error": e }));
-                } else {
-                    all_ok = false;
-                    batches.push(json!({ "error": e }));
-                }
-            }
+    let write = match sticker_config::write_config(handle, dev_eui, &config, save, ctx.command_timeout) {
+        Ok(w) => w,
+        Err(errs) => {
+            let errors: Vec<Value> =
+                errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
+            return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
         }
-    }
+    };
+
+    let batches: Vec<Value> = write
+        .batches
+        .iter()
+        .map(|b| match b {
+            BatchOutcome::Replied(dr) => decoded_to_json(dr, &sent_keys),
+            BatchOutcome::SavedNoReply { transport_error } => json!({
+                "note": "no reply after save (device reboots; expect unsolicited Info on rejoin)",
+                "transport_error": transport_error,
+            }),
+            BatchOutcome::Failed { transport_error } => json!({ "error": transport_error }),
+        })
+        .collect();
 
     let data = json!({ "batches": batches, "save": save });
-    if all_ok {
+    if write.all_ok {
         Response::ok(data)
     } else {
         Response::err_coded("transport", "one or more batches failed", data)
@@ -502,23 +505,20 @@ fn lorawan_get_param(
     };
     let _guard = ctx.lorawan_lock.lock(); // serialize with other device ops
     let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-    let command = sc::build_get_param(&key_refs);
-    let dr = match handle.send_command(dev_eui, command, ctx.command_timeout) {
-        Ok(dr) => dr,
+    // read_config follows ConfigDump paging and returns the merged config (fixes
+    // the prior single-page read, which silently dropped pages 1..n).
+    let read = match sticker_config::read_config(handle, dev_eui, &key_refs, ctx.command_timeout) {
+        Ok(r) => r,
         Err(e) => return Response::err_coded("transport", format!("no response from device: {e}"), json!(null)),
     };
 
-    let ResponseKind::ConfigDump { config, page_index, page_count } = dr.kind else {
-        return Response::err_coded("unexpected_response", format!("expected ConfigDump, got {:?}", dr.kind), json!(null));
-    };
-
     let config_json: BTreeMap<String, Value> =
-        config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect();
+        read.config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect();
 
     let mut data = json!({
-        "seq": dr.seq,
-        "page_index": page_index,
-        "page_count": page_count,
+        "seq": read.last_seq,
+        "page_index": 0,
+        "page_count": read.page_count,
         "config": config_json,
     });
 
@@ -537,7 +537,7 @@ fn lorawan_get_param(
         if !perr.is_empty() {
             return Response::err_coded("validation", "invalid desired value(s)", json!({ "errors": perr }));
         }
-        let mismatches = crate::libs::lorawan::sticker_response::diff_config(&want, &config);
+        let mismatches = crate::libs::lorawan::sticker_response::diff_config(&want, &read.config);
         data["diff"] = json!(mismatches.iter().map(mismatch_to_json).collect::<Vec<_>>());
         data["in_sync"] = json!(mismatches.is_empty());
     }
