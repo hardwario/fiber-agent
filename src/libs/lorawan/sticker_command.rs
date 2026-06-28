@@ -266,6 +266,15 @@ pub fn build_clock_sync(unix_time: u32) -> Command {
     cmd(command::Body::ClockSync(command::ClockSync { unix_time: Some(unix_time) }))
 }
 
+/// `ReqHistory` requesting the device's on-device history buffer (#39).
+/// `from_unix`/`to_unix` bound the window (Unix seconds); `None` = whole buffer.
+/// The device replies with one or more `HistoryFrame` responses that share this
+/// command's seq (collected by the history backfill path), each expanded with
+/// [`super::sticker_response::expand_history_frame`].
+pub fn build_req_history(from_unix: Option<u32>, to_unix: Option<u32>) -> Command {
+    cmd(command::Body::ReqHistory(command::ReqHistory { from_unix, to_unix }))
+}
+
 /// Parse a raw `key=value` string into a [`ConfigValue`] of the type the field
 /// expects (bool vs unsigned), per the [`SETTABLE`] spec. Range validation
 /// happens later in [`build_set_param`]/[`validate`]; this only fixes the type.
@@ -446,5 +455,33 @@ mod tests {
             }
             other => panic!("expected GetParam, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn req_history_encodes_range() {
+        let mut c = build_req_history(Some(1000), Some(2000));
+        c.seq = 7; // sender stamps the seq
+        // seq(1)=7, req_history(11)={ from_unix(1)=1000, to_unix(2)=2000 }
+        assert_eq!(hex(&c.encode_to_vec()), "08075a0608e80710d00f");
+        match c.body {
+            Some(command::Body::ReqHistory(r)) => {
+                assert_eq!((r.from_unix, r.to_unix), (Some(1000), Some(2000)));
+            }
+            other => panic!("expected ReqHistory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn req_history_empty_requests_whole_buffer() {
+        let c = build_req_history(None, None);
+        match &c.body {
+            Some(command::Body::ReqHistory(r)) => {
+                assert_eq!((r.from_unix, r.to_unix), (None, None));
+            }
+            other => panic!("expected ReqHistory, got {other:?}"),
+        }
+        // seq=0 omitted (proto3 default); req_history(11) with an empty body
+        // encodes to tag 0x5a + length 0x00.
+        assert_eq!(hex(&c.encode_to_vec()), "5a00");
     }
 }
