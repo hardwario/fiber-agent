@@ -35,6 +35,11 @@ struct CommandRequest {
     /// Encoded `Command` protobuf (no proto-version prefix on downlinks).
     bytes: Vec<u8>,
     resp_tx: Sender<DecodedResponse>,
+    /// When true the seq may receive several responses (e.g. paged
+    /// HistoryFrames that all echo the command seq); the monitor keeps the
+    /// registration until the caller drops the receiver, instead of removing
+    /// it after the first response.
+    multi: bool,
 }
 
 /// Handle for sending messages to the LoRaWAN monitor
@@ -67,11 +72,56 @@ impl LoRaWANHandle {
                 seq,
                 bytes,
                 resp_tx,
+                multi: false,
             })
             .map_err(|_| "LoRaWAN monitor not running".to_string())?;
         resp_rx
             .recv_timeout(timeout)
             .map_err(|_| format!("no fPort-85 response for seq {seq} within {timeout:?}"))
+    }
+
+    /// Send a downlink `Command` and collect a multi-response reply whose pages
+    /// share one seq (e.g. an fPort-85 `HistoryFrame` set). Returns every
+    /// response received until `frame_count` frames arrive (learned from the
+    /// first HistoryFrame) or no further frame arrives within `frame_timeout`.
+    /// A non-history reply (Error/Empty/…) returns immediately as a single item.
+    pub fn send_command_collect(
+        &self,
+        dev_eui: &str,
+        mut command: Command,
+        frame_timeout: Duration,
+    ) -> Result<Vec<DecodedResponse>, String> {
+        use super::sticker_response::ResponseKind;
+        let seq = (self.seq.fetch_add(1, Ordering::Relaxed) % 250) + 1;
+        command.seq = seq;
+        let bytes = command.encode_to_vec();
+        let (resp_tx, resp_rx) = unbounded();
+        self.cmd_tx
+            .send(CommandRequest {
+                dev_eui: dev_eui.to_lowercase(),
+                seq,
+                bytes,
+                resp_tx,
+                multi: true,
+            })
+            .map_err(|_| "LoRaWAN monitor not running".to_string())?;
+
+        // The first response bounds the collection.
+        let first = resp_rx
+            .recv_timeout(frame_timeout)
+            .map_err(|_| format!("no fPort-85 response for seq {seq} within {frame_timeout:?}"))?;
+        let expected = match &first.kind {
+            ResponseKind::HistoryFrame { frame_count, .. } => (*frame_count).max(1),
+            _ => 1,
+        };
+        let mut frames = vec![first];
+        while (frames.len() as u32) < expected {
+            match resp_rx.recv_timeout(frame_timeout) {
+                Ok(resp) => frames.push(resp),
+                Err(_) => break, // inter-frame timeout → return what we have
+            }
+        }
+        Ok(frames)
     }
 }
 
@@ -206,6 +256,10 @@ fn lorawan_loop(
         // Persists across MQTT reconnects. last_app_id is learned from uplink
         // topics so downlinks can target application/{app_id}/device/.../command/down.
         let mut pending: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
+        // Multi-response registrations (paged HistoryFrames share one seq); kept
+        // until the caller drops its receiver, at which point the next send fails
+        // and the entry is dropped.
+        let mut pending_multi: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
         let mut last_app_id: Option<String> = None;
 
         loop {
@@ -285,7 +339,11 @@ fn lorawan_loop(
                             {
                                 Ok(_) => {
                                     eprintln!("[LoRaWAN Monitor] downlink cmd seq={} -> {}", req.seq, req.dev_eui);
-                                    pending.insert(req.seq, req.resp_tx);
+                                    if req.multi {
+                                        pending_multi.insert(req.seq, req.resp_tx);
+                                    } else {
+                                        pending.insert(req.seq, req.resp_tx);
+                                    }
                                 }
                                 Err(e) => eprintln!("[LoRaWAN Monitor] downlink publish failed: {}", e),
                             }
@@ -318,15 +376,24 @@ fn lorawan_loop(
                             match chirpstack::strip_proto_version(&data, &dev_eui)
                                 .and_then(decode_response)
                             {
-                                Ok(resp) => match pending.remove(&resp.seq) {
-                                    Some(tx) => {
+                                Ok(resp) => {
+                                    let seq = resp.seq;
+                                    if let Some(tx) = pending.remove(&seq) {
                                         let _ = tx.send(resp);
+                                    } else if let Some(tx) = pending_multi.remove(&seq) {
+                                        // Paged response (e.g. HistoryFrame): forward this
+                                        // page, keeping the registration for further pages
+                                        // only while the caller is still listening.
+                                        if tx.send(resp).is_ok() {
+                                            pending_multi.insert(seq, tx);
+                                        }
+                                    } else {
+                                        eprintln!(
+                                            "[LoRaWAN Monitor] fPort-85 response from {} (unmatched seq={}): {:?}",
+                                            dev_eui, seq, resp.kind
+                                        );
                                     }
-                                    None => eprintln!(
-                                        "[LoRaWAN Monitor] fPort-85 response from {} (unmatched seq={}): {:?}",
-                                        dev_eui, resp.seq, resp.kind
-                                    ),
-                                },
+                                }
                                 Err(e) => eprintln!(
                                     "[LoRaWAN Monitor] fPort-85 decode failed from {}: {}",
                                     dev_eui, e

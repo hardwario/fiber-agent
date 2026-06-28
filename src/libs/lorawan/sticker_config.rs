@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use super::monitor::LoRaWANHandle;
 use super::sticker_command::{self as sc, ConfigError};
-use super::sticker_response::{ConfigValue, DecodedResponse, ResponseKind};
+use super::sticker_response::{ConfigValue, DecodedResponse, HistoryRecord, ResponseKind};
 
 /// Result of reading a STICKER's config (all ConfigDump pages merged).
 #[derive(Debug, Clone)]
@@ -165,4 +165,47 @@ fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
         ConfigValue::Uint(n) => serde_json::json!(n),
         ConfigValue::Enum(s) | ConfigValue::Hex(s) => serde_json::json!(s),
     }
+}
+
+/// One page of a STICKER's on-device history (an expanded fPort-85 HistoryFrame).
+pub struct HistoryPage {
+    pub frame_index: u32,
+    pub frame_count: u32,
+    pub records: Vec<HistoryRecord>,
+}
+
+/// Feature D: send ONE ReqHistory and collect the resulting HistoryFrame pages
+/// (they share the command seq), returning the per-frame expanded records sorted
+/// by frame_index. A non-history reply yields an error.
+pub fn read_history(
+    handle: &LoRaWANHandle,
+    dev_eui: &str,
+    from_unix: Option<u32>,
+    to_unix: Option<u32>,
+    frame_timeout: Duration,
+) -> Result<Vec<HistoryPage>, String> {
+    let command = sc::build_req_history(from_unix, to_unix);
+    let responses = handle.send_command_collect(dev_eui, command, frame_timeout)?;
+    let mut pages = Vec::new();
+    for dr in responses {
+        match dr.kind {
+            ResponseKind::HistoryFrame { frame_index, frame_count, records, .. } => {
+                pages.push(HistoryPage { frame_index, frame_count, records });
+            }
+            // The device may terminate the stream with an empty/no-body response.
+            ResponseKind::Empty => {}
+            other => return Err(format!("expected HistoryFrame, got {:?}", other)),
+        }
+    }
+    pages.sort_by_key(|p| p.frame_index);
+    Ok(pages)
+}
+
+/// Project an expanded history record into the JSON shape published over MQTT.
+pub fn history_record_to_json(r: &HistoryRecord) -> serde_json::Value {
+    serde_json::json!({
+        "time": r.time,
+        "fields": r.fields,
+        "counters": r.counters,
+    })
 }

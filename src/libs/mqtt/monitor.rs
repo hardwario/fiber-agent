@@ -841,6 +841,78 @@ impl MqttMonitor {
         });
     }
 
+    /// Spawn a detached task that requests a STICKER's on-device history and
+    /// publishes each returned frame to `lorawan/sensors/<dev_eui>/history`.
+    fn spawn_sticker_history_read(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+        from_unix: Option<u32>,
+        to_unix: Option<u32>,
+    ) {
+        tokio::spawn(async move {
+            use crate::libs::lorawan::sticker_config;
+            let dev_eui_blocking = dev_eui.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                sticker_config::read_history(
+                    &handle,
+                    &dev_eui_blocking,
+                    from_unix,
+                    to_unix,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match result {
+                Ok(Ok(pages)) => {
+                    if pages.is_empty() {
+                        // Signal completion-with-no-data so the viewer can stop waiting.
+                        let msg = MqttMessage::PublishStickerHistory {
+                            dev_eui: dev_eui.clone(),
+                            frame_index: 0,
+                            frame_count: 0,
+                            records: Vec::new(),
+                        };
+                        if let Err(e) = publisher.handle_message(msg).await {
+                            eprintln!("[MQTT Monitor] Failed to publish sticker history: {}", e);
+                        }
+                    } else {
+                        for page in pages {
+                            let records: Vec<serde_json::Value> = page
+                                .records
+                                .iter()
+                                .map(sticker_config::history_record_to_json)
+                                .collect();
+                            let msg = MqttMessage::PublishStickerHistory {
+                                dev_eui: dev_eui.clone(),
+                                frame_index: page.frame_index,
+                                frame_count: page.frame_count,
+                                records,
+                            };
+                            if let Err(e) = publisher.handle_message(msg).await {
+                                eprintln!("[MQTT Monitor] Failed to publish sticker history: {}", e);
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    if let Err(pe) =
+                        publisher.publish_error("get_sticker_history", "transport", &e).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker history error: {}", pe);
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!("[MQTT Monitor] get_sticker_history task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
     /// Main monitoring loop (runs in background thread)
     fn monitor_loop(
         config: MqttConfig,
@@ -1602,6 +1674,38 @@ impl MqttMonitor {
                                                             if let Err(pe) = publisher
                                                                 .publish_error(
                                                                     "get_sticker_config",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix } => {
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_history_read(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                dev_eui,
+                                                                from_unix,
+                                                                to_unix,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "get_sticker_history",
                                                                     "lorawan_unavailable",
                                                                     "LoRaWAN command handle not available",
                                                                 )
