@@ -151,3 +151,18 @@ pub fn batch_result(outcome: &BatchOutcome) -> String {
         BatchOutcome::Failed { .. } => "transport_error".to_string(),
     }
 }
+
+/// Project a decoded config map into JSON values for publishing over MQTT.
+pub fn config_to_json(
+    config: &BTreeMap<String, ConfigValue>,
+) -> BTreeMap<String, serde_json::Value> {
+    config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect()
+}
+
+fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
+    match v {
+        ConfigValue::Bool(b) => serde_json::json!(b),
+        ConfigValue::Uint(n) => serde_json::json!(n),
+        ConfigValue::Enum(s) | ConfigValue::Hex(s) => serde_json::json!(s),
+    }
+}

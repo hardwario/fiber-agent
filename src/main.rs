@@ -635,6 +635,7 @@ fn main() -> io::Result<()> {
     // Wire LoRaWAN state into MQTT monitor now that both exist.
     if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
         mqtt_mon.set_lorawan_state(lr_mon.state.clone());
+        mqtt_mon.set_lorawan_handle(lr_mon.handle());
     }
 
     // Control socket server (#79): local CLI control plane for dev/testing,
