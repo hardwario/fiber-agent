@@ -139,6 +139,30 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish a STICKER's fPort-85 config read-back (Feature C) to
+    /// `lorawan/sensors/<dev_eui>/config`.
+    PublishStickerConfig {
+        dev_eui: String,
+        /// Flattened `group.field` → JSON value (projected from ConfigValue).
+        config: BTreeMap<String, Value>,
+        page_index: u32,
+        page_count: u32,
+        /// Seq + result of the last Ack/Error (the viewer renders
+        /// pending / awaiting-Ack / ok from this).
+        last_seq: u32,
+        last_result: String,
+    },
+
+    /// Publish one page of a STICKER's on-device history (Feature D) to
+    /// `lorawan/sensors/<dev_eui>/history`.
+    PublishStickerHistory {
+        dev_eui: String,
+        frame_index: u32,
+        frame_count: u32,
+        /// Each record is `{ time, fields{}, counters{} }` as JSON.
+        records: Vec<Value>,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 

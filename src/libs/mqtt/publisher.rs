@@ -212,6 +212,34 @@ impl MqttPublisher {
                 self.publish_lorawan_sensors(sensors).await
             }
 
+            MqttMessage::PublishStickerConfig {
+                dev_eui,
+                config,
+                page_index,
+                page_count,
+                last_seq,
+                last_result,
+            } => {
+                self.publish_sticker_config(
+                    dev_eui,
+                    config,
+                    page_index,
+                    page_count,
+                    last_seq,
+                    last_result,
+                )
+                .await
+            }
+
+            MqttMessage::PublishStickerHistory {
+                dev_eui,
+                frame_index,
+                frame_count,
+                records,
+            } => {
+                self.publish_sticker_history(dev_eui, frame_index, frame_count, records).await
+            }
+
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
@@ -747,6 +775,51 @@ impl MqttPublisher {
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
 
         self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish a STICKER's fPort-85 config read-back to
+    /// `lorawan/sensors/<dev_eui>/config` (Feature C). `last_ack` lets the viewer
+    /// render pending / awaiting-Ack / ok for a preceding write.
+    async fn publish_sticker_config(
+        &self,
+        dev_eui: String,
+        config: std::collections::BTreeMap<String, serde_json::Value>,
+        page_index: u32,
+        page_count: u32,
+        last_seq: u32,
+        last_result: String,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "dev_eui": dev_eui,
+            "config": config,
+            "page_index": page_index,
+            "page_count": page_count,
+            "synced_at": Self::timestamp(),
+            "last_ack": { "seq": last_seq, "result": last_result },
+        });
+
+        let topic = self.topics.lorawan_sensor_config(&dev_eui);
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+    }
+
+    /// Publish one page of a STICKER's on-device history to
+    /// `lorawan/sensors/<dev_eui>/history` (Feature D).
+    async fn publish_sticker_history(
+        &self,
+        dev_eui: String,
+        frame_index: u32,
+        frame_count: u32,
+        records: Vec<serde_json::Value>,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "dev_eui": dev_eui,
+            "frame_index": frame_index,
+            "frame_count": frame_count,
+            "records": records,
+        });
+
+        let topic = self.topics.lorawan_sensor_history(&dev_eui);
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
     }
 
     /// Publish pairing response (success)
