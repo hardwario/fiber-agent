@@ -754,6 +754,93 @@ impl MqttMonitor {
         });
     }
 
+    /// Spawn a detached task that writes a STICKER's fPort-85 config (validate →
+    /// SetParam batches), reads it back (unless save+reboot), and publishes the
+    /// result to `lorawan/sensors/<dev_eui>/config` with the last Ack/Error.
+    fn spawn_sticker_config_write(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+        fields: std::collections::BTreeMap<String, String>,
+        save: bool,
+    ) {
+        tokio::spawn(async move {
+            use crate::libs::lorawan::{sticker_command as sc, sticker_config};
+            let dev_eui_blocking = dev_eui.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                // Parse string values into typed ConfigValue (fail fast).
+                let mut config = std::collections::BTreeMap::new();
+                for (k, raw) in &fields {
+                    match sc::parse_value(k, raw) {
+                        Ok(v) => {
+                            config.insert(k.clone(), v);
+                        }
+                        Err(e) => return Err(format!("{}: {}", e.key, e.reason)),
+                    }
+                }
+                let write = sticker_config::write_config(
+                    &handle,
+                    &dev_eui_blocking,
+                    &config,
+                    save,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+                .map_err(|errs| {
+                    errs.iter()
+                        .map(|e| format!("{}: {}", e.key, e.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })?;
+                // Read back the staged values, unless we just saved (device reboots).
+                let read = if save {
+                    None
+                } else {
+                    sticker_config::read_config(&handle, &dev_eui_blocking, &[], STICKER_COMMAND_TIMEOUT).ok()
+                };
+                Ok((write, read))
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match outcome {
+                Ok(Ok((write, read))) => {
+                    let last_result = write
+                        .batches
+                        .last()
+                        .map(sticker_config::batch_result)
+                        .unwrap_or_else(|| "ok".to_string());
+                    let (config_json, page_count) = match read {
+                        Some(cfg) => (sticker_config::config_to_json(&cfg.config), cfg.page_count),
+                        None => (std::collections::BTreeMap::new(), 1),
+                    };
+                    let msg = MqttMessage::PublishStickerConfig {
+                        dev_eui,
+                        config: config_json,
+                        page_index: 0,
+                        page_count,
+                        last_seq: write.last_seq,
+                        last_result,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker config: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    if let Err(pe) =
+                        publisher.publish_error("set_sticker_config", "transport", &e).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker config error: {}", pe);
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!("[MQTT Monitor] set_sticker_config task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
     /// Main monitoring loop (runs in background thread)
     fn monitor_loop(
         config: MqttConfig,
@@ -1183,7 +1270,7 @@ impl MqttMonitor {
                                                         let direct_cmd = Self::build_dev_command(&command_type, &params, &reason);
                                                         match direct_cmd {
                                                             Ok(execute_cmd) => {
-                                                                if let Err(e) = Self::execute_config_command(
+                                                                if let Err(e) = Self::execute_resolved_command(
                                                                     execute_cmd,
                                                                     &config_applier,
                                                                     &stm_bridge,
@@ -1194,6 +1281,10 @@ impl MqttMonitor {
                                                                     &lorawan_state_slot,
                                                                     &lorawan_configs,
                                                                     &storage_handle,
+                                                                    &lorawan_handle_slot,
+                                                                    &client,
+                                                                    &topics,
+                                                                    &config.publish,
                                                                 ) {
                                                                     eprintln!("[MQTT Monitor] DEV-PLATFORM: Command failed: {}", e);
                                                                     if let Err(publish_err) = publisher.publish_error(
@@ -1308,7 +1399,7 @@ impl MqttMonitor {
 
                                                                 // Execute command if approved
                                                                 if let Some(execute_cmd) = maybe_command {
-                                                                    if let Err(e) = Self::execute_config_command(
+                                                                    if let Err(e) = Self::execute_resolved_command(
                                                                         execute_cmd,
                                                                         &config_applier,
                                                                         &stm_bridge,
@@ -1319,6 +1410,10 @@ impl MqttMonitor {
                                                                         &lorawan_state_slot,
                                                                         &lorawan_configs,
                                                                         &storage_handle,
+                                                                        &lorawan_handle_slot,
+                                                                        &client,
+                                                                        &topics,
+                                                                        &config.publish,
                                                                     ) {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     } else {
@@ -1990,8 +2085,60 @@ impl MqttMonitor {
                     dns_secondary: params.get("dns_secondary").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 })
             }
+            "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
         }
+    }
+
+    /// Dispatch a resolved (authorized) config command. `set_sticker_config` is
+    /// an async fPort-85 write that publishes its own result, so it is spawned
+    /// here; every other command delegates to the synchronous executor.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_resolved_command(
+        cmd: MqttCommand,
+        config_applier: &Option<Arc<ConfigApplier>>,
+        stm_bridge: &Option<SharedStmBridge>,
+        screen_brightness: &Option<SharedScreenBrightnessHandle>,
+        buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
+        led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
+        lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+        lorawan_handle_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
+        client: &AsyncClient,
+        topics: &TopicBuilder,
+        publish_cfg: &crate::libs::config::PublishConfig,
+    ) -> Result<(), String> {
+        if let MqttCommand::SetStickerConfig { dev_eui, fields, save } = cmd {
+            return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
+                Some(handle) => {
+                    Self::spawn_sticker_config_write(
+                        client.clone(),
+                        topics.clone(),
+                        publish_cfg.clone(),
+                        handle,
+                        dev_eui,
+                        fields,
+                        save,
+                    );
+                    Ok(())
+                }
+                None => Err("LoRaWAN command handle not available".to_string()),
+            };
+        }
+        Self::execute_config_command(
+            cmd,
+            config_applier,
+            stm_bridge,
+            screen_brightness,
+            buzzer_volume,
+            buzzer_priority,
+            led_brightness_tracker,
+            lorawan_state_slot,
+            lorawan_configs,
+            storage_handle,
+        )
     }
 
     /// Execute an approved configuration command

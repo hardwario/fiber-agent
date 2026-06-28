@@ -470,6 +470,7 @@ impl AuthorizationManager {
 
             "set_lorawan_field_threshold" => "set_threshold",
             "delete_lorawan_field_threshold" => "set_threshold",
+            "set_sticker_config" => "set_lorawan_sensor_config",  // reuse sticker-management permission
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -561,6 +562,15 @@ impl AuthorizationManager {
             "remove_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Remove HARDWARIO STICKER {}", dev_eui)
+            }
+            "set_sticker_config" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let keys: Vec<&str> = params
+                    .get("config")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.keys().map(|s| s.as_str()).collect())
+                    .unwrap_or_default();
+                format!("Configure STICKER {} parameters: {:?}", dev_eui, keys)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -810,6 +820,10 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
                 Ok(MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field })
+            }
+            "set_sticker_config" => {
+                MqttCommand::parse_set_sticker_config(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
             }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")

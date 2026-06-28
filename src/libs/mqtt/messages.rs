@@ -498,6 +498,49 @@ impl MqttCommand {
             MqttCommand::PairingRequest { .. } => "pairing_request",
         }
     }
+
+    /// Parse a `set_sticker_config` params object `{dev_eui, config{}, save?}`
+    /// into [`MqttCommand::SetStickerConfig`]. Shared by the production
+    /// (challenge) and dev-platform signed-command builders so both paths parse
+    /// identically. Config values may be JSON string/number/bool and are
+    /// stringified for the fPort-85 engine's typed parser.
+    pub fn parse_set_sticker_config(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+        }
+        let config_obj = params
+            .get("config")
+            .and_then(|v| v.as_object())
+            .ok_or("Missing or invalid 'config' object")?;
+        let mut fields = BTreeMap::new();
+        for (k, v) in config_obj {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                Value::Bool(b) => b.to_string(),
+                Value::Number(n) => n.to_string(),
+                _ => {
+                    return Err(format!(
+                        "config value for '{}' must be a string, number or bool",
+                        k
+                    ))
+                }
+            };
+            fields.insert(k.clone(), s);
+        }
+        if fields.is_empty() {
+            return Err("config must contain at least one key".to_string());
+        }
+        let save = params.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
+        Ok(MqttCommand::SetStickerConfig {
+            dev_eui: dev_eui.to_lowercase(),
+            fields,
+            save,
+        })
+    }
 }
 
 #[cfg(test)]
