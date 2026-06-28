@@ -5,6 +5,7 @@ use crate::libs::crypto::UserCertificate;
 use crate::libs::pairing::messages::{PairingError, PairingResponse};
 use crate::libs::sensors::aggregation::AggregationPeriod;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Messages sent to the MQTT monitor thread for publishing
 #[derive(Debug, Clone)]
@@ -342,6 +343,31 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Read a STICKER's own fPort-85 parameters over MQTT (unsigned query).
+    /// `keys` empty/None = read the full settable set.
+    GetStickerConfig {
+        dev_eui: String,
+        keys: Option<Vec<String>>,
+    },
+
+    /// Write a STICKER's fPort-85 parameters over MQTT (signed via ConfigRequest).
+    /// `fields` maps SETTABLE keys (`application.interval_report`, …) to string
+    /// values parsed + range-checked by the fPort-85 engine. `save` persists to
+    /// flash (reboots the sticker) vs RAM-staging a dry run.
+    SetStickerConfig {
+        dev_eui: String,
+        fields: BTreeMap<String, String>,
+        save: bool,
+    },
+
+    /// Request a STICKER's on-device history buffer (fPort-85 ReqHistory,
+    /// unsigned query). `from_unix`/`to_unix` bound the window; None = whole buffer.
+    GetStickerHistory {
+        dev_eui: String,
+        from_unix: Option<u32>,
+        to_unix: Option<u32>,
+    },
+
     /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
     /// next drain pass replays the stream from row 1. Use after a viewer DB
     /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
@@ -435,6 +461,9 @@ impl MqttCommand {
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
+            MqttCommand::SetStickerConfig { .. } => "set_sticker_config",
+            MqttCommand::GetStickerHistory { .. } => "get_sticker_history",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
@@ -486,6 +515,34 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn sticker_commands_have_names() {
+        assert_eq!(
+            MqttCommand::GetStickerConfig { dev_eui: "0102030405060708".into(), keys: None }.name(),
+            "get_sticker_config"
+        );
+        let mut fields = BTreeMap::new();
+        fields.insert("application.interval_report".to_string(), "1200".to_string());
+        assert_eq!(
+            MqttCommand::SetStickerConfig {
+                dev_eui: "0102030405060708".into(),
+                fields,
+                save: false,
+            }
+            .name(),
+            "set_sticker_config"
+        );
+        assert_eq!(
+            MqttCommand::GetStickerHistory {
+                dev_eui: "0102030405060708".into(),
+                from_unix: None,
+                to_unix: None,
+            }
+            .name(),
+            "get_sticker_history"
+        );
     }
 
     #[test]
