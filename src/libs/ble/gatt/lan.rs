@@ -20,6 +20,12 @@ use super::net_error::{categorize, NetworkErrorCategory};
 /// by `crate::libs::network::status`.
 const ETH_INTERFACES: &[&str] = &["eth0", "enp0s3", "enp4s0", "enp0s31f6", "end0"];
 
+/// Max raw FB09 write payload (bytes). A well-formed static-mode request is
+/// ~250 B; cap at 1 KiB so a malicious peer cannot push megabytes through
+/// `serde_json` before validation rejects it. The DNS array is the only
+/// repeatable field; combined with [`MAX_DNS_ENTRIES`] this is comfortable.
+pub const MAX_PAYLOAD_BYTES: usize = 1024;
+
 /// Last LAN configuration error, surfaced in FB0C `error` so a failed FB09
 /// write is observable on a subsequent status read. Set on every
 /// `apply_lan_config` (cleared on success, set to the category on failure).
@@ -135,9 +141,44 @@ pub fn validate_static_config(cfg: &Ipv4Config) -> Result<(), NetworkErrorCatego
         .gateway
         .parse()
         .map_err(|_| NetworkErrorCategory::InvalidIp)?;
-    for d in &cfg.dns {
-        let _: Ipv4Addr = d.parse().map_err(|_| NetworkErrorCategory::InvalidIp)?;
+
+    // Reject unusable address/gateway classes. Without these checks an
+    // attacker (or a confused user) could pass validation with
+    // address=127.0.0.2/8 gateway=127.0.0.1 — both parse and "share a
+    // subnet" — and nmcli would happily point the default route at
+    // loopback, killing all outbound traffic. Same shape for multicast,
+    // broadcast, 0.0.0.0, and link-local.
+    if !is_assignable_host(&addr) {
+        return Err(NetworkErrorCategory::InvalidIp);
     }
+    if !is_assignable_host(&gw) {
+        return Err(NetworkErrorCategory::InvalidIp);
+    }
+    if addr == gw {
+        // nmcli rejects address == gateway; pre-validate so the user gets
+        // a clear "invalid IP" instead of a generic nmcli failure.
+        return Err(NetworkErrorCategory::InvalidIp);
+    }
+
+    // Cap the DNS list (MAXNS on Linux is 3). Without this a malicious
+    // peer can submit thousands of entries that we then join into a
+    // single nmcli argument longer than ARG_MAX.
+    if cfg.dns.len() > MAX_DNS_ENTRIES {
+        return Err(NetworkErrorCategory::InvalidIp);
+    }
+    for d in &cfg.dns {
+        let dns_addr: Ipv4Addr = d.parse().map_err(|_| NetworkErrorCategory::InvalidIp)?;
+        // DNS may legitimately be off-link, so we don't enforce subnet —
+        // but loopback/multicast/unspecified are all unusable.
+        if dns_addr.is_loopback()
+            || dns_addr.is_multicast()
+            || dns_addr.is_unspecified()
+            || dns_addr.is_broadcast()
+        {
+            return Err(NetworkErrorCategory::InvalidIp);
+        }
+    }
+
     if cfg.prefix <= 30 {
         // prefix is 1..=30 here, so the shift is well-defined.
         let mask: u32 = u32::MAX << (32 - cfg.prefix);
@@ -147,6 +188,24 @@ pub fn validate_static_config(cfg: &Ipv4Config) -> Result<(), NetworkErrorCatego
     }
     Ok(())
 }
+
+/// True iff `addr` is a usable host address for a wired interface or its
+/// default gateway. Rejects loopback (127/8), multicast (224/4),
+/// broadcast (255.255.255.255), unspecified (0.0.0.0) and link-local
+/// (169.254/16). Each of these would either soft-brick the device's
+/// routing or be silently dropped by the kernel.
+fn is_assignable_host(addr: &Ipv4Addr) -> bool {
+    !(addr.is_loopback()
+        || addr.is_multicast()
+        || addr.is_broadcast()
+        || addr.is_unspecified()
+        || addr.is_link_local())
+}
+
+/// Maximum number of DNS servers accepted in a static-mode FB09 write.
+/// Matches Linux's MAXNS (resolv.conf hard-coded limit) — anything more
+/// is silently dropped by glibc anyway.
+pub const MAX_DNS_ENTRIES: usize = 3;
 
 /// Map an `ipv4.method` value (`auto`/`manual`) to the wire `mode`.
 fn method_to_mode(method: &str) -> String {
@@ -513,6 +572,88 @@ mod tests {
             dns: vec![],
         };
         assert!(validate_static_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_loopback_address_and_gateway() {
+        // The motivating soft-brick: loopback address + loopback gateway
+        // would otherwise pass (both /8 subnet match, both parse).
+        let mut cfg = static_cfg();
+        cfg.address = "127.0.0.2".to_string();
+        cfg.prefix = 8;
+        cfg.gateway = "127.0.0.1".to_string();
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
+        // Gateway alone on loopback (off-subnet address) — still rejected.
+        let mut cfg = static_cfg();
+        cfg.gateway = "127.0.0.1".to_string();
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_multicast_broadcast_unspecified_linklocal() {
+        for bad in [
+            "224.0.0.1",       // multicast
+            "255.255.255.255", // broadcast
+            "0.0.0.0",         // unspecified
+            "169.254.1.1",     // link-local
+        ] {
+            let mut cfg = static_cfg();
+            cfg.address = bad.to_string();
+            assert_eq!(
+                validate_static_config(&cfg),
+                Err(NetworkErrorCategory::InvalidIp),
+                "address {bad} must be rejected"
+            );
+            let mut cfg = static_cfg();
+            cfg.gateway = bad.to_string();
+            assert_eq!(
+                validate_static_config(&cfg),
+                Err(NetworkErrorCategory::InvalidIp),
+                "gateway {bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_address_equal_to_gateway() {
+        let mut cfg = static_cfg();
+        cfg.address = "192.168.1.1".to_string();
+        cfg.gateway = "192.168.1.1".to_string();
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_too_many_dns_entries() {
+        let mut cfg = static_cfg();
+        cfg.dns = (0..(MAX_DNS_ENTRIES + 1))
+            .map(|i| format!("8.8.8.{}", i + 1))
+            .collect();
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_dns_loopback_multicast_unspecified() {
+        for bad in ["127.0.0.1", "224.0.0.1", "0.0.0.0", "255.255.255.255"] {
+            let mut cfg = static_cfg();
+            cfg.dns = vec![bad.to_string()];
+            assert_eq!(
+                validate_static_config(&cfg),
+                Err(NetworkErrorCategory::InvalidIp),
+                "dns {bad} must be rejected"
+            );
+        }
     }
 
     #[test]

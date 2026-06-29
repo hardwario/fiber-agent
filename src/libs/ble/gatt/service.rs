@@ -398,14 +398,52 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
+                        use crate::libs::ble::gatt::lan;
+                        use std::sync::atomic::Ordering as AtomicOrdering;
+
+                        // Bound the request before any parsing work — a
+                        // malicious peer could otherwise push megabytes
+                        // through serde_json before validation rejects it.
+                        if new_value.len() > lan::MAX_PAYLOAD_BYTES {
+                            return Err(ReqError::InvalidValueLength);
+                        }
+
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.authenticated.load(Ordering::SeqCst) {
                             return Err(ReqError::NotAuthorized);
                         }
+                        let in_flight = state_guard.lan_apply_in_flight.clone();
                         drop(state_guard);
 
-                        let request: crate::libs::ble::gatt::lan::LanConfigRequest =
+                        // Single-pending guard: refuse a new write while a
+                        // prior `apply_lan_config` is still running. Without
+                        // this, a peer can spam FB09 writes and either
+                        // saturate the blocking pool or trigger a
+                        // NetworkManager modify+up race that leaves the eth
+                        // profile half-applied.
+                        if in_flight
+                            .compare_exchange(
+                                false,
+                                true,
+                                AtomicOrdering::SeqCst,
+                                AtomicOrdering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return Err(ReqError::Failed);
+                        }
+                        // RAII reset: clear the flag no matter how this
+                        // closure exits below.
+                        struct InFlightGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                        impl Drop for InFlightGuard {
+                            fn drop(&mut self) {
+                                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                        let _guard = InFlightGuard(in_flight);
+
+                        let request: lan::LanConfigRequest =
                             serde_json::from_slice(&new_value)
                                 .map_err(|_| ReqError::InvalidValueLength)?;
 
@@ -413,7 +451,7 @@ pub async fn create_gatt_app(
                         // can block for seconds — offload it so the async BLE
                         // worker thread is not tied up while NM works.
                         let apply_result = tokio::task::spawn_blocking(move || {
-                            crate::libs::ble::gatt::lan::apply_lan_config(&request)
+                            lan::apply_lan_config(&request)
                         })
                         .await
                         .unwrap_or(Err(
@@ -422,7 +460,7 @@ pub async fn create_gatt_app(
 
                         match apply_result {
                             Ok(()) => {
-                                let status = crate::libs::ble::gatt::lan::get_lan_status();
+                                let status = lan::get_lan_status();
                                 let _ = event_tx.try_send(super::BleEvent::LanConfigured {
                                     mode: status.mode.clone(),
                                     ip: status.ip_address.clone(),

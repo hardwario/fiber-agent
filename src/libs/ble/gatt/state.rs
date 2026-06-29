@@ -27,6 +27,11 @@ pub struct ServiceState {
     pub config_applier: Option<Arc<ConfigApplier>>,
     pub terminal_notifier: Option<Arc<Mutex<CharacteristicNotifier>>>,
     pub shell_process: Option<Arc<Mutex<ShellProcess>>>,
+    /// True while an FB09 `apply_lan_config` task is running. A concurrent
+    /// FB09 write is rejected so a spammy peer cannot saturate the
+    /// blocking-thread pool or trigger a NetworkManager modify+up race
+    /// that leaves the eth profile half-applied.
+    pub lan_apply_in_flight: Arc<AtomicBool>,
 }
 
 impl ServiceState {
@@ -44,6 +49,7 @@ impl ServiceState {
             config_applier,
             terminal_notifier: None,
             shell_process: None,
+            lan_apply_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 }
