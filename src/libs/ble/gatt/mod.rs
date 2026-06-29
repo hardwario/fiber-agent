@@ -12,6 +12,7 @@ pub mod device_info;
 pub mod service;
 pub mod state;
 pub mod terminal;
+pub mod time_sync;
 pub mod wifi;
 
 use std::sync::atomic::{AtomicBool, Ordering};
