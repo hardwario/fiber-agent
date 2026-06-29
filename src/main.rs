@@ -503,6 +503,13 @@ fn main() -> io::Result<()> {
             }
         };
 
+    // Slot for the LoRaWAN shared state handed to the BLE FB0D sticker-add
+    // path. The LoRaWAN monitor is created after the BLE monitor, so (like
+    // MQTT's set_lorawan_state) the main thread fills this slot once it exists.
+    let ble_lorawan_state_slot: std::sync::Arc<
+        std::sync::Mutex<Option<fiber_app::libs::lorawan::SharedLoRaWANState>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+
     // Create and spawn BLE monitor if enabled.
     // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
     let (_ble_monitor, ble_handle) = if config.ble.enabled {
@@ -511,6 +518,9 @@ fn main() -> io::Result<()> {
             config.ble.clone(),
             provisioning_session.clone(),
             ble_config_applier.clone(),
+            Some(storage_handle.clone()),
+            Some(lorawan_configs.clone()),
+            ble_lorawan_state_slot.clone(),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] BLE monitor started");
@@ -669,6 +679,18 @@ fn main() -> io::Result<()> {
     // Wire LoRaWAN state into MQTT monitor now that both exist.
     if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
         mqtt_mon.set_lorawan_state(lr_mon.state.clone());
+    }
+
+    // Fill the BLE FB0D sticker-add slot with the LoRaWAN shared state, so an
+    // enrollment over BLE inserts the same optimistic stub the MQTT add does.
+    // NOTE: the LoRaWAN monitor only exists when MQTT is enabled. In a
+    // pure BLE-only / MQTT-disabled deployment this slot stays None, so a
+    // FB0D enrollment still provisions ChirpStack + saves config, but the
+    // optimistic shared-state stub (display-before-first-uplink) is skipped.
+    if let Some(lr_mon) = _lorawan_monitor.as_ref() {
+        if let Ok(mut slot) = ble_lorawan_state_slot.lock() {
+            *slot = Some(lr_mon.state.clone());
+        }
     }
 
     // Application is now running with background monitoring

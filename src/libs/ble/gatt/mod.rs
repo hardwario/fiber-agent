@@ -10,6 +10,7 @@
 pub mod auth;
 pub mod device_info;
 pub mod service;
+pub mod sticker;
 pub mod state;
 pub mod terminal;
 pub mod time_sync;
@@ -74,10 +75,16 @@ pub struct BleMonitor {
 }
 
 impl BleMonitor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: BleConfig,
         provisioning_session: SharedProvisioningSession,
         config_applier: Option<Arc<ConfigApplier>>,
+        storage: Option<crate::libs::storage::StorageHandle>,
+        lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        lorawan_state_slot: Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
+        >,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
@@ -92,6 +99,9 @@ impl BleMonitor {
                     config,
                     provisioning_session,
                     config_applier,
+                    storage,
+                    lorawan_configs,
+                    lorawan_state_slot,
                     command_rx,
                     event_tx_xbeam,
                     shutdown_flag_clone,
@@ -112,10 +122,16 @@ impl BleMonitor {
         self.handle.clone()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn thread_main(
         config: BleConfig,
         provisioning_session: SharedProvisioningSession,
         config_applier: Option<Arc<ConfigApplier>>,
+        storage: Option<crate::libs::storage::StorageHandle>,
+        lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+        lorawan_state_slot: Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
+        >,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -138,6 +154,9 @@ impl BleMonitor {
                 config,
                 provisioning_session,
                 config_applier,
+                storage,
+                lorawan_configs,
+                lorawan_state_slot,
                 command_rx,
                 event_tx,
                 shutdown_flag,
@@ -167,10 +186,14 @@ impl Drop for BleMonitor {
 }
 
 /// Async GATT server entry point — analogue of run_server() in ble-fiber.
+#[allow(clippy::too_many_arguments)]
 async fn run_server(
     config: BleConfig,
     provisioning_session: SharedProvisioningSession,
     config_applier: Option<Arc<ConfigApplier>>,
+    storage: Option<crate::libs::storage::StorageHandle>,
+    lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
+    lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     command_rx: Receiver<BleCommand>,
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
@@ -263,6 +286,9 @@ async fn run_server(
         hostname.clone(),
         mac_str.clone(),
         config_applier,
+        storage,
+        lorawan_configs,
+        lorawan_state_slot,
     )));
 
     // Bridge crossbeam Sender to a tokio mpsc that GATT closures can move into.
@@ -351,6 +377,14 @@ async fn run_server(
                             }
                         }
                         st.terminal_notifier = None;
+                        // Cancel any in-flight FB0D enrollment and clear its
+                        // result slot — a slow ChirpStack add would otherwise
+                        // keep running and leak its outcome (deveui + final
+                        // message) to whichever client connects next.
+                        if let Some(task) = st.sticker_task.take() {
+                            task.abort();
+                        }
+                        crate::libs::ble::gatt::sticker::reset(&st.sticker_result);
                         let _ = event_tx_xbeam.send(BleEvent::ClientDisconnected);
                     }
                     _ => {}
