@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::network::SharedProvisioningSession;
 
+use super::sticker::SharedResult as StickerResultSlot;
 use super::terminal::ShellProcess;
 
 pub struct ServiceState {
@@ -36,6 +37,14 @@ pub struct ServiceState {
         std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     pub terminal_notifier: Option<Arc<Mutex<CharacteristicNotifier>>>,
     pub shell_process: Option<Arc<Mutex<ShellProcess>>>,
+    /// Result of the most recent FB0D enrollment, scoped to this GATT-server
+    /// instance. Cleared on BLE disconnect so one client cannot read another
+    /// client's pending or completed result.
+    pub sticker_result: StickerResultSlot,
+    /// Handle to the background enrollment task (if any). Aborted on
+    /// disconnect so a slow add cannot keep running and overwrite the slot
+    /// after the originating peer is gone.
+    pub sticker_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ServiceState {
@@ -62,6 +71,8 @@ impl ServiceState {
             lorawan_state_slot,
             terminal_notifier: None,
             shell_process: None,
+            sticker_result: super::sticker::new_slot(),
+            sticker_task: None,
         }
     }
 

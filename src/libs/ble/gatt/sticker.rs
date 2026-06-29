@@ -9,11 +9,21 @@
 //! the structured result of the most recent write (mirrors the FB01
 //! auth-response pattern) so the app can confirm without a list characteristic.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 use crate::libs::mqtt::messages::ActivationMode;
+
+/// Max raw FB0D write payload (bytes). A well-formed request is ~200 B; cap at
+/// 4 KiB so a malicious peer cannot push megabytes through `serde_json` before
+/// validation rejects it.
+pub const MAX_PAYLOAD_BYTES: usize = 4096;
+
+/// Max length (chars) for free-form string fields (`name`, `serial_number`).
+/// These flow into YAML on disk and into log lines; 64 is comfortably above
+/// real-world labels and small enough to keep logs readable.
+pub const MAX_STR_CHARS: usize = 64;
 
 /// All-zero JoinEUI default — mirrors `messages::default_join_eui` so a phone
 /// that omits it stays compatible with the OTAA command.
@@ -24,6 +34,7 @@ fn default_join_eui() -> String {
 /// FB0D write payload. Fields map 1:1 onto `MqttCommand::AddLoRaWANSticker`
 /// (OTAA only) — all decoded from the sticker's NFC tag by the phone.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StickerAddRequest {
     pub deveui: String,
     #[serde(default = "default_join_eui")]
@@ -49,22 +60,57 @@ pub struct StickerAddResponse {
     pub deveui: String,
 }
 
-/// Most recent enrollment result, surfaced on FB0D read. `None` before the
-/// first write → read returns the `Default` (success=false, empty).
-static LAST_RESULT: Mutex<Option<StickerAddResponse>> = Mutex::new(None);
+/// Per-`ServiceState` slot holding the most recent FB0D result. Scoped to a
+/// single GATT-server instance (not a process-global), so the slot can be
+/// reset on BLE disconnect and one client cannot read another's result.
+pub type SharedResult = Arc<Mutex<StickerAddResponse>>;
 
-pub fn set_last_result(result: StickerAddResponse) {
-    if let Ok(mut guard) = LAST_RESULT.lock() {
-        *guard = Some(result);
-    }
+pub fn new_slot() -> SharedResult {
+    Arc::new(Mutex::new(StickerAddResponse::default()))
 }
 
-pub fn last_result() -> StickerAddResponse {
-    LAST_RESULT
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_default()
+/// Read the current slot. Returns the default response if the lock is
+/// poisoned — the caller treats that as "no result yet".
+pub fn read(slot: &SharedResult) -> StickerAddResponse {
+    slot.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Overwrite the slot. Recovers from a poisoned lock so a panicked prior
+/// holder cannot strand the slot.
+pub fn store(slot: &SharedResult, resp: StickerAddResponse) {
+    let mut g = match slot.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    *g = resp;
+}
+
+/// Reset the slot to the default (no result). Called on BLE disconnect.
+pub fn reset(slot: &SharedResult) {
+    store(slot, StickerAddResponse::default());
+}
+
+/// Atomic "begin a new enrollment" gate.
+///
+/// If the slot is free (`pending == false`), transitions it to
+/// `pending=true` for `deveui` and returns `true`. If another enrollment is
+/// still pending, leaves the slot untouched and returns `false` — the caller
+/// must reject the new write so a slow add cannot be clobbered by spam.
+pub fn try_begin(slot: &SharedResult, deveui: String) -> bool {
+    let mut g = match slot.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if g.pending {
+        return false;
+    }
+    *g = StickerAddResponse {
+        pending: true,
+        success: false,
+        message: "enrolling".to_string(),
+        deveui,
+    };
+    true
 }
 
 /// True iff `s` is exactly `len` hex digits.
@@ -84,8 +130,10 @@ pub struct PreparedAdd {
 /// Validate the request and build the OTAA command components.
 ///
 /// Hex fields are length-checked (deveui/joineui 16, appkey 32) and lowercased;
-/// name and serial_number must be non-empty. Returns a human-readable reason on
-/// failure (surfaced in the FB0D response `message`).
+/// `name` and `serial_number` are trimmed, must be non-empty, must not exceed
+/// `MAX_STR_CHARS`, and must not contain ASCII control characters (newlines
+/// would break YAML quoting and inject into log lines). Returns a human-
+/// readable reason on failure (surfaced in the FB0D response `message`).
 pub fn prepare(req: &StickerAddRequest) -> Result<PreparedAdd, String> {
     let dev_eui = req.deveui.trim().to_lowercase();
     let join_eui = req.joineui.trim().to_lowercase();
@@ -105,14 +153,8 @@ pub fn prepare(req: &StickerAddRequest) -> Result<PreparedAdd, String> {
     if !is_hex(&app_key, 32) {
         return Err("appkey must be 32 hex chars".to_string());
     }
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
-        return Err("name must not be empty".to_string());
-    }
-    let serial_number = req.serial_number.trim().to_string();
-    if serial_number.is_empty() {
-        return Err("serial_number must not be empty".to_string());
-    }
+    let name = check_label(req.name.trim(), "name")?;
+    let serial_number = check_label(req.serial_number.trim(), "serial_number")?;
 
     Ok(PreparedAdd {
         dev_eui,
@@ -120,6 +162,19 @@ pub fn prepare(req: &StickerAddRequest) -> Result<PreparedAdd, String> {
         serial_number,
         activation: ActivationMode::Otaa { app_key, join_eui },
     })
+}
+
+fn check_label(s: &str, field: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if s.chars().count() > MAX_STR_CHARS {
+        return Err(format!("{field} too long (>{} chars)", MAX_STR_CHARS));
+    }
+    if s.chars().any(|c| c.is_control()) {
+        return Err(format!("{field} must not contain control characters"));
+    }
+    Ok(s.to_string())
 }
 
 #[cfg(test)]
@@ -189,6 +244,22 @@ mod tests {
     }
 
     #[test]
+    fn prepare_rejects_oversized_name() {
+        let mut r = req();
+        r.name = "a".repeat(MAX_STR_CHARS + 1);
+        let err = prepare(&r).unwrap_err();
+        assert!(err.contains("name") && err.contains("too long"));
+    }
+
+    #[test]
+    fn prepare_rejects_control_chars_in_serial() {
+        let mut r = req();
+        r.serial_number = "SN\n001".to_string();
+        let err = prepare(&r).unwrap_err();
+        assert!(err.contains("serial_number") && err.contains("control"));
+    }
+
+    #[test]
     fn deserialize_defaults_joineui() {
         let json = r#"{"deveui":"0011223344556677","appkey":"00112233445566778899aabbccddeeff","name":"x","serial_number":"s"}"#;
         let r: StickerAddRequest = serde_json::from_str(json).unwrap();
@@ -196,16 +267,53 @@ mod tests {
     }
 
     #[test]
-    fn last_result_roundtrip() {
-        set_last_result(StickerAddResponse {
-            pending: false,
-            success: true,
-            message: "ok".to_string(),
-            deveui: "0011223344556677".to_string(),
-        });
-        let r = last_result();
-        assert!(r.success);
+    fn deserialize_rejects_unknown_fields() {
+        let json = r#"{"deveui":"0011223344556677","appkey":"00112233445566778899aabbccddeeff","name":"x","serial_number":"s","sneaky":"x"}"#;
+        let r: Result<StickerAddRequest, _> = serde_json::from_str(json);
+        assert!(r.is_err(), "unknown fields must be rejected");
+    }
+
+    #[test]
+    fn try_begin_blocks_second_caller_while_pending() {
+        let slot = new_slot();
+        assert!(try_begin(&slot, "deveui-a".to_string()));
+        // A second caller arrives while A is still running.
+        assert!(
+            !try_begin(&slot, "deveui-b".to_string()),
+            "try_begin must refuse a second enrollment while one is pending"
+        );
+        // The pending state is for A; B did not clobber it.
+        let cur = read(&slot);
+        assert!(cur.pending);
+        assert_eq!(cur.deveui, "deveui-a");
+    }
+
+    #[test]
+    fn store_clears_pending_and_try_begin_succeeds_again() {
+        let slot = new_slot();
+        assert!(try_begin(&slot, "deveui-a".to_string()));
+        // Finish the enrollment.
+        store(
+            &slot,
+            StickerAddResponse {
+                pending: false,
+                success: true,
+                message: "sticker enrolled".to_string(),
+                deveui: "deveui-a".to_string(),
+            },
+        );
+        // Now a new enrollment is allowed.
+        assert!(try_begin(&slot, "deveui-b".to_string()));
+        assert_eq!(read(&slot).deveui, "deveui-b");
+    }
+
+    #[test]
+    fn reset_clears_pending_slot() {
+        let slot = new_slot();
+        assert!(try_begin(&slot, "deveui-a".to_string()));
+        reset(&slot);
+        let r = read(&slot);
         assert!(!r.pending);
-        assert_eq!(r.deveui, "0011223344556677");
+        assert!(r.deveui.is_empty());
     }
 }

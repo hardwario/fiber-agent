@@ -376,6 +376,14 @@ async fn run_server(
                             }
                         }
                         st.terminal_notifier = None;
+                        // Cancel any in-flight FB0D enrollment and clear its
+                        // result slot — a slow ChirpStack add would otherwise
+                        // keep running and leak its outcome (deveui + final
+                        // message) to whichever client connects next.
+                        if let Some(task) = st.sticker_task.take() {
+                            task.abort();
+                        }
+                        crate::libs::ble::gatt::sticker::reset(&st.sticker_result);
                         let _ = event_tx_xbeam.send(BleEvent::ClientDisconnected);
                     }
                     _ => {}
