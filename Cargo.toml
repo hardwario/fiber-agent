@@ -49,6 +49,12 @@ subtle = "2.5"  # timing-safe equality for PIN comparison
 ctrlc = "3.4"
 libc = "0.2"
 
+# Protobuf codec for STICKER LoRaWAN payloads (proto/app_config.proto, sticker-firmware v1.4.0)
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
+
 [features]
 default = []
 dev-platform = []
