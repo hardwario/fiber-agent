@@ -39,6 +39,8 @@ const WIFI_DISCONNECT_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB08_0000_1000_8000_00805F9B34FB);
 const DEVICE_LABEL_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0A_0000_1000_8000_00805F9B34FB);
+const TIME_SET_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0B_0000_1000_8000_00805F9B34FB);
 
 // --- Application builder -----------------------------------------------------
 
@@ -380,6 +382,69 @@ pub async fn create_gatt_app(
         ..Default::default()
     };
 
+    // --- Time Set characteristic (FB0B) --------------------------------------
+    // Write {"epoch": <utc seconds>} to set the device clock (and persist to
+    // RTC) — for BLE-only deployments where NTP is unreachable after a power
+    // loss. Read returns {epoch, synchronized}. Auth-gated, mirrors FB09.
+    let time_set_char = Characteristic {
+        uuid: TIME_SET_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+
+                        let req: crate::libs::ble::gatt::time_sync::TimeSetRequest =
+                            serde_json::from_slice(&new_value)
+                                .map_err(|_| ReqError::InvalidValueLength)?;
+
+                        // `date` + `hwclock` are quick (sub-second), well under
+                        // the ATT write-response timeout, but they shell out —
+                        // offload off the async worker thread anyway.
+                        let epoch = req.epoch;
+                        let result = tokio::task::spawn_blocking(move || {
+                            crate::libs::ble::gatt::time_sync::set_system_time(epoch)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("internal task error".to_string()));
+
+                        result.map_err(|_| ReqError::Failed)
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+                        let status = crate::libs::ble::gatt::time_sync::get_time_status();
+                        Ok(serde_json::to_vec(&status).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
     // --- Terminal TX characteristic (FB05) ------------------------------------
     let terminal_tx_char = Characteristic {
         uuid: TERMINAL_TX_CHAR_UUID.into(),
@@ -539,6 +604,7 @@ pub async fn create_gatt_app(
         wifi_status_char,
         device_info_char,
         device_label_char,
+        time_set_char,
     ];
 
     if enable_terminal {
