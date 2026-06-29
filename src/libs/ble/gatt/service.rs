@@ -43,6 +43,10 @@ const TIME_SET_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0B_0000_1000_8000_00805F9B34FB);
 const STICKER_ADD_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0D_0000_1000_8000_00805F9B34FB);
+const LAN_CONFIG_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB09_0000_1000_8000_00805F9B34FB);
+const LAN_STATUS_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0C_0000_1000_8000_00805F9B34FB);
 
 // --- Application builder -----------------------------------------------------
 
@@ -610,6 +614,145 @@ pub async fn create_gatt_app(
         ..Default::default()
     };
 
+    // --- LAN Config characteristic (FB09) -------------------------------------
+    // Write {"mode":"dhcp"} or {"mode":"static","ipv4":{...}} to configure the
+    // wired interface via NetworkManager. Auth-gated, mirrors FB03.
+    let lan_config_char = Characteristic {
+        uuid: LAN_CONFIG_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                let event_tx = event_tx.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    let event_tx = event_tx.clone();
+                    Box::pin(async move {
+                        use crate::libs::ble::gatt::lan;
+                        use std::sync::atomic::Ordering as AtomicOrdering;
+
+                        // Bound the request before any parsing work — a
+                        // malicious peer could otherwise push megabytes
+                        // through serde_json before validation rejects it.
+                        if new_value.len() > lan::MAX_PAYLOAD_BYTES {
+                            return Err(ReqError::InvalidValueLength);
+                        }
+
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let in_flight = state_guard.lan_apply_in_flight.clone();
+                        drop(state_guard);
+
+                        // Single-pending guard: refuse a new write while a
+                        // prior `apply_lan_config` is still running. Without
+                        // this, a peer can spam FB09 writes and either
+                        // saturate the blocking pool or trigger a
+                        // NetworkManager modify+up race that leaves the eth
+                        // profile half-applied.
+                        if in_flight
+                            .compare_exchange(
+                                false,
+                                true,
+                                AtomicOrdering::SeqCst,
+                                AtomicOrdering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return Err(ReqError::Failed);
+                        }
+                        // RAII reset: clear the flag no matter how this
+                        // closure exits below.
+                        struct InFlightGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                        impl Drop for InFlightGuard {
+                            fn drop(&mut self) {
+                                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                        let _guard = InFlightGuard(in_flight);
+
+                        let request: lan::LanConfigRequest =
+                            serde_json::from_slice(&new_value)
+                                .map_err(|_| ReqError::InvalidValueLength)?;
+
+                        // apply_lan_config drives nmcli synchronously and `up`
+                        // can block for seconds — offload it so the async BLE
+                        // worker thread is not tied up while NM works.
+                        let apply_result = tokio::task::spawn_blocking(move || {
+                            lan::apply_lan_config(&request)
+                        })
+                        .await
+                        .unwrap_or(Err(
+                            crate::libs::ble::gatt::net_error::NetworkErrorCategory::Other,
+                        ));
+
+                        match apply_result {
+                            Ok(()) => {
+                                let status = lan::get_lan_status();
+                                let _ = event_tx.try_send(super::BleEvent::LanConfigured {
+                                    mode: status.mode.clone(),
+                                    ip: status.ip_address.clone(),
+                                });
+                                Ok(())
+                            }
+                            Err(category) => {
+                                let _ = event_tx.try_send(super::BleEvent::LanFailed {
+                                    error: category.as_str().to_string(),
+                                });
+                                Err(ReqError::Failed)
+                            }
+                        }
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // --- LAN Status characteristic (FB0C) -------------------------------------
+    // Read returns {connected, link, ip_address, mac, mode, error}. Notify is
+    // passive (kept alive; client polls via read) — identical to FB04.
+    let lan_status_char = Characteristic {
+        uuid: LAN_STATUS_CHAR_UUID.into(),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+
+                        let status = crate::libs::ble::gatt::lan::get_lan_status();
+                        Ok(serde_json::to_vec(&status).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        notify: Some(CharacteristicNotify {
+            notify: true,
+            method: CharacteristicNotifyMethod::Fun(Box::new({
+                move |notifier| {
+                    Box::pin(async move {
+                        // Keep notifier alive until client unsubscribes.
+                        notifier.stopped().await;
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
     // --- Terminal TX characteristic (FB05) ------------------------------------
     let terminal_tx_char = Characteristic {
         uuid: TERMINAL_TX_CHAR_UUID.into(),
@@ -771,6 +914,8 @@ pub async fn create_gatt_app(
         device_label_char,
         time_set_char,
         sticker_add_char,
+        lan_config_char,
+        lan_status_char,
     ];
 
     if enable_terminal {

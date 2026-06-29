@@ -45,6 +45,11 @@ pub struct ServiceState {
     /// disconnect so a slow add cannot keep running and overwrite the slot
     /// after the originating peer is gone.
     pub sticker_task: Option<tokio::task::JoinHandle<()>>,
+    /// True while an FB09 `apply_lan_config` task is running. A concurrent
+    /// FB09 write is rejected so a spammy peer cannot saturate the
+    /// blocking-thread pool or trigger a NetworkManager modify+up race
+    /// that leaves the eth profile half-applied.
+    pub lan_apply_in_flight: Arc<AtomicBool>,
 }
 
 impl ServiceState {
@@ -73,6 +78,7 @@ impl ServiceState {
             shell_process: None,
             sticker_result: super::sticker::new_slot(),
             sticker_task: None,
+            lan_apply_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 

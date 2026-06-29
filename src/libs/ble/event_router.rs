@@ -100,5 +100,12 @@ fn handle(ev: &BleEvent, display: &SharedDisplayStateHandle, pairing: Option<&Pa
                 d.show_ble_wifi_fail(error);
             }
         }
+        BleEvent::LanConfigured { mode, ip } => {
+            // LCD feedback for LAN is a follow-up; log only for now.
+            eprintln!("[BleEventRouter] LAN configured: mode={} ip={}", mode, ip);
+        }
+        BleEvent::LanFailed { error } => {
+            eprintln!("[BleEventRouter] LAN configuration failed: {}", error);
+        }
     }
 }
