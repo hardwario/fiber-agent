@@ -116,6 +116,40 @@ fn decode_message(data: &[u8]) -> std::collections::HashMap<u32, Vec<u8>> {
     fields
 }
 
+/// Read the value of a varint (wire-type 0) field by number from a protobuf
+/// message. Unlike `decode_message` (which keeps only length-delimited fields),
+/// this reads scalar varints — used to pull `seconds` out of a nested
+/// google.protobuf.Timestamp. Returns None when the field is absent.
+fn decode_varint_field(data: &[u8], target_field: u32) -> Option<u64> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (tag, np) = decode_varint(data, pos)?;
+        pos = np;
+        let field_number = (tag >> 3) as u32;
+        let wire_type = (tag & 0x07) as u8;
+        match wire_type {
+            0 => {
+                let (value, np) = decode_varint(data, pos)?;
+                pos = np;
+                if field_number == target_field {
+                    return Some(value);
+                }
+            }
+            2 => {
+                let (len, np) = decode_varint(data, pos)?;
+                pos = np.checked_add(len as usize)?;
+                if pos > data.len() {
+                    return None;
+                }
+            }
+            5 => pos = pos.checked_add(4)?,
+            1 => pos = pos.checked_add(8)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
 // --- gRPC-web Transport ---
 
 fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Result<Option<Vec<u8>>, String> {
@@ -636,32 +670,137 @@ pub fn deprovision_external_gateway(gateway_eui: &str) -> Result<(), String> {
     }
 }
 
+/// A gateway counts as online when ChirpStack saw it within this window.
+const GATEWAY_ONLINE_WINDOW_SECS: u64 = 300; // 5 minutes
+
+/// Live status for one external gateway, resolved from ChirpStack.
+#[derive(Debug, Clone)]
+pub struct GatewayStatus {
+    pub gateway_eui: String,
+    pub online: bool,
+    /// RFC3339 UTC timestamp of the gateway's last contact, when known.
+    pub last_seen: Option<String>,
+}
+
+/// Extract the `last_seen_at` epoch seconds from a GetGatewayResponse.
+///
+/// `GetGatewayResponse.last_seen_at` is field 4, a google.protobuf.Timestamp
+/// (`int64 seconds = 1; int32 nanos = 2;`). `decode_message` captures the
+/// (length-delimited) Timestamp submessage; we then read its `seconds` varint.
+/// Returns None when the gateway has never been seen (the field is absent).
+fn last_seen_secs(resp: &[u8]) -> Option<u64> {
+    let last_seen_at = decode_message(resp).get(&4)?.clone();
+    decode_varint_field(&last_seen_at, 1)
+}
+
+/// Format epoch seconds as an RFC3339 UTC string (e.g. `2026-06-30T12:00:00+00:00`).
+fn epoch_to_rfc3339(secs: u64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339())
+}
+
+/// Decide online from a last-seen epoch and the current time. A gateway never
+/// seen is offline; a future timestamp (clock skew) is treated as just-seen.
+fn gateway_online(now_secs: u64, last_seen_secs: Option<u64>, window: u64) -> bool {
+    match last_seen_secs {
+        Some(s) => now_secs.saturating_sub(s) <= window,
+        None => false,
+    }
+}
+
 /// Query live online status for a set of gateways, logging in once.
 ///
-/// v1 (decoder limitation): `decode_message` reads top-level length-delimited
-/// fields and skips varints, so the nested `last_seen_at` Timestamp cannot be
-/// fully parsed. We therefore report `online` = a successful Get whose
-/// GetGatewayResponse carries a `last_seen_at` submessage (field 4); a precise
-/// last-seen timestamp is a follow-up. On login failure every gateway is
-/// reported offline. Returns (gateway_eui, online) preserving input order.
-pub fn get_gateways_status(gateway_euis: &[String]) -> Vec<(String, bool)> {
+/// `online` is derived from the gateway's `last_seen_at` (GetGatewayResponse
+/// field 4, a google.protobuf.Timestamp): a gateway is online when ChirpStack
+/// saw it within `GATEWAY_ONLINE_WINDOW_SECS`. A gateway never seen, or last
+/// seen older than the window, is offline. `last_seen` carries the RFC3339
+/// timestamp when known. On login failure every gateway is reported offline.
+/// Order is preserved.
+pub fn get_gateways_status(gateway_euis: &[String]) -> Vec<GatewayStatus> {
     let token = match login() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("[lorawan-provision] gateway status login failed: {}", e);
-            return gateway_euis.iter().map(|eui| (eui.clone(), false)).collect();
+            return gateway_euis
+                .iter()
+                .map(|eui| GatewayStatus {
+                    gateway_eui: eui.clone(),
+                    online: false,
+                    last_seen: None,
+                })
+                .collect();
         }
     };
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     gateway_euis
         .iter()
         .map(|eui| {
             // GetGatewayResponse { Gateway gateway = 1; ... last_seen_at = 4; }
-            let online = match get_gateway(&token, eui) {
-                Ok(Some(resp)) => decode_message(&resp).contains_key(&4),
-                _ => false,
+            let last = match get_gateway(&token, eui) {
+                Ok(Some(resp)) => last_seen_secs(&resp),
+                _ => None,
             };
-            (eui.clone(), online)
+            GatewayStatus {
+                gateway_eui: eui.clone(),
+                online: gateway_online(now_secs, last, GATEWAY_ONLINE_WINDOW_SECS),
+                last_seen: last.and_then(epoch_to_rfc3339),
+            }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn varint_field_reads_scalar_by_number() {
+        // Message with field 1 = 1234 and field 2 = 56 (both varints).
+        let mut msg = encode_uint32(1, 1234);
+        msg.extend(encode_uint32(2, 56));
+        assert_eq!(decode_varint_field(&msg, 1), Some(1234));
+        assert_eq!(decode_varint_field(&msg, 2), Some(56));
+        assert_eq!(decode_varint_field(&msg, 3), None);
+    }
+
+    #[test]
+    fn last_seen_secs_parses_timestamp_submessage() {
+        // GetGatewayResponse with last_seen_at (field 4) =
+        // Timestamp { seconds = 1_700_000_000 }.
+        let ts = encode_uint32(1, 1_700_000_000);
+        let resp = encode_submessage(4, &ts);
+        assert_eq!(last_seen_secs(&resp), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn last_seen_secs_absent_when_never_seen() {
+        // A response carrying some other field but no last_seen_at (field 4).
+        let resp = encode_string(2, "some-other-field");
+        assert_eq!(last_seen_secs(&resp), None);
+        assert_eq!(last_seen_secs(&[]), None);
+    }
+
+    #[test]
+    fn online_window_logic() {
+        // Seen 100s ago, window 300s → online.
+        assert!(gateway_online(1_000, Some(900), 300));
+        // Seen 400s ago, window 300s → offline (stale).
+        assert!(!gateway_online(1_000, Some(600), 300));
+        // Never seen → offline.
+        assert!(!gateway_online(1_000, None, 300));
+        // Future timestamp (clock skew) → treated as just-seen → online.
+        assert!(gateway_online(1_000, Some(1_200), 300));
+    }
+
+    #[test]
+    fn epoch_to_rfc3339_formats_utc() {
+        // 1_700_000_000 = 2023-11-14T22:13:20Z
+        let s = epoch_to_rfc3339(1_700_000_000).unwrap();
+        assert!(s.starts_with("2023-11-14T22:13:20"), "got {s}");
+        assert!(s.ends_with("+00:00"), "got {s}");
+    }
 }

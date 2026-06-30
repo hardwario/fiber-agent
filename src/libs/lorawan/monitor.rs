@@ -476,15 +476,19 @@ async fn publish_lorawan_gateways(mqtt_tx: &Sender<MqttMessage>) {
     })
     .await
     .unwrap_or_default();
-    let online_map: std::collections::HashMap<String, bool> = status.into_iter().collect();
+    let status_map: std::collections::HashMap<String, crate::libs::lorawan::provisioning::GatewayStatus> =
+        status.into_iter().map(|s| (s.gateway_eui.clone(), s)).collect();
 
     let gateways: Vec<crate::libs::mqtt::messages::LoRaWANGatewayPayload> = enabled
         .iter()
-        .map(|g| crate::libs::mqtt::messages::LoRaWANGatewayPayload {
-            gateway_eui: g.gateway_eui.clone(),
-            name: g.name.clone(),
-            online: online_map.get(&g.gateway_eui).copied().unwrap_or(false),
-            last_seen: None, // coarse v1: precise last_seen is a follow-up
+        .map(|g| {
+            let st = status_map.get(&g.gateway_eui);
+            crate::libs::mqtt::messages::LoRaWANGatewayPayload {
+                gateway_eui: g.gateway_eui.clone(),
+                name: g.name.clone(),
+                online: st.map(|s| s.online).unwrap_or(false),
+                last_seen: st.and_then(|s| s.last_seen.clone()),
+            }
         })
         .collect();
 
