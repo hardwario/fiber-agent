@@ -700,6 +700,7 @@ fn main() -> io::Result<()> {
             config.eye.clone().unwrap_or_default(),
             handle.sender(),
             hostname.clone(),
+            storage_handle.clone(),
         ) {
             Ok(monitor) => Some(monitor),
             Err(e) => {

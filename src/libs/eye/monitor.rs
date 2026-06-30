@@ -11,12 +11,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use std::collections::HashMap;
+
 use crossbeam::channel::Sender;
 
 use crate::libs::eye::config::EyeConfig;
 use crate::libs::mqtt::messages::{EyeTagPayload, MqttMessage};
+use crate::libs::storage::StorageHandle;
 
-use super::advertising::{parse_manufacturer_value, TELTONIKA_COMPANY_ID};
+use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
 use super::provisioning::{provision, EyeProfile};
 use super::state::{create_shared_eye_state, ProvisioningStatus, SharedEyeState};
 
@@ -44,6 +47,7 @@ impl EyeMonitor {
         config: EyeConfig,
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
+        storage: StorageHandle,
     ) -> io::Result<Self> {
         let state = create_shared_eye_state(false);
 
@@ -61,7 +65,7 @@ impl EyeMonitor {
         let state_clone = state.clone();
 
         let thread_handle = thread::spawn(move || {
-            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname);
+            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage);
         });
 
         eprintln!("[EYE Monitor] Started");
@@ -106,7 +110,12 @@ fn eye_loop(
     config: EyeConfig,
     mqtt_tx: Sender<MqttMessage>,
     _hostname: String,
+    storage: StorageHandle,
 ) {
+    // Last raw manufacturer payload persisted per MAC — so we only write a new
+    // DB row (save-and-feed) when the advertised data actually changes, instead
+    // of once per 1 s poll.
+    let mut last_persisted: HashMap<String, Vec<u8>> = HashMap::new();
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -214,6 +223,23 @@ fn eye_loop(
                                     let entry = s.entry(&mac_key, tag.name.clone());
                                     entry.apply_reading(&reading, rssi, now_ts);
                                 }
+                                // Save-and-feed: persist only when the advertised
+                                // payload actually changed (the poll re-reads the
+                                // same cached frame every second otherwise).
+                                if last_persisted.get(&mac_key).map(Vec::as_slice)
+                                    != Some(value.as_slice())
+                                {
+                                    last_persisted.insert(mac_key.clone(), value.clone());
+                                    let message_id = format!("{}-{}", mac_key, now_ts);
+                                    let _ = storage.write_eye_reading(
+                                        mac_key.clone(),
+                                        now_ts,
+                                        now_ts,
+                                        message_id,
+                                        "advertising".to_string(),
+                                        reading_payload_json(&reading, rssi),
+                                    );
+                                }
                             }
                             Err(e) => {
                                 eprintln!("[EYE Monitor] Parse error for {mac_key}: {e}");
@@ -281,6 +307,42 @@ fn eye_loop(
             }
         }
     });
+}
+
+/// Slim JSON payload persisted per reading (omits absent fields).
+fn reading_payload_json(r: &EyeReading, rssi: Option<i16>) -> String {
+    let mut o = serde_json::Map::new();
+    if let Some(t) = r.temperature_c {
+        o.insert("temperature_c".into(), serde_json::json!(t));
+    }
+    if let Some(h) = r.humidity_pct {
+        o.insert("humidity_pct".into(), serde_json::json!(h));
+    }
+    if let Some(b) = r.battery_mv {
+        o.insert("battery_mv".into(), serde_json::json!(b));
+    }
+    if r.low_battery {
+        o.insert("low_battery".into(), serde_json::json!(true));
+    }
+    if r.magnet_present {
+        o.insert("magnet".into(), serde_json::json!(r.magnet_detected));
+    }
+    if let Some(m) = r.moving {
+        o.insert("moving".into(), serde_json::json!(m));
+    }
+    if let Some(c) = r.movement_count {
+        o.insert("movement_count".into(), serde_json::json!(c));
+    }
+    if let Some(p) = r.pitch_deg {
+        o.insert("pitch".into(), serde_json::json!(p));
+    }
+    if let Some(rr) = r.roll_deg {
+        o.insert("roll".into(), serde_json::json!(rr));
+    }
+    if let Some(s) = rssi {
+        o.insert("rssi".into(), serde_json::json!(s));
+    }
+    serde_json::to_string(&serde_json::Value::Object(o)).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Build the payload from current state and hand it to the MQTT publisher.

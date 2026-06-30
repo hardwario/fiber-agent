@@ -63,6 +63,15 @@ pub enum StorageMessage {
         event_type: String,
         payload_json: String,
     },
+    /// Write an EYE BLE tag reading (fire-and-forget).
+    WriteEyeReading {
+        mac: String,
+        ts: i64,
+        received_at: i64,
+        message_id: String,
+        event_type: String,
+        payload_json: String,
+    },
     /// Append a `sticker_removed` marker event (fire-and-forget).
     AppendStickerRemoved {
         dev_eui: String,
@@ -218,6 +227,33 @@ impl StorageHandle {
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
                     "Failed to send sticker reading: {}",
+                    e
+                ))
+            })
+    }
+
+    /// Send an EYE BLE tag reading to be persisted (fire-and-forget).
+    pub fn write_eye_reading(
+        &self,
+        mac: String,
+        ts: i64,
+        received_at: i64,
+        message_id: String,
+        event_type: String,
+        payload_json: String,
+    ) -> StorageResult<()> {
+        self.sender
+            .send(StorageMessage::WriteEyeReading {
+                mac,
+                ts,
+                received_at,
+                message_id,
+                event_type,
+                payload_json,
+            })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send eye reading: {}",
                     e
                 ))
             })
@@ -820,6 +856,33 @@ impl StorageThread {
                             }
                             Err(e) => {
                                 eprintln!("STORAGE THREAD: write_sticker_reading failed: {}", e);
+                            }
+                        }
+                    }
+
+                    StorageMessage::WriteEyeReading {
+                        mac,
+                        ts,
+                        received_at,
+                        message_id,
+                        event_type,
+                        payload_json,
+                    } => {
+                        match StorageWriter::write_eye_reading(
+                            &mut conn,
+                            &mac,
+                            ts,
+                            received_at,
+                            &message_id,
+                            &event_type,
+                            &payload_json,
+                        ) {
+                            Ok(_) => {
+                                pending_writes += 1;
+                                message_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: write_eye_reading failed: {}", e);
                             }
                         }
                     }

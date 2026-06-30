@@ -62,6 +62,7 @@ fn default_streams() -> Vec<String> {
         "probe".into(),
         "probe_1m".into(),
         "alarm".into(),
+        "eye".into(),
     ]
 }
 fn default_batch_size() -> usize {
@@ -95,7 +96,7 @@ destinations:
         assert_eq!(cfg.batch_size, 200);
         assert_eq!(cfg.drain_interval_ms, 500);
         assert_eq!(cfg.publish_qos, 1);
-        assert_eq!(cfg.streams, vec!["sticker", "probe", "probe_1m", "alarm"]);
+        assert_eq!(cfg.streams, vec!["sticker", "probe", "probe_1m", "alarm", "eye"]);
     }
 
     #[test]
@@ -104,6 +105,6 @@ destinations:
         assert!(!cfg.enabled);
         assert_eq!(cfg.destinations.len(), 0);
         assert_eq!(cfg.batch_size, 200);
-        assert_eq!(cfg.streams, vec!["sticker", "probe", "probe_1m", "alarm"]);
+        assert_eq!(cfg.streams, vec!["sticker", "probe", "probe_1m", "alarm", "eye"]);
     }
 }

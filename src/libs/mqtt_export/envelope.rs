@@ -7,7 +7,7 @@
 //! the natural per-record identifier (dev_eui, sensor line, or `sys`).
 
 use crate::libs::storage::models::{
-    AlarmEvent, MinuteAggregateRow, SensorReading, StickerReadingRow,
+    AlarmEvent, EyeReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
 };
 
 pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
@@ -25,6 +25,26 @@ pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
             "event_type":         row.event_type,
             "payload":            serde_json::from_str::<serde_json::Value>(&row.payload_json)
                                   .unwrap_or(serde_json::json!({})),
+        }
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    (topic, payload)
+}
+
+pub fn eye_envelope(row: &EyeReadingRow) -> (String, String) {
+    let topic = format!("export/eye/{}", row.mac);
+    let payload = serde_json::to_string(&serde_json::json!({
+        "message_id":     row.message_id,
+        "exported_at":    now_secs(),
+        "stream":         "eye",
+        "stream_version": 1,
+        "data": {
+            "mac":         row.mac,
+            "ts":          row.ts,
+            "received_at": row.received_at,
+            "event_type":  row.event_type,
+            "payload":     serde_json::from_str::<serde_json::Value>(&row.payload_json)
+                           .unwrap_or(serde_json::json!({})),
         }
     }))
     .unwrap_or_else(|_| "{}".to_string());
