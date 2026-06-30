@@ -13,6 +13,16 @@
 //!
 //! Endianness gotchas: advertising interval is little-endian; the Command
 //! value is big-endian.
+//!
+//! Verified live on hardware against 5 tags (2 white EN12830, 3 black standard)
+//! via the FIBER's BLE radio. Two model variants exist and their ATT handle
+//! layouts differ, but resolving characteristics by **UUID** (not fixed handle)
+//! makes provisioning model-agnostic:
+//!   * standard ("black") tags expose the full config set incl. Active Sensors
+//!     (`e61c0021`);
+//!   * white EN12830 tags have **no** `e61c0021` characteristic — their sensors
+//!     are fixed (Temperature + Humidity) by the model, so the Active Sensors
+//!     write is skipped when the characteristic is absent.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -24,6 +34,16 @@ use bluer::{Device, Uuid};
 pub const DEFAULT_PIN: &[u8; 6] = b"123456";
 
 // Characteristic UUIDs (see fiber-v2/application#4 / the BLE integration guide).
+//
+// Resolve by UUID, never by fixed handle — the ATT handle layout differs by model.
+// Reference (value handles, from live Read-By-Type discovery on 2026-06):
+//   characteristic   white EN12830   black standard
+//   TX power (2a07)      0x0027          0x0021
+//   protocol e61c0001    0x002b          0x0025
+//   adv int  e61c0002    0x002d          0x0027
+//   sensors  e61c0021    (absent)        0x0059
+//   command  e61c0007    0x003b          0x0035
+//   password e61c0008    0x0037          0x0031
 const UUID_PASSWORD: &str = "e61c0008-7df2-4d4e-8e6d-c611745b92e9";
 const UUID_PROTOCOL_TYPE: &str = "e61c0001-7df2-4d4e-8e6d-c611745b92e9";
 const UUID_ACTIVE_SENSORS: &str = "e61c0021-7df2-4d4e-8e6d-c611745b92e9";
@@ -45,13 +65,17 @@ pub mod sensors {
     pub const MOVEMENT: u8 = 0b0000_1000;
 }
 
+/// Active sensors are **fixed to Temperature + Humidity** for Proximos — this is
+/// not a per-tag configurable option. White EN12830 tags don't expose the
+/// `e61c0021` characteristic at all (their sensor set is fixed by the model);
+/// on standard tags this value is written so they match.
+pub const ACTIVE_SENSORS: u8 = sensors::TEMPERATURE | sensors::HUMIDITY;
+
 /// The configuration profile written to a tag during provisioning.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EyeProfile {
     /// Protocol type (`0x02` = EYE Sensor / "Sensors").
     pub protocol_type: u8,
-    /// `active_sensors` bitmask (see [`sensors`] constants).
-    pub active_sensors: u8,
     /// Advertising interval in milliseconds (1000..=10000).
     pub advertising_interval_ms: u16,
     /// Tx power in dBm. Allowed: -14,-11,-8,-5,-2,2,4,8.
@@ -59,13 +83,14 @@ pub struct EyeProfile {
 }
 
 impl Default for EyeProfile {
-    /// PROXIMOS default: Sensors, Temperature + Humidity, 10 s, 4 dBm.
+    /// PROXIMOS default: EYE Sensor, 10 s, +8 dBm (sensors fixed to Temp+Hum,
+    /// see [`ACTIVE_SENSORS`]). +8 dBm is the tag's maximum TX power — chosen for
+    /// best BLE range to the FIBER gateway (tags ship at the +2 dBm factory default).
     fn default() -> Self {
         Self {
             protocol_type: PROTOCOL_EYE_SENSOR,
-            active_sensors: sensors::TEMPERATURE | sensors::HUMIDITY,
             advertising_interval_ms: 10_000,
-            tx_power_dbm: 4,
+            tx_power_dbm: 8,
         }
     }
 }
@@ -128,7 +153,13 @@ pub async fn provision(device: &Device, profile: &EyeProfile) -> Result<(), Prov
     )
     .await?;
     write(get(UUID_PROTOCOL_TYPE)?, &[profile.protocol_type]).await?;
-    write(get(UUID_ACTIVE_SENSORS)?, &[profile.active_sensors]).await?;
+    // Active Sensors is fixed to Temperature + Humidity ([`ACTIVE_SENSORS`]).
+    // The write is conditional only because white EN12830 tags don't expose
+    // `e61c0021` (their sensor set is already fixed to Temp+Hum by the model) —
+    // skip it when absent rather than failing the whole provisioning.
+    if let Some(ch) = chars.get(&Uuid::parse_str(UUID_ACTIVE_SENSORS).expect("static UUID")) {
+        write(ch, &[ACTIVE_SENSORS]).await?;
+    }
 
     // 3. Persist (command 0x0010, big-endian bytes 00 10).
     write(get(UUID_COMMAND)?, &CMD_WRITE_TO_FLASH.to_be_bytes()).await?;
@@ -170,9 +201,13 @@ mod tests {
     fn default_profile_is_proximos() {
         let p = EyeProfile::default();
         assert_eq!(p.protocol_type, PROTOCOL_EYE_SENSOR);
-        assert_eq!(p.active_sensors, 0b0000_0011); // temp + hum
         assert_eq!(p.advertising_interval_ms, 10_000);
-        assert_eq!(p.tx_power_dbm, 4);
+        assert_eq!(p.tx_power_dbm, 8); // max TX power for best range
+    }
+
+    #[test]
+    fn active_sensors_fixed_to_temp_hum() {
+        assert_eq!(ACTIVE_SENSORS, 0b0000_0011); // temperature + humidity, fixed
     }
 
     #[test]
