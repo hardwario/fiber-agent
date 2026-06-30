@@ -683,6 +683,11 @@ impl MqttMonitor {
         }
     }
 
+    /// Get handle for sending messages
+    pub fn handle(&self) -> MqttHandle {
+        self.handle.clone()
+    }
+
     /// Set the mqtt_export handle (call after MqttExportThread is spawned).
     /// Without this, ResetExportCursor commands only reset the persisted
     /// SQLite cursor — the orchestrator's in-memory cache continues to skip
@@ -692,11 +697,6 @@ impl MqttMonitor {
             *g = Some(handle);
             eprintln!("[MQTT Monitor] Export handle set");
         }
-    }
-
-    /// Get handle for sending messages
-    pub fn handle(&self) -> MqttHandle {
-        self.handle.clone()
     }
 
     /// Get connection state
