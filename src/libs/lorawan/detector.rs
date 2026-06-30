@@ -15,10 +15,14 @@ pub struct GatewayDetection {
 }
 
 impl GatewayDetection {
-    /// Returns true if gateway hardware appears to be present.
-    /// Only true when concentratord is actually running — it fails without hardware.
+    /// Returns true if LoRaWAN is usable: either a local concentrator (RAK5146)
+    /// is running, OR ChirpStack is running — which covers devices that have no
+    /// local concentrator but receive/transmit via an EXTERNAL gateway registered
+    /// in the on-device ChirpStack (Semtech UDP). Without this, the monitor never
+    /// starts on external-gateway devices, so fPort-85 sticker config/history
+    /// downlinks can't be sent and uplinks aren't re-published.
     pub fn is_present(&self) -> bool {
-        self.concentratord_running
+        self.concentratord_running || self.chirpstack_running
     }
 }
 

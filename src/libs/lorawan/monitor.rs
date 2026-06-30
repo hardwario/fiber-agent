@@ -52,14 +52,7 @@ impl LoRaWANMonitor {
         let detection = detector::detect_gateway();
         let gateway_present = detection.is_present();
         let has_external = detector::has_external_gateway();
-
-        // `gateway_present` (built-in concentrator presence) drives the display
-        // state. Whether the monitor RUNS is a separate decision: it only needs
-        // ChirpStack + Mosquitto, both of which run independently of the
-        // concentrator. Start it when the concentrator is up, OR ChirpStack is
-        // running (so an external gateway added at runtime is handled without a
-        // reboot), OR an external gateway is already configured.
-        let should_run = gateway_present || detection.chirpstack_running || has_external;
+        let should_run = gateway_present || has_external;
 
         let state = create_shared_lorawan_state(gateway_present);
 

@@ -738,7 +738,7 @@ pub struct LoRaWANConfig {
     pub sensors: Vec<LoRaWANSensorConfig>,
 
     /// External LoRaWAN gateways registered in ChirpStack
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gateways: Vec<ExternalGatewayConfig>,
 }
 
