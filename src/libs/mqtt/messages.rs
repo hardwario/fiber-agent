@@ -138,6 +138,11 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish EYE BLE tag sensor data
+    PublishEyeSensorData {
+        tags: Vec<EyeTagPayload>,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 
@@ -149,6 +154,26 @@ pub enum MqttMessage {
 
     /// Graceful shutdown signal
     Shutdown,
+}
+
+/// EYE BLE tag data payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct EyeTagPayload {
+    pub mac: String,
+    pub name: Option<String>,
+    pub temperature_c: Option<f32>,
+    pub humidity_pct: Option<u8>,
+    pub battery_mv: Option<u16>,
+    pub low_battery: bool,
+    pub magnet_present: bool,
+    pub magnet_detected: bool,
+    pub moving: Option<bool>,
+    pub movement_count: Option<u16>,
+    pub pitch_deg: Option<i8>,
+    pub roll_deg: Option<i16>,
+    pub rssi: Option<i16>,
+    pub last_seen_ts: Option<i64>,
+    pub provisioning: String,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)

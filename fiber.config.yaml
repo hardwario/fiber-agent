@@ -100,3 +100,17 @@ ble:
   pin: "123456"                # BLE pairing PIN. Edit to rotate.
   enable_terminal: true        # FB05/FB06 terminal-over-BLE; set false for stricter deployments
   advertising_name: null       # null → use device hostname; set to "FIBER-DEV" if mobile filters by name
+
+# Teltonika EYE BLE sensor tags (BTSMP1).
+# Tags are read passively from their BLE advertising; `auto_provision` connects
+# once (default PIN 123456) on first sight to apply the profile below.
+eye:
+  enabled: false               # set true to enable the EYE tag monitor
+  scan_window_s: 60
+  publish_interval_s: 30
+  tag_timeout_s: 600           # mark a tag stale if unseen for this long
+  auto_provision: true         # apply the PROXIMOS profile on first sight
+  tags:
+    - mac: "7C:D9:F4:13:10:DE"
+      name: "EYE tag 1"
+      enabled: true
