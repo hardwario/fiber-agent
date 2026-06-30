@@ -138,13 +138,13 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish successful pairing response
+    PublishPairingResponse(PairingResponse),
+
     /// Publish external LoRaWAN gateway status
     PublishLoRaWANGatewayData {
         gateways: Vec<LoRaWANGatewayPayload>,
     },
-
-    /// Publish successful pairing response
-    PublishPairingResponse(PairingResponse),
 
     /// Publish pairing error
     PublishPairingError(PairingError),
@@ -356,6 +356,15 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
+    /// next drain pass replays the stream from row 1. Use after a viewer DB
+    /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
+    /// "alarm" | "all".
+    ResetExportCursor {
+        broker_id: String,
+        stream: String,
+    },
+
     /// Add external LoRaWAN gateway: register in ChirpStack + save gateway config (signed via ConfigRequest)
     AddExternalGateway {
         gateway_eui: String,
@@ -365,15 +374,6 @@ pub enum MqttCommand {
     /// Remove external LoRaWAN gateway: remove gateway config + deregister from ChirpStack (signed via ConfigRequest)
     RemoveExternalGateway {
         gateway_eui: String,
-    },
-
-    /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
-    /// next drain pass replays the stream from row 1. Use after a viewer DB
-    /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
-    /// "alarm" | "all".
-    ResetExportCursor {
-        broker_id: String,
-        stream: String,
     },
 
     /// On-demand replay of `sensor_readings_minute` for a historical window.
@@ -460,9 +460,9 @@ impl MqttCommand {
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::AddExternalGateway { .. } => "add_external_gateway",
             MqttCommand::RemoveExternalGateway { .. } => "remove_external_gateway",
-            MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",

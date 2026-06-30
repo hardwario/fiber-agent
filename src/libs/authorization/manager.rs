@@ -560,10 +560,6 @@ impl AuthorizationManager {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("?").to_uppercase();
                 format!("Add HARDWARIO STICKER {} via {} (name: \"{}\")", dev_eui, mode, name)
             }
-            "remove_lorawan_sticker" => {
-                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
-                format!("Remove HARDWARIO STICKER {}", dev_eui)
-            }
             "add_external_gateway" => {
                 let gateway_eui = params.get("gateway_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -572,6 +568,10 @@ impl AuthorizationManager {
             "remove_external_gateway" => {
                 let gateway_eui = params.get("gateway_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Remove external LoRaWAN gateway {}", gateway_eui)
+            }
+            "remove_lorawan_sticker" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove HARDWARIO STICKER {}", dev_eui)
             }
             _ => format!("Execute command: {}", command_type),
         }
