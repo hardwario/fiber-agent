@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
 use crate::libs::storage::models::{
-    AlarmEvent, MinuteAggregateRow, SensorReading, StickerReadingRow, StorageStats,
+    AlarmEvent, EyeReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow, StorageStats,
 };
 
 /// Reader for querying sensor data
@@ -222,6 +222,55 @@ impl StorageReader {
             .map_err(|e| StorageError::QueryError(format!("collect sticker_readings_after: {}", e)))?;
 
         Ok(rows)
+    }
+
+    /// Fetch EYE readings with `id > last_id`, ascending, for the export drain.
+    pub fn fetch_eye_readings_after(
+        conn: &Connection,
+        last_id: i64,
+        limit: usize,
+    ) -> StorageResult<Vec<EyeReadingRow>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, mac, ts, received_at, message_id,
+                        event_type, payload_json, created_at
+                 FROM eye_readings
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ?",
+            )
+            .map_err(|e| StorageError::QueryError(format!("prepare eye_readings_after: {}", e)))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![last_id, limit as i64], |r| {
+                Ok(EyeReadingRow {
+                    id: r.get(0)?,
+                    mac: r.get(1)?,
+                    ts: r.get(2)?,
+                    received_at: r.get(3)?,
+                    message_id: r.get(4)?,
+                    event_type: r.get(5)?,
+                    payload_json: r.get(6)?,
+                    created_at: r.get(7)?,
+                })
+            })
+            .map_err(|e| StorageError::QueryError(format!("query eye_readings_after: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::QueryError(format!("collect eye_readings_after: {}", e)))?;
+
+        Ok(rows)
+    }
+
+    /// Newest archived (EN12830 recording) timestamp for `mac`, or `None` if the
+    /// tag has no stored recording samples yet. Used to resume archive downloads
+    /// from where the last one left off (filters out live `advertising` rows).
+    pub fn max_eye_reading_ts(conn: &Connection, mac: &str) -> StorageResult<Option<i64>> {
+        conn.query_row(
+            "SELECT MAX(ts) FROM eye_readings WHERE mac = ? AND event_type = 'recording'",
+            rusqlite::params![mac],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .map_err(|e| StorageError::QueryError(format!("max_eye_reading_ts: {}", e)))
     }
 
     /// Fetch sensor readings with `id > last_id`, ordered by id ascending,

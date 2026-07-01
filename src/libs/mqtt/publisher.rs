@@ -212,6 +212,10 @@ impl MqttPublisher {
                 self.publish_lorawan_sensors(sensors).await
             }
 
+            MqttMessage::PublishEyeSensorData { tags } => {
+                self.publish_eye_sensors(tags).await
+            }
+
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
@@ -744,6 +748,46 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.lorawan_sensors();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish EYE BLE tag sensor data
+    async fn publish_eye_sensors(
+        &self,
+        tags: Vec<super::messages::EyeTagPayload>,
+    ) -> Result<(), String> {
+        let tags_data: Vec<serde_json::Value> = tags
+            .iter()
+            .map(|t| {
+                json!({
+                    "mac": t.mac,
+                    "name": t.name,
+                    "temperature_c": t.temperature_c,
+                    "humidity_pct": t.humidity_pct,
+                    "battery_mv": t.battery_mv,
+                    "low_battery": t.low_battery,
+                    "magnet_present": t.magnet_present,
+                    "magnet_detected": t.magnet_detected,
+                    "moving": t.moving,
+                    "movement_count": t.movement_count,
+                    "pitch_deg": t.pitch_deg,
+                    "roll_deg": t.roll_deg,
+                    "rssi": t.rssi,
+                    "last_seen_ts": t.last_seen_ts,
+                    "stale": t.stale,
+                    "provisioning": t.provisioning,
+                })
+            })
+            .collect();
+
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "tags": tags_data,
+        });
+
+        let topic = self.topics.eye_sensors();
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
 
         self.publish(topic, payload.to_string(), qos, false).await

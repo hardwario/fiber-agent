@@ -138,6 +138,11 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish EYE BLE tag sensor data
+    PublishEyeSensorData {
+        tags: Vec<EyeTagPayload>,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 
@@ -149,6 +154,28 @@ pub enum MqttMessage {
 
     /// Graceful shutdown signal
     Shutdown,
+}
+
+/// EYE BLE tag data payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct EyeTagPayload {
+    pub mac: String,
+    pub name: Option<String>,
+    pub temperature_c: Option<f32>,
+    pub humidity_pct: Option<u8>,
+    pub battery_mv: Option<u16>,
+    pub low_battery: bool,
+    pub magnet_present: bool,
+    pub magnet_detected: bool,
+    pub moving: Option<bool>,
+    pub movement_count: Option<u16>,
+    pub pitch_deg: Option<i8>,
+    pub roll_deg: Option<i16>,
+    pub rssi: Option<i16>,
+    pub last_seen_ts: Option<i64>,
+    /// Whether the tag has not been seen within the configured `tag_timeout_s`.
+    pub stale: bool,
+    pub provisioning: String,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
@@ -342,6 +369,17 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
+    SetEyeRecording {
+        mac: String,
+        interval_min: u16,
+    },
+
+    /// Manually back-fill the EN12830 temperature archive for an EYE tag.
+    DownloadEyeHistory {
+        mac: String,
+    },
+
     /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
     /// next drain pass replays the stream from row 1. Use after a viewer DB
     /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
@@ -434,6 +472,8 @@ impl MqttCommand {
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
+            MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
+            MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",

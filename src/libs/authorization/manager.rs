@@ -466,6 +466,8 @@ impl AuthorizationManager {
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "set_eye_recording" => "set_lorawan_sensor_config",  // reuse: sensor config change
+            "download_eye_history" => "set_lorawan_sensor_config",  // reuse: sensor data op
             "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
 
             "set_lorawan_field_threshold" => "set_threshold",
@@ -561,6 +563,15 @@ impl AuthorizationManager {
             "remove_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Remove HARDWARIO STICKER {}", dev_eui)
+            }
+            "set_eye_recording" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let interval = params.get("interval_min").and_then(|v| v.as_u64()).unwrap_or(0);
+                format!("Set EYE {} recording interval to {} min", mac, interval)
+            }
+            "download_eye_history" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Download EYE {} temperature history", mac)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -900,6 +911,28 @@ impl AuthorizationManager {
                     .to_lowercase();
 
                 Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
+            }
+            "set_eye_recording" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                let interval_min = challenge.params.get("interval_min")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing interval_min".to_string()))?;
+                if !matches!(interval_min, 1 | 5 | 15) {
+                    return Err(AuthError::InvalidCommand(
+                        "interval_min must be 1, 5 or 15".to_string(),
+                    ));
+                }
+                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+            }
+            "download_eye_history" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                Ok(MqttCommand::DownloadEyeHistory { mac })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",

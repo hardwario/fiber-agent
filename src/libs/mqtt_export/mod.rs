@@ -14,7 +14,7 @@ mod integration_tests;
 pub use config::{DestinationConfig, ExportConfig, TlsConfig};
 pub use destination::RumqttcDestination;
 pub use drain::{drain_one_batch, DrainConfig, Publisher, Stream};
-pub use envelope::{alarm_envelope, probe_envelope, sticker_envelope};
+pub use envelope::{alarm_envelope, eye_envelope, probe_envelope, sticker_envelope};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -224,6 +224,7 @@ impl MqttExportThread {
                                     Stream::Probe,
                                     Stream::Probe1m,
                                     Stream::Alarm,
+                                    Stream::Eye,
                                 ] {
                                     if s.as_str() == stream {
                                         cursors.insert((broker_id.clone(), s.as_str()), 0);

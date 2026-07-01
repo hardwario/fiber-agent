@@ -353,6 +353,80 @@ impl RetentionPolicy {
             unexported_dropped,
         })
     }
+
+    /// Sweep the `eye_readings` table — delete rows older than
+    /// `retention_seconds` (by `ts`). Reports how many of the deleted rows
+    /// had `id > min(last_exported_id across all destinations for the "eye"
+    /// stream)`; those are data losses for at least one destination and are
+    /// logged at WARN level. Mirrors `sweep_sticker_readings`.
+    pub fn sweep_eye_readings(
+        &self,
+        conn: &mut Connection,
+        retention_seconds: i64,
+    ) -> StorageResult<EyeRetentionResult> {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - retention_seconds;
+
+        let min_cursor: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MIN(last_exported_id), 0) FROM export_cursor
+                 WHERE stream = 'eye'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let unexported_dropped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM eye_readings WHERE ts < ? AND id > ?",
+                rusqlite::params![cutoff, min_cursor],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        let purged = conn
+            .execute(
+                "DELETE FROM eye_readings WHERE ts < ?",
+                rusqlite::params![cutoff],
+            )
+            .map_err(|e| StorageError::DeleteError(format!("sweep_eye_readings: {}", e)))?
+            as i64;
+
+        if unexported_dropped > 0 {
+            eprintln!(
+                "WARN [retention] dropped {} un-exported eye_readings rows (min_cursor={}, cutoff={})",
+                unexported_dropped, min_cursor, cutoff,
+            );
+        }
+
+        if purged > 0 {
+            let _ = AuditLogger::log_operation(
+                conn,
+                "DELETE",
+                Some("eye_readings"),
+                Some(purged),
+                None,
+            );
+        }
+
+        Ok(EyeRetentionResult {
+            purged,
+            unexported_dropped,
+        })
+    }
+}
+
+/// Result of a `sweep_eye_readings` pass.
+#[derive(Debug, Clone, Default)]
+pub struct EyeRetentionResult {
+    /// Total rows deleted from `eye_readings`.
+    pub purged: i64,
+    /// Of those deleted, how many had `id > min(cursor)` — i.e. were dropped
+    /// before any destination had a chance to export them. Emits a WARN log.
+    pub unexported_dropped: i64,
 }
 
 /// Statistics from a retention cleanup operation
@@ -455,6 +529,54 @@ mod tests {
 
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn eye_retention_purges_old_rows_and_warns_when_unexported() {
+        use crate::libs::storage::writer::StorageWriter;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = Database::new(tmp.path(), 1).unwrap();
+        let mut conn = db.connect().unwrap();
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let day = 86400i64;
+
+        // Old row (35 days ago)
+        StorageWriter::write_eye_reading(
+            &mut conn,
+            "AA:BB:CC:DD:EE:FF",
+            now - 35 * day,
+            now - 35 * day,
+            "mac-old",
+            "advertising",
+            "{}",
+        )
+        .unwrap();
+        // Fresh row (1 day ago)
+        StorageWriter::write_eye_reading(
+            &mut conn,
+            "AA:BB:CC:DD:EE:FF",
+            now - day,
+            now - day,
+            "mac-fresh",
+            "advertising",
+            "{}",
+        )
+        .unwrap();
+
+        // Cursor is at 0 (no destinations have exported anything) → both
+        // un-exported. Sweep should drop the old row and warn.
+        let policy = RetentionPolicy::default();
+        let dropped = policy.sweep_eye_readings(&mut conn, 30 * day).unwrap();
+        assert_eq!(dropped.purged, 1);
+        assert_eq!(dropped.unexported_dropped, 1);
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM eye_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 1);
     }

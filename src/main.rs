@@ -6,6 +6,7 @@ use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
 use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router, new_shared_provisioning_session};
+use fiber_app::libs::eye::EyeMonitor;
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
@@ -692,6 +693,26 @@ fn main() -> io::Result<()> {
             *slot = Some(lr_mon.state.clone());
         }
     }
+
+    // Create and spawn the Teltonika EYE BLE tag monitor if MQTT is available.
+    let _eye_monitor = if let Some(ref handle) = mqtt_handle {
+        match EyeMonitor::new(
+            config.eye.clone().unwrap_or_default(),
+            handle.sender(),
+            hostname.clone(),
+            storage_handle.clone(),
+            config.storage.db_path.clone(),
+        ) {
+            Ok(monitor) => Some(monitor),
+            Err(e) => {
+                eprintln!("[main] Warning: Failed to start EYE monitor: {}", e);
+                None
+            }
+        }
+    } else {
+        eprintln!("[main] EYE sensor monitor disabled (MQTT not enabled)");
+        None
+    };
 
     // Application is now running with background monitoring
     eprintln!("[main] Application running with medical data persistence. Press Ctrl+C to exit.");
