@@ -376,12 +376,21 @@ fn eye_loop(
                                     }
                                     // Save-and-feed: persist only when the advertised
                                     // payload actually changed (the poll re-reads the
-                                    // same cached frame every second otherwise).
+                                    // same cached frame every second otherwise). The
+                                    // message_id is derived from the payload bytes so
+                                    // that INSERT OR IGNORE also dedupes across FIBER
+                                    // restarts (last_persisted is in-memory only).
                                     if last_persisted.get(&mac_key).map(Vec::as_slice)
                                         != Some(value.as_slice())
                                     {
                                         last_persisted.insert(mac_key.clone(), value.clone());
-                                        let message_id = format!("{}-{}", mac_key, now_ts);
+                                        let mut hasher =
+                                            std::collections::hash_map::DefaultHasher::new();
+                                        std::hash::Hash::hash_slice(value.as_slice(), &mut hasher);
+                                        let value_hash =
+                                            std::hash::Hasher::finish(&hasher);
+                                        let message_id =
+                                            format!("{}-{:016x}", mac_key, value_hash);
                                         let _ = storage.write_eye_reading(
                                             mac_key.clone(),
                                             now_ts,
@@ -609,8 +618,31 @@ async fn run_recorder_job(
                 Ok(Err(e)) => {
                     eprintln!("[EYE Monitor] download {mac} failed: {e}");
                     mark_not_en12830_if_absent(state, mac, &e);
+                    // The queuer stamped last_download_ts optimistically to
+                    // rate-limit re-queuing while the job was in flight. On a
+                    // real download failure we don't want that stamp to gate
+                    // the fallback path for a full sync_fallback_hours — rewind
+                    // it so the fallback fires again in ~5 min. Skipped when
+                    // we marked the tag as not-EN12830 (no point retrying).
+                    if e.kind() != io::ErrorKind::NotFound {
+                        if let Ok(mut s) = state.write() {
+                            if let Some(t) = s.tags.get_mut(mac) {
+                                t.last_download_ts = Some(
+                                    now.saturating_sub(sync_fallback_secs.saturating_sub(300)),
+                                );
+                            }
+                        }
+                    }
                 }
-                Err(e) => eprintln!("[EYE Monitor] download {mac} task error: {e}"),
+                Err(e) => {
+                    eprintln!("[EYE Monitor] download {mac} task error: {e}");
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.last_download_ts =
+                                Some(now.saturating_sub(sync_fallback_secs.saturating_sub(300)));
+                        }
+                    }
+                }
             }
         }
     }
