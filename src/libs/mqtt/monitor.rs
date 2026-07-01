@@ -2314,6 +2314,9 @@ impl MqttMonitor {
             MqttCommand::SetEyeRecording { mac, interval_min } => {
                 // Hand off to the EYE monitor, which runs recorder ops with the
                 // BLE scan paused (raw L2CAP and an active scan must not overlap).
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
                 if crate::libs::eye::state::queue_eye_command(
                     crate::libs::eye::state::EyeCommand::SetRecording {
                         mac: mac.clone(),
@@ -2327,6 +2330,9 @@ impl MqttMonitor {
                 }
             }
             MqttCommand::DownloadEyeHistory { mac } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
                 if crate::libs::eye::state::queue_eye_command(
                     crate::libs::eye::state::EyeCommand::DownloadHistory { mac: mac.clone() },
                 ) {

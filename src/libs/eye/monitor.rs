@@ -188,8 +188,9 @@ fn eye_loop(
             // adapter, so this deliberately runs before discovery is (re)started. ---
             if !pending.is_empty() {
                 let jobs: Vec<(String, EyeJob)> = pending.drain().collect();
+                let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
                 for (mac, job) in jobs {
-                    run_recorder_job(&mac, job, &state, &storage).await;
+                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs).await;
                 }
             }
 
@@ -490,7 +491,13 @@ fn eye_loop(
 /// dispatched to a blocking thread). Must be called only while the BlueZ scan is
 /// stopped. Updates per-tag state and persists downloaded samples (dedup via the
 /// `{mac}-rec-{ts}` message_id → `INSERT OR IGNORE`).
-async fn run_recorder_job(mac: &str, job: EyeJob, state: &SharedEyeState, storage: &StorageHandle) {
+async fn run_recorder_job(
+    mac: &str,
+    job: EyeJob,
+    state: &SharedEyeState,
+    storage: &StorageHandle,
+    sync_fallback_secs: i64,
+) {
     let now = now_secs();
     let now_u32 = now as u32;
     match job {
@@ -522,7 +529,7 @@ async fn run_recorder_job(mac: &str, job: EyeJob, state: &SharedEyeState, storag
             })
             .await;
             match res {
-                Ok(Ok(records)) => {
+                Ok(Ok((records, restart_ok))) => {
                     let n = records.len();
                     let mut max_ts = since_ts;
                     for (ts, temp) in records {
@@ -546,10 +553,23 @@ async fn run_recorder_job(mac: &str, job: EyeJob, state: &SharedEyeState, storag
                         );
                     }
                     eprintln!("[EYE Monitor] Back-filled {n} archived record(s) from {mac}");
+                    if !restart_ok {
+                        // Records were downloaded but START_RECORD didn't ack —
+                        // the tag is now silently stopped. Rewind the poll gate
+                        // so the fallback sync fires again in ~5 min instead of
+                        // waiting a full sync_fallback_hours window.
+                        eprintln!(
+                            "[EYE Monitor] ⚠ START_RECORD after download for {mac} did not ack — scheduling fast retry"
+                        );
+                    }
                     if let Ok(mut s) = state.write() {
                         if let Some(t) = s.tags.get_mut(mac) {
                             t.is_en12830 = Some(true);
-                            t.last_download_ts = Some(now);
+                            t.last_download_ts = if restart_ok {
+                                Some(now)
+                            } else {
+                                Some(now.saturating_sub(sync_fallback_secs.saturating_sub(300)))
+                            };
                             if max_ts > t.last_archived_ts.unwrap_or(0) {
                                 t.last_archived_ts = Some(max_ts);
                             }

@@ -451,7 +451,12 @@ impl Recorder {
     /// `since_ts` (partial via `START_RECORD_SEND_TS`, falling back to a full
     /// send if unsupported), walks the chunks, and finally restarts a clean
     /// recording with the FIBER's clock so the tag keeps logging.
-    fn download_since(&self, since_ts: u32, interval_s: u16, now_ts: u32) -> io::Result<Vec<(i64, f32)>> {
+    ///
+    /// Returns `(records, restart_ok)`. When `restart_ok == false` the final
+    /// `START_RECORD` didn't get an OK response (BLE glitch, transient tag
+    /// state) and the caller must schedule a fast re-sync — otherwise the tag
+    /// silently stops logging until the next fallback tick.
+    fn download_since(&self, since_ts: u32, interval_s: u16, now_ts: u32) -> io::Result<(Vec<(i64, f32)>, bool)> {
         // Finalize the active page so its data chunks become readable.
         self.send_cmd(CMD_STOP_RECORD, &[])?;
         std::thread::sleep(Duration::from_millis(400));
@@ -490,16 +495,24 @@ impl Recorder {
             }
         }
 
-        // Restart a clean recording with the correct clock.
+        // Restart a clean recording with the correct clock. TIME_SYNC's own
+        // ack we don't care about, but START_RECORD's response gates whether
+        // the tag is actually logging again — surface it to the caller.
         let _ = self.send_cmd(CMD_TIME_SYNC, &now_ts.to_le_bytes());
         let mut p = interval_s.to_le_bytes().to_vec();
         p.extend_from_slice(&now_ts.to_le_bytes());
-        let _ = self.send_cmd(CMD_START_RECORD, &p);
+        let mut restart_ok = matches!(self.send_cmd(CMD_START_RECORD, &p), Ok(r) if r == RESP_OK);
+        if !restart_ok {
+            // One in-session retry — the tag often needs a beat after the
+            // download session before it accepts a fresh START_RECORD.
+            std::thread::sleep(Duration::from_millis(250));
+            restart_ok = matches!(self.send_cmd(CMD_START_RECORD, &p), Ok(r) if r == RESP_OK);
+        }
 
         // Client-side guard against page-alignment overshoot (device returns
         // whole pages, so a few records before `since_ts` may come back).
         out.retain(|(ts, _)| *ts >= since_ts as i64);
-        Ok(out)
+        Ok((out, restart_ok))
     }
 }
 
@@ -534,7 +547,7 @@ pub fn download_since(
     since_ts: i64,
     interval_s: u16,
     now_ts: u32,
-) -> io::Result<Vec<(i64, f32)>> {
+) -> io::Result<(Vec<(i64, f32)>, bool)> {
     let since = since_ts.max(0) as u32;
     Recorder::connect(mac)?.download_since(since, interval_s, now_ts)
 }

@@ -170,6 +170,28 @@ pub fn register_eye_state(state: SharedEyeState) {
     let _ = EYE_STATE.set(state);
 }
 
+/// Strict MAC format check `AA:BB:CC:DD:EE:FF`. The recorder path builds a raw
+/// `sockaddr` from this string via `parse_mac`, which silently coerces bad hex
+/// to zero — a malformed MAC would then attempt to connect to `00:00:00:...`,
+/// so validate at the choke point (MQTT command handlers) before enqueuing.
+pub fn is_valid_mac(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 17 {
+        return false;
+    }
+    for (i, &c) in bytes.iter().enumerate() {
+        let in_sep = i % 3 == 2;
+        if in_sep {
+            if c != b':' {
+                return false;
+            }
+        } else if !c.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Enqueue an external command for the monitor to run. Returns `false` if the
 /// EYE monitor is not running (state never registered).
 pub fn queue_eye_command(cmd: EyeCommand) -> bool {
