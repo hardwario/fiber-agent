@@ -776,6 +776,7 @@ impl MqttPublisher {
                     "roll_deg": t.roll_deg,
                     "rssi": t.rssi,
                     "last_seen_ts": t.last_seen_ts,
+                    "stale": t.stale,
                     "provisioning": t.provisioning,
                 })
             })

@@ -581,6 +581,14 @@ impl StorageThread {
         let sticker_retention_interval = Duration::from_secs(3600);
         let mut last_sticker_retention_run = std::time::Instant::now();
 
+        // EYE retention sweep: every hour, drop eye_readings older than 30
+        // days, mirroring the sticker_readings policy above. Without this
+        // eye_readings grows unbounded for as long as configured tags keep
+        // advertising, eventually filling /data.
+        const EYE_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
+        let eye_retention_interval = Duration::from_secs(3600);
+        let mut last_eye_retention_run = std::time::Instant::now();
+
         eprintln!(
             "STORAGE THREAD: Started, database: {}, max size: {} MB",
             db_path,
@@ -679,6 +687,27 @@ impl StorageThread {
                             }
                         }
                         last_sticker_retention_run = std::time::Instant::now();
+                    }
+                    if last_eye_retention_run.elapsed() >= eye_retention_interval
+                        && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
+                    {
+                        match RetentionPolicy::default()
+                            .sweep_eye_readings(&mut conn, EYE_RETENTION_SECONDS)
+                        {
+                            Ok(stats) if stats.purged > 0 => {
+                                eprintln!(
+                                    "STORAGE THREAD: eye retention swept {} eye_readings rows older than {} days (unexported_dropped={})",
+                                    stats.purged,
+                                    EYE_RETENTION_SECONDS / 86400,
+                                    stats.unexported_dropped,
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("STORAGE THREAD: eye retention sweep failed: {}", e);
+                            }
+                        }
+                        last_eye_retention_run = std::time::Instant::now();
                     }
                     if consecutive_write_failures >= RECONNECT_FAILURE_THRESHOLD
                         && next_reconnect_attempt

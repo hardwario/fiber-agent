@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crossbeam::channel::Sender;
+use futures::{FutureExt, StreamExt};
 
 use crate::libs::eye::config::EyeConfig;
 use crate::libs::mqtt::messages::{EyeTagPayload, MqttMessage};
@@ -173,8 +174,17 @@ fn eye_loop(
                 ..Default::default()
             };
             let _ = adapter.set_discovery_filter(filter).await;
-            let _discovery = match adapter.discover_devices().await {
-                Ok(d) => d, // held alive → keeps discovery running
+            // `_with_changes` also yields a `DeviceAdded(addr)` event each time
+            // a device's properties change (e.g. a fresh advertisement updates
+            // ManufacturerData), not just on first discovery. We use that as
+            // the sole signal that a tag's data is genuinely fresh — see the
+            // `fresh_macs` drain below. Note: it also replays one `DeviceAdded`
+            // per already-known device the instant the stream is created, so
+            // the very first poll tick after a (re)connect may treat a tag as
+            // "fresh" even if its cached BlueZ data is actually old; this is a
+            // harmless, one-time-per-session-restart edge case.
+            let mut discovery = match adapter.discover_devices_with_changes().await {
+                Ok(d) => d,
                 Err(e) => {
                     eprintln!("[EYE Monitor] Failed to start discovery: {e}; retrying in 10s");
                     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -199,6 +209,21 @@ fn eye_loop(
 
                 let now_ts = now_secs();
 
+                // Non-blocking drain: collect every tag whose BlueZ device
+                // object genuinely changed (i.e. a fresh advertisement was
+                // received) since the last tick. BlueZ keeps serving the last
+                // cached ManufacturerData/RSSI for a device indefinitely even
+                // after it stops transmitting, so polling `manufacturer_data()`
+                // unconditionally would make a dead tag look perpetually live —
+                // only a `PropertiesChanged`-driven event tells us the data is
+                // actually new.
+                let mut fresh_macs: HashSet<String> = HashSet::new();
+                while let Some(Some(event)) = discovery.next().now_or_never() {
+                    if let bluer::AdapterEvent::DeviceAdded(addr) = event {
+                        fresh_macs.insert(addr.to_string());
+                    }
+                }
+
                 for tag in config.tags.iter().filter(|t| t.enabled) {
                     let mac_key = tag.mac.to_uppercase();
                     let addr: bluer::Address = match mac_key.parse() {
@@ -213,36 +238,41 @@ fn eye_loop(
                         Err(_) => continue,
                     };
 
-                    // Read & parse the latest advertising manufacturer data.
-                    let md = device.manufacturer_data().await.ok().flatten();
-                    if let Some(value) = md.as_ref().and_then(|m| m.get(&TELTONIKA_COMPANY_ID)) {
-                        match parse_manufacturer_value(value) {
-                            Ok(reading) => {
-                                let rssi = device.rssi().await.ok().flatten();
-                                if let Ok(mut s) = state.write() {
-                                    let entry = s.entry(&mac_key, tag.name.clone());
-                                    entry.apply_reading(&reading, rssi, now_ts);
+                    // Read & parse the latest advertising manufacturer data,
+                    // but only when we just observed a genuine change for this
+                    // tag — otherwise we'd be re-reading (and re-timestamping)
+                    // BlueZ's stale cached frame every second forever.
+                    if fresh_macs.contains(&mac_key) {
+                        let md = device.manufacturer_data().await.ok().flatten();
+                        if let Some(value) = md.as_ref().and_then(|m| m.get(&TELTONIKA_COMPANY_ID)) {
+                            match parse_manufacturer_value(value) {
+                                Ok(reading) => {
+                                    let rssi = device.rssi().await.ok().flatten();
+                                    if let Ok(mut s) = state.write() {
+                                        let entry = s.entry(&mac_key, tag.name.clone());
+                                        entry.apply_reading(&reading, rssi, now_ts);
+                                    }
+                                    // Save-and-feed: persist only when the advertised
+                                    // payload actually changed (the poll re-reads the
+                                    // same cached frame every second otherwise).
+                                    if last_persisted.get(&mac_key).map(Vec::as_slice)
+                                        != Some(value.as_slice())
+                                    {
+                                        last_persisted.insert(mac_key.clone(), value.clone());
+                                        let message_id = format!("{}-{}", mac_key, now_ts);
+                                        let _ = storage.write_eye_reading(
+                                            mac_key.clone(),
+                                            now_ts,
+                                            now_ts,
+                                            message_id,
+                                            "advertising".to_string(),
+                                            reading_payload_json(&reading, rssi),
+                                        );
+                                    }
                                 }
-                                // Save-and-feed: persist only when the advertised
-                                // payload actually changed (the poll re-reads the
-                                // same cached frame every second otherwise).
-                                if last_persisted.get(&mac_key).map(Vec::as_slice)
-                                    != Some(value.as_slice())
-                                {
-                                    last_persisted.insert(mac_key.clone(), value.clone());
-                                    let message_id = format!("{}-{}", mac_key, now_ts);
-                                    let _ = storage.write_eye_reading(
-                                        mac_key.clone(),
-                                        now_ts,
-                                        now_ts,
-                                        message_id,
-                                        "advertising".to_string(),
-                                        reading_payload_json(&reading, rssi),
-                                    );
+                                Err(e) => {
+                                    eprintln!("[EYE Monitor] Parse error for {mac_key}: {e}");
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("[EYE Monitor] Parse error for {mac_key}: {e}");
                             }
                         }
                     }
@@ -299,7 +329,7 @@ fn eye_loop(
                 // Publish snapshot periodically.
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
-                    publish_snapshot(&state, &mqtt_tx);
+                    publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s);
                 }
 
                 // Recreate the session occasionally? No — just keep polling.
@@ -346,7 +376,12 @@ fn reading_payload_json(r: &EyeReading, rssi: Option<i16>) -> String {
 }
 
 /// Build the payload from current state and hand it to the MQTT publisher.
-fn publish_snapshot(state: &SharedEyeState, mqtt_tx: &Sender<MqttMessage>) {
+fn publish_snapshot(
+    state: &SharedEyeState,
+    mqtt_tx: &Sender<MqttMessage>,
+    now_ts: i64,
+    tag_timeout_s: i64,
+) {
     let snapshot = match state.read() {
         Ok(s) => s,
         Err(_) => return,
@@ -369,6 +404,7 @@ fn publish_snapshot(state: &SharedEyeState, mqtt_tx: &Sender<MqttMessage>) {
             roll_deg: t.roll_deg,
             rssi: t.rssi,
             last_seen_ts: t.last_seen_ts,
+            stale: t.is_stale(now_ts, tag_timeout_s),
             provisioning: t.provisioning.as_str().to_string(),
         })
         .collect();

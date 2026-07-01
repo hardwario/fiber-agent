@@ -173,6 +173,8 @@ pub struct EyeTagPayload {
     pub roll_deg: Option<i16>,
     pub rssi: Option<i16>,
     pub last_seen_ts: Option<i64>,
+    /// Whether the tag has not been seen within the configured `tag_timeout_s`.
+    pub stale: bool,
     pub provisioning: String,
 }
 
