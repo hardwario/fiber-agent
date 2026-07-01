@@ -701,6 +701,7 @@ fn main() -> io::Result<()> {
             handle.sender(),
             hostname.clone(),
             storage_handle.clone(),
+            config.storage.db_path.clone(),
         ) {
             Ok(monitor) => Some(monitor),
             Err(e) => {

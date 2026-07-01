@@ -53,6 +53,13 @@ pub struct EyeTagState {
     pub provisioning: ProvisioningStatus,
     /// Number of consecutive failed provisioning attempts (for backoff).
     pub provision_attempts: u32,
+    /// EN12830 recorder present (white tag)? `None` until first probed.
+    pub is_en12830: Option<bool>,
+    /// Unix seconds of the newest archived (recording) sample stored so far.
+    /// Pre-seeded from the DB at startup; the download resumes from here.
+    pub last_archived_ts: Option<i64>,
+    /// Unix seconds of the last archive download attempt (rate-limit + fallback).
+    pub last_download_ts: Option<i64>,
 }
 
 impl EyeTagState {
@@ -74,6 +81,9 @@ impl EyeTagState {
             last_seen_ts: None,
             provisioning: ProvisioningStatus::PendingProvisioning,
             provision_attempts: 0,
+            is_en12830: None,
+            last_archived_ts: None,
+            last_download_ts: None,
         }
     }
 

@@ -261,6 +261,18 @@ impl StorageReader {
         Ok(rows)
     }
 
+    /// Newest archived (EN12830 recording) timestamp for `mac`, or `None` if the
+    /// tag has no stored recording samples yet. Used to resume archive downloads
+    /// from where the last one left off (filters out live `advertising` rows).
+    pub fn max_eye_reading_ts(conn: &Connection, mac: &str) -> StorageResult<Option<i64>> {
+        conn.query_row(
+            "SELECT MAX(ts) FROM eye_readings WHERE mac = ? AND event_type = 'recording'",
+            rusqlite::params![mac],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .map_err(|e| StorageError::QueryError(format!("max_eye_reading_ts: {}", e)))
+    }
+
     /// Fetch sensor readings with `id > last_id`, ordered by id ascending,
     /// up to `limit` rows. Companion to `fetch_sticker_readings_after`,
     /// consumed by the probe-stream export drain.
