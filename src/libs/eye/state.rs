@@ -1,7 +1,7 @@
 //! Shared, live state for EYE BLE tags (latest readings + provisioning status).
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::advertising::EyeReading;
 
@@ -128,6 +128,16 @@ impl EyeTagState {
     }
 }
 
+/// External command for the EYE monitor, queued by the MQTT command handler and
+/// drained by the monitor loop (which runs it while the scan is paused).
+#[derive(Debug, Clone)]
+pub enum EyeCommand {
+    /// Change the on-tag logging interval (minutes) and (re)start recording.
+    SetRecording { mac: String, interval_min: u16 },
+    /// Manually back-fill the archive for a tag now.
+    DownloadHistory { mac: String },
+}
+
 /// Aggregate state for the EYE subsystem.
 #[derive(Debug, Clone, Default)]
 pub struct EyeSensorState {
@@ -135,6 +145,8 @@ pub struct EyeSensorState {
     pub adapter_present: bool,
     /// Tags keyed by uppercase MAC `AA:BB:CC:DD:EE:FF`.
     pub tags: HashMap<String, EyeTagState>,
+    /// Pending external commands (from MQTT); drained by the monitor loop.
+    pub command_queue: Vec<EyeCommand>,
 }
 
 impl EyeSensorState {
@@ -148,11 +160,38 @@ impl EyeSensorState {
 
 pub type SharedEyeState = Arc<RwLock<EyeSensorState>>;
 
+/// Process-wide handle to the running monitor's state, so the MQTT command
+/// handler can enqueue EYE commands without threading the state through every
+/// call site. Set once when the monitor starts.
+static EYE_STATE: OnceLock<SharedEyeState> = OnceLock::new();
+
+/// Register the monitor's shared state (called once at monitor startup).
+pub fn register_eye_state(state: SharedEyeState) {
+    let _ = EYE_STATE.set(state);
+}
+
+/// Enqueue an external command for the monitor to run. Returns `false` if the
+/// EYE monitor is not running (state never registered).
+pub fn queue_eye_command(cmd: EyeCommand) -> bool {
+    match EYE_STATE.get() {
+        Some(state) => {
+            if let Ok(mut s) = state.write() {
+                s.command_queue.push(cmd);
+                true
+            } else {
+                false
+            }
+        }
+        None => false,
+    }
+}
+
 /// Build a fresh shared state.
 pub fn create_shared_eye_state(adapter_present: bool) -> SharedEyeState {
     Arc::new(RwLock::new(EyeSensorState {
         adapter_present,
         tags: HashMap::new(),
+        command_queue: Vec::new(),
     }))
 }
 

@@ -367,6 +367,17 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
+    SetEyeRecording {
+        mac: String,
+        interval_min: u16,
+    },
+
+    /// Manually back-fill the EN12830 temperature archive for an EYE tag.
+    DownloadEyeHistory {
+        mac: String,
+    },
+
     /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
     /// next drain pass replays the stream from row 1. Use after a viewer DB
     /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
@@ -459,6 +470,8 @@ impl MqttCommand {
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
+            MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
+            MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",

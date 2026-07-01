@@ -23,7 +23,9 @@ use crate::libs::storage::{StorageHandle, StorageReader};
 use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
 use super::en12830;
 use super::provisioning::{provision, EyeProfile};
-use super::state::{create_shared_eye_state, ProvisioningStatus, SharedEyeState};
+use super::state::{
+    create_shared_eye_state, register_eye_state, ProvisioningStatus, SharedEyeState,
+};
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
 /// the tag's anti-bruteforce lockout).
@@ -75,6 +77,9 @@ impl EyeMonitor {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown_flag.clone();
         let state_clone = state.clone();
+
+        // Expose the state so the MQTT command handler can enqueue commands.
+        register_eye_state(state.clone());
 
         let thread_handle = thread::spawn(move || {
             eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage, db_path);
@@ -242,6 +247,47 @@ fn eye_loop(
                 }
 
                 let now_ts = now_secs();
+
+                // Drain externally-queued commands (from the MQTT handler) into
+                // recorder jobs, which the outer loop runs with the scan paused.
+                let external: Vec<super::state::EyeCommand> = state
+                    .write()
+                    .ok()
+                    .map(|mut s| std::mem::take(&mut s.command_queue))
+                    .unwrap_or_default();
+                for cmd in external {
+                    match cmd {
+                        super::state::EyeCommand::SetRecording { mac, interval_min } => {
+                            let interval_s = match interval_min {
+                                1 => 60,
+                                15 => 900,
+                                _ => 300,
+                            };
+                            pending.insert(mac.to_uppercase(), EyeJob::EnableRecording { interval_s });
+                        }
+                        super::state::EyeCommand::DownloadHistory { mac } => {
+                            let mac_key = mac.to_uppercase();
+                            let interval_s = config
+                                .tags
+                                .iter()
+                                .find(|t| t.mac.to_uppercase() == mac_key)
+                                .map(|t| config.interval_min_for(t) as u16 * 60)
+                                .unwrap_or(300);
+                            let since = state
+                                .read()
+                                .ok()
+                                .and_then(|s| s.tags.get(&mac_key).and_then(|t| t.last_archived_ts))
+                                .unwrap_or(0);
+                            pending.insert(
+                                mac_key,
+                                EyeJob::Download { since_ts: since, interval_s },
+                            );
+                        }
+                    }
+                }
+                if !pending.is_empty() {
+                    break;
+                }
 
                 for tag in config.tags.iter().filter(|t| t.enabled) {
                     let mac_key = tag.mac.to_uppercase();
