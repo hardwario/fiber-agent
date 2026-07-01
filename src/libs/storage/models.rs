@@ -337,6 +337,21 @@ pub struct StickerReadingRow {
     pub created_at: i64,
 }
 
+/// One persisted EYE BLE tag reading. Like [`StickerReadingRow`] but keyed by
+/// the tag MAC and without an OTAA provisioning epoch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EyeReadingRow {
+    pub id: i64,
+    pub mac: String,
+    pub ts: i64,
+    pub received_at: i64,
+    pub message_id: String,
+    /// "advertising" (currently the only event type)
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: i64,
+}
+
 /// Row from the `sensor_readings_minute` table — per-minute aggregate of
 /// raw `sensor_readings` for long-term retention (3 years on a budget that
 /// the raw table cannot fit). Populated by the aggregator and read for

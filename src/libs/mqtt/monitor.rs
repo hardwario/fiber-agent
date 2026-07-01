@@ -2311,6 +2311,37 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetEyeRecording { mac, interval_min } => {
+                // Hand off to the EYE monitor, which runs recorder ops with the
+                // BLE scan paused (raw L2CAP and an active scan must not overlap).
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if crate::libs::eye::state::queue_eye_command(
+                    crate::libs::eye::state::EyeCommand::SetRecording {
+                        mac: mac.clone(),
+                        interval_min,
+                    },
+                ) {
+                    eprintln!("[MQTT Monitor] Queued EYE set-recording {mac} @ {interval_min} min");
+                    Ok(())
+                } else {
+                    Err("EYE monitor not running".to_string())
+                }
+            }
+            MqttCommand::DownloadEyeHistory { mac } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if crate::libs::eye::state::queue_eye_command(
+                    crate::libs::eye::state::EyeCommand::DownloadHistory { mac: mac.clone() },
+                ) {
+                    eprintln!("[MQTT Monitor] Queued EYE history download {mac}");
+                    Ok(())
+                } else {
+                    Err("EYE monitor not running".to_string())
+                }
+            }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
                 // The reset is two-phase:
                 //   1. Persisted SQLite cursor → storage handle (so a restart

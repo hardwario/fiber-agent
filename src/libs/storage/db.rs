@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::libs::storage::error::{StorageError, StorageResult};
 
 /// Current schema version for migrations
-pub const CURRENT_SCHEMA_VERSION: i32 = 4;
+pub const CURRENT_SCHEMA_VERSION: i32 = 5;
 
 /// SQLite database manager
 pub struct Database {
@@ -368,6 +368,9 @@ impl Database {
                 if v < 4 {
                     self.migrate_v3_to_v4(&conn)?;
                 }
+                if v < 5 {
+                    self.migrate_v4_to_v5(&conn)?;
+                }
                 Ok(())
             }
             Some(v) if v > CURRENT_SCHEMA_VERSION => {
@@ -387,9 +390,10 @@ impl Database {
                     .unwrap_or_default()
                     .as_secs() as i64;
 
-                // Create v3+v4 tables on fresh initialization so DB starts at current version
+                // Create v3+v4+v5 tables on fresh initialization so DB starts at current version
                 self.create_v3_tables(&conn)?;
                 self.create_v4_tables(&conn)?;
+                self.create_v5_tables(&conn)?;
 
                 conn.execute(
                     "INSERT INTO schema_version (version, applied_at, description)
@@ -397,7 +401,7 @@ impl Database {
                     rusqlite::params![
                         CURRENT_SCHEMA_VERSION,
                         now,
-                        "Initial schema v4 (save-and-feed + tamper-evidence + minute aggregates)"
+                        "Initial schema v5 (save-and-feed + tamper-evidence + minute aggregates + eye readings)"
                     ],
                 )
                 .map_err(|e| StorageError::DatabaseInitError(
@@ -590,6 +594,60 @@ impl Database {
         AuditLogger::log_schema_change(conn, "Migration v3\u{2192}v4: sensor_readings_minute")?;
 
         eprintln!("MIGRATION: Schema upgraded from v3 to v4 (minute aggregates)");
+        Ok(())
+    }
+
+    /// Create v5 tables: EYE BLE tag readings (save-and-feed stream, like
+    /// sticker_readings but without the OTAA provisioning epoch).
+    fn create_v5_tables(&self, conn: &Connection) -> StorageResult<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS eye_readings (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 mac          TEXT    NOT NULL,
+                 ts           INTEGER NOT NULL,
+                 received_at  INTEGER NOT NULL,
+                 message_id   TEXT    NOT NULL UNIQUE,
+                 event_type   TEXT    NOT NULL,
+                 payload_json TEXT    NOT NULL,
+                 created_at   INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_eye_readings_mac_ts
+                 ON eye_readings(mac, ts);
+             CREATE INDEX IF NOT EXISTS idx_eye_readings_id
+                 ON eye_readings(id);"
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to create v5 tables: {}", e),
+        ))?;
+        Ok(())
+    }
+
+    /// Migrate database schema from v4 to v5. Adds eye_readings.
+    fn migrate_v4_to_v5(&self, conn: &Connection) -> StorageResult<()> {
+        use crate::libs::storage::audit::AuditLogger;
+
+        self.create_v5_tables(conn)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+            rusqlite::params![
+                5,
+                now,
+                "EYE BLE tag readings (save-and-feed stream)"
+            ],
+        )
+        .map_err(|e| StorageError::MigrationError(
+            format!("Failed to record v5 migration: {}", e),
+        ))?;
+
+        AuditLogger::log_schema_change(conn, "Migration v4\u{2192}v5: eye_readings")?;
+
+        eprintln!("MIGRATION: Schema upgraded from v4 to v5 (eye readings)");
         Ok(())
     }
 

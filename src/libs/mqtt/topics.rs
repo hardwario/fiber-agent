@@ -182,6 +182,11 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors"])
     }
 
+    // EYE BLE tag topics
+    pub fn eye_sensors(&self) -> String {
+        self.build(&["eye", "sensors"])
+    }
+
     // Error topic
     pub fn errors(&self) -> String {
         self.build(&["errors"])
