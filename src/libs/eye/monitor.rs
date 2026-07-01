@@ -18,15 +18,28 @@ use futures::{FutureExt, StreamExt};
 
 use crate::libs::eye::config::EyeConfig;
 use crate::libs::mqtt::messages::{EyeTagPayload, MqttMessage};
-use crate::libs::storage::StorageHandle;
+use crate::libs::storage::db::Database;
+use crate::libs::storage::{StorageHandle, StorageReader};
 
 use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
+use super::en12830;
 use super::provisioning::{provision, EyeProfile};
-use super::state::{create_shared_eye_state, ProvisioningStatus, SharedEyeState};
+use super::state::{
+    create_shared_eye_state, register_eye_state, ProvisioningStatus, SharedEyeState,
+};
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
 /// the tag's anti-bruteforce lockout).
 const MAX_PROVISION_ATTEMPTS: u32 = 3;
+
+/// A pending EN12830 recorder operation, run at the top of the outer loop while
+/// the BlueZ scan is stopped (raw L2CAP and an active scan must not overlap).
+enum EyeJob {
+    /// Sync clock + start recording at `interval_s` (after provisioning).
+    EnableRecording { interval_s: u16 },
+    /// Back-fill archived samples with `ts >= since_ts`, then restart recording.
+    Download { since_ts: i64, interval_s: u16 },
+}
 
 /// Read-only handle to the EYE monitor state.
 #[derive(Clone)]
@@ -49,6 +62,7 @@ impl EyeMonitor {
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
         storage: StorageHandle,
+        db_path: String,
     ) -> io::Result<Self> {
         let state = create_shared_eye_state(false);
 
@@ -65,8 +79,11 @@ impl EyeMonitor {
         let shutdown_clone = shutdown_flag.clone();
         let state_clone = state.clone();
 
+        // Expose the state so the MQTT command handler can enqueue commands.
+        register_eye_state(state.clone());
+
         let thread_handle = thread::spawn(move || {
-            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage);
+            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage, db_path);
         });
 
         eprintln!("[EYE Monitor] Started");
@@ -112,6 +129,7 @@ fn eye_loop(
     mqtt_tx: Sender<MqttMessage>,
     _hostname: String,
     storage: StorageHandle,
+    db_path: String,
 ) {
     // Last raw manufacturer payload persisted per MAC — so we only write a new
     // DB row (save-and-feed) when the advertised data actually changes, instead
@@ -129,20 +147,52 @@ fn eye_loop(
     };
 
     // Pre-seed configured tags into the shared state so the UI shows them as
-    // "pending" before the first advertisement arrives.
+    // "pending" before the first advertisement arrives. Also resume the archive
+    // cursor (last stored recording ts) from the DB so a download after a FIBER
+    // restart fetches only new samples instead of the whole history.
+    let seed_archived: HashMap<String, i64> = {
+        let mut m = HashMap::new();
+        if let Ok(db) = Database::new(&db_path, 1) {
+            if let Ok(conn) = db.connect() {
+                for tag in config.tags.iter().filter(|t| t.enabled) {
+                    let mac_key = tag.mac.to_uppercase();
+                    if let Ok(Some(ts)) = StorageReader::max_eye_reading_ts(&conn, &mac_key) {
+                        m.insert(mac_key, ts);
+                    }
+                }
+            }
+        }
+        m
+    };
     if let Ok(mut s) = state.write() {
         for tag in config.tags.iter().filter(|t| t.enabled) {
-            s.entry(&tag.mac.to_uppercase(), tag.name.clone());
+            let mac_key = tag.mac.to_uppercase();
+            let entry = s.entry(&mac_key, tag.name.clone());
+            entry.last_archived_ts = seed_archived.get(&mac_key).copied();
         }
     }
 
     rt.block_on(async {
         let publish_interval = Duration::from_secs(config.publish_interval_s.max(1));
         let mut last_publish = Instant::now();
+        // EN12830 recorder jobs queued by the inner poll loop; drained here at the
+        // top of the outer loop while no scan is running.
+        let mut pending: HashMap<String, EyeJob> = HashMap::new();
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
+            }
+
+            // --- Run queued recorder jobs while the BlueZ scan is stopped. Raw
+            // L2CAP (recorder) and an active LE scan must not overlap on the same
+            // adapter, so this deliberately runs before discovery is (re)started. ---
+            if !pending.is_empty() {
+                let jobs: Vec<(String, EyeJob)> = pending.drain().collect();
+                let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
+                for (mac, job) in jobs {
+                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs).await;
+                }
             }
 
             // (Re)establish a BlueZ session + adapter and start an active scan.
@@ -224,6 +274,47 @@ fn eye_loop(
                     }
                 }
 
+                // Drain externally-queued commands (from the MQTT handler) into
+                // recorder jobs, which the outer loop runs with the scan paused.
+                let external: Vec<super::state::EyeCommand> = state
+                    .write()
+                    .ok()
+                    .map(|mut s| std::mem::take(&mut s.command_queue))
+                    .unwrap_or_default();
+                for cmd in external {
+                    match cmd {
+                        super::state::EyeCommand::SetRecording { mac, interval_min } => {
+                            let interval_s = match interval_min {
+                                1 => 60,
+                                15 => 900,
+                                _ => 300,
+                            };
+                            pending.insert(mac.to_uppercase(), EyeJob::EnableRecording { interval_s });
+                        }
+                        super::state::EyeCommand::DownloadHistory { mac } => {
+                            let mac_key = mac.to_uppercase();
+                            let interval_s = config
+                                .tags
+                                .iter()
+                                .find(|t| t.mac.to_uppercase() == mac_key)
+                                .map(|t| config.interval_min_for(t) as u16 * 60)
+                                .unwrap_or(300);
+                            let since = state
+                                .read()
+                                .ok()
+                                .and_then(|s| s.tags.get(&mac_key).and_then(|t| t.last_archived_ts))
+                                .unwrap_or(0);
+                            pending.insert(
+                                mac_key,
+                                EyeJob::Download { since_ts: since, interval_s },
+                            );
+                        }
+                    }
+                }
+                if !pending.is_empty() {
+                    break;
+                }
+
                 for tag in config.tags.iter().filter(|t| t.enabled) {
                     let mac_key = tag.mac.to_uppercase();
                     let addr: bluer::Address = match mac_key.parse() {
@@ -248,9 +339,40 @@ fn eye_loop(
                             match parse_manufacturer_value(value) {
                                 Ok(reading) => {
                                     let rssi = device.rssi().await.ok().flatten();
+                                    // Gap detection: was the tag absent longer than 5×
+                                    // the logging interval before this frame? If so it
+                                    // was out of BLE range and its archive may hold
+                                    // samples we missed. Also evaluate the fallback.
+                                    let interval_s = config.interval_min_for(tag) as i64 * 60;
                                     if let Ok(mut s) = state.write() {
                                         let entry = s.entry(&mac_key, tag.name.clone());
+                                        let prev_seen = entry.last_seen_ts;
                                         entry.apply_reading(&reading, rssi, now_ts);
+                                        if config.recording_on_for(tag)
+                                            && entry.is_en12830 != Some(false)
+                                        {
+                                            let gap = prev_seen.map_or(false, |p| {
+                                                now_ts.saturating_sub(p) > 5 * interval_s
+                                            });
+                                            let fallback_due = now_ts
+                                                .saturating_sub(entry.last_download_ts.unwrap_or(0))
+                                                > config.sync_fallback_hours as i64 * 3600;
+                                            // Rate-limit: at most one download per interval.
+                                            let rate_ok = now_ts
+                                                .saturating_sub(entry.last_download_ts.unwrap_or(0))
+                                                >= interval_s;
+                                            if (gap || fallback_due) && rate_ok {
+                                                let since = entry.last_archived_ts.unwrap_or(0);
+                                                entry.last_download_ts = Some(now_ts); // optimistic
+                                                pending.insert(
+                                                    mac_key.clone(),
+                                                    EyeJob::Download {
+                                                        since_ts: since,
+                                                        interval_s: interval_s as u16,
+                                                    },
+                                                );
+                                            }
+                                        }
                                     }
                                     // Save-and-feed: persist only when the advertised
                                     // payload actually changed (the poll re-reads the
@@ -304,6 +426,18 @@ fn eye_loop(
                                         Ok(()) => {
                                             t.provisioning = ProvisioningStatus::Provisioned;
                                             eprintln!("[EYE Monitor] Provisioned {mac_key}");
+                                            // Auto-enable the temperature archive.
+                                            if config.recording_on_for(tag) {
+                                                pending.insert(
+                                                    mac_key.clone(),
+                                                    EyeJob::EnableRecording {
+                                                        interval_s: config
+                                                            .interval_min_for(tag)
+                                                            as u16
+                                                            * 60,
+                                                    },
+                                                );
+                                            }
                                         }
                                         Err(ref e) => {
                                             t.provision_attempts += 1;
@@ -324,6 +458,44 @@ fn eye_loop(
                             }
                         }
                     }
+
+                    // Fallback archive sync — independent of a fresh advertising
+                    // frame (manufacturer_data may be absent right after recorder
+                    // ops or a scan restart). Triggers when the tag is currently in
+                    // range and the archive hasn't synced within sync_fallback_hours
+                    // (or ever). The gap-driven path above handles quick catch-up
+                    // when advertising flows; this guarantees eventual sync.
+                    if config.recording_on_for(tag) {
+                        let interval_s = config.interval_min_for(tag) as i64 * 60;
+                        let due_job = state.read().ok().and_then(|s| {
+                            s.tags.get(&mac_key).and_then(|t| {
+                                let in_range = t
+                                    .last_seen_ts
+                                    .map_or(false, |ls| now_ts.saturating_sub(ls) <= config.tag_timeout_s);
+                                let last_dl = t.last_download_ts.unwrap_or(0);
+                                let due = now_ts.saturating_sub(last_dl)
+                                    > config.sync_fallback_hours as i64 * 3600;
+                                let rate_ok =
+                                    now_ts.saturating_sub(last_dl) >= interval_s.max(60);
+                                if t.is_en12830 != Some(false) && in_range && due && rate_ok {
+                                    Some(t.last_archived_ts.unwrap_or(0))
+                                } else {
+                                    None
+                                }
+                            })
+                        });
+                        if let Some(since) = due_job {
+                            if let Ok(mut s) = state.write() {
+                                if let Some(t) = s.tags.get_mut(&mac_key) {
+                                    t.last_download_ts = Some(now_ts);
+                                }
+                            }
+                            pending.insert(
+                                mac_key.clone(),
+                                EyeJob::Download { since_ts: since, interval_s: interval_s as u16 },
+                            );
+                        }
+                    }
                 }
 
                 // Publish snapshot periodically.
@@ -332,11 +504,129 @@ fn eye_loop(
                     publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s);
                 }
 
+                // A recorder job was queued: leave the inner loop so the outer
+                // loop drops the discovery guard (stops the scan) and runs it.
+                if !pending.is_empty() {
+                    break;
+                }
+
                 // Recreate the session occasionally? No — just keep polling.
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     });
+}
+
+/// Run one queued EN12830 recorder job over a raw L2CAP connection (blocking, so
+/// dispatched to a blocking thread). Must be called only while the BlueZ scan is
+/// stopped. Updates per-tag state and persists downloaded samples (dedup via the
+/// `{mac}-rec-{ts}` message_id → `INSERT OR IGNORE`).
+async fn run_recorder_job(
+    mac: &str,
+    job: EyeJob,
+    state: &SharedEyeState,
+    storage: &StorageHandle,
+    sync_fallback_secs: i64,
+) {
+    let now = now_secs();
+    let now_u32 = now as u32;
+    match job {
+        EyeJob::EnableRecording { interval_s } => {
+            let m = mac.to_string();
+            let res =
+                tokio::task::spawn_blocking(move || en12830::enable_recording(&m, interval_s, now_u32))
+                    .await;
+            match res {
+                Ok(Ok(())) => {
+                    eprintln!("[EYE Monitor] Recording enabled on {mac} ({interval_s}s interval)");
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.is_en12830 = Some(true);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[EYE Monitor] enable_recording {mac} failed: {e}");
+                    mark_not_en12830_if_absent(state, mac, &e);
+                }
+                Err(e) => eprintln!("[EYE Monitor] enable_recording {mac} task error: {e}"),
+            }
+        }
+        EyeJob::Download { since_ts, interval_s } => {
+            let m = mac.to_string();
+            let res = tokio::task::spawn_blocking(move || {
+                en12830::download_since(&m, since_ts, interval_s, now_u32)
+            })
+            .await;
+            match res {
+                Ok(Ok((records, restart_ok))) => {
+                    let n = records.len();
+                    let mut max_ts = since_ts;
+                    for (ts, temp) in records {
+                        if ts > max_ts {
+                            max_ts = ts;
+                        }
+                        let message_id = format!("{mac}-rec-{ts}");
+                        let payload = serde_json::json!({
+                            "temperature_c": temp,
+                            "ts": ts,
+                            "source": "en12830",
+                        })
+                        .to_string();
+                        let _ = storage.write_eye_reading(
+                            mac.to_string(),
+                            ts,
+                            now,
+                            message_id,
+                            "recording".to_string(),
+                            payload,
+                        );
+                    }
+                    eprintln!("[EYE Monitor] Back-filled {n} archived record(s) from {mac}");
+                    if !restart_ok {
+                        // Records were downloaded but START_RECORD didn't ack —
+                        // the tag is now silently stopped. Rewind the poll gate
+                        // so the fallback sync fires again in ~5 min instead of
+                        // waiting a full sync_fallback_hours window.
+                        eprintln!(
+                            "[EYE Monitor] ⚠ START_RECORD after download for {mac} did not ack — scheduling fast retry"
+                        );
+                    }
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.is_en12830 = Some(true);
+                            t.last_download_ts = if restart_ok {
+                                Some(now)
+                            } else {
+                                Some(now.saturating_sub(sync_fallback_secs.saturating_sub(300)))
+                            };
+                            if max_ts > t.last_archived_ts.unwrap_or(0) {
+                                t.last_archived_ts = Some(max_ts);
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[EYE Monitor] download {mac} failed: {e}");
+                    mark_not_en12830_if_absent(state, mac, &e);
+                }
+                Err(e) => eprintln!("[EYE Monitor] download {mac} task error: {e}"),
+            }
+        }
+    }
+}
+
+/// If the recorder characteristics were absent, the tag is not an EN12830 model
+/// (e.g. a black standard tag) — remember that so we stop attempting downloads.
+/// Other errors (connect timeout, out of range) leave the flag unknown to retry.
+fn mark_not_en12830_if_absent(state: &SharedEyeState, mac: &str, e: &io::Error) {
+    if e.kind() == io::ErrorKind::NotFound {
+        if let Ok(mut s) = state.write() {
+            if let Some(t) = s.tags.get_mut(mac) {
+                t.is_en12830 = Some(false);
+            }
+        }
+    }
 }
 
 /// Slim JSON payload persisted per reading (omits absent fields).

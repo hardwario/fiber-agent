@@ -1,7 +1,7 @@
 //! Shared, live state for EYE BLE tags (latest readings + provisioning status).
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::advertising::EyeReading;
 
@@ -53,6 +53,13 @@ pub struct EyeTagState {
     pub provisioning: ProvisioningStatus,
     /// Number of consecutive failed provisioning attempts (for backoff).
     pub provision_attempts: u32,
+    /// EN12830 recorder present (white tag)? `None` until first probed.
+    pub is_en12830: Option<bool>,
+    /// Unix seconds of the newest archived (recording) sample stored so far.
+    /// Pre-seeded from the DB at startup; the download resumes from here.
+    pub last_archived_ts: Option<i64>,
+    /// Unix seconds of the last archive download attempt (rate-limit + fallback).
+    pub last_download_ts: Option<i64>,
 }
 
 impl EyeTagState {
@@ -74,6 +81,9 @@ impl EyeTagState {
             last_seen_ts: None,
             provisioning: ProvisioningStatus::PendingProvisioning,
             provision_attempts: 0,
+            is_en12830: None,
+            last_archived_ts: None,
+            last_download_ts: None,
         }
     }
 
@@ -118,6 +128,16 @@ impl EyeTagState {
     }
 }
 
+/// External command for the EYE monitor, queued by the MQTT command handler and
+/// drained by the monitor loop (which runs it while the scan is paused).
+#[derive(Debug, Clone)]
+pub enum EyeCommand {
+    /// Change the on-tag logging interval (minutes) and (re)start recording.
+    SetRecording { mac: String, interval_min: u16 },
+    /// Manually back-fill the archive for a tag now.
+    DownloadHistory { mac: String },
+}
+
 /// Aggregate state for the EYE subsystem.
 #[derive(Debug, Clone, Default)]
 pub struct EyeSensorState {
@@ -125,6 +145,8 @@ pub struct EyeSensorState {
     pub adapter_present: bool,
     /// Tags keyed by uppercase MAC `AA:BB:CC:DD:EE:FF`.
     pub tags: HashMap<String, EyeTagState>,
+    /// Pending external commands (from MQTT); drained by the monitor loop.
+    pub command_queue: Vec<EyeCommand>,
 }
 
 impl EyeSensorState {
@@ -138,11 +160,60 @@ impl EyeSensorState {
 
 pub type SharedEyeState = Arc<RwLock<EyeSensorState>>;
 
+/// Process-wide handle to the running monitor's state, so the MQTT command
+/// handler can enqueue EYE commands without threading the state through every
+/// call site. Set once when the monitor starts.
+static EYE_STATE: OnceLock<SharedEyeState> = OnceLock::new();
+
+/// Register the monitor's shared state (called once at monitor startup).
+pub fn register_eye_state(state: SharedEyeState) {
+    let _ = EYE_STATE.set(state);
+}
+
+/// Strict MAC format check `AA:BB:CC:DD:EE:FF`. The recorder path builds a raw
+/// `sockaddr` from this string via `parse_mac`, which silently coerces bad hex
+/// to zero — a malformed MAC would then attempt to connect to `00:00:00:...`,
+/// so validate at the choke point (MQTT command handlers) before enqueuing.
+pub fn is_valid_mac(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 17 {
+        return false;
+    }
+    for (i, &c) in bytes.iter().enumerate() {
+        let in_sep = i % 3 == 2;
+        if in_sep {
+            if c != b':' {
+                return false;
+            }
+        } else if !c.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Enqueue an external command for the monitor to run. Returns `false` if the
+/// EYE monitor is not running (state never registered).
+pub fn queue_eye_command(cmd: EyeCommand) -> bool {
+    match EYE_STATE.get() {
+        Some(state) => {
+            if let Ok(mut s) = state.write() {
+                s.command_queue.push(cmd);
+                true
+            } else {
+                false
+            }
+        }
+        None => false,
+    }
+}
+
 /// Build a fresh shared state.
 pub fn create_shared_eye_state(adapter_present: bool) -> SharedEyeState {
     Arc::new(RwLock::new(EyeSensorState {
         adapter_present,
         tags: HashMap::new(),
+        command_queue: Vec::new(),
     }))
 }
 

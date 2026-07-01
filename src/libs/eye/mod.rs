@@ -14,6 +14,7 @@
 
 pub mod advertising;
 pub mod config;
+pub mod en12830;
 pub mod provisioning;
 pub mod state;
 pub mod monitor;
