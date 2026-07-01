@@ -427,6 +427,44 @@ fn eye_loop(
                             }
                         }
                     }
+
+                    // Fallback archive sync — independent of a fresh advertising
+                    // frame (manufacturer_data may be absent right after recorder
+                    // ops or a scan restart). Triggers when the tag is currently in
+                    // range and the archive hasn't synced within sync_fallback_hours
+                    // (or ever). The gap-driven path above handles quick catch-up
+                    // when advertising flows; this guarantees eventual sync.
+                    if config.recording_on_for(tag) {
+                        let interval_s = config.interval_min_for(tag) as i64 * 60;
+                        let due_job = state.read().ok().and_then(|s| {
+                            s.tags.get(&mac_key).and_then(|t| {
+                                let in_range = t
+                                    .last_seen_ts
+                                    .map_or(false, |ls| now_ts.saturating_sub(ls) <= config.tag_timeout_s);
+                                let last_dl = t.last_download_ts.unwrap_or(0);
+                                let due = now_ts.saturating_sub(last_dl)
+                                    > config.sync_fallback_hours as i64 * 3600;
+                                let rate_ok =
+                                    now_ts.saturating_sub(last_dl) >= interval_s.max(60);
+                                if t.is_en12830 != Some(false) && in_range && due && rate_ok {
+                                    Some(t.last_archived_ts.unwrap_or(0))
+                                } else {
+                                    None
+                                }
+                            })
+                        });
+                        if let Some(since) = due_job {
+                            if let Ok(mut s) = state.write() {
+                                if let Some(t) = s.tags.get_mut(&mac_key) {
+                                    t.last_download_ts = Some(now_ts);
+                                }
+                            }
+                            pending.insert(
+                                mac_key.clone(),
+                                EyeJob::Download { since_ts: since, interval_s: interval_s as u16 },
+                            );
+                        }
+                    }
                 }
 
                 // Publish snapshot periodically.

@@ -388,8 +388,27 @@ struct Recorder {
 }
 
 impl Recorder {
-    /// Connect, negotiate MTU, discover handles, and unlock reads with the PIN.
+    /// Connect with retries. BLE connects to these tags are flaky (10 s
+    /// advertising interval, weak signal → transient `Connection refused`), so
+    /// retry a few times. A missing recorder characteristic (`NotFound`, i.e. a
+    /// non-EN12830 tag) is permanent and returned immediately.
     fn connect(mac: &str) -> io::Result<Recorder> {
+        let mut last_err: Option<io::Error> = None;
+        for attempt in 0..4 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(2500));
+            }
+            match Self::try_connect(mac) {
+                Ok(r) => return Ok(r),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(e),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "connect failed")))
+    }
+
+    /// Single connect attempt: connect, negotiate MTU, discover handles, unlock.
+    fn try_connect(mac: &str) -> io::Result<Recorder> {
         let att = match connect_att(mac, BDADDR_LE_PUBLIC) {
             Ok(a) => a,
             Err(_) => connect_att(mac, BDADDR_LE_RANDOM)?,
