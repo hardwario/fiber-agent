@@ -2821,11 +2821,19 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_eye_tag_config(mac.clone(), name.clone());
                     if result.success {
+                        // Reflect the change in the monitor's live config so the
+                        // scan loop starts tracking the new tag without a restart.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.upsert_tag(&mac, name.as_deref());
+                            }
+                        }
                         // Seed in-memory state so the tag shows up before its
-                        // first advertisement is parsed.
+                        // first advertisement is parsed (uppercase key, matching
+                        // the scan loop and remove path).
                         if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
                             if let Ok(mut s) = handle.write() {
-                                s.entry(&mac, name);
+                                s.entry(&mac.to_uppercase(), name);
                             }
                         }
                         eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");
@@ -2844,6 +2852,13 @@ impl MqttMonitor {
                 if let Some(applier) = config_applier {
                     let result = applier.remove_eye_tag_config(mac.clone());
                     if result.success {
+                        // Drop it from the live config too, so the scan loop stops
+                        // tracking it and cannot resurrect it on the next advert.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.remove_tag(&mac);
+                            }
+                        }
                         if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
                             if let Ok(mut s) = handle.write() {
                                 s.tags.remove(&mac.to_uppercase());

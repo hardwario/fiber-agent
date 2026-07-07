@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::advertising::EyeReading;
+use super::config::EyeConfig;
 
 /// Per-tag provisioning lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +172,23 @@ static EYE_STATE: OnceLock<SharedEyeState> = OnceLock::new();
 /// Register the monitor's shared state (called once at monitor startup).
 pub fn register_eye_state(state: SharedEyeState) {
     let _ = EYE_STATE.set(state);
+}
+
+pub type SharedEyeConfig = Arc<RwLock<EyeConfig>>;
+
+/// Process-wide handle to the monitor's live config. The scan loop re-reads it
+/// each poll cycle and the MQTT add/remove handlers mutate it, so tag changes
+/// take effect without restarting the monitor. Set once at monitor startup.
+static EYE_CONFIG: OnceLock<SharedEyeConfig> = OnceLock::new();
+
+/// Register the monitor's shared config (called once at monitor startup).
+pub fn register_eye_config(config: SharedEyeConfig) {
+    let _ = EYE_CONFIG.set(config);
+}
+
+/// Handle to the monitor's live config, if the monitor has started.
+pub fn eye_config_handle() -> Option<SharedEyeConfig> {
+    EYE_CONFIG.get().cloned()
 }
 
 /// Strict MAC format check `AA:BB:CC:DD:EE:FF`. The recorder path builds a raw

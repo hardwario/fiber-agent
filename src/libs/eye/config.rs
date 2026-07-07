@@ -65,6 +65,35 @@ impl EyeConfig {
     pub fn recording_on_for(&self, tag: &EyeTagConfig) -> bool {
         self.recording_enabled && tag.recording.unwrap_or(true)
     }
+
+    /// Insert or update a tag by MAC (case-insensitive; stored uppercased).
+    /// Overwrites the name only when `name` is `Some`. Mirrors the YAML upsert in
+    /// `ConfigApplier::update_eye_tag_config` so the monitor's live view stays in
+    /// sync with disk after an `add_eye_tag` command.
+    pub fn upsert_tag(&mut self, mac: &str, name: Option<&str>) {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            if let Some(n) = name {
+                t.name = Some(n.to_string());
+            }
+        } else {
+            self.tags.push(EyeTagConfig {
+                mac: up,
+                name: name.map(|s| s.to_string()),
+                enabled: true,
+                logging_interval_min: None,
+                recording: None,
+            });
+        }
+    }
+
+    /// Remove a tag by MAC (case-insensitive). Returns whether one was removed.
+    pub fn remove_tag(&mut self, mac: &str) -> bool {
+        let up = mac.to_uppercase();
+        let before = self.tags.len();
+        self.tags.retain(|t| t.mac.to_uppercase() != up);
+        self.tags.len() != before
+    }
 }
 
 /// A single configured EYE tag (identified by MAC).
@@ -109,4 +138,41 @@ fn default_sync_fallback_hours() -> u64 {
 }
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_tag_inserts_uppercased_with_defaults() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Freezer"));
+        assert_eq!(cfg.tags.len(), 1);
+        assert_eq!(cfg.tags[0].mac, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Freezer"));
+        assert!(cfg.tags[0].enabled);
+    }
+
+    #[test]
+    fn upsert_tag_updates_in_place_and_keeps_name_when_none() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
+        // same MAC (lowercased) with a new name updates in place, no duplicate
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Fridge"));
+        assert_eq!(cfg.tags.len(), 1, "must upsert, not duplicate");
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Fridge"));
+        // name None keeps the existing name
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", None);
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Fridge"));
+    }
+
+    #[test]
+    fn remove_tag_is_case_insensitive_and_reports() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", None);
+        assert!(cfg.remove_tag("aa:bb:cc:dd:ee:ff"));
+        assert!(cfg.tags.is_empty());
+        assert!(!cfg.remove_tag("AA:BB:CC:DD:EE:FF"), "absent -> false");
+    }
 }

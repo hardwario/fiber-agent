@@ -7,7 +7,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -25,7 +25,8 @@ use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY
 use super::en12830;
 use super::provisioning::{provision, EyeProfile};
 use super::state::{
-    create_shared_eye_state, register_eye_state, ProvisioningStatus, SharedEyeState,
+    create_shared_eye_state, register_eye_config, register_eye_state, ProvisioningStatus,
+    SharedEyeConfig, SharedEyeState,
 };
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
@@ -85,8 +86,14 @@ impl EyeMonitor {
         // Expose the state so the MQTT command handler can enqueue commands.
         register_eye_state(state.clone());
 
+        // Expose the config so add/remove command handlers can mutate the tag set
+        // the scan loop reads (the loop re-reads this each poll cycle).
+        let shared_config: SharedEyeConfig = Arc::new(RwLock::new(config));
+        register_eye_config(shared_config.clone());
+        let config_clone = shared_config.clone();
+
         let thread_handle = thread::spawn(move || {
-            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage, db_path);
+            eye_loop(shutdown_clone, state_clone, config_clone, mqtt_tx, hostname, storage, db_path);
         });
 
         eprintln!("[EYE Monitor] Started");
@@ -128,12 +135,16 @@ fn now_secs() -> i64 {
 fn eye_loop(
     shutdown: Arc<AtomicBool>,
     state: SharedEyeState,
-    config: EyeConfig,
+    shared_config: SharedEyeConfig,
     mqtt_tx: Sender<MqttMessage>,
     _hostname: String,
     storage: StorageHandle,
     db_path: String,
 ) {
+    // Live view of the config; re-read from the shared handle each poll cycle so
+    // add/remove_eye_tag take effect without restarting the monitor.
+    let mut config = shared_config.read().map(|g| g.clone()).unwrap_or_default();
+
     // Last raw manufacturer payload persisted per MAC — so we only write a new
     // DB row (save-and-feed) when the advertised data actually changes, instead
     // of once per 1 s poll.
@@ -258,6 +269,12 @@ fn eye_loop(
             loop {
                 if shutdown.load(Ordering::Relaxed) {
                     return;
+                }
+
+                // Re-read the live config so a tag added/removed via an MQTT
+                // command is picked up by the scan below within one poll cycle.
+                if let Ok(g) = shared_config.read() {
+                    config = g.clone();
                 }
 
                 let now_ts = now_secs();
