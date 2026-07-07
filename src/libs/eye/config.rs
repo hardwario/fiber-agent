@@ -9,10 +9,6 @@ pub struct EyeConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Active-scan window length per cycle, seconds.
-    #[serde(default = "default_scan_window_s")]
-    pub scan_window_s: u64,
-
     /// How often to publish the tag snapshot to MQTT, seconds.
     #[serde(default = "default_publish_interval_s")]
     pub publish_interval_s: u64,
@@ -121,9 +117,6 @@ pub struct EyeTagConfig {
     pub recording: Option<bool>,
 }
 
-fn default_scan_window_s() -> u64 {
-    60
-}
 fn default_publish_interval_s() -> u64 {
     30
 }

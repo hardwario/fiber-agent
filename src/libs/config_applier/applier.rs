@@ -1517,15 +1517,18 @@ impl ConfigApplier {
         let backup_path = self.create_backup(&config_file, &content);
         let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
 
-        if let Err(e) = self.update_eye_tag_config(&mut config, &mac, name.as_deref()) {
-            return ApplyResult {
-                success: false,
-                file_path: config_file.to_string_lossy().to_string(),
-                backup_path: backup_path_str,
-                error_message: Some(e),
-                applied_at,
-            };
-        }
+        let created = match self.update_eye_tag_config(&mut config, &mac, name.as_deref()) {
+            Ok(created) => created,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(e),
+                    applied_at,
+                };
+            }
+        };
 
         let new_content = match serde_yaml::to_string(&config) {
             Ok(c) => c,
@@ -1553,7 +1556,11 @@ impl ConfigApplier {
             };
         }
 
-        eprintln!("[ConfigApplier] ✓ EYE tag config updated for {}", mac);
+        eprintln!(
+            "[ConfigApplier] ✓ EYE tag {} for {}",
+            if created { "added" } else { "updated" },
+            mac
+        );
 
         self.log_audit(
             "ADD_EYE_TAG",
@@ -2209,7 +2216,7 @@ impl ConfigApplier {
         config: &mut Value,
         mac: &str,
         name: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let config_map = config
             .as_mapping_mut()
             .ok_or_else(|| "Config root is not a mapping".to_string())?;
@@ -2246,6 +2253,7 @@ impl ConfigApplier {
                 .map(|m| m.to_uppercase() == mac)
                 .unwrap_or(false)
         });
+        let created = entry.is_none();
 
         let tag_map = if let Some(existing) = entry {
             existing
@@ -2269,7 +2277,7 @@ impl ConfigApplier {
             tag_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
         }
 
-        Ok(())
+        Ok(created)
     }
 
     /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
