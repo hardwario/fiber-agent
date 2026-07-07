@@ -90,6 +90,24 @@ impl EyeConfig {
         self.tags.retain(|t| t.mac.to_uppercase() != up);
         self.tags.len() != before
     }
+
+    /// Persist a tag's recording on/off + interval (from `set_eye_recording`).
+    /// `interval_min == 0` means OFF: it sets `recording = Some(false)` so that
+    /// `recording_on_for` returns false and the gap/fallback sync stops queueing
+    /// downloads (which would otherwise re-`START_RECORD` the tag). Returns
+    /// whether a matching tag was updated.
+    pub fn set_recording(&mut self, mac: &str, interval_min: u16) -> bool {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            t.recording = Some(interval_min != 0);
+            if interval_min != 0 {
+                t.logging_interval_min = Some(interval_min);
+            }
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// A single configured EYE tag (identified by MAC).
@@ -167,5 +185,25 @@ mod tests {
         assert!(cfg.remove_tag("aa:bb:cc:dd:ee:ff"));
         assert!(cfg.tags.is_empty());
         assert!(!cfg.remove_tag("AA:BB:CC:DD:EE:FF"), "absent -> false");
+    }
+
+    #[test]
+    fn set_recording_off_makes_recording_on_for_false() {
+        let mut cfg = EyeConfig::default();
+        cfg.recording_enabled = true;
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
+        // interval 5 -> on
+        assert!(cfg.set_recording("aa:bb:cc:dd:ee:ff", 5));
+        let tag = cfg.tags[0].clone();
+        assert_eq!(tag.recording, Some(true));
+        assert_eq!(tag.logging_interval_min, Some(5));
+        assert!(cfg.recording_on_for(&tag));
+        // interval 0 -> off, and recording_on_for must be false (H1)
+        assert!(cfg.set_recording("AA:BB:CC:DD:EE:FF", 0));
+        let tag = cfg.tags[0].clone();
+        assert_eq!(tag.recording, Some(false));
+        assert!(!cfg.recording_on_for(&tag), "interval 0 must turn recording off");
+        // unknown MAC -> false
+        assert!(!cfg.set_recording("11:22:33:44:55:66", 1));
     }
 }

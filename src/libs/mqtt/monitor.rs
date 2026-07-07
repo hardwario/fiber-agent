@@ -2822,6 +2822,24 @@ impl MqttMonitor {
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
+                // Persist the recording on/off + interval FIRST, so interval 0 =
+                // off survives a restart and the gap/fallback sync stops queueing
+                // downloads (which would otherwise re-START_RECORD the tag) — H1.
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_recording(mac.clone(), interval_min);
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so the running loop's
+                    // recording_on_for() updates without a restart.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_recording(&mac, interval_min);
+                        }
+                    }
+                } else {
+                    return Err("Config applier not initialized".to_string());
+                }
                 if crate::libs::eye::state::queue_eye_command(
                     crate::libs::eye::state::EyeCommand::SetRecording {
                         mac: mac.clone(),

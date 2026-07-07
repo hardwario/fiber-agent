@@ -1576,6 +1576,111 @@ impl ConfigApplier {
         }
     }
 
+    /// Persist an EYE tag's recording on/off + interval into `eye.tags[mac]`.
+    /// `interval_min == 0` disables recording so it survives a restart and the
+    /// gap/fallback sync stops re-enabling it (H1). The tag must already exist.
+    pub fn apply_eye_recording(&self, mac: String, interval_min: u16) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mac = mac.to_uppercase();
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.update_eye_recording_config(&mut config, &mac, interval_min) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] ✓ EYE recording {} for {}",
+            if interval_min == 0 { "off".to_string() } else { format!("{interval_min}min") },
+            mac
+        );
+        self.log_audit(
+            "SET_EYE_RECORDING",
+            format!(r#"{{"mac":{:?},"interval_min":{}}}"#, mac, interval_min),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     /// Remove an EYE BLE tag from the main config (`eye.tags[]`) by MAC.
     pub fn remove_eye_tag_config(&self, mac: String) -> ApplyResult {
         let applied_at = SystemTime::now()
@@ -2211,6 +2316,50 @@ impl ConfigApplier {
     /// Upsert an EYE tag entry in `eye.tags[]` (get-or-create the `eye` section
     /// and `tags` array, then match on `mac` case-insensitively). `mac` is
     /// expected already uppercased by the caller.
+    /// Set `recording` (+ `logging_interval_min` when on) on an existing
+    /// `eye.tags[mac]` entry. Errors if the tag is not present.
+    fn update_eye_recording_config(
+        &self,
+        config: &mut Value,
+        mac: &str,
+        interval_min: u16,
+    ) -> Result<(), String> {
+        let not_found = || format!("EYE tag with mac '{mac}' not found");
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+        let eye = config_map
+            .get_mut(&Value::String("eye".to_string()))
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(not_found)?;
+        let tags = eye
+            .get_mut(&Value::String("tags".to_string()))
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(not_found)?;
+        let tag = tags
+            .iter_mut()
+            .find(|t| {
+                t.get("mac")
+                    .and_then(|v| v.as_str())
+                    .map(|m| m.to_uppercase() == mac)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(not_found)?
+            .as_mapping_mut()
+            .ok_or_else(|| "Tag entry is not a mapping".to_string())?;
+        tag.insert(
+            Value::String("recording".to_string()),
+            Value::Bool(interval_min != 0),
+        );
+        if interval_min != 0 {
+            tag.insert(
+                Value::String("logging_interval_min".to_string()),
+                Value::Number((interval_min as u64).into()),
+            );
+        }
+        Ok(())
+    }
+
     fn update_eye_tag_config(
         &self,
         config: &mut Value,
@@ -2685,6 +2834,40 @@ mod tests {
         let result = applier.remove_eye_tag_config("AA:BB:CC:DD:EE:FF".to_string());
         assert!(!result.success);
         assert!(result.error_message.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn apply_eye_recording_persists_off_and_interval() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "eye:\n  tags:\n    - mac: 'AA:BB:CC:DD:EE:FF'\n      enabled: true\n",
+        )
+        .unwrap();
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        // interval 5 -> recording on + interval persisted
+        assert!(applier.apply_eye_recording("aa:bb:cc:dd:ee:ff".to_string(), 5).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        let tag = &parsed["eye"]["tags"][0];
+        assert_eq!(tag["recording"].as_bool(), Some(true));
+        assert_eq!(tag["logging_interval_min"].as_u64(), Some(5));
+
+        // interval 0 -> recording off persisted (H1: must survive restart)
+        assert!(applier.apply_eye_recording("AA:BB:CC:DD:EE:FF".to_string(), 0).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed["eye"]["tags"][0]["recording"].as_bool(), Some(false));
+
+        // unknown MAC -> error
+        let r = applier.apply_eye_recording("11:22:33:44:55:66".to_string(), 1);
+        assert!(!r.success);
+        assert!(r.error_message.unwrap().contains("not found"));
     }
 
     // ---- device label apply-path tests -----------------------------------------
