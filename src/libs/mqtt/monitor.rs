@@ -1502,14 +1502,12 @@ impl MqttMonitor {
                                                             &certificate,
                                                         ) {
                                                             Ok((response_msg, maybe_command)) => {
-                                                                // Publish response
-                                                                if let Err(e) = publisher.handle_message(response_msg).await {
-                                                                    eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
-                                                                }
-
-                                                                // Execute command if approved
+                                                                // Execute FIRST, then report the real result.
+                                                                // Previously SUCCESS was published before running the
+                                                                // command and execution errors were only logged, so the
+                                                                // client always saw SUCCESS even when the command failed.
                                                                 if let Some(execute_cmd) = maybe_command {
-                                                                    if let Err(e) = Self::execute_resolved_command(
+                                                                    let exec = Self::execute_resolved_command(
                                                                         execute_cmd,
                                                                         &config_applier,
                                                                         &stm_bridge,
@@ -1525,9 +1523,16 @@ impl MqttMonitor {
                                                                         &topics,
                                                                         &config.publish,
                                                                         &export_handle_slot,
-                                                                    ) {
+                                                                    );
+                                                                    let succeeded = exec.is_ok();
+                                                                    if let Err(ref e) = exec {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
-                                                                    } else {
+                                                                    }
+                                                                    let response = Self::confirm_response_message(exec, response_msg);
+                                                                    if let Err(e) = publisher.handle_message(response).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                    }
+                                                                    if succeeded {
                                                                         // Publish updated config state after successful command
                                                                         let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
                                                                         if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
@@ -1535,6 +1540,11 @@ impl MqttMonitor {
                                                                                 eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
                                                                             }
                                                                         }
+                                                                    }
+                                                                } else {
+                                                                    // REJECTED (no command to run): publish the response as-is.
+                                                                    if let Err(e) = publisher.handle_message(response_msg).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
                                                                     }
                                                                 }
                                                             }
@@ -2331,6 +2341,31 @@ impl MqttMonitor {
             storage_handle,
             export_handle_slot,
         )
+    }
+
+    /// Decide which response to publish for a confirmed command: the pre-built
+    /// SUCCESS response when execution succeeded, or an ERROR response (reusing
+    /// the same challenge/request ids) when it failed. Pure — unit-testable
+    /// without the async MQTT/execute machinery.
+    fn confirm_response_message(exec: Result<(), String>, success: MqttMessage) -> MqttMessage {
+        match exec {
+            Ok(()) => success,
+            Err(e) => match success {
+                MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    ..
+                } => MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    status: "ERROR".to_string(),
+                    applied_at: None,
+                    effective_at: None,
+                    message: format!("Execution failed: {e}"),
+                },
+                other => other,
+            },
+        }
     }
 
     /// Execute an approved configuration command
@@ -3500,5 +3535,46 @@ mod tests {
 
         // malformed MAC rejected
         assert!(MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None).is_err());
+    }
+
+    #[test]
+    fn confirm_response_message_reports_execution_result() {
+        let make = || MqttMessage::PublishConfigResponse {
+            challenge_id: "chal-1".to_string(),
+            request_id: "req-1".to_string(),
+            status: "SUCCESS".to_string(),
+            applied_at: Some(123),
+            effective_at: Some(123),
+            message: "Configuration applied: set_led_brightness".to_string(),
+        };
+
+        // Ok -> the pre-built SUCCESS response passes through unchanged.
+        match MqttMonitor::confirm_response_message(Ok(()), make()) {
+            MqttMessage::PublishConfigResponse { status, applied_at, .. } => {
+                assert_eq!(status, "SUCCESS");
+                assert_eq!(applied_at, Some(123));
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
+
+        // Err -> ERROR response, same ids, nulled timestamps, error in message.
+        match MqttMonitor::confirm_response_message(Err("boom".to_string()), make()) {
+            MqttMessage::PublishConfigResponse {
+                challenge_id,
+                request_id,
+                status,
+                applied_at,
+                effective_at,
+                message,
+            } => {
+                assert_eq!(challenge_id, "chal-1");
+                assert_eq!(request_id, "req-1");
+                assert_eq!(status, "ERROR");
+                assert_eq!(applied_at, None);
+                assert_eq!(effective_at, None);
+                assert!(message.contains("boom"), "message was: {message}");
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
     }
 }
