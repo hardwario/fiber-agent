@@ -1507,6 +1507,15 @@ impl MqttMonitor {
                                                                 // command and execution errors were only logged, so the
                                                                 // client always saw SUCCESS even when the command failed.
                                                                 if let Some(execute_cmd) = maybe_command {
+                                                                    // Teardown commands (reboot / network reconfig) tear down
+                                                                    // the process or the MQTT-bearing interface, which races the
+                                                                    // response publish — so for those publish SUCCESS FIRST (M3).
+                                                                    let teardown = Self::is_teardown_command(&execute_cmd);
+                                                                    if teardown {
+                                                                        if let Err(e) = publisher.handle_message(response_msg.clone()).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                    }
                                                                     let exec = Self::execute_resolved_command(
                                                                         execute_cmd,
                                                                         &config_applier,
@@ -1528,16 +1537,19 @@ impl MqttMonitor {
                                                                     if let Err(ref e) = exec {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
                                                                     }
-                                                                    let response = Self::confirm_response_message(exec, response_msg);
-                                                                    if let Err(e) = publisher.handle_message(response).await {
-                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
-                                                                    }
-                                                                    if succeeded {
-                                                                        // Publish updated config state after successful command
-                                                                        let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
-                                                                            if let Err(e) = publisher.handle_message(config_msg).await {
-                                                                                eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                    if !teardown {
+                                                                        // Execute-first: report the real SUCCESS/ERROR result.
+                                                                        let response = Self::confirm_response_message(exec, response_msg);
+                                                                        if let Err(e) = publisher.handle_message(response).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                        if succeeded {
+                                                                            // Publish updated config state after successful command
+                                                                            let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                                                                            if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
+                                                                                if let Err(e) = publisher.handle_message(config_msg).await {
+                                                                                    eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
@@ -2347,6 +2359,17 @@ impl MqttMonitor {
     /// SUCCESS response when execution succeeded, or an ERROR response (reusing
     /// the same challenge/request ids) when it failed. Pure — unit-testable
     /// without the async MQTT/execute machinery.
+    /// Commands whose execution tears down the process or the MQTT-bearing
+    /// network interface. Their confirmation must be published BEFORE execution
+    /// (best-effort SUCCESS), because execute-then-report would race the shutdown
+    /// and the signer would never receive the response.
+    fn is_teardown_command(cmd: &MqttCommand) -> bool {
+        matches!(
+            cmd,
+            MqttCommand::RestartApplication { .. } | MqttCommand::SetNetworkConfig { .. }
+        )
+    }
+
     fn confirm_response_message(exec: Result<(), String>, success: MqttMessage) -> MqttMessage {
         match exec {
             Ok(()) => success,
