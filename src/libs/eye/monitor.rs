@@ -552,7 +552,9 @@ fn eye_loop(
                 // Publish snapshot periodically.
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
-                    publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s);
+                    let configured: HashSet<String> =
+                        config.tags.iter().map(|t| t.mac.to_uppercase()).collect();
+                    publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s, &configured);
                 }
 
                 // A recorder job was queued: leave the inner loop so the outer
@@ -701,12 +703,11 @@ async fn run_recorder_job(
             }
         }
         EyeJob::Detect => {
-            // Seed a state entry first so the resolved flag is not dropped for a
-            // MAC that isn't in eye.tags (e.g. an ad-hoc detect of a tag that was
-            // never configured/added).
-            if let Ok(mut s) = state.write() {
-                s.entry(mac, None);
-            }
+            // Do NOT seed a state.tags entry: the result is always published on
+            // eye/detect below, and seeding a MAC that isn't in eye.tags would
+            // leave a phantom in the periodic eye/sensors snapshot forever (M2).
+            // For a configured tag the entry already exists (scan/add seeded it)
+            // and the resolved flag is persisted via get_mut below.
             let prev = state
                 .read()
                 .ok()
@@ -820,14 +821,19 @@ fn publish_snapshot(
     mqtt_tx: &Sender<MqttMessage>,
     now_ts: i64,
     tag_timeout_s: i64,
+    configured: &HashSet<String>,
 ) {
     let snapshot = match state.read() {
         Ok(s) => s,
         Err(_) => return,
     };
+    // Only publish tags still in the live config: this prunes a just-removed tag
+    // that a sub-second scan race may have re-materialised in state.tags (M1) and
+    // any non-configured detect target (M2).
     let tags: Vec<EyeTagPayload> = snapshot
         .tags
         .values()
+        .filter(|t| configured.contains(&t.mac))
         .map(|t| EyeTagPayload {
             mac: t.mac.clone(),
             name: t.name.clone(),
