@@ -2234,6 +2234,40 @@ impl MqttMonitor {
             }
             "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
+            "set_eye_recording" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let interval_min = params.get("interval_min").and_then(|v| v.as_u64()).ok_or("Missing interval_min")?;
+                if !matches!(interval_min, 1 | 5 | 15) {
+                    return Err("interval_min must be 1, 5 or 15".to_string());
+                }
+                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+            }
+            "download_eye_history" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                Ok(MqttCommand::DownloadEyeHistory { mac })
+            }
+            "add_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let name = params.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                Ok(MqttCommand::AddEyeTag { mac, name })
+            }
+            "remove_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::RemoveEyeTag { mac })
+            }
+            "detect_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::DetectEyeTag { mac })
+            }
             _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
         }
     }
@@ -3393,5 +3427,63 @@ mod tests {
         };
         let result = configure_tls_transport(&tls);
         assert!(result.is_ok(), "Should succeed loading CA, client cert, and key files: {:?}", result.err());
+    }
+
+    #[cfg(feature = "dev-platform")]
+    #[test]
+    fn test_build_dev_command_eye_arms() {
+        use serde_json::json;
+
+        // add_eye_tag: MAC uppercased, name preserved
+        match MqttMonitor::build_dev_command(
+            "add_eye_tag",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::AddEyeTag { mac, name } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(name.as_deref(), Some("Freezer"));
+            }
+            other => panic!("expected AddEyeTag, got {other:?}"),
+        }
+
+        // add_eye_tag: empty name -> None
+        assert!(matches!(
+            MqttMonitor::build_dev_command(
+                "add_eye_tag",
+                &json!({"mac": "AA:BB:CC:DD:EE:FF", "name": ""}),
+                &None,
+            )
+            .unwrap(),
+            MqttCommand::AddEyeTag { name: None, .. }
+        ));
+
+        // remove_eye_tag / detect_eye_tag uppercase the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("remove_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::RemoveEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("detect_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DetectEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set_eye_recording: valid interval accepted, invalid rejected
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 5, .. }
+        ));
+        assert!(MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}), &None).is_err());
+
+        // download_eye_history uppercases the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("download_eye_history", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DownloadEyeHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // malformed MAC rejected
+        assert!(MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None).is_err());
     }
 }
