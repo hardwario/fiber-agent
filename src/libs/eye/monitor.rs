@@ -39,6 +39,9 @@ enum EyeJob {
     EnableRecording { interval_s: u16 },
     /// Back-fill archived samples with `ts >= since_ts`, then restart recording.
     Download { since_ts: i64, interval_s: u16 },
+    /// Probe the recorder characteristics to determine `is_en12830` without
+    /// changing recording state.
+    Detect,
 }
 
 /// Read-only handle to the EYE monitor state.
@@ -308,6 +311,9 @@ fn eye_loop(
                                 mac_key,
                                 EyeJob::Download { since_ts: since, interval_s },
                             );
+                        }
+                        super::state::EyeCommand::Detect { mac } => {
+                            pending.insert(mac.to_uppercase(), EyeJob::Detect);
                         }
                     }
                 }
@@ -645,6 +651,27 @@ async fn run_recorder_job(
                 }
             }
         }
+        EyeJob::Detect => {
+            let m = mac.to_string();
+            let res = tokio::task::spawn_blocking(move || en12830::read_record_info(&m)).await;
+            match res {
+                Ok(Ok(_info)) => {
+                    eprintln!("[EYE Monitor] Detect: {mac} is an EN12830 recorder");
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.is_en12830 = Some(true);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    // NotFound → recorder characteristics absent → standard tag.
+                    // Other errors (out of range) leave the flag unknown to retry.
+                    eprintln!("[EYE Monitor] Detect {mac}: {e}");
+                    mark_not_en12830_if_absent(state, mac, &e);
+                }
+                Err(e) => eprintln!("[EYE Monitor] Detect {mac} task error: {e}"),
+            }
+        }
     }
 }
 
@@ -728,6 +755,7 @@ fn publish_snapshot(
             last_seen_ts: t.last_seen_ts,
             stale: t.is_stale(now_ts, tag_timeout_s),
             provisioning: t.provisioning.as_str().to_string(),
+            is_en12830: t.is_en12830,
         })
         .collect();
     if tags.is_empty() {

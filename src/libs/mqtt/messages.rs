@@ -215,6 +215,10 @@ pub struct EyeTagPayload {
     /// Whether the tag has not been seen within the configured `tag_timeout_s`.
     pub stale: bool,
     pub provisioning: String,
+    /// `Some(true)` = EN12830 recorder (white) variant, `Some(false)` = standard
+    /// (black), `None` = not yet determined. Surfaced so the viewer can label
+    /// the tag type and expose recorder controls.
+    pub is_en12830: Option<bool>,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
@@ -454,6 +458,28 @@ pub enum MqttCommand {
         mac: String,
     },
 
+    /// Register an EYE tag in the device config (`eye.tags[]`) so it is
+    /// tracked/named explicitly. Auto-provisioning still discovers unknown
+    /// tags; this pins a name/override. Signed via ConfigRequest.
+    AddEyeTag {
+        mac: String,
+        name: Option<String>,
+    },
+
+    /// Remove an EYE tag from the device config (`eye.tags[]`). Signed via
+    /// ConfigRequest.
+    RemoveEyeTag {
+        mac: String,
+    },
+
+    /// Connect to an EYE tag over BLE and determine whether it is an EN12830
+    /// recorder (white) or a standard tag (black). Result surfaces
+    /// asynchronously via `is_en12830` in the `eye/sensors` snapshot. Signed
+    /// via ConfigRequest.
+    DetectEyeTag {
+        mac: String,
+    },
+
     /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
     /// next drain pass replays the stream from row 1. Use after a viewer DB
     /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
@@ -559,6 +585,9 @@ impl MqttCommand {
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
+            MqttCommand::AddEyeTag { .. } => "add_eye_tag",
+            MqttCommand::RemoveEyeTag { .. } => "remove_eye_tag",
+            MqttCommand::DetectEyeTag { .. } => "detect_eye_tag",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
             MqttCommand::SetStickerConfig { .. } => "set_sticker_config",

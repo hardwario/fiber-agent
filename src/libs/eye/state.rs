@@ -136,6 +136,9 @@ pub enum EyeCommand {
     SetRecording { mac: String, interval_min: u16 },
     /// Manually back-fill the archive for a tag now.
     DownloadHistory { mac: String },
+    /// Connect over BLE and determine whether the tag is an EN12830 recorder,
+    /// updating `is_en12830` in the shared state.
+    Detect { mac: String },
 }
 
 /// Aggregate state for the EYE subsystem.
@@ -190,6 +193,12 @@ pub fn is_valid_mac(s: &str) -> bool {
         }
     }
     true
+}
+
+/// Handle to the running monitor's shared state, if the monitor has started.
+/// Lets command handlers seed/drop in-memory tag entries after a config change.
+pub fn eye_state_handle() -> Option<SharedEyeState> {
+    EYE_STATE.get().cloned()
 }
 
 /// Enqueue an external command for the monitor to run. Returns `false` if the

@@ -1457,6 +1457,261 @@ impl ConfigApplier {
         }
     }
 
+    /// Register/update an EYE BLE tag in the main config (`eye.tags[]`).
+    /// `mac` is stored uppercase; `name` is optional. Auto-provisioning still
+    /// discovers unknown tags — this pins an explicit, named entry.
+    pub fn apply_eye_tag_config(&self, mac: String, name: Option<String>) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mac = mac.to_uppercase();
+        if mac.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("mac cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = self.update_eye_tag_config(&mut config, &mac, name.as_deref()) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!("[ConfigApplier] ✓ EYE tag config updated for {}", mac);
+
+        self.log_audit(
+            "ADD_EYE_TAG",
+            format!(r#"{{"mac":{:?},"name":{:?}}}"#, mac, name),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Remove an EYE BLE tag from the main config (`eye.tags[]`) by MAC.
+    pub fn remove_eye_tag_config(&self, mac: String) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mac = mac.to_uppercase();
+        if mac.is_empty() {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("mac cannot be empty".to_string()),
+                applied_at,
+            };
+        }
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // Remove tag from eye.tags array (MAC compared case-insensitively).
+        let removed = (|| -> Result<bool, String> {
+            let eye = config
+                .get_mut("eye")
+                .and_then(|v| v.as_mapping_mut())
+                .ok_or_else(|| "Missing 'eye' section in config".to_string())?;
+
+            let tags_key = Value::String("tags".to_string());
+            let tags = eye
+                .get_mut(&tags_key)
+                .and_then(|v| v.as_sequence_mut())
+                .ok_or_else(|| "Missing 'eye.tags' array in config".to_string())?;
+
+            let original_len = tags.len();
+            tags.retain(|t| {
+                t.get("mac")
+                    .and_then(|v| v.as_str())
+                    .map(|m| m.to_uppercase() != mac)
+                    .unwrap_or(true)
+            });
+
+            Ok(tags.len() < original_len)
+        })();
+
+        match removed {
+            Ok(false) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("EYE tag with mac '{}' not found", mac)),
+                    applied_at,
+                };
+            }
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(e),
+                    applied_at,
+                };
+            }
+            Ok(true) => {}
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!("[ConfigApplier] ✓ EYE tag config removed for {}", mac);
+
+        self.log_audit("REMOVE_EYE_TAG", format!(r#"{{"mac":{:?}}}"#, mac));
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     // --- Private helper methods ---
 
     /// Update thresholds for a specific sensor line in the YAML structure
@@ -1946,6 +2201,79 @@ impl ConfigApplier {
     }
 
     /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
+    /// Upsert an EYE tag entry in `eye.tags[]` (get-or-create the `eye` section
+    /// and `tags` array, then match on `mac` case-insensitively). `mac` is
+    /// expected already uppercased by the caller.
+    fn update_eye_tag_config(
+        &self,
+        config: &mut Value,
+        mac: &str,
+        name: Option<&str>,
+    ) -> Result<(), String> {
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+
+        // Get or create 'eye' section
+        let eye_key = Value::String("eye".to_string());
+        if !config_map.contains_key(&eye_key) {
+            let mut eye = Mapping::new();
+            eye.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            eye.insert(Value::String("tags".to_string()), Value::Sequence(Vec::new()));
+            config_map.insert(eye_key.clone(), Value::Mapping(eye));
+        }
+
+        let eye = config_map
+            .get_mut(&eye_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Failed to get 'eye' section".to_string())?;
+
+        // Get or create 'tags' array
+        let tags_key = Value::String("tags".to_string());
+        if !eye.contains_key(&tags_key) {
+            eye.insert(tags_key.clone(), Value::Sequence(Vec::new()));
+        }
+
+        let tags = eye
+            .get_mut(&tags_key)
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(|| "Failed to get 'eye.tags' array".to_string())?;
+
+        // Find existing entry (case-insensitive MAC) or create a new one.
+        let entry = tags.iter_mut().find(|t| {
+            t.get("mac")
+                .and_then(|v| v.as_str())
+                .map(|m| m.to_uppercase() == mac)
+                .unwrap_or(false)
+        });
+
+        let tag_map = if let Some(existing) = entry {
+            existing
+                .as_mapping_mut()
+                .ok_or_else(|| "Tag entry is not a mapping".to_string())?
+        } else {
+            let mut new_entry = Mapping::new();
+            new_entry.insert(
+                Value::String("mac".to_string()),
+                Value::String(mac.to_string()),
+            );
+            new_entry.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            tags.push(Value::Mapping(new_entry));
+            tags.last_mut()
+                .unwrap()
+                .as_mapping_mut()
+                .ok_or_else(|| "Failed to get new tag entry".to_string())?
+        };
+
+        if let Some(n) = name {
+            tag_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
+    /// Upsert a per-field threshold inside lorawan.sensors[*].field_thresholds.
     pub fn apply_lorawan_field_threshold(
         &self,
         dev_eui: String,
@@ -2264,6 +2592,91 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 1, "expected a sticker_removed row to be appended");
+    }
+
+    // ---- EYE tag config apply/remove tests --------------------------------------
+
+    #[test]
+    fn apply_eye_tag_config_creates_section_and_entry() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        // No `eye:` section yet — the helper must create it.
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "system:\n  device_label: \"X\"\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier
+            .apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("Freezer".to_string()));
+        assert!(result.success, "{:?}", result.error_message);
+
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let parsed: Value = serde_yaml::from_str(&contents).unwrap();
+        let tags = parsed["eye"]["tags"].as_sequence().unwrap();
+        assert_eq!(tags.len(), 1);
+        // MAC is stored uppercase.
+        assert_eq!(tags[0]["mac"].as_str().unwrap(), "AA:BB:CC:DD:EE:FF");
+        assert_eq!(tags[0]["name"].as_str().unwrap(), "Freezer");
+        assert_eq!(tags[0]["enabled"].as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn apply_eye_tag_config_updates_existing_name() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "eye:\n  enabled: true\n  tags:\n    - mac: 'AA:BB:CC:DD:EE:FF'\n      enabled: true\n      name: Old\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        // Same MAC in lowercase must match the existing (uppercase) entry.
+        let result = applier
+            .apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("New".to_string()));
+        assert!(result.success, "{:?}", result.error_message);
+
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let parsed: Value = serde_yaml::from_str(&contents).unwrap();
+        let tags = parsed["eye"]["tags"].as_sequence().unwrap();
+        assert_eq!(tags.len(), 1, "must upsert, not duplicate");
+        assert_eq!(tags[0]["name"].as_str().unwrap(), "New");
+    }
+
+    #[test]
+    fn remove_eye_tag_config_removes_entry() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "eye:\n  tags:\n    - mac: 'AA:BB:CC:DD:EE:FF'\n      enabled: true\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier.remove_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string());
+        assert!(result.success, "{:?}", result.error_message);
+
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let parsed: Value = serde_yaml::from_str(&contents).unwrap();
+        assert_eq!(parsed["eye"]["tags"].as_sequence().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn remove_eye_tag_config_missing_is_error() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "eye:\n  tags: []\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier.remove_eye_tag_config("AA:BB:CC:DD:EE:FF".to_string());
+        assert!(!result.success);
+        assert!(result.error_message.unwrap().contains("not found"));
     }
 
     // ---- device label apply-path tests -----------------------------------------

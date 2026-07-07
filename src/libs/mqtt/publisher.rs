@@ -838,6 +838,7 @@ impl MqttPublisher {
                     "last_seen_ts": t.last_seen_ts,
                     "stale": t.stale,
                     "provisioning": t.provisioning,
+                    "is_en12830": t.is_en12830,
                 })
             })
             .collect();

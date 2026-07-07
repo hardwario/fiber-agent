@@ -2778,6 +2778,67 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
+            MqttCommand::AddEyeTag { mac, name } => {
+                // Persist the tag into `eye.tags[]` so it is tracked/named
+                // explicitly (auto-provisioning still discovers unknown tags).
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_tag_config(mac.clone(), name.clone());
+                    if result.success {
+                        // Seed in-memory state so the tag shows up before its
+                        // first advertisement is parsed.
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                s.entry(&mac, name);
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::RemoveEyeTag { mac } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.remove_eye_tag_config(mac.clone());
+                    if result.success {
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                s.tags.remove(&mac.to_uppercase());
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} removed from config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DetectEyeTag { mac } => {
+                // Detection runs over raw L2CAP GATT, which must not overlap the
+                // active BLE scan — hand off to the EYE monitor via the queue.
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if crate::libs::eye::state::queue_eye_command(
+                    crate::libs::eye::state::EyeCommand::Detect { mac: mac.clone() },
+                ) {
+                    eprintln!("[MQTT Monitor] Queued EYE detect {mac}");
+                    Ok(())
+                } else {
+                    Err("EYE monitor not running".to_string())
+                }
+            }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
                 // The reset is two-phase:
                 //   1. Persisted SQLite cursor → storage handle (so a restart
