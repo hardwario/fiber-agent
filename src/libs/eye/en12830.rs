@@ -535,6 +535,20 @@ pub fn enable_recording(mac: &str, interval_s: u16, now_ts: u32) -> io::Result<(
     Ok(())
 }
 
+/// Stop temperature recording on the tag (STOP_RECORD). Used by set_eye_recording
+/// with `interval_min = 0`.
+pub fn stop_recording(mac: &str) -> io::Result<()> {
+    let rec = Recorder::connect(mac)?;
+    let resp = rec.send_cmd(CMD_STOP_RECORD, &[])?;
+    if resp != RESP_OK {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("STOP_RECORD rejected: resp=0x{resp:02x}"),
+        ));
+    }
+    Ok(())
+}
+
 /// Read the tag's current Record Info (recording state, interval, count, start).
 pub fn read_record_info(mac: &str) -> io::Result<RecordInfo> {
     Recorder::connect(mac)?.read_record_info()

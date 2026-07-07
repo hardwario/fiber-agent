@@ -2247,8 +2247,8 @@ impl MqttMonitor {
             "set_eye_recording" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
                 let interval_min = params.get("interval_min").and_then(|v| v.as_u64()).ok_or("Missing interval_min")?;
-                if !matches!(interval_min, 1 | 5 | 15) {
-                    return Err("interval_min must be 1, 5 or 15".to_string());
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
+                    return Err("interval_min must be 0 (off), 1, 5 or 15".to_string());
                 }
                 Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
             }
@@ -3520,10 +3520,14 @@ mod tests {
             MqttCommand::DetectEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
         ));
 
-        // set_eye_recording: valid interval accepted, invalid rejected
+        // set_eye_recording: valid interval accepted, 0 = off accepted, invalid rejected
         assert!(matches!(
             MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}), &None).unwrap(),
             MqttCommand::SetEyeRecording { interval_min: 5, .. }
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 0}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 0, .. }
         ));
         assert!(MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}), &None).is_err());
 

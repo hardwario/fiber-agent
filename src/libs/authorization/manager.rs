@@ -995,9 +995,9 @@ impl AuthorizationManager {
                 let interval_min = challenge.params.get("interval_min")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing interval_min".to_string()))?;
-                if !matches!(interval_min, 1 | 5 | 15) {
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
                     return Err(AuthError::InvalidCommand(
-                        "interval_min must be 1, 5 or 15".to_string(),
+                        "interval_min must be 0 (off), 1, 5 or 15".to_string(),
                     ));
                 }
                 Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })

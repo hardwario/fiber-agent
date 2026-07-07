@@ -43,6 +43,8 @@ enum EyeJob {
     /// Probe the recorder characteristics to determine `is_en12830` without
     /// changing recording state.
     Detect,
+    /// Stop the tag's on-tag recording (set_eye_recording with interval 0).
+    StopRecording,
 }
 
 /// Read-only handle to the EYE monitor state.
@@ -304,12 +306,18 @@ fn eye_loop(
                 for cmd in external {
                     match cmd {
                         super::state::EyeCommand::SetRecording { mac, interval_min } => {
-                            let interval_s = match interval_min {
-                                1 => 60,
-                                15 => 900,
-                                _ => 300,
+                            let job = if interval_min == 0 {
+                                // interval 0 = turn recording off
+                                EyeJob::StopRecording
+                            } else {
+                                let interval_s = match interval_min {
+                                    1 => 60,
+                                    15 => 900,
+                                    _ => 300,
+                                };
+                                EyeJob::EnableRecording { interval_s }
                             };
-                            pending.insert(mac.to_uppercase(), EyeJob::EnableRecording { interval_s });
+                            pending.insert(mac.to_uppercase(), job);
                         }
                         super::state::EyeCommand::DownloadHistory { mac } => {
                             let mac_key = mac.to_uppercase();
@@ -583,6 +591,18 @@ async fn run_recorder_job(
                     mark_not_en12830_if_absent(state, mac, &e);
                 }
                 Err(e) => eprintln!("[EYE Monitor] enable_recording {mac} task error: {e}"),
+            }
+        }
+        EyeJob::StopRecording => {
+            let m = mac.to_string();
+            let res = tokio::task::spawn_blocking(move || en12830::stop_recording(&m)).await;
+            match res {
+                Ok(Ok(())) => eprintln!("[EYE Monitor] Recording stopped on {mac}"),
+                Ok(Err(e)) => {
+                    eprintln!("[EYE Monitor] stop_recording {mac} failed: {e}");
+                    mark_not_en12830_if_absent(state, mac, &e);
+                }
+                Err(e) => eprintln!("[EYE Monitor] stop_recording {mac} task error: {e}"),
             }
         }
         EyeJob::Download { since_ts, interval_s } => {
