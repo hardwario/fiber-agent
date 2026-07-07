@@ -106,6 +106,8 @@ pub enum ProvisionError {
     MissingCharacteristic(&'static str),
     /// A GATT write/read failed (commonly `NotPermitted` = wrong PIN / lockout).
     Gatt(bluer::Error),
+    /// Connect/service-resolution exceeded `SERVICE_RESOLVE_TIMEOUT`.
+    Timeout,
 }
 
 impl std::fmt::Display for ProvisionError {
@@ -120,6 +122,7 @@ impl std::fmt::Display for ProvisionError {
                 f,
                 "GATT write/read failed: {e} (wrong PIN or anti-bruteforce lockout?)"
             ),
+            ProvisionError::Timeout => write!(f, "provisioning timed out"),
         }
     }
 }

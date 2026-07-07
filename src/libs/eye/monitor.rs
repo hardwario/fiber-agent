@@ -23,7 +23,7 @@ use crate::libs::storage::{StorageHandle, StorageReader};
 
 use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
 use super::en12830;
-use super::provisioning::{provision, EyeProfile};
+use super::provisioning::{provision, EyeProfile, ProvisionError};
 use super::state::{
     create_shared_eye_state, register_eye_config, register_eye_state, ProvisioningStatus,
     SharedEyeConfig, SharedEyeState,
@@ -458,7 +458,18 @@ fn eye_loop(
                                 }
                             }
                             eprintln!("[EYE Monitor] Provisioning {mac_key} (first sight)...");
-                            let result = provision(&device, &EyeProfile::default()).await;
+                            // Bound the whole provisioning session so a stuck
+                            // connect()/services() cannot freeze the single-thread
+                            // runtime (scan + command queue) indefinitely.
+                            let result = match tokio::time::timeout(
+                                crate::libs::eye::provisioning::SERVICE_RESOLVE_TIMEOUT,
+                                provision(&device, &EyeProfile::default()),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err(ProvisionError::Timeout),
+                            };
                             let _ = device.disconnect().await;
                             if let Ok(mut s) = state.write() {
                                 if let Some(t) = s.tags.get_mut(&mac_key) {
