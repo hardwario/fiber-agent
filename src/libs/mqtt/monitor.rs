@@ -2909,7 +2909,12 @@ impl MqttMonitor {
                         // the scan loop and remove path).
                         if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
                             if let Ok(mut s) = handle.write() {
-                                s.entry(&mac.to_uppercase(), name);
+                                let entry = s.entry(&mac.to_uppercase(), name.clone());
+                                // entry() ignores `name` for an existing tag, so a
+                                // rename must be applied explicitly (only when given).
+                                if let Some(n) = name {
+                                    entry.name = Some(n);
+                                }
                             }
                         }
                         eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");

@@ -610,7 +610,16 @@ async fn run_recorder_job(
             let m = mac.to_string();
             let res = tokio::task::spawn_blocking(move || en12830::stop_recording(&m)).await;
             match res {
-                Ok(Ok(())) => eprintln!("[EYE Monitor] Recording stopped on {mac}"),
+                Ok(Ok(())) => {
+                    eprintln!("[EYE Monitor] Recording stopped on {mac}");
+                    // A successful STOP_RECORD proves the recorder characteristic
+                    // exists → this is an EN12830 (white) tag.
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.is_en12830 = Some(true);
+                        }
+                    }
+                }
                 Ok(Err(e)) => {
                     eprintln!("[EYE Monitor] stop_recording {mac} failed: {e}");
                     mark_not_en12830_if_absent(state, mac, &e);
