@@ -248,6 +248,10 @@ impl MqttPublisher {
                 self.publish_eye_sensors(tags).await
             }
 
+            MqttMessage::PublishEyeDetectResult { mac, is_en12830, status } => {
+                self.publish_eye_detect_result(&mac, is_en12830, &status).await
+            }
+
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
@@ -897,6 +901,26 @@ impl MqttPublisher {
 
         let topic = self.topics.lorawan_sensor_history(&dev_eui);
         self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+    }
+
+    /// Publish the result of a detect_eye_tag probe on `eye/detect`.
+    async fn publish_eye_detect_result(
+        &self,
+        mac: &str,
+        is_en12830: Option<bool>,
+        status: &str,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "mac": mac,
+            "is_en12830": is_en12830,
+            "status": status,
+        });
+
+        let topic = self.topics.eye_detect();
+        let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
+
+        self.publish(topic, payload.to_string(), qos, false).await
     }
 
     /// Publish pairing response (success)

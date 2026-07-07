@@ -173,6 +173,15 @@ pub enum MqttMessage {
         tags: Vec<EyeTagPayload>,
     },
 
+    /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
+    /// `is_en12830` is `None` when the probe was inconclusive; `status` is
+    /// "ok" | "unreachable" | "error".
+    PublishEyeDetectResult {
+        mac: String,
+        is_en12830: Option<bool>,
+        status: String,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 

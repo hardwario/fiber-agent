@@ -205,7 +205,7 @@ fn eye_loop(
                 let jobs: Vec<(String, EyeJob)> = pending.drain().collect();
                 let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
                 for (mac, job) in jobs {
-                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs).await;
+                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs, &mqtt_tx).await;
                 }
             }
 
@@ -559,6 +559,7 @@ async fn run_recorder_job(
     state: &SharedEyeState,
     storage: &StorageHandle,
     sync_fallback_secs: i64,
+    mqtt_tx: &Sender<MqttMessage>,
 ) {
     let now = now_secs();
     let now_u32 = now as u32;
@@ -669,25 +670,50 @@ async fn run_recorder_job(
             }
         }
         EyeJob::Detect => {
+            // Seed a state entry first so the resolved flag is not dropped for a
+            // MAC that isn't in eye.tags (e.g. an ad-hoc detect of a tag that was
+            // never configured/added).
+            if let Ok(mut s) = state.write() {
+                s.entry(mac, None);
+            }
+            let prev = state
+                .read()
+                .ok()
+                .and_then(|s| s.tags.get(mac).and_then(|t| t.is_en12830));
             let m = mac.to_string();
             let res = tokio::task::spawn_blocking(move || en12830::read_record_info(&m)).await;
-            match res {
+            let (is_en12830, status) = match res {
                 Ok(Ok(_info)) => {
                     eprintln!("[EYE Monitor] Detect: {mac} is an EN12830 recorder");
-                    if let Ok(mut s) = state.write() {
-                        if let Some(t) = s.tags.get_mut(mac) {
-                            t.is_en12830 = Some(true);
-                        }
-                    }
+                    classify_detect(Ok(()), prev)
                 }
                 Ok(Err(e)) => {
                     // NotFound → recorder characteristics absent → standard tag.
-                    // Other errors (out of range) leave the flag unknown to retry.
+                    // Other errors (out of range / connect fail) are inconclusive.
                     eprintln!("[EYE Monitor] Detect {mac}: {e}");
-                    mark_not_en12830_if_absent(state, mac, &e);
+                    classify_detect(Err(e.kind()), prev)
                 }
-                Err(e) => eprintln!("[EYE Monitor] Detect {mac} task error: {e}"),
+                Err(e) => {
+                    eprintln!("[EYE Monitor] Detect {mac} task error: {e}");
+                    (prev, "error")
+                }
+            };
+            // Persist the flag only when the probe was conclusive; otherwise leave
+            // it for a later retry rather than corrupting a known value.
+            if let Some(val) = is_en12830 {
+                if let Ok(mut s) = state.write() {
+                    if let Some(t) = s.tags.get_mut(mac) {
+                        t.is_en12830 = Some(val);
+                    }
+                }
             }
+            // Always report an explicit result — the periodic snapshot alone
+            // cannot distinguish "still detecting" from "unreachable".
+            let _ = mqtt_tx.try_send(MqttMessage::PublishEyeDetectResult {
+                mac: mac.to_string(),
+                is_en12830,
+                status: status.to_string(),
+            });
         }
     }
 }
@@ -702,6 +728,22 @@ fn mark_not_en12830_if_absent(state: &SharedEyeState, mac: &str, e: &io::Error) 
                 t.is_en12830 = Some(false);
             }
         }
+    }
+}
+
+/// Classify a detect probe outcome into (resolved `is_en12830`, status string).
+/// `probe`: `Ok(())` = recorder characteristics present; `Err(kind)` = the read
+/// failed with that io kind. `prev` (the tag's current flag) is preserved when
+/// the outcome is inconclusive, so an unreachable tag is not misreported as
+/// "not a recorder".
+fn classify_detect(
+    probe: Result<(), io::ErrorKind>,
+    prev: Option<bool>,
+) -> (Option<bool>, &'static str) {
+    match probe {
+        Ok(()) => (Some(true), "ok"),
+        Err(io::ErrorKind::NotFound) => (Some(false), "ok"),
+        Err(_) => (prev, "unreachable"),
     }
 }
 
@@ -779,4 +821,29 @@ fn publish_snapshot(
         return;
     }
     let _ = mqtt_tx.try_send(MqttMessage::PublishEyeSensorData { tags });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_detect_maps_outcomes() {
+        // recorder characteristics present -> definitely EN12830
+        assert_eq!(classify_detect(Ok(()), None), (Some(true), "ok"));
+        // characteristics absent -> definitely a standard (black) tag
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::NotFound), None),
+            (Some(false), "ok")
+        );
+        // inconclusive (out of range / connect fail) -> keep previous, report it
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::TimedOut), None),
+            (None, "unreachable")
+        );
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::TimedOut), Some(true)),
+            (Some(true), "unreachable")
+        );
+    }
 }
