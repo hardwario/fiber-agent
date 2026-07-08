@@ -15,10 +15,14 @@ pub struct GatewayDetection {
 }
 
 impl GatewayDetection {
-    /// Returns true if gateway hardware appears to be present.
-    /// Only true when concentratord is actually running — it fails without hardware.
+    /// Returns true if LoRaWAN is usable: either a local concentrator (RAK5146)
+    /// is running, OR ChirpStack is running — which covers devices that have no
+    /// local concentrator but receive/transmit via an EXTERNAL gateway registered
+    /// in the on-device ChirpStack (Semtech UDP). Without this, the monitor never
+    /// starts on external-gateway devices, so fPort-85 sticker config/history
+    /// downlinks can't be sent and uplinks aren't re-published.
     pub fn is_present(&self) -> bool {
-        self.concentratord_running
+        self.concentratord_running || self.chirpstack_running
     }
 }
 
@@ -45,6 +49,18 @@ pub fn detect_gateway() -> GatewayDetection {
     }
 
     detection
+}
+
+/// Returns true if at least one enabled external LoRaWAN gateway is configured.
+///
+/// Used so the LoRaWAN monitor starts even when the built-in concentrator is
+/// absent but an external gateway forwards uplinks over Semtech UDP :1700.
+pub fn has_external_gateway() -> bool {
+    crate::libs::config::Config::load_default()
+        .ok()
+        .and_then(|c| c.lorawan)
+        .map(|l| l.gateways.iter().any(|g| g.enabled))
+        .unwrap_or(false)
 }
 
 /// Check if a systemd service is currently active (running)

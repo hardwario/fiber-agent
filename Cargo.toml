@@ -52,6 +52,9 @@ libc = "0.2"
 # Protobuf codec for STICKER LoRaWAN payloads (proto/app_config.proto, sticker-firmware v1.4.0)
 prost = "0.13"
 
+# Control CLI (fiberctl client + in-daemon control socket server, #79)
+clap = { version = "4", features = ["derive"] }
+
 [build-dependencies]
 prost-build = "0.13"
 
@@ -62,6 +65,12 @@ dev-platform = []
 [[bin]]
 name = "fiber_app"
 path = "src/main.rs"
+
+# Control CLI client (#79). Talks to the running fiber_app daemon over the
+# control socket; the daemon embeds the server side (libs::control).
+[[bin]]
+name = "fiberctl"
+path = "src/bin/fiberctl.rs"
 
 [lib]
 name = "fiber_app"

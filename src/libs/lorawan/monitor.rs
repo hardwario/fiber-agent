@@ -35,6 +35,20 @@ struct CommandRequest {
     /// Encoded `Command` protobuf (no proto-version prefix on downlinks).
     bytes: Vec<u8>,
     resp_tx: Sender<DecodedResponse>,
+    /// When true the seq may receive several responses (e.g. paged
+    /// HistoryFrames that all echo the command seq); the monitor keeps the
+    /// registration until the caller drops the receiver, instead of removing
+    /// it after the first response.
+    multi: bool,
+}
+
+/// A raw downlink queued by `LoRaWANHandle::send_raw` — published verbatim on the
+/// requested fPort with no seq allocation and no response correlation, so it
+/// cannot disturb the seq-correlated command stream. Fire-and-forget ("expert").
+struct RawDownlink {
+    dev_eui: String,
+    bytes: Vec<u8>,
+    fport: u8,
 }
 
 /// Handle for sending messages to the LoRaWAN monitor
@@ -42,6 +56,10 @@ struct CommandRequest {
 pub struct LoRaWANHandle {
     pub state: SharedLoRaWANState,
     cmd_tx: Sender<CommandRequest>,
+    raw_tx: Sender<RawDownlink>,
+    /// Signals the monitor loop to drop a multi-response registration once its
+    /// collector has finished, so a recycled seq cannot alias a stale waiter.
+    release_tx: Sender<u32>,
     seq: Arc<AtomicU32>,
 }
 
@@ -67,11 +85,95 @@ impl LoRaWANHandle {
                 seq,
                 bytes,
                 resp_tx,
+                multi: false,
             })
             .map_err(|_| "LoRaWAN monitor not running".to_string())?;
         resp_rx
             .recv_timeout(timeout)
             .map_err(|_| format!("no fPort-85 response for seq {seq} within {timeout:?}"))
+    }
+
+    /// Send a downlink `Command` and collect a multi-response reply whose pages
+    /// share one seq (e.g. an fPort-85 `HistoryFrame` set). Returns every
+    /// response received until `frame_count` frames arrive (learned from the
+    /// first HistoryFrame) or no further frame arrives within `frame_timeout`.
+    /// A non-history reply (Error/Empty/…) returns immediately as a single item.
+    pub fn send_command_collect(
+        &self,
+        dev_eui: &str,
+        mut command: Command,
+        frame_timeout: Duration,
+    ) -> Result<Vec<DecodedResponse>, String> {
+        use super::sticker_response::ResponseKind;
+        let seq = (self.seq.fetch_add(1, Ordering::Relaxed) % 250) + 1;
+        command.seq = seq;
+        let bytes = command.encode_to_vec();
+        let (resp_tx, resp_rx) = unbounded();
+        self.cmd_tx
+            .send(CommandRequest {
+                dev_eui: dev_eui.to_lowercase(),
+                seq,
+                bytes,
+                resp_tx,
+                multi: true,
+            })
+            .map_err(|_| "LoRaWAN monitor not running".to_string())?;
+
+        // The first response bounds the collection.
+        let first = match resp_rx.recv_timeout(frame_timeout) {
+            Ok(resp) => resp,
+            Err(_) => {
+                // Release the registration so a seq that never got a reply
+                // cannot alias a later command that recycles the same seq.
+                let _ = self.release_tx.send(seq);
+                return Err(format!(
+                    "no fPort-85 response for seq {seq} within {frame_timeout:?}"
+                ));
+            }
+        };
+        // Bound the collection by DISTINCT frame_index: a duplicated frame must
+        // not advance completion, and frame_count is a device estimate that can
+        // drift upward mid-replay, so keep the max seen. Non-history replies
+        // (Error/Empty/…) leave target 0 and return as a single item.
+        let mut seen = std::collections::HashSet::<u32>::new();
+        let mut target: u32 = 0;
+        if let ResponseKind::HistoryFrame { frame_index, frame_count, .. } = &first.kind {
+            seen.insert(*frame_index);
+            target = (*frame_count).max(1);
+        }
+        let mut frames = vec![first];
+        while (seen.len() as u32) < target {
+            match resp_rx.recv_timeout(frame_timeout) {
+                Ok(resp) => {
+                    if let ResponseKind::HistoryFrame { frame_index, frame_count, .. } = &resp.kind {
+                        seen.insert(*frame_index);
+                        target = target.max((*frame_count).max(1));
+                    }
+                    frames.push(resp);
+                }
+                Err(_) => break, // inter-frame timeout → return what we have
+            }
+        }
+        // Collection done: deregister the multi seq so its pending_multi entry
+        // is dropped deterministically instead of leaking until seq recycles.
+        let _ = self.release_tx.send(seq);
+        Ok(frames)
+    }
+
+    /// Enqueue a raw downlink to a STICKER (default fPort 85) — fire-and-forget.
+    /// The bytes are sent verbatim (the caller owns the encoding, e.g. the
+    /// docs.hardwario.com downlink generator); no seq is allocated and no
+    /// response is awaited, so this cannot disturb the seq-correlated
+    /// `send_command` stream. Any device reply is logged as an unmatched
+    /// fPort-85 response and dropped.
+    pub fn send_raw(&self, dev_eui: &str, bytes: Vec<u8>, fport: u8) -> Result<(), String> {
+        self.raw_tx
+            .send(RawDownlink {
+                dev_eui: dev_eui.to_lowercase(),
+                bytes,
+                fport,
+            })
+            .map_err(|_| "LoRaWAN monitor not running".to_string())
     }
 }
 
@@ -81,6 +183,8 @@ pub struct LoRaWANMonitor {
     shutdown_flag: Arc<AtomicBool>,
     pub state: SharedLoRaWANState,
     cmd_tx: Sender<CommandRequest>,
+    raw_tx: Sender<RawDownlink>,
+    release_tx: Sender<u32>,
     seq: Arc<AtomicU32>,
 }
 
@@ -97,23 +201,32 @@ impl LoRaWANMonitor {
         buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
         storage: StorageHandle,
     ) -> io::Result<Self> {
-        // Detect gateway hardware
+        // Detect built-in gateway hardware and external-gateway config.
         let detection = detector::detect_gateway();
         let gateway_present = detection.is_present();
+        let has_external = detector::has_external_gateway();
+        let should_run = gateway_present || has_external;
 
         let state = create_shared_lorawan_state(gateway_present);
 
         let (cmd_tx, cmd_rx) = unbounded::<CommandRequest>();
+        let (raw_tx, raw_rx) = unbounded::<RawDownlink>();
+        let (release_tx, release_rx) = unbounded::<u32>();
         let seq = Arc::new(AtomicU32::new(0));
 
-        if !gateway_present {
-            eprintln!("[LoRaWAN Monitor] No gateway detected, monitor will not start");
-            // cmd_rx dropped → send_command returns "monitor not running".
+        if !should_run {
+            eprintln!(
+                "[LoRaWAN Monitor] Not starting: concentratord={}, chirpstack={}, external_gateway={}",
+                detection.concentratord_running, detection.chirpstack_running, has_external
+            );
+            // cmd_rx/raw_rx dropped → send_command/send_raw return "monitor not running".
             return Ok(Self {
                 thread_handle: None,
                 shutdown_flag: Arc::new(AtomicBool::new(false)),
                 state,
                 cmd_tx,
+                raw_tx,
+                release_tx,
                 seq,
             });
         }
@@ -121,6 +234,17 @@ impl LoRaWANMonitor {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
         let state_clone = state.clone();
+
+        // Handle the loop can use to drive its own downlinks (auto-backfill on a
+        // STICKER reconnect, #43). Its cmd_tx feeds the same cmd_rx the loop
+        // drains, so the backfill read must run on a blocking task, never inline.
+        let self_handle = LoRaWANHandle {
+            state: state.clone(),
+            cmd_tx: cmd_tx.clone(),
+            raw_tx: raw_tx.clone(),
+            release_tx: release_tx.clone(),
+            seq: seq.clone(),
+        };
 
         let thread_handle = thread::spawn(move || {
             lorawan_loop(
@@ -134,6 +258,9 @@ impl LoRaWANMonitor {
                 buzzer_priority_manager,
                 storage,
                 cmd_rx,
+                raw_rx,
+                release_rx,
+                self_handle,
             );
         });
 
@@ -144,6 +271,8 @@ impl LoRaWANMonitor {
             shutdown_flag,
             state,
             cmd_tx,
+            raw_tx,
+            release_tx,
             seq,
         })
     }
@@ -153,6 +282,8 @@ impl LoRaWANMonitor {
         LoRaWANHandle {
             state: self.state.clone(),
             cmd_tx: self.cmd_tx.clone(),
+            raw_tx: self.raw_tx.clone(),
+            release_tx: self.release_tx.clone(),
             seq: self.seq.clone(),
         }
     }
@@ -183,6 +314,9 @@ fn lorawan_loop(
     buzzer_priority_manager: Option<Arc<crate::libs::buzzer::priority::BuzzerPriorityManager>>,
     storage: StorageHandle,
     cmd_rx: Receiver<CommandRequest>,
+    raw_rx: Receiver<RawDownlink>,
+    release_rx: Receiver<u32>,
+    self_handle: LoRaWANHandle,
 ) {
     // Build a tokio runtime for the async MQTT client
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -202,14 +336,14 @@ fn lorawan_loop(
         // MQTT broker hiccups and only fires on_new_sensor_alarm() for genuinely new alarms.
         let mut prev_any_sticker_critical = false;
 
-        // fPort-85 command/response correlation (#34): (dev_eui, seq) ->
-        // waiting sender. The key is per-device so a malicious or buggy
-        // device on the same tenant cannot deliver a forged Response with
-        // the matching seq to the waiter of another device — the seq counter
-        // wraps every 250, so cross-device collisions are trivial otherwise.
+        // fPort-85 command/response correlation (#34): seq -> waiting sender.
         // Persists across MQTT reconnects. last_app_id is learned from uplink
         // topics so downlinks can target application/{app_id}/device/.../command/down.
-        let mut pending: HashMap<(String, u32), Sender<DecodedResponse>> = HashMap::new();
+        let mut pending: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
+        // Multi-response registrations (paged HistoryFrames share one seq); kept
+        // until the caller drops its receiver, at which point the next send fails
+        // and the entry is dropped.
+        let mut pending_multi: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
         let mut last_app_id: Option<String> = None;
 
         loop {
@@ -261,33 +395,6 @@ fn lorawan_loop(
             let publish_interval = Duration::from_secs(config.publish_interval_s);
             let timeout_secs = config.sensor_timeout_s;
 
-            // Dedicated event pump. `EventLoop::poll()` is NOT cancel-safe —
-            // dropping the future mid-read loses bytes from the in-progress
-            // MQTT frame and corrupts the eventloop's state. We previously
-            // wrapped poll() in `tokio::time::timeout(1s, ...)` to also do
-            // periodic work, which silently dropped uplink frames whenever
-            // the timeout fired mid-frame. Now: a dedicated task owns the
-            // eventloop, never cancels poll(), and feeds events through a
-            // bounded mpsc to the periodic-work loop. mpsc::Receiver::recv
-            // IS cancel-safe so the outer select! below is safe.
-            let (event_tx, mut event_rx) =
-                tokio::sync::mpsc::channel::<Result<Event, rumqttc::ConnectionError>>(64);
-            let pump_handle = tokio::spawn(async move {
-                loop {
-                    match eventloop.poll().await {
-                        Ok(ev) => {
-                            if event_tx.send(Ok(ev)).await.is_err() {
-                                break; // receiver dropped (outer reconnect)
-                            }
-                        }
-                        Err(e) => {
-                            let _ = event_tx.send(Err(e)).await;
-                            break;
-                        }
-                    }
-                }
-            });
-
             // Event loop
             loop {
                 if shutdown_flag.load(Ordering::Relaxed) {
@@ -295,8 +402,7 @@ fn lorawan_loop(
                 }
 
                 // Publish queued downlink commands (#33) and register them for
-                // fPort-85 response correlation (#34). Done at the top of every
-                // iteration so commands don't wait for the next uplink to drain.
+                // fPort-85 response correlation (#34).
                 while let Ok(req) = cmd_rx.try_recv() {
                     match &last_app_id {
                         Some(app_id) => {
@@ -317,7 +423,22 @@ fn lorawan_loop(
                             {
                                 Ok(_) => {
                                     eprintln!("[LoRaWAN Monitor] downlink cmd seq={} -> {}", req.seq, req.dev_eui);
-                                    pending.insert((req.dev_eui.clone(), req.seq), req.resp_tx);
+                                    // Newest-wins: a recycled seq must not resolve to a stale
+                                    // waiter, so evict any prior registration for this seq in
+                                    // both maps first (separate removes, no short-circuit).
+                                    let had = pending.remove(&req.seq).is_some();
+                                    let had_multi = pending_multi.remove(&req.seq).is_some();
+                                    if had || had_multi {
+                                        eprintln!(
+                                            "[LoRaWAN Monitor] seq={} reused; dropped stale pending registration",
+                                            req.seq
+                                        );
+                                    }
+                                    if req.multi {
+                                        pending_multi.insert(req.seq, req.resp_tx);
+                                    } else {
+                                        pending.insert(req.seq, req.resp_tx);
+                                    }
                                 }
                                 Err(e) => eprintln!("[LoRaWAN Monitor] downlink publish failed: {}", e),
                             }
@@ -329,17 +450,54 @@ fn lorawan_loop(
                     }
                 }
 
-                // Select between events from the pump and a 1-second tick
-                // for periodic work. event_rx.recv() is cancel-safe; sleep
-                // is cancel-safe; the eventloop itself never gets cancelled.
-                let polled = tokio::select! {
-                    biased;
-                    ev = event_rx.recv() => Some(ev),
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => None,
-                };
+                // Publish queued raw downlinks (expert / fire-and-forget): sent
+                // verbatim on the requested fPort with no seq allocation and no
+                // response correlation, so they never touch the pending maps and
+                // cannot disturb the seq-correlated command stream.
+                while let Ok(raw) = raw_rx.try_recv() {
+                    match &last_app_id {
+                        Some(app_id) => {
+                            let down_topic = format!(
+                                "application/{}/device/{}/command/down",
+                                app_id, raw.dev_eui
+                            );
+                            let body = serde_json::json!({
+                                "devEui": raw.dev_eui,
+                                "confirmed": false,
+                                "fPort": raw.fport,
+                                "data": BASE64.encode(&raw.bytes),
+                            })
+                            .to_string();
+                            match client
+                                .publish(&down_topic, QoS::AtMostOnce, false, body.into_bytes())
+                                .await
+                            {
+                                Ok(_) => eprintln!(
+                                    "[LoRaWAN Monitor] raw downlink fPort={} ({} bytes) -> {}",
+                                    raw.fport,
+                                    raw.bytes.len(),
+                                    raw.dev_eui
+                                ),
+                                Err(e) => {
+                                    eprintln!("[LoRaWAN Monitor] raw downlink publish failed: {}", e)
+                                }
+                            }
+                        }
+                        None => eprintln!(
+                            "[LoRaWAN Monitor] cannot send raw downlink: no application id seen yet"
+                        ),
+                    }
+                }
 
-                match polled {
-                    Some(Some(Ok(Event::Incoming(Incoming::Publish(publish))))) => {
+                // Deregister multi seqs whose collector has finished (F1) so the
+                // re-inserted pending_multi entry cannot alias a recycled seq.
+                while let Ok(done_seq) = release_rx.try_recv() {
+                    pending_multi.remove(&done_seq);
+                }
+
+                // Poll with a timeout so we can check shutdown and publish periodically
+                match tokio::time::timeout(Duration::from_secs(1), eventloop.poll()).await {
+                    Ok(Ok(Event::Incoming(Incoming::Publish(publish)))) => {
                         let topic = publish.topic.clone();
                         let payload = publish.payload.to_vec();
 
@@ -358,15 +516,24 @@ fn lorawan_loop(
                             match chirpstack::strip_proto_version(&data, &dev_eui)
                                 .and_then(decode_response)
                             {
-                                Ok(resp) => match pending.remove(&(dev_eui.clone(), resp.seq)) {
-                                    Some(tx) => {
+                                Ok(resp) => {
+                                    let seq = resp.seq;
+                                    if let Some(tx) = pending.remove(&seq) {
                                         let _ = tx.send(resp);
+                                    } else if let Some(tx) = pending_multi.remove(&seq) {
+                                        // Paged response (e.g. HistoryFrame): forward this
+                                        // page, keeping the registration for further pages
+                                        // only while the caller is still listening.
+                                        if tx.send(resp).is_ok() {
+                                            pending_multi.insert(seq, tx);
+                                        }
+                                    } else {
+                                        eprintln!(
+                                            "[LoRaWAN Monitor] fPort-85 response from {} (unmatched seq={}): {:?}",
+                                            dev_eui, seq, resp.kind
+                                        );
                                     }
-                                    None => eprintln!(
-                                        "[LoRaWAN Monitor] fPort-85 response from {} (unmatched seq={}): {:?}",
-                                        dev_eui, resp.seq, resp.kind
-                                    ),
-                                },
+                                }
                                 Err(e) => eprintln!(
                                     "[LoRaWAN Monitor] fPort-85 decode failed from {}: {}",
                                     dev_eui, e
@@ -392,61 +559,63 @@ fn lorawan_loop(
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs() as i64;
-                                // `ts` is the device-reported event time (ChirpStack
-                                // `time`, RFC3339); `received_at` is our ingest time.
-                                // Falling back to `now_ts` when the upstream time is
-                                // missing or malformed keeps a usable timestamp on
-                                // the row instead of dropping the uplink, but the
-                                // message_id is anchored on the device time so
-                                // redeliveries dedup deterministically.
-                                let device_ts =
-                                    chirpstack::received_at_epoch(&reading).unwrap_or(now_ts);
-                                let message_id = chirpstack::message_id_for(&reading);
+                                let message_id = chirpstack::message_id_for(&reading, now_ts);
                                 let epoch = storage
                                     .get_provisioning_epoch(reading.dev_eui.clone())
                                     .unwrap_or(1);
-                                // Slim payload: omit any null/empty fields so
-                                // sticker_readings.payload_json stays as tight
-                                // as possible (this row is kept for 30 days at
-                                // ~1 uplink/min/sticker; trimming defaults
-                                // saves ~25-30% over the always-write-nulls
-                                // version). device_name is dropped — it's
-                                // redundant with dev_eui and the YAML config
-                                // holds the operator-set display name. The
-                                // events array is serialized in full (type +
-                                // extra) so AlarmReport / Telemetry detail
-                                // (value/source/slot/edge/side/rel_s/base_time)
-                                // survives the save-and-feed replay.
-                                let mut obj = serde_json::Map::new();
-                                if !reading.fields.is_empty() {
-                                    obj.insert("fields".into(), serde_json::json!(reading.fields));
-                                }
-                                if !reading.counters.is_empty() {
-                                    obj.insert("counters".into(), serde_json::json!(reading.counters));
-                                }
-                                if !reading.events.is_empty() {
-                                    obj.insert("events".into(), serde_json::json!(reading.events));
-                                }
-                                if let Some(r) = reading.rssi {
-                                    obj.insert("rssi".into(), serde_json::json!(r));
-                                }
-                                if let Some(s) = reading.snr {
-                                    obj.insert("snr".into(), serde_json::json!(s));
-                                }
-                                if !reading.received_at.is_empty() {
-                                    obj.insert("received_at".into(), serde_json::json!(reading.received_at));
-                                }
-                                let payload_json = serde_json::to_string(&serde_json::Value::Object(obj))
-                                    .unwrap_or_else(|_| "{}".to_string());
+                                let payload_json = serde_json::to_string(&serde_json::json!({
+                                    "fields":      reading.fields,
+                                    "counters":    reading.counters,
+                                    "events":      reading.events,
+                                    "rssi":        reading.rssi,
+                                    "snr":         reading.snr,
+                                    "received_at": reading.received_at,
+                                    "device_name": reading.device_name,
+                                }))
+                                .unwrap_or_else(|_| "{}".to_string());
                                 let _ = storage.write_sticker_reading(
                                     reading.dev_eui.clone(),
                                     epoch,
-                                    device_ts,
+                                    now_ts,
                                     now_ts,
                                     message_id,
                                     "uplink".to_string(),
                                     payload_json,
                                 );
+
+                                // Auto-backfill (#43): a STICKER buffers its samples
+                                // while off the air; when it reappears after an outage,
+                                // pull that gap over fPort 85 without operator action.
+                                // Read the PREVIOUS last_seen before update_sensor
+                                // overwrites it, so the window is [was_last_seen, now].
+                                let prev_last_seen = state
+                                    .read()
+                                    .ok()
+                                    .and_then(|s| {
+                                        s.sensors
+                                            .get(&reading.dev_eui)
+                                            .and_then(|se| se.last_seen.clone())
+                                    })
+                                    .and_then(|ls| {
+                                        chrono::DateTime::parse_from_rfc3339(&ls)
+                                            .ok()
+                                            .map(|dt| dt.timestamp())
+                                    });
+                                if let Some((from_unix, to_unix)) =
+                                    auto_backfill_window(prev_last_seen, now_ts, config.sensor_timeout_s)
+                                {
+                                    eprintln!(
+                                        "[LoRaWAN Monitor] sticker {} back after outage; auto-backfill {}..{}",
+                                        reading.dev_eui, from_unix, to_unix
+                                    );
+                                    spawn_auto_backfill(
+                                        self_handle.clone(),
+                                        mqtt_tx.clone(),
+                                        reading.dev_eui.clone(),
+                                        from_unix,
+                                        to_unix,
+                                    );
+                                }
 
                                 if let Ok(mut s) = state.write() {
                                     s.update_sensor(&reading);
@@ -462,21 +631,15 @@ fn lorawan_loop(
                         }
                         } // end fPort-85 vs telemetry dispatch
                     }
-                    Some(Some(Ok(_))) => {
+                    Ok(Ok(_)) => {
                         // Other MQTT events (ConnAck, SubAck, etc.) - ignore
                     }
-                    Some(Some(Err(e))) => {
+                    Ok(Err(e)) => {
                         eprintln!("[LoRaWAN Monitor] Connection error: {}", e);
                         break; // Reconnect
                     }
-                    Some(None) => {
-                        // Pump task exited (channel closed) — treat as
-                        // disconnect and reconnect.
-                        eprintln!("[LoRaWAN Monitor] Event pump closed unexpectedly");
-                        break;
-                    }
-                    None => {
-                        // 1-second tick — check timeouts and publish if needed
+                    Err(_) => {
+                        // Timeout - check timeouts and publish if needed
                     }
                 }
 
@@ -514,12 +677,9 @@ fn lorawan_loop(
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
                     publish_lorawan_sensors(&state, &mqtt_tx, &hostname);
+                    publish_lorawan_gateways(&mqtt_tx).await;
                 }
             }
-
-            // Drop the receiver so the pump task notices and exits cleanly.
-            drop(event_rx);
-            let _ = pump_handle.await;
 
             // Wait before reconnecting
             eprintln!("[LoRaWAN Monitor] Disconnected, reconnecting in 5s...");
@@ -529,6 +689,128 @@ fn lorawan_loop(
 }
 
 /// Publish current LoRaWAN sensor state to the main FIBER MQTT
+/// Upper bound on a single auto-backfill history read (same budget as the
+/// manual get_sticker_history). A paged HistoryFrame replay can take a while at
+/// low data rates, so keep this generous.
+const AUTO_BACKFILL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Decide the `[from, to]` unix window to auto-backfill when a STICKER uplink
+/// arrives. Returns `None` on first contact (no prior `last_seen`) or when the
+/// gap since the previous uplink is within normal reporting cadence
+/// (`< offline_threshold_s`) — i.e. the device never actually went away, so
+/// there is nothing buffered to fetch. A backwards clock also yields `None`.
+///
+/// Self-guarding by design: `update_sensor` advances `last_seen` to `now` right
+/// after this check, so the next uplink sees a small gap and does not re-trigger
+/// — one backfill per outage.
+fn auto_backfill_window(
+    prev_last_seen: Option<i64>,
+    now: i64,
+    offline_threshold_s: u64,
+) -> Option<(u32, u32)> {
+    let prev = prev_last_seen?;
+    if now <= prev {
+        return None;
+    }
+    if (now - prev) < offline_threshold_s as i64 {
+        return None;
+    }
+    Some((prev.max(0) as u32, now.max(0) as u32))
+}
+
+/// Spawn a detached task that pulls a STICKER's buffered history for the outage
+/// window and republishes each frame to `lorawan/sensors/<dev_eui>/history` via
+/// the MQTT channel. Mirrors the manual `get_sticker_history` path, but is
+/// triggered automatically on reconnect. The read runs on a blocking task: it
+/// sends its downlink through `handle` (whose cmd_tx feeds the loop's cmd_rx),
+/// so running it inline on the monitor thread would deadlock.
+fn spawn_auto_backfill(
+    handle: LoRaWANHandle,
+    mqtt_tx: Sender<MqttMessage>,
+    dev_eui: String,
+    from_unix: u32,
+    to_unix: u32,
+) {
+    tokio::spawn(async move {
+        let dev = dev_eui.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            super::sticker_config::read_history(
+                &handle,
+                &dev,
+                Some(from_unix),
+                Some(to_unix),
+                AUTO_BACKFILL_TIMEOUT,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(hr)) => {
+                if !hr.complete {
+                    eprintln!(
+                        "[LoRaWAN Monitor] auto-backfill {} incomplete: missing frames {:?}",
+                        dev_eui, hr.missing_indices
+                    );
+                }
+                for page in hr.pages {
+                    let records: Vec<serde_json::Value> = page
+                        .records
+                        .iter()
+                        .map(super::sticker_config::history_record_to_json)
+                        .collect();
+                    let _ = mqtt_tx.try_send(MqttMessage::PublishStickerHistory {
+                        dev_eui: dev_eui.clone(),
+                        frame_index: page.frame_index,
+                        frame_count: page.frame_count,
+                        records,
+                    });
+                }
+            }
+            Ok(Err(e)) => eprintln!(
+                "[LoRaWAN Monitor] auto-backfill {} failed: {}",
+                dev_eui, e
+            ),
+            Err(join_err) => eprintln!(
+                "[LoRaWAN Monitor] auto-backfill {} task panicked: {}",
+                dev_eui, join_err
+            ),
+        }
+    });
+}
+
+#[cfg(test)]
+mod auto_backfill_tests {
+    use super::auto_backfill_window;
+
+    #[test]
+    fn none_on_first_contact() {
+        assert_eq!(auto_backfill_window(None, 1000, 300), None);
+    }
+
+    #[test]
+    fn none_within_cadence() {
+        // 100 s gap, 300 s outage threshold -> normal reporting, nothing buffered.
+        assert_eq!(auto_backfill_window(Some(900), 1000, 300), None);
+    }
+
+    #[test]
+    fn window_after_outage() {
+        // 4000 s gap >> 300 s threshold -> backfill the whole gap.
+        assert_eq!(auto_backfill_window(Some(1000), 5000, 300), Some((1000, 5000)));
+    }
+
+    #[test]
+    fn none_on_backwards_clock() {
+        assert_eq!(auto_backfill_window(Some(5000), 1000, 300), None);
+    }
+
+    #[test]
+    fn boundary_gap_equal_threshold_triggers() {
+        // gap == threshold counts as an outage (>= threshold).
+        assert_eq!(auto_backfill_window(Some(1000), 1300, 300), Some((1000, 1300)));
+    }
+}
+
 fn publish_lorawan_sensors(
     state: &SharedLoRaWANState,
     mqtt_tx: &Sender<MqttMessage>,
@@ -581,4 +863,52 @@ fn publish_lorawan_sensors(
         .collect();
 
     let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANSensorData { sensors });
+}
+
+/// Publish external LoRaWAN gateway status to the main FIBER MQTT.
+///
+/// Reads the configured gateways fresh each tick (so a gateway added at runtime
+/// is picked up without restarting the monitor) and queries ChirpStack for
+/// online state. The ChirpStack query is blocking network I/O, so it runs on a
+/// blocking thread to keep the async uplink pump responsive.
+async fn publish_lorawan_gateways(mqtt_tx: &Sender<MqttMessage>) {
+    let loaded = match crate::libs::config::Config::load_default() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let enabled: Vec<crate::libs::config::ExternalGatewayConfig> = match loaded.lorawan.as_ref() {
+        Some(l) => l.gateways.iter().filter(|g| g.enabled).cloned().collect(),
+        None => return,
+    };
+
+    // Always publish (even an empty list) so the viewer can reconcile/clear
+    // stale gateway entries — mirrors publish_lorawan_sensors.
+    if enabled.is_empty() {
+        let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData { gateways: Vec::new() });
+        return;
+    }
+
+    let euis: Vec<String> = enabled.iter().map(|g| g.gateway_eui.clone()).collect();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::libs::lorawan::provisioning::get_gateways_status(&euis)
+    })
+    .await
+    .unwrap_or_default();
+    let status_map: std::collections::HashMap<String, crate::libs::lorawan::provisioning::GatewayStatus> =
+        status.into_iter().map(|s| (s.gateway_eui.clone(), s)).collect();
+
+    let gateways: Vec<crate::libs::mqtt::messages::LoRaWANGatewayPayload> = enabled
+        .iter()
+        .map(|g| {
+            let st = status_map.get(&g.gateway_eui);
+            crate::libs::mqtt::messages::LoRaWANGatewayPayload {
+                gateway_eui: g.gateway_eui.clone(),
+                name: g.name.clone(),
+                online: st.map(|s| s.online).unwrap_or(false),
+                last_seen: st.and_then(|s| s.last_seen.clone()),
+            }
+        })
+        .collect();
+
+    let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData { gateways });
 }

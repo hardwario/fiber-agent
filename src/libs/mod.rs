@@ -18,6 +18,7 @@ pub mod config_applier;
 pub mod pairing;
 pub mod ble;
 pub mod lorawan;
+pub mod control;
 pub mod eye;
 pub mod mqtt_export;
 pub mod config_migrations;

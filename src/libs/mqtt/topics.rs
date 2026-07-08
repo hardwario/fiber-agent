@@ -182,6 +182,20 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors"])
     }
 
+    pub fn lorawan_gateways(&self) -> String {
+        self.build(&["lorawan", "gateways"])
+    }
+
+    /// Per-sticker fPort-85 config read-back result (Feature C).
+    pub fn lorawan_sensor_config(&self, dev_eui: &str) -> String {
+        self.build(&["lorawan", "sensors", dev_eui, "config"])
+    }
+
+    /// Per-sticker fPort-85 history page (Feature D).
+    pub fn lorawan_sensor_history(&self, dev_eui: &str) -> String {
+        self.build(&["lorawan", "sensors", dev_eui, "history"])
+    }
+
     // EYE BLE tag topics
     pub fn eye_sensors(&self) -> String {
         self.build(&["eye", "sensors"])
@@ -228,6 +242,19 @@ mod tests {
         assert_eq!(builder.sensors_aggregated(), "fiber/DEVICE001/sensors/aggregated");
         assert_eq!(builder.power_battery_percentage(), "fiber/DEVICE001/power/battery/percentage");
         assert_eq!(builder.commands_wildcard(), "fiber/DEVICE001/commands/#");
+    }
+
+    #[test]
+    fn test_sticker_subtopics() {
+        let builder = TopicBuilder::new("fiber".to_string(), "DEVICE001".to_string(), true);
+        assert_eq!(
+            builder.lorawan_sensor_config("0102030405060708"),
+            "fiber/DEVICE001/lorawan/sensors/0102030405060708/config"
+        );
+        assert_eq!(
+            builder.lorawan_sensor_history("0102030405060708"),
+            "fiber/DEVICE001/lorawan/sensors/0102030405060708/history"
+        );
     }
 
     #[test]

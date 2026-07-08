@@ -5,6 +5,7 @@ use crate::libs::crypto::UserCertificate;
 use crate::libs::pairing::messages::{PairingError, PairingResponse};
 use crate::libs::sensors::aggregation::AggregationPeriod;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Messages sent to the MQTT monitor thread for publishing
 #[derive(Debug, Clone)]
@@ -138,6 +139,35 @@ pub enum MqttMessage {
         sensors: Vec<LoRaWANSensorPayload>,
     },
 
+    /// Publish external LoRaWAN gateway status
+    PublishLoRaWANGatewayData {
+        gateways: Vec<LoRaWANGatewayPayload>,
+    },
+
+    /// Publish a STICKER's fPort-85 config read-back (Feature C) to
+    /// `lorawan/sensors/<dev_eui>/config`.
+    PublishStickerConfig {
+        dev_eui: String,
+        /// Flattened `group.field` → JSON value (projected from ConfigValue).
+        config: BTreeMap<String, Value>,
+        page_index: u32,
+        page_count: u32,
+        /// Seq + result of the last Ack/Error (the viewer renders
+        /// pending / awaiting-Ack / ok from this).
+        last_seq: u32,
+        last_result: String,
+    },
+
+    /// Publish one page of a STICKER's on-device history (Feature D) to
+    /// `lorawan/sensors/<dev_eui>/history`.
+    PublishStickerHistory {
+        dev_eui: String,
+        frame_index: u32,
+        frame_count: u32,
+        /// Each record is `{ time, fields{}, counters{} }` as JSON.
+        records: Vec<Value>,
+    },
+
     /// Publish EYE BLE tag sensor data
     PublishEyeSensorData {
         tags: Vec<EyeTagPayload>,
@@ -154,6 +184,15 @@ pub enum MqttMessage {
 
     /// Graceful shutdown signal
     Shutdown,
+}
+
+/// External LoRaWAN gateway status payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct LoRaWANGatewayPayload {
+    pub gateway_eui: String,
+    pub name: Option<String>,
+    pub online: bool,
+    pub last_seen: Option<String>,
 }
 
 /// EYE BLE tag data payload for MQTT publishing.
@@ -369,6 +408,41 @@ pub enum MqttCommand {
         dev_eui: String,
     },
 
+    /// Read a STICKER's own fPort-85 parameters over MQTT (unsigned query).
+    /// `keys` empty/None = read the full settable set.
+    GetStickerConfig {
+        dev_eui: String,
+        keys: Option<Vec<String>>,
+    },
+
+    /// Write a STICKER's fPort-85 parameters over MQTT (signed via ConfigRequest).
+    /// `fields` maps SETTABLE keys (`application.interval_report`, …) to string
+    /// values parsed + range-checked by the fPort-85 engine. `save` persists to
+    /// flash (reboots the sticker) vs RAM-staging a dry run.
+    SetStickerConfig {
+        dev_eui: String,
+        fields: BTreeMap<String, String>,
+        save: bool,
+    },
+
+    /// Request a STICKER's on-device history buffer (fPort-85 ReqHistory,
+    /// unsigned query). `from_unix`/`to_unix` bound the window; None = whole buffer.
+    GetStickerHistory {
+        dev_eui: String,
+        from_unix: Option<u32>,
+        to_unix: Option<u32>,
+    },
+
+    /// Send a raw fPort downlink to a STICKER verbatim (signed via ConfigRequest).
+    /// `bytes` is the exact protobuf `Command` produced by an operator's downlink
+    /// generator; `fport` defaults to 85. Fire-and-forget — no response is
+    /// correlated (expert / advanced use).
+    SendStickerRaw {
+        dev_eui: String,
+        bytes: Vec<u8>,
+        fport: u8,
+    },
+
     /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
     SetEyeRecording {
         mac: String,
@@ -475,6 +549,10 @@ impl MqttCommand {
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
+            MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
+            MqttCommand::SetStickerConfig { .. } => "set_sticker_config",
+            MqttCommand::SendStickerRaw { .. } => "send_sticker_raw",
+            MqttCommand::GetStickerHistory { .. } => "get_sticker_history",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
@@ -484,6 +562,89 @@ impl MqttCommand {
             MqttCommand::ConfigConfirm { .. } => "config_confirm",
             MqttCommand::PairingRequest { .. } => "pairing_request",
         }
+    }
+
+    /// Parse a `set_sticker_config` params object `{dev_eui, config{}, save?}`
+    /// into [`MqttCommand::SetStickerConfig`]. Shared by the production
+    /// (challenge) and dev-platform signed-command builders so both paths parse
+    /// identically. Config values may be JSON string/number/bool and are
+    /// stringified for the fPort-85 engine's typed parser.
+    pub fn parse_set_sticker_config(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+        }
+        let config_obj = params
+            .get("config")
+            .and_then(|v| v.as_object())
+            .ok_or("Missing or invalid 'config' object")?;
+        let mut fields = BTreeMap::new();
+        for (k, v) in config_obj {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                Value::Bool(b) => b.to_string(),
+                Value::Number(n) => n.to_string(),
+                _ => {
+                    return Err(format!(
+                        "config value for '{}' must be a string, number or bool",
+                        k
+                    ))
+                }
+            };
+            fields.insert(k.clone(), s);
+        }
+        if fields.is_empty() {
+            return Err("config must contain at least one key".to_string());
+        }
+        let save = params.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
+        Ok(MqttCommand::SetStickerConfig {
+            dev_eui: dev_eui.to_lowercase(),
+            fields,
+            save,
+        })
+    }
+
+    /// Parse a `send_sticker_raw` params object `{dev_eui, hex, fport?}` into
+    /// [`MqttCommand::SendStickerRaw`]. `hex` is an even-length hex string of at
+    /// most 51 bytes (the DR0 downlink budget); `fport` defaults to 85 (1..=223).
+    pub fn parse_send_sticker_raw(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+        }
+        let hex_str = params
+            .get("hex")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing hex")?
+            .trim();
+        let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex: {e}"))?;
+        if bytes.is_empty() {
+            return Err("hex must contain at least one byte".to_string());
+        }
+        if bytes.len() > 51 {
+            return Err(format!("raw downlink too large: {} bytes (max 51)", bytes.len()));
+        }
+        let fport = match params.get("fport") {
+            None => 85u8,
+            Some(v) => {
+                let n = v.as_u64().ok_or("fport must be a number")?;
+                if !(1..=223).contains(&n) {
+                    return Err(format!("fport {} out of range (1..=223)", n));
+                }
+                n as u8
+            }
+        };
+        Ok(MqttCommand::SendStickerRaw {
+            dev_eui: dev_eui.to_lowercase(),
+            bytes,
+            fport,
+        })
     }
 }
 
@@ -526,6 +687,67 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn sticker_commands_have_names() {
+        assert_eq!(
+            MqttCommand::GetStickerConfig { dev_eui: "0102030405060708".into(), keys: None }.name(),
+            "get_sticker_config"
+        );
+        let mut fields = BTreeMap::new();
+        fields.insert("application.interval_report".to_string(), "1200".to_string());
+        assert_eq!(
+            MqttCommand::SetStickerConfig {
+                dev_eui: "0102030405060708".into(),
+                fields,
+                save: false,
+            }
+            .name(),
+            "set_sticker_config"
+        );
+        assert_eq!(
+            MqttCommand::GetStickerHistory {
+                dev_eui: "0102030405060708".into(),
+                from_unix: None,
+                to_unix: None,
+            }
+            .name(),
+            "get_sticker_history"
+        );
+    }
+
+    #[test]
+    fn parse_send_sticker_raw_validates_and_defaults() {
+        use serde_json::json;
+        assert_eq!(
+            MqttCommand::SendStickerRaw { dev_eui: "0102030405060708".into(), bytes: vec![8], fport: 85 }.name(),
+            "send_sticker_raw"
+        );
+        // The docs.hardwario.com generator example (SetParam interval_report=600, save).
+        let cmd = MqttCommand::parse_send_sticker_raw(
+            &json!({ "dev_eui": "d7653371A0EF363F", "hex": "08011207120318d8041801" }),
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::SendStickerRaw { dev_eui, bytes, fport } => {
+                assert_eq!(dev_eui, "d7653371a0ef363f"); // lowercased
+                assert_eq!(fport, 85); // default
+                assert_eq!(bytes, vec![0x08, 0x01, 0x12, 0x07, 0x12, 0x03, 0x18, 0xd8, 0x04, 0x18, 0x01]);
+            }
+            _ => panic!("wrong variant"),
+        }
+        // fport override in range.
+        assert!(matches!(
+            MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 10 })).unwrap(),
+            MqttCommand::SendStickerRaw { fport: 10, .. }
+        ));
+        // Rejections: bad hex, bad dev_eui, empty, oversize (52 bytes), fport OOR.
+        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "zz" })).is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "short", "hex": "08" })).is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "" })).is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "aa".repeat(52) })).is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 300 })).is_err());
     }
 
     #[test]
