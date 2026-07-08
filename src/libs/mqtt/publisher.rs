@@ -925,6 +925,7 @@ impl MqttPublisher {
 
         self.publish(topic, payload, qos, false).await
     }
+
 }
 
 #[cfg(test)]

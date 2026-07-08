@@ -466,6 +466,8 @@ impl AuthorizationManager {
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
             "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
             "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
+            "add_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
+            "remove_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
             "set_eye_recording" => "set_lorawan_sensor_config",  // reuse: sensor config change
             "download_eye_history" => "set_lorawan_sensor_config",  // reuse: sensor data op
             "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
@@ -561,6 +563,15 @@ impl AuthorizationManager {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("?").to_uppercase();
                 format!("Add HARDWARIO STICKER {} via {} (name: \"{}\")", dev_eui, mode, name)
+            }
+            "add_external_gateway" => {
+                let gateway_eui = params.get("gateway_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Add external LoRaWAN gateway {} (name: \"{}\")", gateway_eui, name)
+            }
+            "remove_external_gateway" => {
+                let gateway_eui = params.get("gateway_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove external LoRaWAN gateway {}", gateway_eui)
             }
             "remove_lorawan_sticker" => {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -935,6 +946,30 @@ impl AuthorizationManager {
                     .to_lowercase();
 
                 Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
+            }
+            "add_external_gateway" => {
+                let gateway_eui = challenge.params.get("gateway_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing gateway_eui".to_string()))?;
+                // normalize_eui validates 16 hex + lowercases; reject a bad EUI early.
+                let gateway_eui = crate::libs::lorawan::provisioning::normalize_eui(gateway_eui)
+                    .map_err(AuthError::InvalidCommand)?;
+
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
+                    .to_string();
+
+                Ok(MqttCommand::AddExternalGateway { gateway_eui, name })
+            }
+            "remove_external_gateway" => {
+                let gateway_eui = challenge.params.get("gateway_eui")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing gateway_eui".to_string()))?;
+                let gateway_eui = crate::libs::lorawan::provisioning::normalize_eui(gateway_eui)
+                    .map_err(AuthError::InvalidCommand)?;
+
+                Ok(MqttCommand::RemoveExternalGateway { gateway_eui })
             }
             "set_eye_recording" => {
                 let mac = challenge.params.get("mac")

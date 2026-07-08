@@ -463,6 +463,17 @@ pub enum MqttCommand {
         stream: String,
     },
 
+    /// Add external LoRaWAN gateway: register in ChirpStack + save gateway config (signed via ConfigRequest)
+    AddExternalGateway {
+        gateway_eui: String,
+        name: String,
+    },
+
+    /// Remove external LoRaWAN gateway: remove gateway config + deregister from ChirpStack (signed via ConfigRequest)
+    RemoveExternalGateway {
+        gateway_eui: String,
+    },
+
     /// On-demand replay of `sensor_readings_minute` for a historical window.
     /// Triggered by the viewer when the user navigates past the 30-day hot
     /// tier: the device replays the requested range on the
@@ -554,6 +565,8 @@ impl MqttCommand {
             MqttCommand::SendStickerRaw { .. } => "send_sticker_raw",
             MqttCommand::GetStickerHistory { .. } => "get_sticker_history",
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
+            MqttCommand::AddExternalGateway { .. } => "add_external_gateway",
+            MqttCommand::RemoveExternalGateway { .. } => "remove_external_gateway",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",

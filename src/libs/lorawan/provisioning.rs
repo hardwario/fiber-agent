@@ -50,6 +50,10 @@ fn encode_submessage(field_number: u32, data: &[u8]) -> Vec<u8> {
     encode_field(field_number, 2, &len_prefixed)
 }
 
+fn encode_uint32(field_number: u32, value: u64) -> Vec<u8> {
+    encode_field(field_number, 0, &encode_varint(value))
+}
+
 /// Decode a varint from data at position. Returns (value, new_pos).
 fn decode_varint(data: &[u8], pos: usize) -> Option<(u64, usize)> {
     let mut result: u64 = 0;
@@ -540,10 +544,83 @@ pub fn deprovision_sticker(dev_eui: &str) -> Result<(), String> {
     }
 }
 
-// --- External gateway status (read-only) ---
-// Registration of external gateways lives on the external-lorawan-gateway
-// branch; here we only READ status so the viewer's gateway panel reflects
-// online/last-seen for gateways already known to ChirpStack.
+// --- ChirpStack Gateway Methods ---
+
+/// Validate and normalize a Gateway EUI: strip whitespace/`:`/`-` separators,
+/// require exactly 16 hex characters, return lowercase.
+pub fn normalize_eui(eui: &str) -> Result<String, String> {
+    let s: String = eui
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
+        .collect();
+    if s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(s.to_lowercase())
+    } else {
+        Err(format!("Invalid Gateway EUI '{}': expected 16 hex characters", eui))
+    }
+}
+
+/// Resolve the ChirpStack tenant UUID required by GatewayService/Create.
+///
+/// 1. Prefer `tenant_id` from /data/lorawan/config.json (written by
+///    chirpstack-provision.py — same file the device functions read).
+/// 2. Fall back to TenantService/List and take the first tenant (a fresh v4
+///    install has a single default tenant).
+fn resolve_tenant_id(token: &str) -> Result<String, String> {
+    if let Ok(config_str) = std::fs::read_to_string(LORAWAN_CONFIG_PATH) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
+            if let Some(tenant_id) = config.get("tenant_id").and_then(|v| v.as_str()) {
+                if !tenant_id.is_empty() {
+                    return Ok(tenant_id.to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback: ListTenantsRequest { uint32 limit = 1; } → ListTenantsResponse
+    // { repeated TenantListItem result = 2; }, TenantListItem { string id = 1; }.
+    let req = encode_uint32(1, 10);
+    let resp = grpc_web_call("api.TenantService/List", &req, Some(token))?
+        .ok_or_else(|| "TenantService/List returned empty response".to_string())?;
+    let fields = decode_message(&resp);
+    let result = fields
+        .get(&2)
+        .ok_or_else(|| "No tenants found in ChirpStack (TenantService/List empty)".to_string())?;
+    let tenant_fields = decode_message(result);
+    let id = tenant_fields
+        .get(&1)
+        .ok_or_else(|| "Tenant list item missing id".to_string())?;
+    String::from_utf8(id.clone()).map_err(|_| "Invalid tenant_id encoding".to_string())
+}
+
+fn create_gateway(
+    token: &str,
+    gateway_id: &str,
+    name: &str,
+    description: &str,
+    tenant_id: &str,
+) -> Result<(), String> {
+    // Gateway { gateway_id=1, name=2, description=3, tenant_id=5 (REQUIRED) }
+    let gateway = [
+        encode_string(1, gateway_id),
+        encode_string(2, name),
+        encode_string(3, description),
+        encode_string(5, tenant_id),
+    ]
+    .concat();
+
+    // CreateGatewayRequest { Gateway gateway = 1; }
+    let req = encode_submessage(1, &gateway);
+    grpc_web_call("api.GatewayService/Create", &req, Some(token))?;
+    Ok(())
+}
+
+fn delete_gateway(token: &str, gateway_id: &str) -> Result<(), String> {
+    // DeleteGatewayRequest { string gateway_id = 1; } — flat, like delete_device.
+    let req = encode_string(1, gateway_id);
+    grpc_web_call("api.GatewayService/Delete", &req, Some(token))?;
+    Ok(())
+}
 
 /// Fetch a gateway by id. Returns the raw GetGatewayResponse bytes (parsed by
 /// the status publisher) or None when ChirpStack returns no data frame.
@@ -551,6 +628,46 @@ fn get_gateway(token: &str, gateway_id: &str) -> Result<Option<Vec<u8>>, String>
     // GetGatewayRequest { string gateway_id = 1; } → GetGatewayResponse
     let req = encode_string(1, gateway_id);
     grpc_web_call("api.GatewayService/Get", &req, Some(token))
+}
+
+/// Register an external LoRaWAN gateway in ChirpStack: login + resolve tenant +
+/// GatewayService/Create. ALREADY_EXISTS is treated as success (idempotent).
+pub fn provision_external_gateway(gateway_eui: &str, name: &str) -> Result<(), String> {
+    let token = login()?;
+    let tenant_id = resolve_tenant_id(&token)?;
+
+    match create_gateway(&token, gateway_eui, name, "External LoRaWAN gateway (FIBER)", &tenant_id) {
+        Ok(()) => {
+            eprintln!("[lorawan-provision] Created gateway {} in ChirpStack", gateway_eui);
+            Ok(())
+        }
+        Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
+            eprintln!("[lorawan-provision] Gateway {} already exists in ChirpStack", gateway_eui);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove an external gateway from ChirpStack: login + GatewayService/Delete.
+/// NOT_FOUND is treated as success (idempotent — gateway already absent is fine).
+pub fn deprovision_external_gateway(gateway_eui: &str) -> Result<(), String> {
+    let token = login()?;
+    match delete_gateway(&token, gateway_eui) {
+        Ok(()) => {
+            eprintln!("[lorawan-provision] Deleted gateway {} from ChirpStack", gateway_eui);
+            Ok(())
+        }
+        Err(e) if e.contains("NOT_FOUND")
+            || e.to_lowercase().contains("not found")
+            || e.contains("grpc-status:5")
+            || e.contains("grpc-status: 5") =>
+        {
+            eprintln!("[lorawan-provision] Gateway {} already absent in ChirpStack", gateway_eui);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// A gateway counts as online when ChirpStack saw it within this window.
@@ -639,14 +756,6 @@ pub fn get_gateways_status(gateway_euis: &[String]) -> Vec<GatewayStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Encode a uint32 (wire-type 0 varint) field — test helper for building
-    /// protobuf fixtures.
-    fn encode_uint32(field_number: u32, value: u64) -> Vec<u8> {
-        let mut out = encode_varint((field_number as u64) << 3);
-        out.extend(encode_varint(value));
-        out
-    }
 
     #[test]
     fn varint_field_reads_scalar_by_number() {

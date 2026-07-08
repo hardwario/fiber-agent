@@ -706,6 +706,11 @@ impl MqttMonitor {
         }
     }
 
+    /// Get handle for sending messages
+    pub fn handle(&self) -> MqttHandle {
+        self.handle.clone()
+    }
+
     /// Set the mqtt_export handle (call after MqttExportThread is spawned).
     /// Without this, ResetExportCursor commands only reset the persisted
     /// SQLite cursor — the orchestrator's in-memory cache continues to skip
@@ -715,11 +720,6 @@ impl MqttMonitor {
             *g = Some(handle);
             eprintln!("[MQTT Monitor] Export handle set");
         }
-    }
-
-    /// Get handle for sending messages
-    pub fn handle(&self) -> MqttHandle {
-        self.handle.clone()
     }
 
     /// Get connection state
@@ -2687,6 +2687,58 @@ impl MqttMonitor {
                             ),
                         }
                         eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::AddExternalGateway { gateway_eui, name } => {
+                // gateway_eui was already validated/normalized in
+                // build_command_from_challenge (the only construction site).
+                eprintln!("[MQTT Monitor] Registering external gateway {} in ChirpStack...", gateway_eui);
+
+                // Step 1: best-effort ChirpStack registration — ChirpStack may be
+                // down; local config is the source of truth and is applied regardless.
+                match crate::libs::lorawan::provisioning::provision_external_gateway(&gateway_eui, &name) {
+                    Ok(()) => eprintln!("[MQTT Monitor] ✓ Gateway {} registered in ChirpStack", gateway_eui),
+                    Err(e) => eprintln!("[MQTT Monitor] ⚠ ChirpStack gateway provisioning for {}: {}", gateway_eui, e),
+                }
+
+                // Step 2: persist to YAML (always, even if ChirpStack failed)
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_external_gateway(gateway_eui.clone(), Some(name.clone()));
+                    if result.success {
+                        eprintln!("[MQTT Monitor] ✓ External gateway {} config saved", gateway_eui);
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::RemoveExternalGateway { gateway_eui } => {
+                eprintln!("[MQTT Monitor] Removing external gateway {} ...", gateway_eui);
+                if let Some(applier) = config_applier {
+                    let result = applier.remove_external_gateway(gateway_eui.clone());
+                    if result.success {
+                        // Best-effort: deregister from ChirpStack so it disappears from
+                        // the network server too. Failure is logged but not fatal —
+                        // local config is the source of truth.
+                        match crate::libs::lorawan::provisioning::deprovision_external_gateway(&gateway_eui) {
+                            Ok(()) => eprintln!(
+                                "[MQTT Monitor] ✓ Gateway {} removed from ChirpStack",
+                                gateway_eui
+                            ),
+                            Err(e) => eprintln!(
+                                "[MQTT Monitor] ⚠ ChirpStack gateway deprovision for {}: {}",
+                                gateway_eui, e
+                            ),
+                        }
+                        eprintln!("[MQTT Monitor] ✓ External gateway {} removed", gateway_eui);
                         Ok(())
                     } else {
                         Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
