@@ -39,6 +39,13 @@ pub struct EyeConfig {
     #[serde(default = "default_sync_fallback_hours")]
     pub sync_fallback_hours: u64,
 
+    /// Bluetooth adapter for the EYE scan (e.g. "hci1"). `None` uses the default
+    /// adapter. Lets the monitor bind a second controller so a co-located tag or
+    /// simulator on another adapter is scannable (a controller can't scan its own
+    /// advertisements) — used for on-device testing without a physical tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+
     /// Configured tags.
     #[serde(default)]
     pub tags: Vec<EyeTagConfig>,

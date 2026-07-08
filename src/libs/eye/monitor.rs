@@ -223,10 +223,18 @@ fn eye_loop(
                     continue;
                 }
             };
-            let adapter = match session.default_adapter().await {
+            // Use the configured adapter (e.g. "hci1") when set, else the default.
+            let adapter_result = match config.adapter.as_deref() {
+                Some(name) => session.adapter(name),
+                None => session.default_adapter().await,
+            };
+            let adapter = match adapter_result {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("[EYE Monitor] No default adapter: {e}; retrying in 10s");
+                    eprintln!(
+                        "[EYE Monitor] No adapter ({}): {e}; retrying in 10s",
+                        config.adapter.as_deref().unwrap_or("default"),
+                    );
                     tokio::time::sleep(Duration::from_secs(10)).await;
                     continue;
                 }
