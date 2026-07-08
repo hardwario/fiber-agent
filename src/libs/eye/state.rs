@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::advertising::EyeReading;
-use super::config::EyeConfig;
+use super::config::{EyeConfig, EyeTagConfig};
+use crate::libs::lorawan::state::{evaluate_threshold, LoRaWANAlarmState};
 
 /// Per-tag provisioning lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,11 @@ pub struct EyeTagState {
     pub last_archived_ts: Option<i64>,
     /// Unix seconds of the last archive download attempt (rate-limit + fallback).
     pub last_download_ts: Option<i64>,
+    /// Per-field alarm state (fields `temperature`/`humidity`), evaluated from
+    /// the tag's configured thresholds on each reading. Empty when unset.
+    pub field_alarm_states: HashMap<String, LoRaWANAlarmState>,
+    /// Aggregate (worst-of-fields) alarm state.
+    pub alarm_state: LoRaWANAlarmState,
 }
 
 impl EyeTagState {
@@ -85,7 +91,38 @@ impl EyeTagState {
             is_en12830: None,
             last_archived_ts: None,
             last_download_ts: None,
+            field_alarm_states: HashMap::new(),
+            alarm_state: LoRaWANAlarmState::Normal,
         }
+    }
+
+    /// Evaluate the current temperature/humidity against the tag's configured
+    /// field thresholds, producing per-field + aggregate alarm state. Reuses the
+    /// LoRaWAN sticker classifier so behaviour matches sticker field alarms.
+    pub fn evaluate_alarms(&mut self, cfg: &EyeTagConfig) {
+        self.field_alarm_states.clear();
+        for t in &cfg.field_thresholds {
+            let value: Option<f64> = match t.field.as_str() {
+                "temperature" => self.temperature_c.map(|v| v as f64),
+                "humidity" => self.humidity_pct.map(|v| v as f64),
+                _ => None,
+            };
+            if let Some(v) = value {
+                let s = evaluate_threshold(
+                    v,
+                    t.critical_low,
+                    t.warning_low,
+                    t.warning_high,
+                    t.critical_high,
+                );
+                self.field_alarm_states.insert(t.field.clone(), s);
+            }
+        }
+        self.alarm_state = self
+            .field_alarm_states
+            .values()
+            .cloned()
+            .fold(LoRaWANAlarmState::Normal, |a, b| a.worst(&b));
     }
 
     /// Apply a freshly parsed advertising frame.
@@ -272,5 +309,61 @@ mod tests {
         tag.apply_reading(&r, None, 5);
         assert_eq!(tag.temperature_c, Some(10.0));
         assert_eq!(tag.battery_mv, Some(3060));
+    }
+
+    #[test]
+    fn evaluate_alarms_classifies_temperature_and_humidity() {
+        use crate::libs::config::FieldThreshold;
+        let cfg = EyeTagConfig {
+            mac: "AA:BB:CC:DD:EE:FF".into(),
+            name: None,
+            enabled: true,
+            logging_interval_min: None,
+            recording: None,
+            field_thresholds: vec![
+                FieldThreshold {
+                    field: "temperature".into(),
+                    critical_low: Some(-20.0),
+                    warning_low: Some(0.0),
+                    warning_high: Some(8.0),
+                    critical_high: Some(12.0),
+                },
+                FieldThreshold {
+                    field: "humidity".into(),
+                    critical_low: None,
+                    warning_low: None,
+                    warning_high: Some(70.0),
+                    critical_high: Some(90.0),
+                },
+            ],
+        };
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+
+        // 5 °C + 50 % → both normal
+        tag.temperature_c = Some(5.0);
+        tag.humidity_pct = Some(50);
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
+
+        // 10 °C → temperature warning (>8) → aggregate Warning
+        tag.temperature_c = Some(10.0);
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(
+            tag.field_alarm_states.get("temperature"),
+            Some(&LoRaWANAlarmState::Warning)
+        );
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Warning);
+
+        // 15 °C + 95 % → both critical → aggregate Critical
+        tag.temperature_c = Some(15.0);
+        tag.humidity_pct = Some(95);
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
+
+        // no thresholds → cleared to Normal
+        let empty = EyeTagConfig { field_thresholds: vec![], ..cfg.clone() };
+        tag.evaluate_alarms(&empty);
+        assert!(tag.field_alarm_states.is_empty());
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
     }
 }

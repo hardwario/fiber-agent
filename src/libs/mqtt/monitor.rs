@@ -2969,6 +2969,55 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
+            MqttCommand::SetEyeFieldThreshold {
+                mac, field, critical_low, warning_low, warning_high, critical_high,
+            } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_field_threshold(
+                        mac.clone(), field.clone(),
+                        critical_low, warning_low, warning_high, critical_high,
+                    );
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so evaluate_alarms uses it next tick.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_field_threshold(&mac, crate::libs::config::FieldThreshold {
+                                field: field.clone(),
+                                critical_low, warning_low, warning_high, critical_high,
+                            });
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold set for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.delete_eye_field_threshold(mac.clone(), field.clone());
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.remove_field_threshold(&mac, &field);
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold deleted for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
                 // The reset is two-phase:
                 //   1. Persisted SQLite cursor → storage handle (so a restart

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::libs::config::FieldThreshold;
+
 /// Top-level EYE subsystem configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EyeConfig {
@@ -79,6 +81,7 @@ impl EyeConfig {
                 enabled: true,
                 logging_interval_min: None,
                 recording: None,
+                field_thresholds: Vec::new(),
             });
         }
     }
@@ -108,6 +111,28 @@ impl EyeConfig {
             false
         }
     }
+
+    /// Upsert a per-field alarm threshold on a tag in the live config (so the
+    /// scan loop's `evaluate_alarms` uses it without a restart). No-op if the
+    /// tag isn't present (the applier persists to YAML either way).
+    pub fn set_field_threshold(&mut self, mac: &str, t: FieldThreshold) {
+        let up = mac.to_uppercase();
+        if let Some(tag) = self.tags.iter_mut().find(|x| x.mac.to_uppercase() == up) {
+            if let Some(existing) = tag.field_thresholds.iter_mut().find(|ft| ft.field == t.field) {
+                *existing = t;
+            } else {
+                tag.field_thresholds.push(t);
+            }
+        }
+    }
+
+    /// Remove a per-field alarm threshold from a tag in the live config.
+    pub fn remove_field_threshold(&mut self, mac: &str, field: &str) {
+        let up = mac.to_uppercase();
+        if let Some(tag) = self.tags.iter_mut().find(|x| x.mac.to_uppercase() == up) {
+            tag.field_thresholds.retain(|ft| ft.field != field);
+        }
+    }
 }
 
 /// A single configured EYE tag (identified by MAC).
@@ -133,6 +158,11 @@ pub struct EyeTagConfig {
     /// [`EyeConfig::recording_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<bool>,
+
+    /// Per-field alarm thresholds (fields: `temperature`, `humidity`), reusing
+    /// the LoRaWAN sticker field-threshold model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
 }
 
 fn default_publish_interval_s() -> u64 {

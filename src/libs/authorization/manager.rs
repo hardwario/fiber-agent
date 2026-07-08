@@ -479,6 +479,8 @@ impl AuthorizationManager {
             "delete_lorawan_field_threshold" => "set_threshold",
             "set_sticker_config" => "set_lorawan_sensor_config",  // reuse sticker-management permission
             "send_sticker_raw" => "set_lorawan_sensor_config",  // reuse sticker-management permission
+            "set_eye_field_threshold" => "set_lorawan_sensor_config",
+            "delete_eye_field_threshold" => "set_lorawan_sensor_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -873,6 +875,41 @@ impl AuthorizationManager {
                 MqttCommand::parse_send_sticker_raw(&challenge.params)
                     .map_err(AuthError::InvalidCommand)
             }
+            "set_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
+                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
+                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac, field,
+                    critical_low, warning_low, warning_high, critical_high,
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
@@ -1204,6 +1241,31 @@ mod tests {
             MqttCommand::DetectEyeTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
             other => panic!("expected DetectEyeTag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_set_eye_field_threshold_uppercases_mac_and_maps_permission() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_eye_field_threshold",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff", "field": "temperature",
+                "warning_high": 8.0, "critical_high": 12.0
+            }),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_high, critical_high, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "temperature");
+                assert_eq!(warning_high, Some(8.0));
+                assert_eq!(critical_high, Some(12.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert_eq!(
+            manager.command_type_to_permission("set_eye_field_threshold").unwrap(),
+            "set_lorawan_sensor_config",
+        );
     }
 
     fn test_challenge(command_type: &str, params: Value) -> crate::libs::authorization::state::PendingChallenge {

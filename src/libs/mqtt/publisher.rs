@@ -843,6 +843,8 @@ impl MqttPublisher {
                     "stale": t.stale,
                     "provisioning": t.provisioning,
                     "is_en12830": t.is_en12830,
+                    "field_alarm_states": t.field_alarm_states,
+                    "alarm_state": t.alarm_state,
                 })
             })
             .collect();

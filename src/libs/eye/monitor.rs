@@ -379,6 +379,7 @@ fn eye_loop(
                                         let entry = s.entry(&mac_key, tag.name.clone());
                                         let prev_seen = entry.last_seen_ts;
                                         entry.apply_reading(&reading, rssi, now_ts);
+                                        entry.evaluate_alarms(tag);
                                         if config.recording_on_for(tag)
                                             && entry.is_en12830 != Some(false)
                                         {
@@ -861,6 +862,12 @@ fn publish_snapshot(
             stale: t.is_stale(now_ts, tag_timeout_s),
             provisioning: t.provisioning.as_str().to_string(),
             is_en12830: t.is_en12830,
+            field_alarm_states: t
+                .field_alarm_states
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect(),
+            alarm_state: t.alarm_state.to_string(),
         })
         .collect();
     if tags.is_empty() {

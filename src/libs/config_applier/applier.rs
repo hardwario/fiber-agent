@@ -2628,6 +2628,173 @@ impl ConfigApplier {
         Ok(removed)
     }
 
+    /// Upsert a per-field alarm threshold on an EYE tag (`eye.tags[mac].field_thresholds[]`).
+    pub fn apply_eye_field_threshold(
+        &self,
+        mac: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    ) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let mac = mac.to_uppercase();
+        if mac.is_empty() {
+            return ApplyResult { success: false, file_path: String::new(), backup_path: None,
+                error_message: Some("mac cannot be empty".into()), applied_at };
+        }
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        if let Err(e) = self.upsert_eye_field_threshold(&mut cfg, &mac, &field,
+            critical_low, warning_low, warning_high, critical_high)
+        {
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() { let _ = self.rollback(&config_file, b); }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+        self.log_audit("SET_EYE_FIELD_THRESHOLD",
+            format!(r#"{{"mac":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?}}}"#,
+                mac, field, critical_low, warning_low, warning_high, critical_high));
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
+    }
+
+    /// Remove a per-field EYE alarm threshold. Returns success even on no-op.
+    pub fn delete_eye_field_threshold(&self, mac: String, field: String) -> ApplyResult {
+        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let mac = mac.to_uppercase();
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+        };
+        let mut cfg: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+        };
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let removed = self.remove_eye_field_threshold(&mut cfg, &mac, &field).unwrap_or(false);
+        let new_content = match serde_yaml::to_string(&cfg) {
+            Ok(c) => c,
+            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+        };
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(b) = backup_path.as_ref() { let _ = self.rollback(&config_file, b); }
+            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str, error_message: Some(e), applied_at };
+        }
+        self.log_audit("DELETE_EYE_FIELD_THRESHOLD",
+            format!(r#"{{"mac":{:?},"field":{:?},"removed":{}}}"#, mac, field, removed));
+        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str, error_message: None, applied_at }
+    }
+
+    fn upsert_eye_field_threshold(
+        &self, config: &mut Value, mac: &str, field: &str,
+        critical_low: Option<f64>, warning_low: Option<f64>,
+        warning_high: Option<f64>, critical_high: Option<f64>,
+    ) -> Result<(), String> {
+        let eye_key = Value::String("eye".to_string());
+        let tags_key = Value::String("tags".to_string());
+        let ft_key = Value::String("field_thresholds".to_string());
+        let eye = config.as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?
+            .entry(eye_key.clone())
+            .or_insert_with(|| {
+                let mut m = Mapping::new();
+                m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+                m.insert(tags_key.clone(), Value::Sequence(Vec::new()));
+                Value::Mapping(m)
+            });
+        let eye_map = eye.as_mapping_mut().ok_or_else(|| "eye is not a mapping".to_string())?;
+        let tags = eye_map.entry(tags_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "tags is not a sequence".to_string())?;
+        let idx = tags.iter().position(|t| {
+            t.get("mac").and_then(|v| v.as_str()).map(|m| m.to_uppercase() == mac).unwrap_or(false)
+        });
+        let tag_map = if let Some(i) = idx {
+            tags[i].as_mapping_mut().ok_or_else(|| "tag entry is not a mapping".to_string())?
+        } else {
+            let mut m = Mapping::new();
+            m.insert(Value::String("mac".to_string()), Value::String(mac.to_string()));
+            m.insert(Value::String("enabled".to_string()), Value::Bool(true));
+            tags.push(Value::Mapping(m));
+            tags.last_mut().unwrap().as_mapping_mut().unwrap()
+        };
+        let thresholds = tag_map.entry(ft_key.clone())
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut().ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
+        let make_entry = || -> Value {
+            let mut m = Mapping::new();
+            m.insert(Value::String("field".to_string()), Value::String(field.to_string()));
+            for (k, v) in [("critical_low", critical_low), ("warning_low", warning_low),
+                           ("warning_high", warning_high), ("critical_high", critical_high)] {
+                if let Some(v) = v {
+                    m.insert(Value::String(k.to_string()), Value::Number(serde_yaml::Number::from(v)));
+                }
+            }
+            Value::Mapping(m)
+        };
+        if let Some(existing) = thresholds.iter_mut()
+            .find(|t| t.get("field").and_then(|v| v.as_str()) == Some(field))
+        {
+            *existing = make_entry();
+        } else {
+            thresholds.push(make_entry());
+        }
+        Ok(())
+    }
+
+    fn remove_eye_field_threshold(&self, config: &mut Value, mac: &str, field: &str) -> Result<bool, String> {
+        let eye = config.as_mapping_mut()
+            .and_then(|m| m.get_mut(&Value::String("eye".into())))
+            .and_then(|v| v.as_mapping_mut());
+        let Some(eye_map) = eye else { return Ok(false); };
+        let Some(tags) = eye_map.get_mut(&Value::String("tags".into()))
+            .and_then(|v| v.as_sequence_mut()) else { return Ok(false); };
+        let mut removed = false;
+        for t in tags.iter_mut() {
+            let is_match = t.get("mac").and_then(|v| v.as_str())
+                .map(|m| m.to_uppercase() == mac).unwrap_or(false);
+            if !is_match { continue; }
+            let tm = match t.as_mapping_mut() { Some(m) => m, None => continue };
+            if let Some(thresholds) = tm.get_mut(&Value::String("field_thresholds".into()))
+                .and_then(|v| v.as_sequence_mut())
+            {
+                let before = thresholds.len();
+                thresholds.retain(|x| x.get("field").and_then(|v| v.as_str()) != Some(field));
+                if thresholds.len() != before { removed = true; }
+            }
+        }
+        Ok(removed)
+    }
+
     /// Create a timestamped backup of the config file
     fn create_backup(&self, config_file: &Path, content: &str) -> Option<PathBuf> {
         let timestamp = SystemTime::now()
@@ -2868,6 +3035,45 @@ mod tests {
         let r = applier.apply_eye_recording("11:22:33:44:55:66".to_string(), 1);
         assert!(!r.success);
         assert!(r.error_message.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn apply_and_delete_eye_field_threshold() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("fiber.config.yaml"),
+            "eye:\n  tags:\n    - mac: 'AA:BB:CC:DD:EE:FF'\n      enabled: true\n",
+        )
+        .unwrap();
+        let applier = ConfigApplier::new(tmp.path()).unwrap();
+
+        // upsert (lowercase MAC must match the uppercase entry)
+        assert!(applier
+            .apply_eye_field_threshold(
+                "aa:bb:cc:dd:ee:ff".into(), "temperature".into(),
+                Some(-20.0), Some(0.0), Some(8.0), Some(12.0),
+            )
+            .success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        let ft = &parsed["eye"]["tags"][0]["field_thresholds"][0];
+        assert_eq!(ft["field"].as_str(), Some("temperature"));
+        assert_eq!(ft["critical_high"].as_f64(), Some(12.0));
+
+        // delete
+        assert!(applier
+            .delete_eye_field_threshold("AA:BB:CC:DD:EE:FF".into(), "temperature".into())
+            .success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed["eye"]["tags"][0]["field_thresholds"].as_sequence().unwrap().len(),
+            0
+        );
     }
 
     // ---- device label apply-path tests -----------------------------------------

@@ -228,6 +228,11 @@ pub struct EyeTagPayload {
     /// (black), `None` = not yet determined. Surfaced so the viewer can label
     /// the tag type and expose recorder controls.
     pub is_en12830: Option<bool>,
+    /// Per-field alarm state (field → NORMAL/WARNING/CRITICAL), evaluated on
+    /// device from the tag's configured thresholds. Empty when none are set.
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    /// Aggregate (worst-of-fields) alarm state string.
+    pub alarm_state: String,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
@@ -405,6 +410,22 @@ pub enum MqttCommand {
     /// Remove a per-field threshold for a LoRaWAN sensor
     DeleteLoRaWANFieldThreshold {
         dev_eui: String,
+        field: String,
+    },
+
+    /// Set a single per-field alarm threshold for an EYE tag.
+    SetEyeFieldThreshold {
+        mac: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    },
+
+    /// Remove a per-field alarm threshold for an EYE tag.
+    DeleteEyeFieldThreshold {
+        mac: String,
         field: String,
     },
 
@@ -591,6 +612,8 @@ impl MqttCommand {
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
+            MqttCommand::SetEyeFieldThreshold { .. } => "set_eye_field_threshold",
+            MqttCommand::DeleteEyeFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
