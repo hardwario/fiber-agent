@@ -100,6 +100,8 @@ impl MqttSubscriber {
             }
             "config_confirm" => self.parse_config_confirm(&json),
             "history_request" => self.parse_history_request(&json),
+            "get_sticker_config" => self.parse_get_sticker_config(&json),
+            "get_sticker_history" => self.parse_get_sticker_history(&json),
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
     }
@@ -162,6 +164,72 @@ impl MqttSubscriber {
             from_ts,
             to_ts,
         })
+    }
+
+    /// Validate a STICKER `dev_eui` field: exactly 16 hex chars, normalized to
+    /// lowercase to match the on-device / fPort-85 downlink representation.
+    fn parse_sticker_dev_eui(json: &Value) -> Result<String, String> {
+        let dev_eui = json
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'dev_eui' field".to_string())?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+        }
+        Ok(dev_eui.to_lowercase())
+    }
+
+    /// Parse an optional u32 field (absent or null → None).
+    fn parse_opt_u32(json: &Value, field: &str) -> Result<Option<u32>, String> {
+        match json.get(field) {
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(v) => {
+                let n = v
+                    .as_u64()
+                    .ok_or_else(|| format!("Invalid '{}' field (expected unsigned integer)", field))?;
+                if n > u32::MAX as u64 {
+                    return Err(format!("'{}' out of u32 range: {}", field, n));
+                }
+                Ok(Some(n as u32))
+            }
+        }
+    }
+
+    /// Parse `get_sticker_config`: read a STICKER's fPort-85 parameters. Optional
+    /// `keys` selects specific `group.field` names (omitted = full settable set).
+    fn parse_get_sticker_config(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+        let keys = match json.get("keys") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let arr = v.as_array().ok_or_else(|| "'keys' must be an array".to_string())?;
+                let mut out = Vec::with_capacity(arr.len());
+                for k in arr {
+                    let s = k
+                        .as_str()
+                        .ok_or_else(|| "'keys' entries must be strings".to_string())?;
+                    out.push(s.to_string());
+                }
+                Some(out)
+            }
+        };
+        Ok(MqttCommand::GetStickerConfig { dev_eui, keys })
+    }
+
+    /// Parse `get_sticker_history`: request a STICKER's on-device history buffer.
+    /// Optional `from`/`to` (Unix seconds) bound the window.
+    fn parse_get_sticker_history(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+        let from_unix = Self::parse_opt_u32(json, "from")?;
+        let to_unix = Self::parse_opt_u32(json, "to")?;
+        if let (Some(f), Some(t)) = (from_unix, to_unix) {
+            if f > t {
+                return Err(format!("Invalid range: from ({}) must be <= to ({})", f, t));
+            }
+        }
+        Ok(MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix })
     }
 
     /// Parse set_threshold command
@@ -655,6 +723,52 @@ mod tests {
 
         assert!(result.is_ok());
         matches!(result.unwrap(), MqttCommand::FlushStorage);
+    }
+
+    #[test]
+    fn test_parse_get_sticker_config() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_config", "dev_eui": "0102030405060708",
+                           "keys": ["application.interval_report"]}"#;
+        match subscriber.parse_command("test/commands", payload).unwrap() {
+            MqttCommand::GetStickerConfig { dev_eui, keys } => {
+                assert_eq!(dev_eui, "0102030405060708");
+                assert_eq!(keys, Some(vec!["application.interval_report".to_string()]));
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_get_sticker_config_rejects_bad_dev_eui() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_config", "dev_eui": "nothex"}"#;
+        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        assert!(err.contains("dev_eui"));
+    }
+
+    #[test]
+    fn test_parse_get_sticker_history_range() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
+                           "from": 1000, "to": 2000}"#;
+        match subscriber.parse_command("test/commands", payload).unwrap() {
+            MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix } => {
+                assert_eq!(dev_eui, "0102030405060708");
+                assert_eq!(from_unix, Some(1000));
+                assert_eq!(to_unix, Some(2000));
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_get_sticker_history_rejects_inverted_range() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
+                           "from": 2000, "to": 1000}"#;
+        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        assert!(err.contains("Invalid range"));
     }
 
     #[test]

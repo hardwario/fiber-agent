@@ -15,8 +15,10 @@ use super::sticker_proto::{response, Response};
 /// from a `HistoryFrame.samples` blob (#39).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryRecord {
-    /// Unix time of this record (`t0_unix + index * interval_s`).
-    pub time: u32,
+    /// Unix time of this record (`t0_unix + index * interval_s`), or `None` when
+    /// the frame was captured before the device RTC synced (`t0_unix` is then
+    /// uptime-relative, so an absolute timestamp would be a bogus ~1970 date).
+    pub time: Option<u32>,
     /// Scaled analog values (temperature/humidity). Absent when the firmware
     /// wrote a sentinel (no valid sample for that channel in this record).
     pub fields: BTreeMap<String, f64>,
@@ -57,11 +59,15 @@ const HIST_HUM_SENTINEL: u8 = 0xff;
 /// Expand a `HistoryFrame.samples` blob into timestamped records. Each record is
 /// a fixed-size, values-only run of the `present` channels (in bit order); record
 /// `j`'s time is `t0_unix + j*interval_s`. Sentinel values decode to "absent".
+/// `time_synced` (from `HistoryFrame.time_synced`, v1.4.0) is false when the frame
+/// was captured before the RTC synced — then `t0_unix` is uptime-relative and each
+/// record's `time` is `None` (mirrors `ttn.js`); absent field = old FW = synced.
 pub fn expand_history_frame(
     t0_unix: u32,
     interval_s: u32,
     present: u32,
     samples: &[u8],
+    time_synced: bool,
 ) -> Vec<HistoryRecord> {
     let mut rec_size = 0usize;
     for (s, (_, enc)) in HIST_SENSORS.iter().enumerate() {
@@ -83,7 +89,11 @@ pub fn expand_history_frame(
     let mut j = 0u32;
     while p + rec_size <= samples.len() {
         let mut rec = HistoryRecord {
-            time: t0_unix.wrapping_add(j.wrapping_mul(interval_s)),
+            time: if time_synced {
+                Some(t0_unix.wrapping_add(j.wrapping_mul(interval_s)))
+            } else {
+                None
+            },
             fields: BTreeMap::new(),
             counters: BTreeMap::new(),
         };
@@ -277,7 +287,6 @@ fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
         // nwkkey/appkey/nwkskey/appskey deliberately omitted (secrets).
     }
     if let Some(a) = &c.application {
-        ins_bool!(a, "application", calibration);
         ins_uint!(a, "application", interval_sample);
         ins_uint!(a, "application", interval_report);
         ins_bool!(a, "application", history_enable);
@@ -414,7 +423,14 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
             t0_unix: h.t0_unix,
             present: h.present,
             interval_s: h.interval_s,
-            records: expand_history_frame(h.t0_unix, h.interval_s, h.present, &h.samples),
+            // Absent time_synced (old FW) = synced, per firmware/ttn.js convention.
+            records: expand_history_frame(
+                h.t0_unix,
+                h.interval_s,
+                h.present,
+                &h.samples,
+                h.time_synced.unwrap_or(true),
+            ),
         },
         Some(response::Body::Error(e)) => ResponseKind::Error {
             code: error_code_name(e.code),
@@ -636,12 +652,12 @@ mod tests {
         // rec0: temp 23.50 C (2350 = 0x092e LE), hum 50% (100 = 0x64)
         // rec1: temp -5.50 C (-550 = 0xfdda LE), hum sentinel 0xff -> absent
         let samples = [0x2e, 0x09, 0x64, 0xda, 0xfd, 0xff];
-        let recs = expand_history_frame(t0, interval, present, &samples);
+        let recs = expand_history_frame(t0, interval, present, &samples, true);
         assert_eq!(recs.len(), 2);
-        assert_eq!(recs[0].time, t0);
+        assert_eq!(recs[0].time, Some(t0));
         assert_eq!(recs[0].fields["temperature"], 23.5);
         assert_eq!(recs[0].fields["humidity"], 50.0);
-        assert_eq!(recs[1].time, t0 + interval);
+        assert_eq!(recs[1].time, Some(t0 + interval));
         assert_eq!(recs[1].fields["temperature"], -5.5);
         assert!(!recs[1].fields.contains_key("humidity")); // sentinel -> absent
     }
@@ -651,10 +667,23 @@ mod tests {
         // present = motion_count (bit 14); record = 4B uint32 LE.
         let present = 1u32 << 14;
         let samples = [0x7b, 0x00, 0x00, 0x00]; // 123
-        let recs = expand_history_frame(1000, 60, present, &samples);
+        let recs = expand_history_frame(1000, 60, present, &samples, true);
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].counters["motion_count"], 123);
-        assert_eq!(recs[0].time, 1000);
+        assert_eq!(recs[0].time, Some(1000));
+    }
+
+    #[test]
+    fn history_expand_unsynced_time_is_null() {
+        // time_synced=false (RTC unsynced at capture): t0_unix is uptime-relative,
+        // so every record's time is None while the sample values still decode.
+        let present = 0b11u32; // temperature + humidity
+        let samples = [0x2e, 0x09, 0x64]; // 23.5 C, 50 %
+        let recs = expand_history_frame(1000, 900, present, &samples, false);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].time, None);
+        assert_eq!(recs[0].fields["temperature"], 23.5);
+        assert_eq!(recs[0].fields["humidity"], 50.0);
     }
 
     #[test]
@@ -669,6 +698,9 @@ mod tests {
                 samples,
                 present: 0b11,
                 interval_s: 900,
+                time_synced: None,
+                next_ord: None,
+                has_more: None,
             })),
         };
         let d = decode_response(&resp.encode_to_vec()).unwrap();
@@ -724,7 +756,7 @@ mod tests {
                 assert_eq!(interval_s, 900);
                 assert_eq!(present, 0xc03); // temperature+humidity+hall_left+hall_right
                 assert_eq!(records.len(), 1);
-                assert_eq!(records[0].time, 1_782_198_249);
+                assert_eq!(records[0].time, Some(1_782_198_249));
                 assert_eq!(records[0].fields["temperature"], 24.32);
                 assert_eq!(records[0].fields["humidity"], 55.0);
                 assert_eq!(records[0].counters["hall_left_count"], 0);

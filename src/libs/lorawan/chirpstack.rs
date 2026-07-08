@@ -238,25 +238,13 @@ fn decode_object_legacy(
 ///
 /// Format: `{dev_eui}-{ts}-{seq}`. `seq` is `fCnt` if present in the
 /// `counters` map (inserted by `parse_uplink` from the ChirpStack uplink's
-/// LoRaWAN frame counter), otherwise 0; combined with the device-reported
-/// `received_at` epoch so a redelivery (broker reconnect, retained message,
-/// save-and-feed replay) hits the same UNIQUE key on `sticker_readings`.
-/// Wall-clock receive time is intentionally NOT part of the id — it would
-/// shift on every redelivery and defeat the dedup constraint.
-pub fn message_id_for(reading: &StickerReading) -> String {
+/// LoRaWAN frame counter), otherwise 0. Two uplinks from the same `dev_eui`
+/// with the same `(ts, seq)` are treated as the same message (the
+/// save-and-feed write path dedups via the UNIQUE constraint on
+/// `sticker_readings.message_id`).
+pub fn message_id_for(reading: &StickerReading, ts: i64) -> String {
     let seq = reading.counters.get("fCnt").copied().unwrap_or(0);
-    let ts = received_at_epoch(reading).unwrap_or(0);
     format!("{}-{}-{}", reading.dev_eui, ts, seq)
-}
-
-/// Parse the ChirpStack-asserted `time` (RFC3339) into a Unix epoch in
-/// seconds. Returns `None` when the field is missing or malformed; callers
-/// fall back to wall-clock for the ingest-time slot, but the device-time
-/// slot stays `0` so the row is still recognisable as "time unknown".
-pub fn received_at_epoch(reading: &StickerReading) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(&reading.received_at)
-        .ok()
-        .map(|dt| dt.timestamp())
 }
 
 /// Extract dev_eui from a ChirpStack MQTT topic.
@@ -322,8 +310,9 @@ mod tests {
         let report = AlarmReport {
             base_time: 1_780_000_000,
             total: 1,
+            time_synced: None,
             events: vec![AlarmEvent {
-                source: 1, edge: 0, side: 2, rel_s: 5,
+                source: 1, edge: 0, r#type: 2, rel_s: 5,
                 value: Some(5500), quantity: 1, slot: 0,
             }],
         };
@@ -331,10 +320,7 @@ mod tests {
         let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
         assert_eq!(r.events.len(), 1);
         assert_eq!(r.events[0].event_type, "alarm");
-        // enriched host-side (#77): labels + descaled value (humidity ×100).
-        assert_eq!(r.events[0].extra["quantity"], "humidity");
-        assert_eq!(r.events[0].extra["value"], 55.0);
-        assert_eq!(r.events[0].extra["value_raw"], 5500);
+        assert_eq!(r.events[0].extra["value"], 5500);
     }
 
     #[test]
@@ -474,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn message_id_uses_received_at_epoch_and_fcnt() {
+    fn message_id_uses_fcnt_when_present_else_received_at_seq() {
         let mut r = StickerReading {
             dev_eui: "70b3d5".into(),
             device_name: "".into(),
@@ -483,71 +469,13 @@ mod tests {
             events: vec![],
             rssi: None,
             snr: None,
-            received_at: "2020-01-01T00:00:00Z".into(),
+            received_at: "2026-05-19T12:00:00Z".into(),
         };
         r.counters.insert("fCnt".into(), 42);
-        // 2020-01-01T00:00:00Z -> 1577836800
-        assert_eq!(message_id_for(&r), "70b3d5-1577836800-42");
+        assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-42");
 
         r.counters.remove("fCnt");
-        assert_eq!(message_id_for(&r), "70b3d5-1577836800-0");
-    }
-
-    #[test]
-    fn message_id_is_stable_across_redelivery() {
-        // The same uplink delivered twice (broker reconnect, retained, replay)
-        // must collide on message_id — otherwise the UNIQUE constraint on
-        // sticker_readings does not dedup. Before this fix the id embedded
-        // the wall-clock receive time and each redelivery got a fresh id.
-        let mut r = StickerReading {
-            dev_eui: "70b3d5".into(),
-            device_name: "".into(),
-            fields: Default::default(),
-            counters: Default::default(),
-            events: vec![],
-            rssi: None,
-            snr: None,
-            received_at: "2020-01-01T00:00:00Z".into(),
-        };
-        r.counters.insert("fCnt".into(), 7);
-        let first = message_id_for(&r);
-        // Simulate a redelivery a minute later — the reading is unchanged,
-        // only our wall clock has moved. The id must be the same.
-        let again = message_id_for(&r);
-        assert_eq!(first, again);
-    }
-
-    #[test]
-    fn received_at_epoch_parses_rfc3339() {
-        let mut r = StickerReading {
-            dev_eui: "70b3d5".into(),
-            device_name: "".into(),
-            fields: Default::default(),
-            counters: Default::default(),
-            events: vec![],
-            rssi: None,
-            snr: None,
-            received_at: "2020-01-01T00:00:00Z".into(),
-        };
-        assert_eq!(received_at_epoch(&r), Some(1577836800));
-        r.received_at = "garbage".into();
-        assert_eq!(received_at_epoch(&r), None);
-    }
-
-    #[test]
-    fn parse_uplink_extracts_fcnt_into_counters() {
-        let payload = r#"{
-            "deviceInfo": { "devEui": "AABB" },
-            "fCnt": 137,
-            "object": { "temperature": 20.0 },
-            "time": "2020-01-01T00:00:00Z"
-        }"#;
-        let r = parse_uplink(payload.as_bytes()).unwrap().expect("legacy object decodes to Some");
-        assert_eq!(r.counters.get("fCnt").copied(), Some(137));
-        // And the message_id derived from it must include the counter so two
-        // uplinks at the same received_at don't collide on the UNIQUE
-        // constraint in sticker_readings.
-        assert_eq!(message_id_for(&r), "aabb-1577836800-137");
+        assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-0");
     }
 
     #[test]

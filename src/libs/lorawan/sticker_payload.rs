@@ -31,6 +31,15 @@ pub struct DecodedTelemetry {
 /// 1-Wire slot type (mirrors `enum app_w1_slot_type` in app_w1_slots.h).
 const W1_TYPE_MACHINE_PROBE: u32 = 2;
 
+/// fPort-2 "no valid sample" sentinels. An enabled analog sensor is always on
+/// the wire (so the configured-sensor list stays stable); a NaN reading arrives
+/// as the sentinel and must decode to "field omitted", not a scaled garbage
+/// value (e.g. `INT32_MIN / 100 ≈ -21_474_836 °C`). Mirrors `app_compose.c`
+/// `TM_S32_NA` / `TM_U32_NA` and `ttn.js` `_TM_S32_NA` / `_TM_U32_NA`; same
+/// intent as `sticker_response.rs`'s `HIST_TEMP_SENTINEL`.
+const TM_S32_NA: i32 = i32::MIN; // sint32 fields: temperature, altitude
+const TM_U32_NA: u32 = u32::MAX; // uint32 fields: humidity, pressure, illuminance
+
 /// Decode a fPort 2 `Telemetry` frame into scaled fields/counters/events.
 /// Scaling per `ttn.js` `decodeTelemetry`: voltage ÷50, temperature ÷100,
 /// humidity ÷2, pressure ÷10, altitude ÷10, illuminance ×2.
@@ -56,21 +65,21 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
         }
     }
     // --- internal (SHT4x) ---
-    if let Some(v) = t.temperature {
+    if let Some(v) = t.temperature.filter(|&v| v != TM_S32_NA) {
         d.fields.insert("temperature".into(), v as f64 / 100.0);
     }
-    if let Some(v) = t.humidity {
+    if let Some(v) = t.humidity.filter(|&v| v != TM_U32_NA) {
         d.fields.insert("humidity".into(), v as f64 / 2.0);
     }
     // --- barometer ---
-    if let Some(v) = t.pressure {
+    if let Some(v) = t.pressure.filter(|&v| v != TM_U32_NA) {
         d.fields.insert("pressure".into(), v as f64 / 10.0);
     }
-    if let Some(v) = t.altitude {
+    if let Some(v) = t.altitude.filter(|&v| v != TM_S32_NA) {
         d.fields.insert("altitude".into(), v as f64 / 10.0);
     }
     // --- light ---
-    if let Some(v) = t.illuminance {
+    if let Some(v) = t.illuminance.filter(|&v| v != TM_U32_NA) {
         d.fields.insert("illuminance".into(), v as f64 * 2.0);
     }
     // --- accelerometer orientation (surfaced as an event, like the JS codec) ---
@@ -138,7 +147,7 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
         } else {
             format!("ext_temperature_{n}")
         };
-        if let Some(v) = sr.temperature {
+        if let Some(v) = sr.temperature.filter(|&v| v != TM_S32_NA) {
             d.fields.insert(temp_key, v as f64 / 100.0);
         }
         if let Some(v) = sr.humidity {
@@ -174,102 +183,43 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
     Ok(d)
 }
 
-/// `AlarmEvent.source` enum → label. Mirrors `m_source_names` in firmware
-/// `app_alarm_rules.c`.
-fn alarm_source_name(s: u32) -> &'static str {
-    match s {
-        0 => "onboard",
-        1 => "s1",
-        2 => "s2",
-        3 => "s3",
-        4 => "s4",
-        5 => "hall-left",
-        6 => "hall-right",
-        7 => "input-a",
-        8 => "input-b",
-        9 => "pir",
-        10 => "accel",
-        _ => "?",
-    }
-}
-
-/// `AlarmEvent.quantity` enum → label. Mirrors `m_quantity_names` in firmware
-/// `app_alarm_rules.c`.
-fn alarm_quantity_name(q: u32) -> &'static str {
-    match q {
-        0 => "temperature",
-        1 => "humidity",
-        2 => "pressure",
-        3 => "illuminance",
-        4 => "magnetic-field",
-        5 => "tilt",
-        6 => "state",
-        7 => "count",
-        _ => "?",
-    }
-}
-
-/// Rule kind derived from the quantity (`app_alarm_quantity_kind`): tilt/state →
-/// state, count → rate, everything else → threshold.
-fn alarm_quantity_kind(q: u32) -> &'static str {
-    match q {
-        5 | 6 => "state",
-        7 => "rate",
-        _ => "threshold",
-    }
-}
-
-/// Inverse of firmware `alarm_scale()`: turn the raw wire `value` back into a
-/// physical reading for THRESHOLD-kind (analog) quantities. State/rate values
-/// are integers (0/1 or a counter) and are returned unscaled.
-fn alarm_descale(q: u32, raw: i32) -> serde_json::Value {
-    let scaled = |d: f64| json!((raw as f64 / d));
-    match q {
-        0 | 1 => scaled(100.0),   // temperature, humidity → ×100 on the wire
-        2 => scaled(10.0),        // pressure → hPa×10
-        4 => scaled(1000.0),      // magnetic-field → µT wire, mT out
-        _ => json!(raw),          // illuminance, tilt, state, count → as-is
-    }
-}
-
 /// Decode a fPort 3 `AlarmReport` frame into a list of alarm events. The rule
 /// config is not on the wire — each event carries the resulting edge only.
-///
-/// Each event is enriched host-side from the firmware enums
-/// (`app_alarm_rules.c`): `source`/`quantity`/`edge`/`side` symbolic labels, the
-/// rule `kind`, the descaled physical `value` (per `alarm_scale`, analog only)
-/// alongside the raw wire value, and the absolute `time` = `base_time + rel_s`.
+/// `value` scaling depends on `quantity` (analog ×100/×10, digital 0/1, counter);
+/// since the quantity→scale map is not yet fixed host-side, the raw value and
+/// quantity are passed through in `extra` for the consumer to interpret.
 pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<StickerEvent>, String> {
     let r = AlarmReport::decode(bytes).map_err(|e| format!("AlarmReport protobuf decode failed: {e}"))?;
+    // time_synced absent = old FW = treat as synced (mirrors ttn.js decodeAlarmBatch).
+    let synced = r.time_synced.unwrap_or(true);
     let events = r
         .events
         .iter()
         .map(|e| {
-            let edge = if e.edge == 1 { "deactivate" } else { "activate" };
-            let side = match e.side {
-                1 => "lo",
-                2 => "hi",
-                _ => "none",
+            // Per-event device-clock time = base_time + rel_s, or null when the
+            // window opened before the RTC synced (base_time is uptime-relative, so
+            // an absolute timestamp would be a bogus ~1970 date). Mirrors ttn.js.
+            let time = if synced {
+                Some(r.base_time.wrapping_add(e.rel_s))
+            } else {
+                None
             };
-            let mut extra = json!({
-                "source": alarm_source_name(e.source),
-                "source_id": e.source,
-                "quantity": alarm_quantity_name(e.quantity),
-                "quantity_id": e.quantity,
-                "kind": alarm_quantity_kind(e.quantity),
-                "slot": e.slot,
-                "edge": edge,
-                "side": side,
-                "rel_s": e.rel_s,
-                "base_time": r.base_time,
-                "time": r.base_time.saturating_add(e.rel_s),
-            });
-            // value is optional on the wire; descale analog quantities, keep raw.
-            if let Some(raw) = e.value {
-                extra["value"] = alarm_descale(e.quantity, raw);
-                extra["value_raw"] = json!(raw);
+            StickerEvent {
+                event_type: "alarm".to_string(),
+                ts: received_at.to_string(),
+                extra: json!({
+                    "source": e.source,
+                    "quantity": e.quantity,
+                    "slot": e.slot,           // 0xFF (255) = no_data watchdog
+                    "edge": e.edge,
+                    "alarm_type": e.r#type,   // low/high/trigger/no_data (#212, replaced `side`; not "type" — that key is the event kind)
+                    "rel_s": e.rel_s,
+                    "base_time": r.base_time,
+                    "time_synced": synced,
+                    "time": time,             // null when clock unsynced
+                    "value": e.value,
+                }),
             }
-            StickerEvent { event_type: "alarm".to_string(), ts: received_at.to_string(), extra }
         })
         .collect();
     Ok(events)
@@ -326,6 +276,46 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_sentinels_decode_to_absent_fields() {
+        // "No valid sample" sentinels (app_compose.c TM_S32_NA / TM_U32_NA,
+        // mirrored by ttn.js → null): an enabled analog sensor is always on the
+        // wire, but a NaN reading arrives as the sentinel and must decode to
+        // "field omitted", never a scaled garbage value (INT32_MIN/100 ≈
+        // -21_474_836 °C — the implausible-temperature bug this guards).
+        let t = Telemetry {
+            voltage: Some(150),          // no sentinel for voltage → still decodes (3.0 V)
+            temperature: Some(i32::MIN), // sint32 sentinel → omit
+            humidity: Some(u32::MAX),    // uint32 sentinel → omit
+            pressure: Some(u32::MAX),    // uint32 sentinel → omit
+            altitude: Some(i32::MIN),    // sint32 sentinel → omit
+            illuminance: Some(u32::MAX), // uint32 sentinel → omit
+            w1_sensors: vec![SensorReading {
+                slot: 1,
+                r#type: W1_TYPE_MACHINE_PROBE,
+                temperature: Some(i32::MIN), // W1 sint32 sentinel → omit
+                humidity: Some(140),         // real value still decodes (70.0 %)
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let d = decode_telemetry(&t.encode_to_vec(), "t").unwrap();
+
+        for k in [
+            "temperature",
+            "humidity",
+            "pressure",
+            "altitude",
+            "illuminance",
+            "machine_probe_temperature_1",
+        ] {
+            assert!(!d.fields.contains_key(k), "{k} should be omitted for its sentinel");
+        }
+        // non-sentinel neighbours still decode
+        assert_eq!(d.fields.get("voltage").copied(), Some(3.0));
+        assert_eq!(d.fields.get("machine_probe_humidity_1").copied(), Some(70.0));
+    }
+
+    #[test]
     fn telemetry_w1_machine_probe_slot() {
         let t = Telemetry {
             w1_sensors: vec![SensorReading {
@@ -346,15 +336,14 @@ mod tests {
 
     #[test]
     fn alarm_report_decodes_events() {
-        // source=1 (s1), quantity=1 (humidity), edge=0 (activate), side=2 (hi),
-        // value=5500 → humidity 55.0 %RH (×100 wire). time = base_time + rel_s.
         let r = AlarmReport {
             base_time: 1_780_000_000,
             total: 1,
+            time_synced: None, // absent → treated as synced
             events: vec![AlarmEvent {
                 source: 1,
                 edge: 0,
-                side: 2,
+                r#type: 2, // TYPE_HIGH (#212, was side=SIDE_HI)
                 rel_s: 5,
                 value: Some(5500),
                 quantity: 1,
@@ -363,56 +352,10 @@ mod tests {
         };
         let evs = decode_alarm_report(&r.encode_to_vec(), "t").unwrap();
         assert_eq!(evs.len(), 1);
-        let e = &evs[0];
-        assert_eq!(e.event_type, "alarm");
-        assert_eq!(e.extra["source"], "s1");
-        assert_eq!(e.extra["quantity"], "humidity");
-        assert_eq!(e.extra["kind"], "threshold");
-        assert_eq!(e.extra["edge"], "activate");
-        assert_eq!(e.extra["side"], "hi");
-        assert_eq!(e.extra["slot"], 0);
-        assert_eq!(e.extra["value"], 55.0); // descaled ×100
-        assert_eq!(e.extra["value_raw"], 5500);
-        assert_eq!(e.extra["time"], 1_780_000_005u64);
-    }
-
-    #[test]
-    fn alarm_descaling_and_kinds_per_quantity() {
-        // temperature (q0) ×100 → -5.5 ; pressure (q2) ×10 → 1013.2 ;
-        // magnetic-field (q4) ×1000 → 1.5 mT ; state (q6) digital → raw ;
-        // count (q7) rate → raw. Also deactivate edge + side none.
-        let mk = |quantity, value, edge, side| AlarmEvent {
-            source: 0,
-            edge,
-            side,
-            rel_s: 0,
-            value: Some(value),
-            quantity,
-            slot: 0,
-        };
-        let r = AlarmReport {
-            base_time: 0,
-            total: 5,
-            events: vec![
-                mk(0, -550, 1, 0),     // temperature -5.5, deactivate, none
-                mk(2, 10132, 0, 1),    // pressure 1013.2, lo
-                mk(4, 1500, 0, 2),     // magnetic-field 1.5 mT
-                mk(6, 1, 0, 0),        // state digital → 1
-                mk(7, 42, 0, 0),       // count rate → 42
-            ],
-        };
-        let evs = decode_alarm_report(&r.encode_to_vec(), "t").unwrap();
-        assert_eq!(evs[0].extra["quantity"], "temperature");
-        assert_eq!(evs[0].extra["value"], -5.5);
-        assert_eq!(evs[0].extra["edge"], "deactivate");
-        assert_eq!(evs[0].extra["side"], "none");
-        assert_eq!(evs[1].extra["value"], 1013.2);
-        assert_eq!(evs[1].extra["side"], "lo");
-        assert_eq!(evs[2].extra["quantity"], "magnetic-field");
-        assert_eq!(evs[2].extra["value"], 1.5);
-        assert_eq!(evs[3].extra["kind"], "state");
-        assert_eq!(evs[3].extra["value"], 1);
-        assert_eq!(evs[4].extra["kind"], "rate");
-        assert_eq!(evs[4].extra["value"], 42);
+        assert_eq!(evs[0].event_type, "alarm");
+        assert_eq!(evs[0].extra["slot"], 0);
+        assert_eq!(evs[0].extra["value"], 5500);
+        assert_eq!(evs[0].extra["alarm_type"], 2); // HIGH passed through
+        assert_eq!(evs[0].extra["time"], 1_780_000_005u32); // base_time + rel_s (synced)
     }
 }
