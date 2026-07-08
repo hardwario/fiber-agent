@@ -422,6 +422,21 @@ pub async fn create_gatt_app(
                         .await
                         .unwrap_or_else(|_| Err("internal task error".to_string()));
 
+                        // Setting the clock can step it forward by a long way
+                        // (a stale-RTC device being corrected from the phone).
+                        // `last_activity` was stamped with the *old* clock at the
+                        // touch above, so without this the idle reaper would see a
+                        // huge `now - last_activity` delta on its next 50ms tick
+                        // and tear the session down (clearing the token + stopping
+                        // advertising) mid-provisioning. Re-touch with the now-
+                        // corrected clock so the session survives.
+                        if result.is_ok() {
+                            let state_guard = state.lock().await;
+                            crate::libs::network::touch_shared(
+                                &state_guard.provisioning_session,
+                            );
+                        }
+
                         result.map_err(|_| ReqError::Failed)
                     })
                 }
