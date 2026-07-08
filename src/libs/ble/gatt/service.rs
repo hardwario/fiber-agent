@@ -39,6 +39,14 @@ const WIFI_DISCONNECT_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB08_0000_1000_8000_00805F9B34FB);
 const DEVICE_LABEL_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0A_0000_1000_8000_00805F9B34FB);
+const TIME_SET_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0B_0000_1000_8000_00805F9B34FB);
+const STICKER_ADD_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0D_0000_1000_8000_00805F9B34FB);
+const LAN_CONFIG_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB09_0000_1000_8000_00805F9B34FB);
+const LAN_STATUS_CHAR_UUID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x0000FB0C_0000_1000_8000_00805F9B34FB);
 
 // --- Application builder -----------------------------------------------------
 
@@ -380,6 +388,386 @@ pub async fn create_gatt_app(
         ..Default::default()
     };
 
+    // --- Time Set characteristic (FB0B) --------------------------------------
+    // Write {"epoch": <utc seconds>} to set the device clock (and persist to
+    // RTC) — for BLE-only deployments where NTP is unreachable after a power
+    // loss. Read returns {epoch, synchronized}. Auth-gated, mirrors FB09.
+    let time_set_char = Characteristic {
+        uuid: TIME_SET_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+
+                        let req: crate::libs::ble::gatt::time_sync::TimeSetRequest =
+                            serde_json::from_slice(&new_value)
+                                .map_err(|_| ReqError::InvalidValueLength)?;
+
+                        // `date` + `hwclock` are quick (sub-second), well under
+                        // the ATT write-response timeout, but they shell out —
+                        // offload off the async worker thread anyway.
+                        let epoch = req.epoch;
+                        let result = tokio::task::spawn_blocking(move || {
+                            crate::libs::ble::gatt::time_sync::set_system_time(epoch)
+                        })
+                        .await
+                        .unwrap_or_else(|_| Err("internal task error".to_string()));
+
+                        // Setting the clock can step it forward by a long way
+                        // (a stale-RTC device being corrected from the phone).
+                        // `last_activity` was stamped with the *old* clock at the
+                        // touch above, so without this the idle reaper would see a
+                        // huge `now - last_activity` delta on its next 50ms tick
+                        // and tear the session down (clearing the token + stopping
+                        // advertising) mid-provisioning. Re-touch with the now-
+                        // corrected clock so the session survives.
+                        if result.is_ok() {
+                            let state_guard = state.lock().await;
+                            crate::libs::network::touch_shared(
+                                &state_guard.provisioning_session,
+                            );
+                        }
+
+                        result.map_err(|_| ReqError::Failed)
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+                        let status = crate::libs::ble::gatt::time_sync::get_time_status();
+                        Ok(serde_json::to_vec(&status).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // --- Sticker Add characteristic (FB0D) ------------------------------------
+    // Write {"deveui","joineui","appkey","name","serial_number"} to enroll a
+    // LoRaWAN sticker (OTAA) into the local ChirpStack via the shared add path
+    // (same as MQTT's AddLoRaWANSticker). Read returns the structured result of
+    // the most recent write. Auth-gated, mirrors FB09/FB01.
+    let sticker_add_char = Characteristic {
+        uuid: STICKER_ADD_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        use crate::libs::ble::gatt::sticker;
+
+                        // Bound the request before any parsing work — a
+                        // malicious peer could otherwise push megabytes
+                        // through serde_json before validation rejects it.
+                        if new_value.len() > sticker::MAX_PAYLOAD_BYTES {
+                            return Err(ReqError::InvalidValueLength);
+                        }
+
+                        let mut state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+
+                        // Single-pending guard: refuse a new write while a
+                        // prior enrollment is still running. Without this,
+                        // a fast peer could pile up unbounded blocking
+                        // workers and the result slot would be clobbered
+                        // mid-flight.
+                        let slot = state_guard.sticker_result.clone();
+                        if sticker::read(&slot).pending {
+                            return Err(ReqError::Failed);
+                        }
+
+                        let req: sticker::StickerAddRequest =
+                            match serde_json::from_slice(&new_value) {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    // Record the failure so the FB0D read
+                                    // does not surface a stale prior result.
+                                    sticker::store(
+                                        &slot,
+                                        sticker::StickerAddResponse {
+                                            pending: false,
+                                            success: false,
+                                            message: "invalid json".to_string(),
+                                            deveui: String::new(),
+                                        },
+                                    );
+                                    return Err(ReqError::Failed);
+                                }
+                            };
+
+                        let prepared = match sticker::prepare(&req) {
+                            Ok(p) => p,
+                            Err(msg) => {
+                                sticker::store(
+                                    &slot,
+                                    sticker::StickerAddResponse {
+                                        pending: false,
+                                        success: false,
+                                        message: msg,
+                                        deveui: req.deveui.trim().to_lowercase(),
+                                    },
+                                );
+                                return Err(ReqError::Failed);
+                            }
+                        };
+
+                        // add_lorawan_sticker drives ChirpStack gRPC + disk
+                        // writes that take seconds — longer than the BLE
+                        // write-response ACK. So we ACK the write immediately
+                        // and run the enrollment in the background; the
+                        // client polls FB0D read (pending=true → final
+                        // result). A synchronous wait here returned a GATT
+                        // UNLIKELY_ERROR on a real device even though the
+                        // add succeeded.
+                        let deps = state_guard.sticker_deps();
+                        let dev_eui = prepared.dev_eui.clone();
+                        if !sticker::try_begin(&slot, dev_eui.clone()) {
+                            // Lost a race against another concurrent writer
+                            // that got the slot first; behave like the
+                            // pending-guard above.
+                            return Err(ReqError::Failed);
+                        }
+
+                        // Drop any prior task handle (it must already be
+                        // done — the pending-guard guarantees this) before
+                        // we own the new one.
+                        if let Some(prev) = state_guard.sticker_task.take() {
+                            prev.abort();
+                        }
+                        let slot_for_task = slot.clone();
+                        let handle = tokio::spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                crate::libs::lorawan::add_lorawan_sticker(
+                                    &deps,
+                                    prepared.dev_eui,
+                                    prepared.name,
+                                    prepared.serial_number,
+                                    prepared.activation,
+                                )
+                            })
+                            .await
+                            .unwrap_or_else(|join_err| {
+                                eprintln!(
+                                    "[gatt::sticker] enrollment task failed: {join_err}"
+                                );
+                                Err("internal task error".to_string())
+                            });
+
+                            let (success, message) = match &result {
+                                Ok(()) => (true, "sticker enrolled".to_string()),
+                                Err(e) => (false, e.clone()),
+                            };
+                            sticker::store(
+                                &slot_for_task,
+                                sticker::StickerAddResponse {
+                                    pending: false,
+                                    success,
+                                    message,
+                                    deveui: dev_eui,
+                                },
+                            );
+                        });
+                        state_guard.sticker_task = Some(handle);
+                        drop(state_guard);
+                        Ok(())
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        use crate::libs::ble::gatt::sticker;
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let slot = state_guard.sticker_result.clone();
+                        drop(state_guard);
+                        let resp = sticker::read(&slot);
+                        Ok(serde_json::to_vec(&resp).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // --- LAN Config characteristic (FB09) -------------------------------------
+    // Write {"mode":"dhcp"} or {"mode":"static","ipv4":{...}} to configure the
+    // wired interface via NetworkManager. Auth-gated, mirrors FB03.
+    let lan_config_char = Characteristic {
+        uuid: LAN_CONFIG_CHAR_UUID.into(),
+        write: Some(CharacteristicWrite {
+            write: true,
+            method: CharacteristicWriteMethod::Fun(Box::new({
+                let state = state.clone();
+                let event_tx = event_tx.clone();
+                move |new_value, _req| {
+                    let state = state.clone();
+                    let event_tx = event_tx.clone();
+                    Box::pin(async move {
+                        use crate::libs::ble::gatt::lan;
+                        use std::sync::atomic::Ordering as AtomicOrdering;
+
+                        // Bound the request before any parsing work — a
+                        // malicious peer could otherwise push megabytes
+                        // through serde_json before validation rejects it.
+                        if new_value.len() > lan::MAX_PAYLOAD_BYTES {
+                            return Err(ReqError::InvalidValueLength);
+                        }
+
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        let in_flight = state_guard.lan_apply_in_flight.clone();
+                        drop(state_guard);
+
+                        // Single-pending guard: refuse a new write while a
+                        // prior `apply_lan_config` is still running. Without
+                        // this, a peer can spam FB09 writes and either
+                        // saturate the blocking pool or trigger a
+                        // NetworkManager modify+up race that leaves the eth
+                        // profile half-applied.
+                        if in_flight
+                            .compare_exchange(
+                                false,
+                                true,
+                                AtomicOrdering::SeqCst,
+                                AtomicOrdering::SeqCst,
+                            )
+                            .is_err()
+                        {
+                            return Err(ReqError::Failed);
+                        }
+                        // RAII reset: clear the flag no matter how this
+                        // closure exits below.
+                        struct InFlightGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                        impl Drop for InFlightGuard {
+                            fn drop(&mut self) {
+                                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                        let _guard = InFlightGuard(in_flight);
+
+                        let request: lan::LanConfigRequest =
+                            serde_json::from_slice(&new_value)
+                                .map_err(|_| ReqError::InvalidValueLength)?;
+
+                        // apply_lan_config drives nmcli synchronously and `up`
+                        // can block for seconds — offload it so the async BLE
+                        // worker thread is not tied up while NM works.
+                        let apply_result = tokio::task::spawn_blocking(move || {
+                            lan::apply_lan_config(&request)
+                        })
+                        .await
+                        .unwrap_or(Err(
+                            crate::libs::ble::gatt::net_error::NetworkErrorCategory::Other,
+                        ));
+
+                        match apply_result {
+                            Ok(()) => {
+                                let status = lan::get_lan_status();
+                                let _ = event_tx.try_send(super::BleEvent::LanConfigured {
+                                    mode: status.mode.clone(),
+                                    ip: status.ip_address.clone(),
+                                });
+                                Ok(())
+                            }
+                            Err(category) => {
+                                let _ = event_tx.try_send(super::BleEvent::LanFailed {
+                                    error: category.as_str().to_string(),
+                                });
+                                Err(ReqError::Failed)
+                            }
+                        }
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // --- LAN Status characteristic (FB0C) -------------------------------------
+    // Read returns {connected, link, ip_address, mac, mode, error}. Notify is
+    // passive (kept alive; client polls via read) — identical to FB04.
+    let lan_status_char = Characteristic {
+        uuid: LAN_STATUS_CHAR_UUID.into(),
+        read: Some(CharacteristicRead {
+            read: true,
+            fun: Box::new({
+                let state = state.clone();
+                move |_req| {
+                    let state = state.clone();
+                    Box::pin(async move {
+                        let state_guard = state.lock().await;
+                        crate::libs::network::touch_shared(&state_guard.provisioning_session);
+                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                            return Err(ReqError::NotAuthorized);
+                        }
+                        drop(state_guard);
+
+                        let status = crate::libs::ble::gatt::lan::get_lan_status();
+                        Ok(serde_json::to_vec(&status).unwrap_or_default())
+                    })
+                }
+            }),
+            ..Default::default()
+        }),
+        notify: Some(CharacteristicNotify {
+            notify: true,
+            method: CharacteristicNotifyMethod::Fun(Box::new({
+                move |notifier| {
+                    Box::pin(async move {
+                        // Keep notifier alive until client unsubscribes.
+                        notifier.stopped().await;
+                    })
+                }
+            })),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
     // --- Terminal TX characteristic (FB05) ------------------------------------
     let terminal_tx_char = Characteristic {
         uuid: TERMINAL_TX_CHAR_UUID.into(),
@@ -539,6 +927,10 @@ pub async fn create_gatt_app(
         wifi_status_char,
         device_info_char,
         device_label_char,
+        time_set_char,
+        sticker_add_char,
+        lan_config_char,
+        lan_status_char,
     ];
 
     if enable_terminal {

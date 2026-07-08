@@ -60,7 +60,7 @@ pub fn get_network_status() -> NetworkStatus {
 }
 
 /// Get IP address of a network interface using ip command
-fn get_interface_ip(interface: &str) -> Option<String> {
+pub(crate) fn get_interface_ip(interface: &str) -> Option<String> {
     // Try using ip command to get IPv4 address
     if let Ok(output) = std::process::Command::new("ip")
         .args(["addr", "show", interface])

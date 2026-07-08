@@ -9,6 +9,12 @@ pub mod monitor;
 pub mod provisioning;
 pub mod registry;
 pub mod state;
+pub mod sticker_add;
+pub mod sticker_payload;
+pub mod sticker_proto;
+pub mod sticker_response;
+
+pub use sticker_add::{add_lorawan_sticker, StickerAddDeps};
 
 pub use monitor::{LoRaWANMonitor, LoRaWANHandle};
 pub use state::{

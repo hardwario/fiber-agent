@@ -384,6 +384,38 @@ impl StorageWriter {
             Ok(Some(conn.last_insert_rowid()))
         }
     }
+
+    /// Persist one EYE BLE tag reading. Idempotent on `message_id`
+    /// (`INSERT OR IGNORE`); returns the new row id, or `None` if it was a
+    /// duplicate. No provisioning epoch (unlike sticker readings).
+    pub fn write_eye_reading(
+        conn: &mut Connection,
+        mac: &str,
+        ts: i64,
+        received_at: i64,
+        message_id: &str,
+        event_type: &str,
+        payload_json: &str,
+    ) -> StorageResult<Option<i64>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let res = conn.execute(
+            "INSERT OR IGNORE INTO eye_readings
+             (mac, ts, received_at, message_id, event_type, payload_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![mac, ts, received_at, message_id, event_type, payload_json, now],
+        )
+        .map_err(|e| StorageError::InsertError(format!("Failed to insert eye reading: {}", e)))?;
+
+        if res == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(conn.last_insert_rowid()))
+        }
+    }
 }
 
 #[cfg(test)]

@@ -991,6 +991,10 @@ pub struct Config {
     /// BLE GATT server settings
     #[serde(default)]
     pub ble: crate::libs::ble::BleConfig,
+
+    /// Teltonika EYE BLE sensor tag settings
+    #[serde(default)]
+    pub eye: Option<crate::libs::eye::EyeConfig>,
 }
 
 impl Config {
@@ -1107,6 +1111,7 @@ impl Config {
             mqtt: None,  // MQTT disabled by default
             lorawan: None,  // LoRaWAN disabled by default
             ble: crate::libs::ble::BleConfig::default(),
+            eye: None,  // EYE BLE tags disabled by default
         }
     }
 }
