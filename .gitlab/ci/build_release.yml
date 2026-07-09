@@ -13,7 +13,7 @@ build:aarch64-dev-platform:
     - apt-get update
     - apt-get install -y --no-install-recommends
         gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config
-        libssl-dev:arm64 libdbus-1-dev:arm64
+        libssl-dev:arm64 libdbus-1-dev:arm64 protobuf-compiler
   script:
     - VERSION="${CI_COMMIT_TAG#v}"
     - echo "Stamping Cargo.toml with version ${VERSION}"
