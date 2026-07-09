@@ -40,3 +40,15 @@ lint:clippy:
     - rustup component add clippy
   script:
     - cargo clippy --all-targets -- -D warnings
+
+lint:commits:
+  image: node:20-alpine
+  stage: test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - apk add --no-cache git
+    - npm install --no-save @commitlint/cli @commitlint/config-conventional
+  script:
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - npx commitlint --from "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --to HEAD --verbose
