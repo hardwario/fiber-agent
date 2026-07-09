@@ -1,0 +1,42 @@
+# application/.gitlab/ci/mr_checks.yml
+.mr_rust_base:
+  image: rust:1.94-bookworm
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  cache:
+    key:
+      files: [Cargo.lock, rust-toolchain.toml]
+    paths: [.cargo/registry/index, .cargo/registry/cache, target/]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build:check:
+  extends: .mr_rust_base
+  stage: test
+  script:
+    - cargo build --locked
+
+test:unit:
+  extends: .mr_rust_base
+  stage: test
+  # --test-threads=1: several tests share global state and race under the
+  # default multi-threaded runner. Serializing keeps the gate deterministic.
+  # FOLLOW-UP: fix the shared-state races so the suite is parallel-safe.
+  script:
+    - cargo test --locked -- --test-threads=1
+
+lint:clippy:
+  extends: .mr_rust_base
+  stage: test
+  # Non-blocking for now: the tree has ~157 pre-existing clippy findings.
+  # Reports on every MR so new code is visible, but does not gate merges yet.
+  # FOLLOW-UP: burn down the backlog (see below), then remove allow_failure
+  # to make clippy a hard gate.
+  #   - ~90 auto-fixable:  cargo clippy --fix --allow-dirty --all-targets
+  #   - 29 too_many_arguments / 6 dead_code: targeted #[allow] or refactor
+  #   - 2 await_holding_lock: real correctness smells — fix by hand
+  allow_failure: true
+  before_script:
+    - rustup component add clippy
+  script:
+    - cargo clippy --all-targets -- -D warnings
