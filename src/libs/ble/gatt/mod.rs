@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod device_info;
+pub mod eye_tag_add;
 pub mod lan;
 pub mod net_error;
 pub mod service;
@@ -389,6 +390,9 @@ async fn run_server(
                             task.abort();
                         }
                         crate::libs::ble::gatt::sticker::reset(&st.sticker_result);
+                        // Clear the FB0E EYE-tag-add result slot too (synchronous
+                        // enrollment, so no task to abort — just the slot).
+                        crate::libs::ble::gatt::eye_tag_add::reset(&st.eye_tag_result);
                         let _ = event_tx_xbeam.send(BleEvent::ClientDisconnected);
                     }
                     _ => {}
