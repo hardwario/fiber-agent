@@ -2290,6 +2290,29 @@ impl MqttMonitor {
                 }
                 Ok(MqttCommand::DetectEyeTag { mac })
             }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac,
+                    field,
+                    critical_low: params.get("critical_low").and_then(|v| v.as_f64()),
+                    warning_low: params.get("warning_low").and_then(|v| v.as_f64()),
+                    warning_high: params.get("warning_high").and_then(|v| v.as_f64()),
+                    critical_high: params.get("critical_high").and_then(|v| v.as_f64()),
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
             _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
         }
     }
@@ -3630,6 +3653,27 @@ mod tests {
         assert!(matches!(
             MqttMonitor::build_dev_command("download_eye_history", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
             MqttCommand::DownloadEyeHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set/delete_eye_field_threshold: MAC uppercased, field + bounds parsed
+        match MqttMonitor::build_dev_command(
+            "set_eye_field_threshold",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "battery", "warning_low": 2700.0, "critical_low": 2400.0}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_low, critical_low, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "battery");
+                assert_eq!(warning_low, Some(2700.0));
+                assert_eq!(critical_low, Some(2400.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert!(matches!(
+            MqttMonitor::build_dev_command("delete_eye_field_threshold", &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "movement"}), &None).unwrap(),
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } if mac == "AA:BB:CC:DD:EE:FF" && field == "movement"
         ));
 
         // malformed MAC rejected

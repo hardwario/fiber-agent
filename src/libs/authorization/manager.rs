@@ -618,6 +618,16 @@ impl AuthorizationManager {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Detect EYE tag type for {}", mac)
             }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Set EYE {} {} alarm thresholds", mac, field)
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Clear EYE {} {} alarm thresholds", mac, field)
+            }
             _ => format!("Execute command: {}", command_type),
         }
     }
