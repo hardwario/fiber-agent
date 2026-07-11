@@ -852,30 +852,44 @@ fn publish_snapshot(
         .tags
         .values()
         .filter(|t| configured.contains(&t.mac))
-        .map(|t| EyeTagPayload {
-            mac: t.mac.clone(),
-            name: t.name.clone(),
-            temperature_c: t.temperature_c,
-            humidity_pct: t.humidity_pct,
-            battery_mv: t.battery_mv,
-            low_battery: t.low_battery,
-            magnet_present: t.magnet_present,
-            magnet_detected: t.magnet_detected,
-            moving: t.moving,
-            movement_count: t.movement_count,
-            pitch_deg: t.pitch_deg,
-            roll_deg: t.roll_deg,
-            rssi: t.rssi,
-            last_seen_ts: t.last_seen_ts,
-            stale: t.is_stale(now_ts, tag_timeout_s),
-            provisioning: t.provisioning.as_str().to_string(),
-            is_en12830: t.is_en12830,
-            field_alarm_states: t
-                .field_alarm_states
-                .iter()
-                .map(|(k, v)| (k.clone(), v.to_string()))
-                .collect(),
-            alarm_state: t.alarm_state.to_string(),
+        .map(|t| {
+            let stale = t.is_stale(now_ts, tag_timeout_s);
+            // A tag not seen within tag_timeout_s is offline: escalate the
+            // aggregate alarm to Disconnected (ranked above Critical by worst())
+            // so a lost tag raises a distinct alarm rather than freezing on its
+            // last-known threshold state. The viewer independently maps `stale`,
+            // but emitting it here keeps the firmware's own alarm_state honest.
+            let alarm_state = if stale {
+                t.alarm_state
+                    .worst(&crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected)
+            } else {
+                t.alarm_state.clone()
+            };
+            EyeTagPayload {
+                mac: t.mac.clone(),
+                name: t.name.clone(),
+                temperature_c: t.temperature_c,
+                humidity_pct: t.humidity_pct,
+                battery_mv: t.battery_mv,
+                low_battery: t.low_battery,
+                magnet_present: t.magnet_present,
+                magnet_detected: t.magnet_detected,
+                moving: t.moving,
+                movement_count: t.movement_count,
+                pitch_deg: t.pitch_deg,
+                roll_deg: t.roll_deg,
+                rssi: t.rssi,
+                last_seen_ts: t.last_seen_ts,
+                stale,
+                provisioning: t.provisioning.as_str().to_string(),
+                is_en12830: t.is_en12830,
+                field_alarm_states: t
+                    .field_alarm_states
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_string()))
+                    .collect(),
+                alarm_state: alarm_state.to_string(),
+            }
         })
         .collect();
     if tags.is_empty() {

@@ -105,6 +105,8 @@ impl EyeTagState {
             let value: Option<f64> = match t.field.as_str() {
                 "temperature" => self.temperature_c.map(|v| v as f64),
                 "humidity" => self.humidity_pct.map(|v| v as f64),
+                "battery" => self.battery_mv.map(|v| v as f64),
+                "movement" => self.movement_count.map(|v| v as f64),
                 _ => None,
             };
             if let Some(v) = value {
@@ -117,6 +119,19 @@ impl EyeTagState {
                 );
                 self.field_alarm_states.insert(t.field.clone(), s);
             }
+        }
+        // The tag's own low-battery flag is a hardware assertion independent of
+        // any configured numeric threshold: surface it as at least a Warning on
+        // the `battery` field so a depleting cell alarms even when the operator
+        // set no battery threshold.
+        if self.low_battery {
+            let cur = self
+                .field_alarm_states
+                .get("battery")
+                .cloned()
+                .unwrap_or(LoRaWANAlarmState::Normal);
+            self.field_alarm_states
+                .insert("battery".to_string(), cur.worst(&LoRaWANAlarmState::Warning));
         }
         self.alarm_state = self
             .field_alarm_states
@@ -365,5 +380,84 @@ mod tests {
         tag.evaluate_alarms(&empty);
         assert!(tag.field_alarm_states.is_empty());
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
+    }
+
+    #[test]
+    fn evaluate_alarms_battery_threshold_and_low_battery_flag() {
+        use crate::libs::config::FieldThreshold;
+        let cfg = EyeTagConfig {
+            mac: "AA:BB:CC:DD:EE:FF".into(),
+            name: None,
+            enabled: true,
+            logging_interval_min: None,
+            recording: None,
+            field_thresholds: vec![FieldThreshold {
+                field: "battery".into(),
+                critical_low: Some(2400.0),
+                warning_low: Some(2700.0),
+                warning_high: None,
+                critical_high: None,
+            }],
+        };
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+
+        tag.battery_mv = Some(3000); // healthy
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
+
+        tag.battery_mv = Some(2600); // < warning_low
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(
+            tag.field_alarm_states.get("battery"),
+            Some(&LoRaWANAlarmState::Warning)
+        );
+
+        tag.battery_mv = Some(2300); // < critical_low
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
+
+        // The hardware low_battery flag alarms even with NO battery threshold set.
+        let no_thr = EyeTagConfig { field_thresholds: vec![], ..cfg.clone() };
+        let mut t2 = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        t2.battery_mv = Some(3000);
+        t2.low_battery = true;
+        t2.evaluate_alarms(&no_thr);
+        assert_eq!(
+            t2.field_alarm_states.get("battery"),
+            Some(&LoRaWANAlarmState::Warning)
+        );
+        assert_eq!(t2.alarm_state, LoRaWANAlarmState::Warning);
+    }
+
+    #[test]
+    fn evaluate_alarms_movement_count_threshold() {
+        use crate::libs::config::FieldThreshold;
+        let cfg = EyeTagConfig {
+            mac: "AA:BB:CC:DD:EE:FF".into(),
+            name: None,
+            enabled: true,
+            logging_interval_min: None,
+            recording: None,
+            field_thresholds: vec![FieldThreshold {
+                field: "movement".into(),
+                critical_low: None,
+                warning_low: None,
+                warning_high: Some(10.0),
+                critical_high: Some(50.0),
+            }],
+        };
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        tag.movement_count = Some(5);
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
+        tag.movement_count = Some(20); // > warning_high
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(
+            tag.field_alarm_states.get("movement"),
+            Some(&LoRaWANAlarmState::Warning)
+        );
+        tag.movement_count = Some(80); // > critical_high
+        tag.evaluate_alarms(&cfg);
+        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
     }
 }
