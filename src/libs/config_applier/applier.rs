@@ -1659,8 +1659,26 @@ impl ConfigApplier {
         self.apply_system_field_u8_change("buzzer_volume", volume, "Buzzer volume")
     }
 
-    /// Generic helper to update a u8 field in the system section of main config
+    /// Apply screen idle-timeout change (seconds) to main configuration
+    pub fn apply_screen_timeout_change(&self, secs: u32) -> ApplyResult {
+        self.apply_system_field_u32_change("screen_timeout_secs", secs, "Screen timeout")
+    }
+
+    /// Update a `u8` field in the `system` section (brightness/volume; logged with `%`).
     fn apply_system_field_u8_change(&self, field_name: &str, value: u8, display_name: &str) -> ApplyResult {
+        self.apply_system_field_num_change(field_name, u64::from(value), display_name, "%")
+    }
+
+    /// Update a `u32` field in the `system` section (e.g. `screen_timeout_secs`,
+    /// which exceeds a `u8`; logged without a `%` suffix).
+    fn apply_system_field_u32_change(&self, field_name: &str, value: u32, display_name: &str) -> ApplyResult {
+        self.apply_system_field_num_change(field_name, u64::from(value), display_name, "")
+    }
+
+    /// Shared implementation for numeric `system` fields: atomic YAML rewrite with
+    /// timestamped backup, rollback on failure, and an audit log entry. `unit` is
+    /// appended to the success log line (e.g. `"%"` for percentages, `""` otherwise).
+    fn apply_system_field_num_change(&self, field_name: &str, value: u64, display_name: &str, unit: &str) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1713,7 +1731,7 @@ impl ConfigApplier {
         {
             system.insert(
                 Value::String(field_name.to_string()),
-                Value::Number(serde_yaml::Number::from(value as u64)),
+                Value::Number(serde_yaml::Number::from(value)),
             );
         } else {
             return ApplyResult {
@@ -1751,7 +1769,7 @@ impl ConfigApplier {
             };
         }
 
-        eprintln!("[ConfigApplier] ✓ {} updated: {}%", display_name, value);
+        eprintln!("[ConfigApplier] ✓ {} updated: {}{}", display_name, value, unit);
 
         self.log_audit(
             "SET_SYSTEM_FIELD",
@@ -2285,6 +2303,26 @@ mod tests {
         let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
         assert!(contents.contains("Ward 3 Freezer"), "got: {contents}");
         assert!(!contents.contains("OLD-LABEL"), "old value should be gone: {contents}");
+    }
+
+    #[test]
+    fn apply_screen_timeout_change_persists_u32_value() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        // A value that exceeds u8, exercising the u32 write path.
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "system:\n  screen_timeout_secs: 60\n",
+        )
+        .unwrap();
+
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+        let result = applier.apply_screen_timeout_change(3600);
+        assert!(result.success, "{:?}", result.error_message);
+
+        // Reload the YAML and confirm the persisted value round-trips.
+        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+        assert_eq!(parsed["system"]["screen_timeout_secs"].as_u64(), Some(3600));
     }
 
     #[test]

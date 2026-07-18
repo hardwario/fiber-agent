@@ -5,10 +5,10 @@
 //! alarm states, and status indicators in a multi-page format.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rppal::gpio::Gpio;
 
@@ -20,6 +20,11 @@ use crate::libs::buzzer::BuzzerPriorityManager;
 
 /// Type alias for shared screen brightness handle (0-100%)
 pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
+
+/// Type alias for shared screen idle-timeout handle (seconds; 0 = always on).
+/// Read live by the display loop so the timeout can be changed at runtime
+/// (e.g. via MQTT) without restarting.
+pub type SharedScreenTimeoutHandle = Arc<AtomicU32>;
 
 pub mod font;
 pub mod monitor;
@@ -154,6 +159,12 @@ pub struct DisplayState {
     /// overview. Written by the button monitor thread each poll and read by the
     /// display monitor.
     pub hold_bar_pixels: u8,
+    /// Instant of the last user activity (button press). Drives the backlight
+    /// idle timeout: the display monitor turns the backlight off once the
+    /// elapsed time since this exceeds the configured timeout. Written by the
+    /// button monitor via [`DisplayState::mark_activity`] and read by the
+    /// display monitor each frame.
+    pub last_activity: Instant,
 }
 
 impl DisplayState {
@@ -169,7 +180,14 @@ impl DisplayState {
             lorawan_detail_page: 0,
             lorawan_configs: None,
             hold_bar_pixels: 0,
+            last_activity: Instant::now(),
         }
+    }
+
+    /// Record user activity (called on any button press). Resets the backlight
+    /// idle timeout so the display stays lit for another full timeout period.
+    pub fn mark_activity(&mut self) {
+        self.last_activity = Instant::now();
     }
 
     /// Get the number of LoRaWAN sensors currently known
@@ -476,6 +494,7 @@ impl DisplayMonitor {
         app_version: String,
         timezone_offset_hours: i8,
         screen_brightness: SharedScreenBrightnessHandle,
+        screen_timeout: SharedScreenTimeoutHandle,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
@@ -495,6 +514,7 @@ impl DisplayMonitor {
                 app_version,
                 timezone_offset_hours,
                 screen_brightness,
+                screen_timeout,
             );
         });
 

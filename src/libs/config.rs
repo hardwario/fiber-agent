@@ -519,6 +519,12 @@ pub struct SystemConfig {
     /// Buzzer volume percentage (0 = muted, 1-100 = active). Default 100.
     #[serde(default = "default_buzzer_volume")]
     pub buzzer_volume: u8,
+
+    /// Idle timeout in seconds before the display backlight turns off to save
+    /// power / reduce burn-in. Any button press wakes it; an active alarm keeps
+    /// it lit. Default 3600 (1 hour). 0 disables the timeout (always on).
+    #[serde(default = "default_screen_timeout_secs")]
+    pub screen_timeout_secs: u32,
 }
 
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
@@ -941,6 +947,7 @@ fn default_warmup_threshold() -> u8 { 3 }
 fn default_led_brightness() -> u8 { 50 }
 fn default_screen_brightness() -> u8 { 100 }
 fn default_buzzer_volume() -> u8 { 100 }
+fn default_screen_timeout_secs() -> u32 { 3600 }
 
 // Default value functions for MQTT configuration
 fn default_true() -> bool { true }
@@ -1107,6 +1114,7 @@ impl Config {
                 led_brightness: 50,
                 screen_brightness: 100,
                 buzzer_volume: 100,
+                screen_timeout_secs: 3600,
             },
             mqtt: None,  // MQTT disabled by default
             lorawan: None,  // LoRaWAN disabled by default

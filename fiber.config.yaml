@@ -48,6 +48,9 @@ system:
   device_label: FIBER
   led_brightness: 25
   screen_brightness: 50
+  # Backlight off after this many seconds of no button activity (an active alarm
+  # keeps it lit). 0 = never.
+  screen_timeout_secs: 3600
 mqtt:
   enabled: true
   broker:

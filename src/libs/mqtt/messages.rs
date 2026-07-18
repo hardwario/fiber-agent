@@ -124,6 +124,7 @@ pub enum MqttMessage {
     PublishConfigState {
         led_brightness: u8,
         screen_brightness: u8,
+        screen_timeout_secs: u32,
         buzzer_volume: u8,
         system_info_interval_s: u64,
         device_label: String,
@@ -349,6 +350,12 @@ pub enum MqttCommand {
         brightness: u8,
     },
 
+    /// Set screen idle timeout in seconds (signed via ConfigRequest).
+    /// 0 disables the timeout (display always on).
+    SetScreenTimeout {
+        timeout_secs: u32,
+    },
+
     /// Set buzzer volume (signed via ConfigRequest)
     /// 0 = muted, 1-100 = active (full volume)
     SetBuzzerVolume {
@@ -550,6 +557,7 @@ impl MqttCommand {
             MqttCommand::SetDeviceLabel { .. } => "set_device_label",
             MqttCommand::SetLedBrightness { .. } => "set_led_brightness",
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
+            MqttCommand::SetScreenTimeout { .. } => "set_screen_timeout",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
             MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
