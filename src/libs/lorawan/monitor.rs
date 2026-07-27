@@ -601,9 +601,12 @@ fn lorawan_loop(
                                             .ok()
                                             .map(|dt| dt.timestamp())
                                     });
-                                if let Some((from_unix, to_unix)) =
-                                    auto_backfill_window(prev_last_seen, now_ts, config.sensor_timeout_s)
-                                {
+                                if let Some((from_unix, to_unix)) = auto_backfill_window_if_enabled(
+                                    config.history_backfill_enabled,
+                                    prev_last_seen,
+                                    now_ts,
+                                    config.sensor_timeout_s,
+                                ) {
                                     eprintln!(
                                         "[LoRaWAN Monitor] sticker {} back after outage; auto-backfill {}..{}",
                                         reading.dev_eui, from_unix, to_unix
@@ -700,6 +703,25 @@ const AUTO_BACKFILL_TIMEOUT: Duration = Duration::from_secs(180);
 /// (`< offline_threshold_s`) — i.e. the device never actually went away, so
 /// there is nothing buffered to fetch. A backwards clock also yields `None`.
 ///
+/// `auto_backfill_window`, suppressed entirely when the gateway is not the one
+/// doing backfill.
+///
+/// The PROXIMOS viewer grew its own reconnect trigger (application#43) that
+/// fires on the same event. With both enabled the same outage window is
+/// replayed twice over the air, which is the airtime waste the viewer's job
+/// queue exists to avoid — so a deployment picks one owner.
+fn auto_backfill_window_if_enabled(
+    enabled: bool,
+    prev_last_seen: Option<i64>,
+    now: i64,
+    offline_threshold_s: u64,
+) -> Option<(u32, u32)> {
+    if !enabled {
+        return None;
+    }
+    auto_backfill_window(prev_last_seen, now, offline_threshold_s)
+}
+
 /// Self-guarding by design: `update_sensor` advances `last_seen` to `now` right
 /// after this check, so the next uplink sees a small gap and does not re-trigger
 /// — one backfill per outage.
@@ -780,7 +802,29 @@ fn spawn_auto_backfill(
 
 #[cfg(test)]
 mod auto_backfill_tests {
-    use super::auto_backfill_window;
+    use super::{auto_backfill_window, auto_backfill_window_if_enabled};
+
+    #[test]
+    fn disabled_suppresses_the_gateway_trigger() {
+        // Same inputs that normally yield a window; the flag alone must stop it,
+        // so a deployment where the viewer owns backfill does not replay twice.
+        assert_eq!(
+            auto_backfill_window_if_enabled(false, Some(1000), 5000, 300),
+            None
+        );
+    }
+
+    #[test]
+    fn enabled_behaves_exactly_as_before() {
+        assert_eq!(
+            auto_backfill_window_if_enabled(true, Some(1000), 5000, 300),
+            auto_backfill_window(Some(1000), 5000, 300)
+        );
+        assert_eq!(
+            auto_backfill_window_if_enabled(true, None, 1000, 300),
+            None
+        );
+    }
 
     #[test]
     fn none_on_first_contact() {
