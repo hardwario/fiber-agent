@@ -1,5 +1,7 @@
 //! Configuration validation for safe updates
 
+use crate::libs::config::{DisplayLine, DisplayLineSource};
+
 /// Validate temperature threshold ordering
 pub struct ConfigValidator;
 
@@ -143,36 +145,157 @@ pub const MAX_DEVICE_LABEL_LEN: usize = 64;
 ///
 /// Note: space (`0x20`) is allowed so users can write "Ward 3 Freezer".
 pub fn validate_device_label(label: &str) -> Result<(), String> {
-    if label.is_empty() {
-        return Err("Device label cannot be empty".to_string());
+    validate_printable_ascii(label, "Device label", MAX_DEVICE_LABEL_LEN)?;
+
+    // Additional rule specific to the device label: it is interpolated into
+    // MQTT topics, so the wildcard/separator characters are out. Display line
+    // labels don't need this — they never reach a topic.
+    for (idx, b) in label.bytes().enumerate() {
+        if matches!(b, b'/' | b'+' | b'#') {
+            return Err(format!(
+                "Device label contains MQTT-reserved character {:?} at byte {}",
+                b as char, idx,
+            ));
+        }
     }
-    if label.len() > MAX_DEVICE_LABEL_LEN {
+    Ok(())
+}
+
+/// Non-empty, at most `max` bytes, and printable ASCII only (`0x20..=0x7E`).
+///
+/// The LCD only ships an ASCII font, so Unicode renders as boxes, and control
+/// bytes / null / newline would corrupt log lines and downstream parsers.
+/// Space is allowed so users can write "Ward 3 Freezer".
+///
+/// `what` names the field in the error message, e.g. "Device label".
+pub fn validate_printable_ascii(value: &str, what: &str, max: usize) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{} cannot be empty", what));
+    }
+    if value.len() > max {
         return Err(format!(
-            "Device label must be at most {} characters (got {})",
-            MAX_DEVICE_LABEL_LEN,
-            label.len(),
+            "{} must be at most {} characters (got {})",
+            what,
+            max,
+            value.len(),
         ));
     }
+    for (idx, b) in value.bytes().enumerate() {
+        if !(0x20..=0x7E).contains(&b) {
+            return Err(format!(
+                "{} contains non-printable-ASCII byte 0x{:02X} at byte {}",
+                what, b, idx,
+            ));
+        }
+    }
+    Ok(())
+}
 
-    for (idx, b) in label.bytes().enumerate() {
-        match b {
-            // MQTT-breaking characters within the otherwise-allowed range.
-            b'/' | b'+' | b'#' => {
+/// Maximum number of configured overview lines. Four rows per page, so this
+/// is four pages — beyond that the user is paging through more screens than
+/// they can reasonably track on a 128x64 panel.
+pub const MAX_DISPLAY_LINES: usize = 16;
+
+/// Maximum length of a custom row label: one full 128 px row at 6 px/char.
+pub const MAX_DISPLAY_LABEL_LEN: usize = 21;
+
+/// Maximum decimal places for a formatted value.
+pub const MAX_DISPLAY_DECIMALS: u8 = 3;
+
+/// Highest addressable DS18B20 line index.
+const MAX_DS18B20_LINE: u8 = 7;
+
+/// Pseudo-fields that are not in the LoRaWAN field registry because they
+/// describe the link or the sensor as a whole rather than a measurement.
+const STICKER_PSEUDO_FIELDS: &[&str] = &["rssi", "snr", "status"];
+
+/// Fields available for a DS18B20 probe. The 1-Wire path carries no battery,
+/// RSSI or humidity — only a temperature and an alarm state.
+const DS18B20_FIELDS: &[&str] = &["temperature", "status"];
+
+/// Validate one configured display line.
+///
+/// Rejects cross-source field/address mixes (e.g. a `ds18b20` line carrying a
+/// `dev_eui`) rather than silently ignoring the stray key, so a Viewer bug
+/// surfaces as a rejected command instead of a row that renders the wrong
+/// sensor.
+pub fn validate_display_line(line: &DisplayLine) -> Result<(), String> {
+    match line.source {
+        DisplayLineSource::Ds18b20 => {
+            let idx = line
+                .line
+                .ok_or_else(|| "ds18b20 display line requires 'line'".to_string())?;
+            if idx > MAX_DS18B20_LINE {
                 return Err(format!(
-                    "Device label contains MQTT-reserved character {:?} at byte {}",
-                    b as char, idx,
+                    "ds18b20 display line index must be 0-{} (got {})",
+                    MAX_DS18B20_LINE, idx,
                 ));
             }
-            // Printable ASCII (space through tilde).
-            0x20..=0x7E => continue,
-            // Anything else: control byte, null, or non-ASCII (Unicode).
-            other => {
+            if line.dev_eui.is_some() {
+                return Err("ds18b20 display line must not set 'dev_eui'".to_string());
+            }
+            if !DS18B20_FIELDS.contains(&line.field.as_str()) {
                 return Err(format!(
-                    "Device label contains non-printable-ASCII byte 0x{:02X} at byte {}",
-                    other, idx,
+                    "unknown ds18b20 field {:?} (available: {})",
+                    line.field,
+                    DS18B20_FIELDS.join(", "),
                 ));
             }
         }
+        DisplayLineSource::Sticker => {
+            let dev_eui = line
+                .dev_eui
+                .as_deref()
+                .ok_or_else(|| "sticker display line requires 'dev_eui'".to_string())?;
+            if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "sticker dev_eui must be 16 hex characters (got {:?})",
+                    dev_eui,
+                ));
+            }
+            if line.line.is_some() {
+                return Err("sticker display line must not set 'line'".to_string());
+            }
+            let known = crate::libs::lorawan::registry::lookup(&line.field).is_some()
+                || STICKER_PSEUDO_FIELDS.contains(&line.field.as_str());
+            if !known {
+                return Err(format!(
+                    "unknown sticker field {:?} (not in the LoRaWAN field registry, and not one of: {})",
+                    line.field,
+                    STICKER_PSEUDO_FIELDS.join(", "),
+                ));
+            }
+        }
+    }
+
+    if let Some(label) = line.label.as_deref() {
+        validate_printable_ascii(label, "Display line label", MAX_DISPLAY_LABEL_LEN)?;
+    }
+
+    if let Some(decimals) = line.format.decimals {
+        if decimals > MAX_DISPLAY_DECIMALS {
+            return Err(format!(
+                "Display line decimals must be 0-{} (got {})",
+                MAX_DISPLAY_DECIMALS, decimals,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a whole custom-line list. An empty list is valid and means
+/// "restore the built-in layout".
+pub fn validate_display_custom_lines(lines: &[DisplayLine]) -> Result<(), String> {
+    if lines.len() > MAX_DISPLAY_LINES {
+        return Err(format!(
+            "At most {} display lines are supported (got {})",
+            MAX_DISPLAY_LINES,
+            lines.len(),
+        ));
+    }
+    for (idx, line) in lines.iter().enumerate() {
+        validate_display_line(line).map_err(|e| format!("display line {}: {}", idx, e))?;
     }
     Ok(())
 }
@@ -306,5 +429,175 @@ mod tests {
         for ok in ["Lab-A_3", "v1.0", "@home", "(spare)", "PASS!", "100%"] {
             assert!(validate_device_label(ok).is_ok(), "should accept {:?}", ok);
         }
+    }
+}
+
+#[cfg(test)]
+mod display_line_tests {
+    use super::*;
+    use crate::libs::config::DisplayLineFormat;
+
+    fn ds(line: Option<u8>, field: &str) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Ds18b20,
+            line,
+            dev_eui: None,
+            field: field.to_string(),
+            label: None,
+            format: DisplayLineFormat::default(),
+        }
+    }
+
+    fn sticker(dev_eui: &str, field: &str) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Sticker,
+            line: None,
+            dev_eui: Some(dev_eui.to_string()),
+            field: field.to_string(),
+            label: None,
+            format: DisplayLineFormat::default(),
+        }
+    }
+
+    const EUI: &str = "70b3d57ed0051f2a";
+
+    #[test]
+    fn accepts_valid_ds18b20_and_sticker_lines() {
+        assert!(validate_display_line(&ds(Some(0), "temperature")).is_ok());
+        assert!(validate_display_line(&ds(Some(7), "status")).is_ok());
+        assert!(validate_display_line(&sticker(EUI, "humidity")).is_ok());
+    }
+
+    #[test]
+    fn rejects_ds18b20_line_over_7() {
+        let err = validate_display_line(&ds(Some(8), "temperature")).unwrap_err();
+        assert!(err.contains("0-7"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_ds18b20_without_line_index() {
+        assert!(validate_display_line(&ds(None, "temperature")).is_err());
+    }
+
+    #[test]
+    fn rejects_ds18b20_with_dev_eui() {
+        let mut line = ds(Some(0), "temperature");
+        line.dev_eui = Some(EUI.to_string());
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("dev_eui"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_sticker_with_line_index() {
+        let mut line = sticker(EUI, "temperature");
+        line.line = Some(2);
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("'line'"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_unknown_ds18b20_field() {
+        // Valid for a sticker, but the 1-Wire path has no humidity.
+        let err = validate_display_line(&ds(Some(0), "humidity")).unwrap_err();
+        assert!(err.contains("unknown ds18b20 field"), "got: {}", err);
+    }
+
+    #[test]
+    fn accepts_every_registry_field_and_pseudo_field_for_stickers() {
+        for def in crate::libs::lorawan::registry::REGISTRY {
+            assert!(
+                validate_display_line(&sticker(EUI, def.name)).is_ok(),
+                "registry field {} should be selectable",
+                def.name,
+            );
+        }
+        for name in STICKER_PSEUDO_FIELDS {
+            assert!(
+                validate_display_line(&sticker(EUI, name)).is_ok(),
+                "pseudo-field {} should be selectable",
+                name,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_sticker_field() {
+        let err = validate_display_line(&sticker(EUI, "battery_percent")).unwrap_err();
+        assert!(err.contains("unknown sticker field"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_bad_dev_eui() {
+        for bad in ["70b3d57ed0051f2", "70b3d57ed0051f2ab", "70b3d57ed0051fZZ", ""] {
+            let err = validate_display_line(&sticker(bad, "temperature")).unwrap_err();
+            assert!(err.contains("16 hex"), "for {:?} got: {}", bad, err);
+        }
+    }
+
+    #[test]
+    fn rejects_sticker_without_dev_eui() {
+        let mut line = sticker(EUI, "temperature");
+        line.dev_eui = None;
+        assert!(validate_display_line(&line).is_err());
+    }
+
+    #[test]
+    fn rejects_non_ascii_label() {
+        let mut line = ds(Some(0), "temperature");
+        line.label = Some("Kühlraum".to_string());
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("non-printable-ASCII"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_empty_and_overlong_label() {
+        let mut line = ds(Some(0), "temperature");
+        line.label = Some(String::new());
+        assert!(validate_display_line(&line).is_err());
+
+        line.label = Some("x".repeat(MAX_DISPLAY_LABEL_LEN + 1));
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("at most 21"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_decimals_over_3() {
+        let mut line = ds(Some(0), "temperature");
+        line.format.decimals = Some(4);
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("0-3"), "got: {}", err);
+
+        line.format.decimals = Some(3);
+        assert!(validate_display_line(&line).is_ok());
+    }
+
+    #[test]
+    fn empty_list_is_valid_and_means_default_layout() {
+        assert!(validate_display_custom_lines(&[]).is_ok());
+    }
+
+    #[test]
+    fn rejects_more_than_16_lines() {
+        let lines: Vec<DisplayLine> = (0..17).map(|_| ds(Some(0), "temperature")).collect();
+        let err = validate_display_custom_lines(&lines).unwrap_err();
+        assert!(err.contains("At most 16"), "got: {}", err);
+
+        let lines: Vec<DisplayLine> = (0..16).map(|_| ds(Some(0), "temperature")).collect();
+        assert!(validate_display_custom_lines(&lines).is_ok());
+    }
+
+    #[test]
+    fn list_error_names_the_offending_index() {
+        let lines = vec![ds(Some(0), "temperature"), ds(Some(9), "temperature")];
+        let err = validate_display_custom_lines(&lines).unwrap_err();
+        assert!(err.starts_with("display line 1:"), "got: {}", err);
+    }
+
+    #[test]
+    fn duplicate_lines_on_the_same_source_are_allowed() {
+        // Two rows on one sticker (e.g. temperature + battery) is the headline
+        // use case from the feature request, not an error.
+        let lines = vec![sticker(EUI, "ext_temperature_1"), sticker(EUI, "voltage")];
+        assert!(validate_display_custom_lines(&lines).is_ok());
     }
 }

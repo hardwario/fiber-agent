@@ -26,9 +26,62 @@ pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
 /// (e.g. via MQTT) without restarting.
 pub type SharedScreenTimeoutHandle = Arc<AtomicU32>;
 
+/// Type alias for the live overview-line configuration.
+///
+/// Read by the display loop each frame and written by the MQTT executor after a
+/// successful config write, so a pushed change takes effect on the next frame
+/// rather than waiting for the periodic config reconcile. Mirrors the existing
+/// [`crate::libs::lorawan::SharedLoRaWANSensorConfigs`] pattern — a `Vec` can't
+/// live in an atomic.
+pub type SharedDisplayLinesHandle = Arc<std::sync::RwLock<Vec<crate::libs::config::DisplayLine>>>;
+
+/// What the sensor overview is currently showing.
+///
+/// Derived in exactly one place ([`DisplayState::overview_mode`]) so the page
+/// count, the paging arithmetic and the renderer dispatch cannot disagree about
+/// which row set is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewMode {
+    /// Built-in active-first layout: 8 DS18B20 slots plus N stickers.
+    Default { rows: usize },
+    /// User-configured display lines.
+    ///
+    /// `NonZeroUsize` is load-bearing: an empty custom list *is* [`Self::Default`]
+    /// (that's the documented fallback), so "custom mode with zero rows" is a
+    /// state that cannot be constructed, and no downstream arithmetic has to
+    /// defend against it.
+    Custom { rows: std::num::NonZeroUsize },
+}
+
+impl OverviewMode {
+    /// Number of rows to page through.
+    pub fn rows(&self) -> usize {
+        match self {
+            Self::Default { rows } => *rows,
+            Self::Custom { rows } => rows.get(),
+        }
+    }
+
+    /// Total number of pages. Always at least 1, for every possible input —
+    /// the overview screen exists even with nothing to show on it.
+    pub fn total_pages(&self) -> usize {
+        self.rows().max(1).div_ceil(screens::ROWS_PER_PAGE)
+    }
+
+    /// True when the user's configured lines are being rendered.
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom { .. })
+    }
+}
+
+/// Number of pages on the system info screen.
+pub const SYSTEM_INFO_PAGES: usize = 3;
+
 pub mod font;
 pub mod monitor;
 pub mod screens;
+pub mod overview;
+pub mod supervise;
 pub mod buttons;
 pub mod icons;
 pub mod splash;
@@ -165,6 +218,11 @@ pub struct DisplayState {
     /// button monitor via [`DisplayState::mark_activity`] and read by the
     /// display monitor each frame.
     pub last_activity: Instant,
+    /// Number of configured custom overview lines, or 0 for the built-in
+    /// layout. Refreshed by the display monitor's config reconcile; consumed by
+    /// [`DisplayState::overview_mode`] so the button thread pages over the same
+    /// row count the renderer is drawing.
+    pub custom_line_count: usize,
 }
 
 impl DisplayState {
@@ -181,6 +239,7 @@ impl DisplayState {
             lorawan_configs: None,
             hold_bar_pixels: 0,
             last_activity: Instant::now(),
+            custom_line_count: 0,
         }
     }
 
@@ -203,10 +262,38 @@ impl DisplayState {
         8 + self.lorawan_sensor_count()
     }
 
-    /// Total number of overview pages: ceil((8 + N) / 4)
+    /// Which row set the overview is showing right now.
+    ///
+    /// Selection mode always falls back to the canonical sensor list: custom
+    /// lines may repeat a source (two rows on one sticker is the headline use
+    /// case), and the selection cursor is keyed on a sensor's global index, so a
+    /// custom-derived list would make the second row on a sensor unreachable.
+    /// Falling back also guarantees every physical sensor's detail screen stays
+    /// reachable no matter how the display is configured.
+    ///
+    /// Total function: no `unwrap`, no panicking path.
+    pub fn overview_mode(&self) -> OverviewMode {
+        if self.current_screen.is_selection_mode() {
+            OverviewMode::Default { rows: self.total_sensor_count() }
+        } else {
+            self.page_mode()
+        }
+    }
+
+    /// The mode page mode would use, independent of the current screen.
+    ///
+    /// Needed by [`Self::exit_selection_mode`], which has to know the page count
+    /// it's about to switch *to* while still in selection mode.
+    fn page_mode(&self) -> OverviewMode {
+        match std::num::NonZeroUsize::new(self.custom_line_count) {
+            Some(rows) => OverviewMode::Custom { rows },
+            None => OverviewMode::Default { rows: self.total_sensor_count() },
+        }
+    }
+
+    /// Total number of overview pages for the current mode. Always >= 1.
     pub fn total_pages(&self) -> usize {
-        let total = self.total_sensor_count();
-        (total + 3) / 4
+        self.overview_mode().total_pages()
     }
 
     /// Snapshot the current ordered list of overview entries.
@@ -247,19 +334,25 @@ impl DisplayState {
     }
 
     /// Navigate to next page (works for sensor overview and system info when not in selection mode)
+    ///
+    /// Wraps with a comparison rather than `%`. This runs on the button thread,
+    /// where a divide-by-zero would panic and permanently kill navigation, so
+    /// there is deliberately no division here to reason about — even though
+    /// [`OverviewMode::total_pages`] already guarantees a non-zero count.
     pub fn next_page(&mut self) {
         match self.current_screen {
             Screen::SensorOverview { page, selected_sensor: None } => {
-                // Dynamic page count: 2 DS18B20 + ceil(lorawan_count / 4)
                 let total = self.total_pages();
+                let next = if page + 1 >= total { 0 } else { page + 1 };
                 self.current_screen = Screen::SensorOverview {
-                    page: (page + 1) % total,
+                    page: next,
                     selected_sensor: None,
                 };
             }
             Screen::SystemInfo { page } => {
                 // System info has 3 pages (0, 1, 2)
-                self.current_screen = Screen::SystemInfo { page: (page + 1) % 3 };
+                let next = if page + 1 >= SYSTEM_INFO_PAGES { 0 } else { page + 1 };
+                self.current_screen = Screen::SystemInfo { page: next };
             }
             _ => {}
         }
@@ -360,7 +453,7 @@ impl DisplayState {
         if let Screen::SensorOverview { page, .. } = self.current_screen {
             let entries = self.ordered_entries(ds_readings);
             if entries.is_empty() { return; }
-            let pos = (page * 4).min(entries.len() - 1);
+            let pos = (page * screens::ROWS_PER_PAGE).min(entries.len() - 1);
             let first_global = entries[pos].global_idx;
             self.current_screen = Screen::SensorOverview {
                 page,
@@ -373,8 +466,13 @@ impl DisplayState {
     /// Exit selection mode (return to page mode)
     pub fn exit_selection_mode(&mut self) {
         if let Screen::SensorOverview { page, selected_sensor: Some(_) } = self.current_screen {
+            // Selection mode pages over the full sensor list, which may have
+            // more pages than the custom-line list we're returning to. Without
+            // this clamp the stale page would land past the end of the rows and
+            // render an empty screen.
+            let max_page = self.page_mode().total_pages().saturating_sub(1);
             self.current_screen = Screen::SensorOverview {
-                page,
+                page: page.min(max_page),
                 selected_sensor: None,
             };
             self.should_update = true;
@@ -392,7 +490,7 @@ impl DisplayState {
             let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
             let new_pos = if pos == 0 { entries.len() - 1 } else { pos - 1 };
             let new_global = entries[new_pos].global_idx;
-            let new_page = new_pos / 4;
+            let new_page = new_pos / screens::ROWS_PER_PAGE;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
                 selected_sensor: Some(new_global),
@@ -412,7 +510,7 @@ impl DisplayState {
             let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
             let new_pos = if pos + 1 >= entries.len() { 0 } else { pos + 1 };
             let new_global = entries[new_pos].global_idx;
-            let new_page = new_pos / 4;
+            let new_page = new_pos / screens::ROWS_PER_PAGE;
             self.current_screen = Screen::SensorOverview {
                 page: new_page,
                 selected_sensor: Some(new_global),
@@ -456,7 +554,7 @@ impl DisplayState {
         if let Some(idx) = target_global {
             let entries = self.ordered_entries(ds_readings);
             let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
-            let page = pos / 4;
+            let page = pos / screens::ROWS_PER_PAGE;
             self.current_screen = Screen::SensorOverview {
                 page,
                 selected_sensor: Some(idx),
@@ -495,6 +593,7 @@ impl DisplayMonitor {
         timezone_offset_hours: i8,
         screen_brightness: SharedScreenBrightnessHandle,
         screen_timeout: SharedScreenTimeoutHandle,
+        display_lines: SharedDisplayLinesHandle,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
@@ -502,20 +601,28 @@ impl DisplayMonitor {
         let display_state_clone = display_state.clone();
 
         let thread_handle = thread::spawn(move || {
-            monitor::display_loop(
-                shutdown_flag_clone,
-                display_state_clone,
-                led_state,
-                gpio,
-                sensor_state,
-                power_status,
-                hostname,
-                device_label,
-                app_version,
-                timezone_offset_hours,
-                screen_brightness,
-                screen_timeout,
-            );
+            // Contain panics: an unhandled one here would end the thread for
+            // good, leaving the operator with a dark panel and no indication
+            // why. Every argument is cloned per attempt so the loop is
+            // re-callable, and the restarted loop re-runs St7920::init(),
+            // resetting the controller out of whatever state it was left in.
+            supervise::supervise("display", &shutdown_flag_clone, || {
+                monitor::display_loop(
+                    shutdown_flag_clone.clone(),
+                    display_state_clone.clone(),
+                    led_state.clone(),
+                    gpio.clone(),
+                    sensor_state.clone(),
+                    power_status.clone(),
+                    hostname.clone(),
+                    device_label.clone(),
+                    app_version.clone(),
+                    timezone_offset_hours,
+                    screen_brightness.clone(),
+                    screen_timeout.clone(),
+                    display_lines.clone(),
+                );
+            });
         });
 
         Ok(Self {
@@ -560,5 +667,132 @@ impl Drop for DisplayMonitor {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+
+    /// A `DisplayState` with no LoRa handle attached, so `total_sensor_count()`
+    /// is exactly the 8 DS18B20 slots.
+    fn state(custom_line_count: usize) -> DisplayState {
+        let mut ds = DisplayState::new();
+        ds.custom_line_count = custom_line_count;
+        ds
+    }
+
+    #[test]
+    fn total_pages_uses_custom_line_count_in_page_mode() {
+        assert_eq!(state(1).total_pages(), 1);
+        assert_eq!(state(4).total_pages(), 1);
+        assert_eq!(state(5).total_pages(), 2);
+        assert_eq!(state(16).total_pages(), 4);
+    }
+
+    #[test]
+    fn total_pages_uses_sensor_count_in_selection_mode() {
+        let mut ds = state(1);
+        // Page mode: one custom line, one page.
+        assert_eq!(ds.total_pages(), 1);
+        // Selection mode falls back to the canonical 8-sensor list.
+        ds.current_screen = Screen::SensorOverview { page: 0, selected_sensor: Some(0) };
+        assert_eq!(ds.total_pages(), 2, "8 DS18B20 slots over 4 rows/page");
+    }
+
+    #[test]
+    fn total_pages_falls_back_to_sensor_count_with_no_custom_lines() {
+        assert_eq!(state(0).total_pages(), 2);
+    }
+
+    #[test]
+    fn overview_mode_cannot_be_custom_with_zero_rows() {
+        // The invariant that makes the paging arithmetic safe by construction.
+        assert!(!state(0).overview_mode().is_custom());
+        assert!(state(1).overview_mode().is_custom());
+    }
+
+    #[test]
+    fn total_pages_is_never_zero_over_full_input_space() {
+        // Proves the invariant the paging arithmetic relies on, rather than
+        // defending against a violation at each use site.
+        for custom_line_count in 0..=64usize {
+            for selected in [None, Some(0usize)] {
+                let mut ds = state(custom_line_count);
+                ds.current_screen = Screen::SensorOverview { page: 0, selected_sensor: selected };
+                let total = ds.total_pages();
+                assert!(
+                    total >= 1,
+                    "total_pages() must never be 0 (lines={}, selected={:?})",
+                    custom_line_count,
+                    selected,
+                );
+
+                // And next_page() must map every valid page back into range.
+                for page in 0..total {
+                    ds.current_screen = Screen::SensorOverview { page, selected_sensor: selected };
+                    ds.next_page();
+                    if selected.is_some() {
+                        // Paging is disabled in selection mode.
+                        assert_eq!(ds.current_screen.get_page(), Some(page));
+                    } else {
+                        let next = ds.current_screen.get_page().expect("still on overview");
+                        assert!(next < total, "next_page() left range: {} >= {}", next, total);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn next_page_wraps_with_zero_custom_lines() {
+        // Regression guard for the divide-by-zero this arithmetic used to have:
+        // must land on a valid page, and above all must not panic.
+        let mut ds = state(0);
+        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        ds.next_page();
+        assert_eq!(ds.current_screen.get_page(), Some(0));
+    }
+
+    #[test]
+    fn next_page_wraps_at_last_custom_page() {
+        let mut ds = state(16);
+        ds.current_screen = Screen::SensorOverview { page: 2, selected_sensor: None };
+        ds.next_page();
+        assert_eq!(ds.current_screen.get_page(), Some(3));
+        ds.next_page();
+        assert_eq!(ds.current_screen.get_page(), Some(0), "4 pages wrap 3 -> 0");
+    }
+
+    #[test]
+    fn next_page_wraps_system_info_over_three_pages() {
+        let mut ds = state(0);
+        for expected in [1, 2, 0] {
+            ds.current_screen = Screen::SystemInfo {
+                page: if expected == 0 { SYSTEM_INFO_PAGES - 1 } else { expected - 1 },
+            };
+            ds.next_page();
+            assert_eq!(ds.current_screen.get_page(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn exit_selection_mode_clamps_stale_page() {
+        // Selection mode pages over 8 sensors (2 pages); page mode here has a
+        // single custom line (1 page). Without the clamp the stale page 1 would
+        // render an empty screen.
+        let mut ds = state(1);
+        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(4) };
+        ds.exit_selection_mode();
+        assert_eq!(ds.current_screen.get_page(), Some(0));
+        assert_eq!(ds.current_screen.get_selected_sensor(), None);
+    }
+
+    #[test]
+    fn exit_selection_mode_keeps_valid_page() {
+        let mut ds = state(16);
+        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(4) };
+        ds.exit_selection_mode();
+        assert_eq!(ds.current_screen.get_page(), Some(1));
     }
 }

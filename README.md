@@ -40,7 +40,7 @@ FIBER monitors up to 8 DS18B20 temperature sensors with a 4-level alarm system, 
 - Buzzer alerts on AC disconnect, battery mode reminder, critical battery
 
 ### Display & UI
-- **Sensor Overview** — 4 sensors per page, 2 pages, with alarm indicators
+- **Sensor Overview** — 4 rows per page with alarm indicators; built-in layout lists the 8 probes then the stickers, or compose your own rows via [`display.custom_lines`](#configurable-overview-lines)
 - **Sensor Detail** — thresholds, current temp, alarm state, location
 - **LoRaWAN Sensors** — remote sensor temp, humidity, battery, signal
 - **QR Code** — BLE pairing info (`ble://{hostname}/{mac}/{pin}`)
@@ -196,6 +196,35 @@ Runtime configuration is loaded from `/data/fiber/config/fiber.config.yaml`. See
 | `fiber.config.yaml` | Main config: power, MQTT, serial, storage, display, buzzer |
 | `fiber.sensors.config.yaml` | Per-sensor thresholds, alarm patterns, names, locations |
 | `authorized_signers.yaml` | EU MDR authorized public keys for remote commands |
+
+### Configurable overview lines
+
+`display.custom_lines` replaces the built-in overview layout with rows you choose.
+Absent or empty ⇒ built-in layout. Max 16 lines (4 pages, 4 rows each). Normally
+written from the FIBER Viewer via the signed `set_display_lines` command, which
+reuses the `set_screen_brightness` permission.
+
+| Key | Values |
+|-----|--------|
+| `source` | `ds18b20` or `sticker` |
+| `line` | DS18B20 line index `0`–`7`. Required for `ds18b20`, forbidden for `sticker` |
+| `dev_eui` | Sticker DevEUI, 16 hex chars. Required for `sticker`, forbidden for `ds18b20`. Never an ordinal — sticker numbering shifts when one is added or removed |
+| `field` | `ds18b20`: `temperature`, `status`. `sticker`: any LoRaWAN registry field (`temperature`, `humidity`, `voltage`, `ext_temperature_1`/`_2`, `machine_probe_temperature_1`/`_2`, `machine_probe_humidity_1`/`_2`, `pressure`, `altitude`, `illuminance`, `*_count`) plus `rssi`, `snr`, `status` |
+| `label` | Row label, ≤21 printable-ASCII chars. Defaults to the sensor's configured name |
+| `format.units` | Append the unit (`°C`, `%`, `V`, `hPa`, `m`, `lx`, `dBm`, `dB`). Default `true` |
+| `format.decimals` | `0`–`3`. Omit for the per-field default (1 temperatures, 0 humidity/pressure/counters, 2 battery voltage) |
+| `format.status_char` | Show the `N`/`W`/`C`/`E` alarm character. Default `true` |
+
+Battery is `field: voltage`, rendered in volts — the device has no mV→% curve for
+a sticker's cell, so a percentage would be invented rather than measured.
+
+Two rows may target the same sensor (e.g. temperature and battery). Rows referencing
+a probe or sticker with no data show `--.-` plus `?`; a sticker that has stopped
+reporting shows `--.-` and `E` rather than its last value, so a stale reading can't
+be mistaken for a live one. Pressing ENTER switches the overview back to the full
+sensor list, keeping every sensor's detail screen reachable regardless of this config.
+
+See [`fiber.config.yaml`](fiber.config.yaml) for a commented example.
 
 ## EU MDR 2017/745 Compliance
 

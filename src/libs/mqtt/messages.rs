@@ -362,6 +362,12 @@ pub enum MqttCommand {
         volume: u8,
     },
 
+    /// Replace the configured physical-display lines (signed via ConfigRequest).
+    /// An empty list restores the built-in overview layout.
+    SetDisplayLines {
+        lines: Vec<crate::libs::config::DisplayLine>,
+    },
+
     /// Silence buzzer (from alarm acknowledgment)
     /// Stops current pattern but re-arms for new alarms
     SilenceBuzzer,
@@ -559,6 +565,7 @@ impl MqttCommand {
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
             MqttCommand::SetScreenTimeout { .. } => "set_screen_timeout",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
+            MqttCommand::SetDisplayLines { .. } => "set_display_lines",
             MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",

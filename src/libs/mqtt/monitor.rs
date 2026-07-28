@@ -47,6 +47,11 @@ pub type SharedScreenTimeoutHandle = std::sync::Arc<std::sync::atomic::AtomicU32
 /// Shared buzzer volume handle (0 = muted, 1-100 = active)
 pub type SharedBuzzerVolumeHandle = std::sync::Arc<std::sync::atomic::AtomicU8>;
 
+/// Shared physical-display line config. Re-exported rather than redeclared —
+/// unlike the atomics above this is a real container type and two names for it
+/// would be one name too many.
+pub use crate::libs::display::SharedDisplayLinesHandle;
+
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
 enum ErrorCategory {
@@ -551,6 +556,7 @@ pub struct MqttMonitor {
     screen_brightness: Option<SharedScreenBrightnessHandle>,
     screen_timeout: Option<SharedScreenTimeoutHandle>,
     buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+    display_lines: Option<SharedDisplayLinesHandle>,
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
     lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     /// fPort-85 command handle, filled after the LoRaWAN monitor exists (see
@@ -563,7 +569,7 @@ pub struct MqttMonitor {
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None, None)
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -576,6 +582,7 @@ impl MqttMonitor {
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         screen_timeout: Option<SharedScreenTimeoutHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        display_lines: Option<SharedDisplayLinesHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         lorawan_state: Option<crate::libs::lorawan::SharedLoRaWANState>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
@@ -626,6 +633,9 @@ impl MqttMonitor {
         // Clone screen timeout for monitor thread
         let screen_timeout_clone = screen_timeout.clone();
 
+        // Clone display line config for monitor thread
+        let display_lines_clone = display_lines.clone();
+
         // Clone buzzer volume and priority for monitor thread
         let buzzer_volume_clone = buzzer_volume.clone();
         let buzzer_priority_clone = buzzer_priority.clone();
@@ -662,6 +672,7 @@ impl MqttMonitor {
                 screen_brightness_clone,
                 screen_timeout_clone,
                 buzzer_volume_clone,
+                display_lines_clone,
                 buzzer_priority_clone,
                 reconnected_flag_clone,
                 lorawan_state_slot_clone,
@@ -686,6 +697,7 @@ impl MqttMonitor {
             screen_brightness,
             screen_timeout,
             buzzer_volume,
+            display_lines,
             buzzer_priority,
             lorawan_state_slot,
             lorawan_handle_slot,
@@ -976,6 +988,7 @@ impl MqttMonitor {
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         screen_timeout: Option<SharedScreenTimeoutHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        display_lines: Option<SharedDisplayLinesHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         reconnected_flag: Arc<AtomicBool>,
         lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -1400,6 +1413,7 @@ impl MqttMonitor {
                                                                     &screen_brightness,
                                                                     &screen_timeout,
                                                                     &buzzer_volume,
+                                                                    &display_lines,
                                                                     &buzzer_priority,
                                                                     &led_brightness_tracker,
                                                                     &lorawan_state_slot,
@@ -1531,6 +1545,7 @@ impl MqttMonitor {
                                                                         &screen_brightness,
                                                                         &screen_timeout,
                                                                         &buzzer_volume,
+                                                                        &display_lines,
                                                                         &buzzer_priority,
                                                                         &led_brightness_tracker,
                                                                         &lorawan_state_slot,
@@ -2244,6 +2259,14 @@ impl MqttMonitor {
                 let volume = params.get("volume").and_then(|v| v.as_u64()).ok_or("Missing volume")? as u8;
                 Ok(MqttCommand::SetBuzzerVolume { volume })
             }
+            "set_display_lines" => {
+                let raw = params.get("lines").ok_or("Missing lines")?;
+                let lines: Vec<crate::libs::config::DisplayLine> =
+                    serde_json::from_value(raw.clone())
+                        .map_err(|e| format!("Invalid display lines: {}", e))?;
+                crate::libs::config_applier::validation::validate_display_custom_lines(&lines)?;
+                Ok(MqttCommand::SetDisplayLines { lines })
+            }
             "set_network_config" => {
                 Ok(MqttCommand::SetNetworkConfig {
                     interface: params.get("interface").and_then(|v| v.as_str()).unwrap_or("ethernet").to_string(),
@@ -2272,6 +2295,7 @@ impl MqttMonitor {
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
         screen_timeout: &Option<SharedScreenTimeoutHandle>,
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -2315,6 +2339,7 @@ impl MqttMonitor {
             screen_brightness,
             screen_timeout,
             buzzer_volume,
+            display_lines,
             buzzer_priority,
             led_brightness_tracker,
             lorawan_state_slot,
@@ -2334,6 +2359,7 @@ impl MqttMonitor {
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
         screen_timeout: &Option<SharedScreenTimeoutHandle>,
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -2543,6 +2569,31 @@ impl MqttMonitor {
                 } else {
                     Err("Buzzer volume control not available".to_string())
                 }
+            }
+            MqttCommand::SetDisplayLines { lines } => {
+                // Persist first: the on-disk config is the source of truth that
+                // survives a reboot and that the display thread reconciles
+                // against. Only mirror into the live handle once the write
+                // succeeded, so a failed write can't leave the panel showing a
+                // layout that isn't saved anywhere.
+                let Some(applier) = config_applier else {
+                    return Err("Config applier not initialized".to_string());
+                };
+                let result = applier.apply_display_custom_lines(lines.clone());
+                if !result.success {
+                    return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                }
+                if let Some(handle) = display_lines.as_ref() {
+                    if let Ok(mut current) = handle.write() {
+                        *current = lines.clone();
+                    }
+                }
+                if lines.is_empty() {
+                    eprintln!("[MQTT Monitor] ✓ Display lines cleared (built-in layout restored)");
+                } else {
+                    eprintln!("[MQTT Monitor] ✓ Display lines updated ({} lines)", lines.len());
+                }
+                Ok(())
             }
             MqttCommand::SilenceBuzzer => {
                 if let Some(bp) = &buzzer_priority {

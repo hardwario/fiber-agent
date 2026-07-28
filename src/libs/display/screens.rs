@@ -18,6 +18,7 @@ use crate::libs::leds::state::SharedLedState;
 use crate::libs::sensors::state::SharedSensorState;
 use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 use crate::libs::display::icons;
+use crate::libs::display::overview::RenderedLine;
 use crate::libs::power::PowerStatus;
 use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
 
@@ -63,28 +64,45 @@ pub fn ordered_sensors(
     active
 }
 
-/// Render the sensor overview screen showing sensors across multiple pages.
-/// Rows are rendered from the pre-computed `entries` slice (active-first ordered list).
-/// When selected_sensor is Some, shows cursor at that sensor position (selection mode).
-pub fn render_sensor_overview(
+/// Number of sensor rows that fit on one overview page (rows at y = 23, 35,
+/// 47, 59 with an 11 px glyph cell below the y=14 divider).
+pub const ROWS_PER_PAGE: usize = 4;
+
+/// Y baseline of overview row `row` (0-based within the page).
+fn row_baseline(row: usize) -> i32 {
+    23 + (row as i32 * 12)
+}
+
+/// The window of `len` items shown on `page`, clamped at both ends.
+///
+/// Clamping `start` as well as `end` matters: a stale `page` left over from a
+/// mode switch would otherwise make `&items[start..end]` panic on the slice
+/// index. A renderer must not panic on out-of-range input from its caller.
+fn page_window(page: usize, len: usize) -> std::ops::Range<usize> {
+    let start = (page * ROWS_PER_PAGE).min(len);
+    let end = (start + ROWS_PER_PAGE).min(len);
+    start..end
+}
+
+/// Draw the parts of the overview screen that don't depend on which rows are
+/// being shown: status icons, device label, page indicator, divider and the
+/// button-hold progress bar.
+///
+/// Returns the x offset rows should start their labels at, which shifts right
+/// in selection mode to leave room for the cursor.
+#[allow(clippy::too_many_arguments)]
+fn draw_overview_chrome(
     display: &mut St7920,
-    page: usize,
-    _led_state: &SharedLedState,
-    sensor_state: &SharedSensorState,
     network_status: &NetworkStatus,
-    selected_sensor: Option<usize>,
     device_label: &str,
     lorawan_gateway_present: bool,
-    lorawan_sensors: &[LoRaWANSensorState],
-    entries: &[OverviewEntry],
-    total_pages: usize,
     sensor_silenced: bool,
+    page: usize,
+    total_pages: usize,
+    selection_mode: bool,
     hold_bar_pixels: u8,
-) -> anyhow::Result<()> {
-    display.clear_buffer();
-
+) -> i32 {
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
-    let header_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // Draw network connection icons on the left (aligned with top of FIBER text)
@@ -105,22 +123,25 @@ pub fn render_sensor_overview(
         icons::draw_mute(display, mute_x, 3);
     }
 
-    let header_label = if device_label.len() > 14 {
-        format!("{}...", &device_label[..11])
+    // truncate_chars, not a byte slice: the label is read straight off disk
+    // every frame, so a hand-edited non-ASCII value would otherwise panic the
+    // display thread mid-codepoint.
+    let header_label = if device_label.chars().count() > 14 {
+        format!("{}...", truncate_chars(device_label, 11))
     } else {
         device_label.to_string()
     };
     Text::with_alignment(
         &header_label,
         Point::new(64, 9),
-        header_style,
+        text_style,
         Alignment::Center,
     )
     .draw(display)
     .ok();
 
     // Show "SEL" when in selection mode, otherwise page number
-    let mode_str = if selected_sensor.is_some() {
+    let mode_str = if selection_mode {
         "SEL".to_string()
     } else {
         format!("{}/{}", page + 1, total_pages)
@@ -142,7 +163,7 @@ pub fn render_sensor_overview(
 
     // Draw button-hold progress bar (1 px) directly under the separator while
     // the user is holding ENTER / UP / DOWN. Width grows 0..=127 over the
-    // 5-second countdown.
+    // hold countdown.
     if hold_bar_pixels > 0 {
         let end_x = (hold_bar_pixels as i32).min(127);
         Line::new(Point::new(0, 15), Point::new(end_x, 15))
@@ -152,14 +173,51 @@ pub fn render_sensor_overview(
     }
 
     // Calculate x offset for labels (make room for cursor in selection mode)
-    let label_x = if selected_sensor.is_some() { 8 } else { 2 };
+    if selection_mode {
+        8
+    } else {
+        2
+    }
+}
 
-    let start = page * 4;
-    let end = (start + 4).min(entries.len());
-    let slice = &entries[start..end];
+/// Render the sensor overview screen showing sensors across multiple pages.
+/// Rows are rendered from the pre-computed `entries` slice (active-first ordered list).
+/// When selected_sensor is Some, shows cursor at that sensor position (selection mode).
+pub fn render_sensor_overview(
+    display: &mut St7920,
+    page: usize,
+    _led_state: &SharedLedState,
+    sensor_state: &SharedSensorState,
+    network_status: &NetworkStatus,
+    selected_sensor: Option<usize>,
+    device_label: &str,
+    lorawan_gateway_present: bool,
+    lorawan_sensors: &[LoRaWANSensorState],
+    entries: &[OverviewEntry],
+    total_pages: usize,
+    sensor_silenced: bool,
+    hold_bar_pixels: u8,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+
+    let label_x = draw_overview_chrome(
+        display,
+        network_status,
+        device_label,
+        lorawan_gateway_present,
+        sensor_silenced,
+        page,
+        total_pages,
+        selected_sensor.is_some(),
+        hold_bar_pixels,
+    );
+
+    let slice = &entries[page_window(page, entries.len())];
 
     for (row, entry) in slice.iter().enumerate() {
-        let y = 23 + (row as i32 * 12);
+        let y = row_baseline(row);
         let is_selected = selected_sensor == Some(entry.global_idx);
 
         match entry.kind {
@@ -179,8 +237,10 @@ pub fn render_sensor_overview(
                 };
                 let name = &sensor_state.names[sensor_idx];
                 let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
-                let label = if name.len() > max_name_len {
-                    format!("{}  ", &name[..max_name_len])
+                // truncate_chars, not a byte slice: sensor names come from
+                // config and a multi-byte one would panic mid-codepoint.
+                let label = if name.chars().count() > max_name_len {
+                    format!("{}  ", truncate_chars(name, max_name_len))
                 } else {
                     format!("{:width$}  ", name, width = max_name_len)
                 };
@@ -215,6 +275,103 @@ pub fn render_sensor_overview(
     }
 
     display.flush()
+}
+
+/// Render the overview screen from the user's configured display lines.
+///
+/// Paging works the same as the built-in layout — [`ROWS_PER_PAGE`] rows per
+/// page, page count derived from the number of configured lines. Selection mode
+/// is never active here: it falls back to [`render_sensor_overview`] so every
+/// physical sensor's detail screen stays reachable no matter how the display is
+/// configured.
+#[allow(clippy::too_many_arguments)]
+pub fn render_custom_overview(
+    display: &mut St7920,
+    page: usize,
+    network_status: &NetworkStatus,
+    device_label: &str,
+    lorawan_gateway_present: bool,
+    lines: &[RenderedLine],
+    total_pages: usize,
+    sensor_silenced: bool,
+    hold_bar_pixels: u8,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+
+    let label_x = draw_overview_chrome(
+        display,
+        network_status,
+        device_label,
+        lorawan_gateway_present,
+        sensor_silenced,
+        page,
+        total_pages,
+        false,
+        hold_bar_pixels,
+    );
+
+    for (row, line) in lines[page_window(page, lines.len())].iter().enumerate() {
+        draw_custom_row(display, row_baseline(row), label_x, line, &text_style);
+    }
+
+    display.flush()
+}
+
+/// Fill a row's background, for the inverted (selected / critical) styles.
+fn invert_row(display: &mut St7920, y: i32) {
+    Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)
+        .ok();
+}
+
+/// Draw one configured overview row: label left, value right-aligned, optional
+/// status character at the right edge.
+///
+/// The value is right-aligned rather than pinned to a fixed column so that
+/// variable-width readings (`1013hPa`, `-72dBm`, `3.02V`) line up with each
+/// other down the screen.
+fn draw_custom_row(
+    display: &mut St7920,
+    y: i32,
+    label_x: i32,
+    line: &RenderedLine,
+    text_style: &MonoTextStyle<'_, BinaryColor>,
+) {
+    let style = if line.is_alarm {
+        invert_row(display, y);
+        MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off)
+    } else {
+        *text_style
+    };
+
+    Text::new(&line.label, Point::new(label_x, y), style)
+        .draw(display)
+        .ok();
+
+    // Leave the last glyph cell free for the status character when present.
+    let value_right = if line.status_char.is_some() { 118 } else { 126 };
+    Text::with_alignment(
+        &line.value,
+        Point::new(value_right, y),
+        style,
+        Alignment::Right,
+    )
+    .draw(display)
+    .ok();
+
+    if let Some(status) = line.status_char {
+        Text::with_alignment(
+            status.encode_utf8(&mut [0u8; 4]),
+            Point::new(126, y),
+            style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
+    }
 }
 
 /// Render the LoRaWAN sensor detail screen
@@ -457,10 +614,7 @@ fn draw_sensor_row(
     text_style: &MonoTextStyle<'_, BinaryColor>,
 ) {
     if is_selected {
-        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)
-            .ok();
+        invert_row(display, y);
 
         let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 
@@ -480,10 +634,7 @@ fn draw_sensor_row(
             .draw(display)
             .ok();
     } else if is_alarm {
-        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)
-            .ok();
+        invert_row(display, y);
 
         let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 
@@ -525,10 +676,7 @@ fn draw_sensor_row_wide(
     text_style: &MonoTextStyle<'_, BinaryColor>,
 ) {
     if is_selected {
-        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)
-            .ok();
+        invert_row(display, y);
 
         let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 
@@ -544,10 +692,7 @@ fn draw_sensor_row_wide(
             .draw(display)
             .ok();
     } else if is_alarm {
-        Rectangle::new(Point::new(0, y - 9), Size::new(128, 12))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)
-            .ok();
+        invert_row(display, y);
 
         let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
 

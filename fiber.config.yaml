@@ -51,6 +51,37 @@ system:
   # Backlight off after this many seconds of no button activity (an active alarm
   # keeps it lit). 0 = never.
   screen_timeout_secs: 3600
+# Physical display (ST7920 LCD) overview screen.
+#
+# Without `custom_lines` the overview shows the built-in layout: the 8 DS18B20
+# probes then any LoRaWAN stickers, active ones first. Set `custom_lines` to
+# compose the screen from individually chosen values instead — 4 rows per page,
+# max 16 lines. Normally written from the FIBER Viewer, not by hand.
+#
+# display:
+#   custom_lines:
+#     # source: sticker  -> addressed by dev_eui (16 hex chars)
+#     #   field: any LoRaWAN registry field (temperature, humidity, voltage,
+#     #          ext_temperature_1/2, machine_probe_*, pressure, altitude,
+#     #          illuminance, *_count) or rssi / snr / status
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: ext_temperature_1
+#       label: "Stkr1 ext"
+#     # source: ds18b20  -> addressed by line index 0-7
+#     #   field: temperature | status
+#     - source: ds18b20
+#       line: 0
+#       field: temperature
+#       label: "Probe 1"
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: voltage
+#       label: "Stkr1 bat"
+#       format:
+#         units: true         # append °C / % / V / hPa / m / lx / dBm / dB
+#         decimals: 2         # 0-3; omit for the per-field default
+#         status_char: false  # hide the N/W/C/E status character
 mqtt:
   enabled: true
   broker:

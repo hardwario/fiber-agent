@@ -15,12 +15,43 @@ use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::lorawan::LoRaWANSensorState;
 
-use super::{SharedDisplayStateHandle, Screen};
+use super::supervise::{lock_recover, read_recover};
+use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
 use super::screens::{
-    render_sensor_overview, render_qr_code_screen, render_qr_session_ended_screen, render_system_info,
+    render_sensor_overview, render_custom_overview, render_qr_code_screen,
+    render_qr_session_ended_screen, render_system_info,
     render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
     render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
 };
+
+/// How often the loop re-reads the config file to pick up out-of-band edits
+/// (a hand-edited YAML, or a write from another process).
+///
+/// This used to happen on every frame — 4-8 full `Config::load_default()` calls
+/// per second, each of which runs the migration check and would rewrite the file
+/// on a version mismatch. Pushed changes don't wait for this: the MQTT executor
+/// writes the shared handle directly, so the reconcile is only the slow path.
+const CONFIG_RECONCILE_MS: u64 = 2000;
+
+/// Snapshot of the config values the display loop cares about.
+struct DisplayConfigSnapshot {
+    device_label: String,
+    custom_lines: Vec<crate::libs::config::DisplayLine>,
+}
+
+/// Re-read the display-relevant config from disk.
+fn load_config_snapshot(hostname: &str) -> DisplayConfigSnapshot {
+    match crate::libs::config::Config::load_default() {
+        Ok(cfg) => DisplayConfigSnapshot {
+            device_label: cfg.system.device_label.unwrap_or_else(|| hostname.to_string()),
+            custom_lines: cfg.display.custom_lines,
+        },
+        Err(_) => DisplayConfigSnapshot {
+            device_label: hostname.to_string(),
+            custom_lines: Vec::new(),
+        },
+    }
+}
 
 /// Decide the backlight brightness to apply.
 ///
@@ -50,6 +81,7 @@ pub fn display_loop(
     _timezone_offset_hours: i8,
     screen_brightness: Arc<AtomicU8>,
     screen_timeout: Arc<AtomicU32>,
+    display_lines: SharedDisplayLinesHandle,
 ) {
     // Initialize display
     let mut display = match St7920::new(gpio) {
@@ -81,6 +113,15 @@ pub fn display_loop(
     // Track last applied brightness to detect changes
     let mut last_brightness: u8 = 100; // Default to full brightness
 
+    // Config values re-read periodically rather than per frame (see
+    // CONFIG_RECONCILE_MS). Backdated so the first loop iteration reconciles,
+    // populating the page count before the first frame is drawn.
+    let reconcile_interval = Duration::from_millis(CONFIG_RECONCILE_MS);
+    let mut config_snapshot = load_config_snapshot(&hostname);
+    let mut last_config_reconcile = std::time::Instant::now()
+        .checked_sub(reconcile_interval)
+        .unwrap_or_else(std::time::Instant::now);
+
     eprintln!("[DisplayMonitor] Started display loop with {}ms update interval", UPDATE_INTERVAL_MS);
 
     // Main display loop
@@ -98,16 +139,14 @@ pub fn display_loop(
         // restored on wake.
         let alarm_lit = led_state.read().lines.iter().flatten()
             .any(|l| l.led_state.color == LedColor::Red);
-        let (idle, force_lit) = match display_state.lock() {
-            Ok(mut ds) => {
-                let force = alarm_lit
-                    || ds.buzzer_priority.as_ref().is_some_and(|bp| bp.is_sensor_beeping());
-                // Keep the timer fresh while lit so a full timeout starts once the
-                // alarm clears (alarm onset counts as activity).
-                if force { ds.mark_activity(); }
-                (ds.last_activity.elapsed(), force)
-            }
-            Err(_) => (Duration::ZERO, alarm_lit),
+        let (idle, force_lit) = {
+            let mut ds = lock_recover(&display_state);
+            let force = alarm_lit
+                || ds.buzzer_priority.as_ref().is_some_and(|bp| bp.is_sensor_beeping());
+            // Keep the timer fresh while lit so a full timeout starts once the
+            // alarm clears (alarm onset counts as activity).
+            if force { ds.mark_activity(); }
+            (ds.last_activity.elapsed(), force)
         };
         // Read the idle timeout live each tick so runtime changes (e.g. via
         // MQTT) take effect without a restart. 0 disables the timeout.
@@ -128,6 +167,17 @@ pub fn display_loop(
             last_brightness = target_brightness;
         }
 
+        // Periodically re-read the config file so out-of-band edits (hand-edited
+        // YAML, or a write from fiberctl) are picked up. MQTT-pushed changes go
+        // straight to the shared handle and don't wait for this.
+        if last_config_reconcile.elapsed() >= reconcile_interval {
+            last_config_reconcile = std::time::Instant::now();
+            config_snapshot = load_config_snapshot(&hostname);
+            if let Ok(mut lines) = display_lines.write() {
+                *lines = config_snapshot.custom_lines.clone();
+            }
+        }
+
         // Throttle updates to reduce flicker and CPU usage
         if last_update.elapsed() >= update_interval {
             last_update = std::time::Instant::now();
@@ -135,27 +185,32 @@ pub fn display_loop(
             // Fetch current network status
             let network_status = get_network_status();
 
+            // Snapshot the configured lines *before* taking the display_state
+            // mutex — never hold that lock while acquiring another.
+            let custom_lines = read_recover(&display_lines).clone();
+
             // Get current display state (screen and page)
-            let (current_screen, qr_generator, lorawan_gateway_present, total_pages, hold_bar_pixels) = {
-                if let Ok(mut state) = display_state.lock() {
-                    // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
-                    state.tick_timed_screens();
-                    // Update network status in display state
-                    state.network_status = network_status.clone();
-                    let tp = state.total_pages();
-                    // Pull the active QR generator out of the live provisioning
-                    // session (if any). None ⇒ either prov mode not entered or
-                    // session ended → QR screen will fall through to a notice.
-                    let qr = state.provisioning_session.as_ref().and_then(|s| {
-                        s.read()
-                            .ok()
-                            .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
-                    });
-                    (state.current_screen.clone(), qr, state.lorawan_gateway_present, tp, state.hold_bar_pixels)
-                } else {
-                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2, 0)
-                }
+            let (current_screen, qr_generator, lorawan_gateway_present, overview_mode, hold_bar_pixels) = {
+                let mut state = lock_recover(&display_state);
+                // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
+                state.tick_timed_screens();
+                // Update network status in display state
+                state.network_status = network_status.clone();
+                // Publish the live line count so the button thread pages over
+                // the same rows this frame is about to draw.
+                state.custom_line_count = custom_lines.len();
+                let mode = state.overview_mode();
+                // Pull the active QR generator out of the live provisioning
+                // session (if any). None ⇒ either prov mode not entered or
+                // session ended → QR screen will fall through to a notice.
+                let qr = state.provisioning_session.as_ref().and_then(|s| {
+                    s.read()
+                        .ok()
+                        .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
+                });
+                (state.current_screen.clone(), qr, state.lorawan_gateway_present, mode, state.hold_bar_pixels)
             };
+            let total_pages = overview_mode.total_pages();
 
             // Read LED state to determine sensor status
             let led_snapshot = led_state.read();
@@ -164,57 +219,69 @@ pub fn display_loop(
             match current_screen {
                 Screen::SensorOverview { page, selected_sensor } => {
                     // Read sensor state for temperature readings
-                    let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
-                        eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
-                        sensor_state.read().unwrap()
-                    });
+                    let sensor_snapshot = read_recover(&sensor_state);
 
-                    // Read device_label fresh from config for hot-reload support
-                    let current_device_label = crate::libs::config::Config::load_default()
-                        .ok()
-                        .and_then(|cfg| cfg.system.device_label)
-                        .unwrap_or_else(|| hostname.clone());
+                    let current_device_label = &config_snapshot.device_label;
+
+                    // Clone the LoRa handle and silence flag out from under the
+                    // display_state mutex in one pass, then drop it before
+                    // taking the inner RwLock.
+                    let (lorawan_state_arc, sensor_silenced) = {
+                        let ds = lock_recover(&display_state);
+                        let silenced = ds.buzzer_priority.as_ref()
+                            .map(|bp| bp.is_button_silenced())
+                            .unwrap_or(false);
+                        (ds.lorawan_state.clone(), silenced)
+                    };
 
                     // Read LoRaWAN sensor state (sorted by dev_eui for consistent ordering)
-                    let lorawan_sensors: Vec<LoRaWANSensorState> = if let Ok(ds) = display_state.lock() {
-                        ds.lorawan_state.as_ref()
-                            .and_then(|s| s.read().ok())
-                            .map(|s| {
-                                let mut sensors: Vec<LoRaWANSensorState> = s.sensors.values().cloned().collect();
-                                sensors.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
-                                sensors
-                            })
-                            .unwrap_or_default()
+                    let lorawan_sensors: Vec<LoRaWANSensorState> = lorawan_state_arc
+                        .as_ref()
+                        .map(|s| {
+                            let mut sensors: Vec<LoRaWANSensorState> =
+                                read_recover(s).sensors.values().cloned().collect();
+                            sensors.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
+                            sensors
+                        })
+                        .unwrap_or_default();
+
+                    // Custom lines only apply in page mode: selection mode falls
+                    // back to the canonical sensor list so every physical sensor's
+                    // detail screen stays reachable. `overview_mode` already
+                    // encodes that decision — this is the same value the page
+                    // count above was derived from, so the two cannot disagree.
+                    let render_result = if overview_mode.is_custom() {
+                        let rows = crate::libs::display::overview::build_custom_lines(
+                            &custom_lines,
+                            &sensor_snapshot.readings,
+                            &sensor_snapshot.names,
+                            &lorawan_sensors,
+                        );
+                        render_custom_overview(
+                            &mut display, page, &network_status, current_device_label,
+                            lorawan_gateway_present, &rows, total_pages, sensor_silenced,
+                            hold_bar_pixels,
+                        )
                     } else {
-                        Vec::new()
+                        // Build the active-first ordered entries list for rendering
+                        let entries = crate::libs::display::screens::ordered_sensors(
+                            &sensor_snapshot.readings,
+                            &lorawan_sensors,
+                        );
+                        render_sensor_overview(
+                            &mut display, page, &led_snapshot, &sensor_snapshot, &network_status,
+                            selected_sensor, current_device_label, lorawan_gateway_present,
+                            &lorawan_sensors, &entries, total_pages, sensor_silenced,
+                            hold_bar_pixels,
+                        )
                     };
-
-                    // Read button silence state for mute icon
-                    let sensor_silenced = if let Ok(ds) = display_state.lock() {
-                        ds.buzzer_priority.as_ref()
-                            .map(|bp| bp.is_button_silenced())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-
-                    // Build the active-first ordered entries list for rendering
-                    let entries = crate::libs::display::screens::ordered_sensors(
-                        &sensor_snapshot.readings,
-                        &lorawan_sensors,
-                    );
-
-                    // Render the sensor overview screen with network status and selection cursor
-                    if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, &entries, total_pages, sensor_silenced, hold_bar_pixels) {
+                    if let Err(e) = render_result {
                         eprintln!("[DisplayMonitor] Error rendering display: {}", e);
                     }
                 }
                 Screen::SensorDetail { sensor_idx } => {
                     // Read sensor state for temperature readings and thresholds
-                    let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
-                        eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
-                        sensor_state.read().unwrap()
-                    });
+                    let sensor_snapshot = read_recover(&sensor_state);
 
                     // Render the sensor detail screen with thresholds
                     if let Err(e) = render_sensor_detail(&mut display, sensor_idx, &sensor_snapshot) {
@@ -265,10 +332,7 @@ pub fn display_loop(
                 }
                 Screen::SystemInfo { page } => {
                     // Read sensor state for probe count
-                    let sensor_snapshot = sensor_state.read().unwrap_or_else(|_| {
-                        eprintln!("[DisplayMonitor] Warning: Could not read sensor state");
-                        sensor_state.read().unwrap()
-                    });
+                    let sensor_snapshot = read_recover(&sensor_state);
 
                     // Read power status
                     let power_snapshot = if let Ok(ps) = power_status.lock() {
@@ -278,11 +342,7 @@ pub fn display_loop(
                         crate::libs::power::PowerStatus::default()
                     };
 
-                    // Read device_label fresh from config for hot-reload support
-                    let current_device_label = crate::libs::config::Config::load_default()
-                        .ok()
-                        .and_then(|cfg| cfg.system.device_label)
-                        .unwrap_or_else(|| hostname.clone());
+                    let current_device_label = &config_snapshot.device_label;
 
                     // Render system info screen with page number
                     if let Err(e) = render_system_info(
@@ -292,7 +352,7 @@ pub fn display_loop(
                         &network_status,
                         &power_snapshot,
                         &hostname,
-                        &current_device_label,
+                        current_device_label,
                         &app_version,
                     ) {
                         eprintln!("[DisplayMonitor] Error rendering system info display: {}", e);
