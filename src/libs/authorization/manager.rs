@@ -1211,6 +1211,9 @@ mod tests {
         // For now, just create a manager with minimal setup
         use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
         use std::path::Path;
+        use std::sync::atomic::AtomicUsize;
+
+        static AUDIT_DB_SEQ: AtomicUsize = AtomicUsize::new(0);
 
         let ca_registry = Arc::new(Mutex::new(
             CARegistry::load_from_file(Path::new("/tmp/test_ca_registry.yaml")).unwrap(),
@@ -1220,6 +1223,17 @@ mod tests {
         ));
         let verifier = Arc::new(SignatureVerifier::new(ca_registry, nonce_tracker, 300));
 
-        AuthorizationManager::new(verifier, Path::new("/tmp/test_audit.db"), 300, 10)
+        // Private path per call. This used to be /tmp/test_audit.db, which
+        // init_audit_db creates unencrypted (bare Connection::open, no PRAGMA
+        // key) — the storage::audit tests then could not reopen that file once
+        // a SQLCipher key existed. Leaked on purpose: the manager owns the path
+        // for its whole life, so there is no TempDir to hold here.
+        let audit_db = std::env::temp_dir().join(format!(
+            "fiber_test_auth_audit_{}_{}.db",
+            std::process::id(),
+            AUDIT_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+
+        AuthorizationManager::new(verifier, &audit_db, 300, 10)
     }
 }
