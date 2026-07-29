@@ -202,7 +202,10 @@ Runtime configuration is loaded from `/data/fiber/config/fiber.config.yaml`. See
 `display.custom_lines` replaces the built-in overview layout with rows you choose.
 Absent or empty ⇒ built-in layout. Max 16 lines (4 pages, 4 rows each). Normally
 written from the FIBER Viewer via the signed `set_display_lines` command, which
-reuses the `set_screen_brightness` permission.
+requires the dedicated `set_display_lines` permission — choosing which sensors the
+panel lists is a separate capability from dimming it. Certificates issued before
+this release do not carry it and must be reissued; a signer holding only
+`set_screen_brightness` is rejected at the ConfigRequest stage.
 
 | Key | Values |
 |-----|--------|
@@ -221,8 +224,9 @@ a sticker's cell, so a percentage would be invented rather than measured.
 Two rows may target the same sensor (e.g. temperature and battery). Rows referencing
 a probe or sticker with no data show `--.-` plus `?`; a sticker that has stopped
 reporting shows `--.-` and `E` rather than its last value, so a stale reading can't
-be mistaken for a live one. Pressing ENTER switches the overview back to the full
-sensor list, keeping every sensor's detail screen reachable regardless of this config.
+be mistaken for a live one. Double-clicking ENTER switches the overview back to the
+full sensor list, keeping every sensor's detail screen reachable regardless of this
+config.
 
 See [`fiber.config.yaml`](fiber.config.yaml) for a commented example.
 

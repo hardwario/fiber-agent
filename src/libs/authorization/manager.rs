@@ -462,7 +462,12 @@ impl AuthorizationManager {
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
             "set_screen_timeout" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
-            "set_display_lines" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
+            // Deliberately NOT the screen-control permission. That one covers how
+            // brightly and how long the panel is lit; this one decides which
+            // measurements the panel lists at all, which is a different capability
+            // on a Class IIa device. The cost is accepted: certificates issued
+            // before this permission existed do not carry it and must be reissued.
+            "set_display_lines" => "set_display_lines",
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
@@ -1188,14 +1193,17 @@ mod tests {
     }
 
     #[test]
-    fn set_display_lines_maps_to_screen_permission() {
-        // Reuses the screen-control permission so the feature works with
-        // certificates issued before it existed (same as set_screen_timeout).
+    fn set_display_lines_has_its_own_permission() {
         let manager = create_test_manager();
-        assert_eq!(
-            manager.command_type_to_permission("set_display_lines").unwrap(),
-            "set_screen_brightness"
-        );
+        let permission = manager.command_type_to_permission("set_display_lines").unwrap();
+        assert_eq!(permission, "set_display_lines");
+
+        // Hard cutover, asserted explicitly: choosing which sensors the local
+        // panel lists is not the same capability as dimming it. A certificate
+        // issued before this permission existed is *supposed* to be rejected, so
+        // the tempting field fix — reinstating the reuse to make an
+        // authorization failure go away — has to fail here first.
+        assert_ne!(permission, "set_screen_brightness");
     }
 
     #[test]
