@@ -7,7 +7,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -23,9 +23,10 @@ use crate::libs::storage::{StorageHandle, StorageReader};
 
 use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
 use super::en12830;
-use super::provisioning::{provision, EyeProfile};
+use super::provisioning::{provision, EyeProfile, ProvisionError};
 use super::state::{
-    create_shared_eye_state, register_eye_state, ProvisioningStatus, SharedEyeState,
+    create_shared_eye_state, register_eye_config, register_eye_state, ProvisioningStatus,
+    SharedEyeConfig, SharedEyeState,
 };
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
@@ -39,6 +40,11 @@ enum EyeJob {
     EnableRecording { interval_s: u16 },
     /// Back-fill archived samples with `ts >= since_ts`, then restart recording.
     Download { since_ts: i64, interval_s: u16 },
+    /// Probe the recorder characteristics to determine `is_en12830` without
+    /// changing recording state.
+    Detect,
+    /// Stop the tag's on-tag recording (set_eye_recording with interval 0).
+    StopRecording,
 }
 
 /// Read-only handle to the EYE monitor state.
@@ -82,8 +88,14 @@ impl EyeMonitor {
         // Expose the state so the MQTT command handler can enqueue commands.
         register_eye_state(state.clone());
 
+        // Expose the config so add/remove command handlers can mutate the tag set
+        // the scan loop reads (the loop re-reads this each poll cycle).
+        let shared_config: SharedEyeConfig = Arc::new(RwLock::new(config));
+        register_eye_config(shared_config.clone());
+        let config_clone = shared_config.clone();
+
         let thread_handle = thread::spawn(move || {
-            eye_loop(shutdown_clone, state_clone, config, mqtt_tx, hostname, storage, db_path);
+            eye_loop(shutdown_clone, state_clone, config_clone, mqtt_tx, hostname, storage, db_path);
         });
 
         eprintln!("[EYE Monitor] Started");
@@ -125,12 +137,16 @@ fn now_secs() -> i64 {
 fn eye_loop(
     shutdown: Arc<AtomicBool>,
     state: SharedEyeState,
-    config: EyeConfig,
+    shared_config: SharedEyeConfig,
     mqtt_tx: Sender<MqttMessage>,
     _hostname: String,
     storage: StorageHandle,
     db_path: String,
 ) {
+    // Live view of the config; re-read from the shared handle each poll cycle so
+    // add/remove_eye_tag take effect without restarting the monitor.
+    let mut config = shared_config.read().map(|g| g.clone()).unwrap_or_default();
+
     // Last raw manufacturer payload persisted per MAC — so we only write a new
     // DB row (save-and-feed) when the advertised data actually changes, instead
     // of once per 1 s poll.
@@ -191,7 +207,7 @@ fn eye_loop(
                 let jobs: Vec<(String, EyeJob)> = pending.drain().collect();
                 let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
                 for (mac, job) in jobs {
-                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs).await;
+                    run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs, &mqtt_tx).await;
                 }
             }
 
@@ -207,10 +223,18 @@ fn eye_loop(
                     continue;
                 }
             };
-            let adapter = match session.default_adapter().await {
+            // Use the configured adapter (e.g. "hci1") when set, else the default.
+            let adapter_result = match config.adapter.as_deref() {
+                Some(name) => session.adapter(name),
+                None => session.default_adapter().await,
+            };
+            let adapter = match adapter_result {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("[EYE Monitor] No default adapter: {e}; retrying in 10s");
+                    eprintln!(
+                        "[EYE Monitor] No adapter ({}): {e}; retrying in 10s",
+                        config.adapter.as_deref().unwrap_or("default"),
+                    );
                     tokio::time::sleep(Duration::from_secs(10)).await;
                     continue;
                 }
@@ -257,6 +281,12 @@ fn eye_loop(
                     return;
                 }
 
+                // Re-read the live config so a tag added/removed via an MQTT
+                // command is picked up by the scan below within one poll cycle.
+                if let Ok(g) = shared_config.read() {
+                    config = g.clone();
+                }
+
                 let now_ts = now_secs();
 
                 // Non-blocking drain: collect every tag whose BlueZ device
@@ -284,12 +314,18 @@ fn eye_loop(
                 for cmd in external {
                     match cmd {
                         super::state::EyeCommand::SetRecording { mac, interval_min } => {
-                            let interval_s = match interval_min {
-                                1 => 60,
-                                15 => 900,
-                                _ => 300,
+                            let job = if interval_min == 0 {
+                                // interval 0 = turn recording off
+                                EyeJob::StopRecording
+                            } else {
+                                let interval_s = match interval_min {
+                                    1 => 60,
+                                    15 => 900,
+                                    _ => 300,
+                                };
+                                EyeJob::EnableRecording { interval_s }
                             };
-                            pending.insert(mac.to_uppercase(), EyeJob::EnableRecording { interval_s });
+                            pending.insert(mac.to_uppercase(), job);
                         }
                         super::state::EyeCommand::DownloadHistory { mac } => {
                             let mac_key = mac.to_uppercase();
@@ -308,6 +344,9 @@ fn eye_loop(
                                 mac_key,
                                 EyeJob::Download { since_ts: since, interval_s },
                             );
+                        }
+                        super::state::EyeCommand::Detect { mac } => {
+                            pending.insert(mac.to_uppercase(), EyeJob::Detect);
                         }
                     }
                 }
@@ -348,6 +387,7 @@ fn eye_loop(
                                         let entry = s.entry(&mac_key, tag.name.clone());
                                         let prev_seen = entry.last_seen_ts;
                                         entry.apply_reading(&reading, rssi, now_ts);
+                                        entry.evaluate_alarms(tag);
                                         if config.recording_on_for(tag)
                                             && entry.is_en12830 != Some(false)
                                         {
@@ -427,7 +467,18 @@ fn eye_loop(
                                 }
                             }
                             eprintln!("[EYE Monitor] Provisioning {mac_key} (first sight)...");
-                            let result = provision(&device, &EyeProfile::default()).await;
+                            // Bound the whole provisioning session so a stuck
+                            // connect()/services() cannot freeze the single-thread
+                            // runtime (scan + command queue) indefinitely.
+                            let result = match tokio::time::timeout(
+                                crate::libs::eye::provisioning::SERVICE_RESOLVE_TIMEOUT,
+                                provision(&device, &EyeProfile::default()),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err(ProvisionError::Timeout),
+                            };
                             let _ = device.disconnect().await;
                             if let Ok(mut s) = state.write() {
                                 if let Some(t) = s.tags.get_mut(&mac_key) {
@@ -510,7 +561,9 @@ fn eye_loop(
                 // Publish snapshot periodically.
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
-                    publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s);
+                    let configured: HashSet<String> =
+                        config.tags.iter().map(|t| t.mac.to_uppercase()).collect();
+                    publish_snapshot(&state, &mqtt_tx, now_ts, config.tag_timeout_s, &configured);
                 }
 
                 // A recorder job was queued: leave the inner loop so the outer
@@ -536,6 +589,7 @@ async fn run_recorder_job(
     state: &SharedEyeState,
     storage: &StorageHandle,
     sync_fallback_secs: i64,
+    mqtt_tx: &Sender<MqttMessage>,
 ) {
     let now = now_secs();
     let now_u32 = now as u32;
@@ -559,6 +613,27 @@ async fn run_recorder_job(
                     mark_not_en12830_if_absent(state, mac, &e);
                 }
                 Err(e) => eprintln!("[EYE Monitor] enable_recording {mac} task error: {e}"),
+            }
+        }
+        EyeJob::StopRecording => {
+            let m = mac.to_string();
+            let res = tokio::task::spawn_blocking(move || en12830::stop_recording(&m)).await;
+            match res {
+                Ok(Ok(())) => {
+                    eprintln!("[EYE Monitor] Recording stopped on {mac}");
+                    // A successful STOP_RECORD proves the recorder characteristic
+                    // exists → this is an EN12830 (white) tag.
+                    if let Ok(mut s) = state.write() {
+                        if let Some(t) = s.tags.get_mut(mac) {
+                            t.is_en12830 = Some(true);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[EYE Monitor] stop_recording {mac} failed: {e}");
+                    mark_not_en12830_if_absent(state, mac, &e);
+                }
+                Err(e) => eprintln!("[EYE Monitor] stop_recording {mac} task error: {e}"),
             }
         }
         EyeJob::Download { since_ts, interval_s } => {
@@ -645,6 +720,51 @@ async fn run_recorder_job(
                 }
             }
         }
+        EyeJob::Detect => {
+            // Do NOT seed a state.tags entry: the result is always published on
+            // eye/detect below, and seeding a MAC that isn't in eye.tags would
+            // leave a phantom in the periodic eye/sensors snapshot forever (M2).
+            // For a configured tag the entry already exists (scan/add seeded it)
+            // and the resolved flag is persisted via get_mut below.
+            let prev = state
+                .read()
+                .ok()
+                .and_then(|s| s.tags.get(mac).and_then(|t| t.is_en12830));
+            let m = mac.to_string();
+            let res = tokio::task::spawn_blocking(move || en12830::read_record_info(&m)).await;
+            let (is_en12830, status) = match res {
+                Ok(Ok(_info)) => {
+                    eprintln!("[EYE Monitor] Detect: {mac} is an EN12830 recorder");
+                    classify_detect(Ok(()), prev)
+                }
+                Ok(Err(e)) => {
+                    // NotFound → recorder characteristics absent → standard tag.
+                    // Other errors (out of range / connect fail) are inconclusive.
+                    eprintln!("[EYE Monitor] Detect {mac}: {e}");
+                    classify_detect(Err(e.kind()), prev)
+                }
+                Err(e) => {
+                    eprintln!("[EYE Monitor] Detect {mac} task error: {e}");
+                    (prev, "error")
+                }
+            };
+            // Persist the flag only when the probe was conclusive; otherwise leave
+            // it for a later retry rather than corrupting a known value.
+            if let Some(val) = is_en12830 {
+                if let Ok(mut s) = state.write() {
+                    if let Some(t) = s.tags.get_mut(mac) {
+                        t.is_en12830 = Some(val);
+                    }
+                }
+            }
+            // Always report an explicit result — the periodic snapshot alone
+            // cannot distinguish "still detecting" from "unreachable".
+            let _ = mqtt_tx.try_send(MqttMessage::PublishEyeDetectResult {
+                mac: mac.to_string(),
+                is_en12830,
+                status: status.to_string(),
+            });
+        }
     }
 }
 
@@ -658,6 +778,22 @@ fn mark_not_en12830_if_absent(state: &SharedEyeState, mac: &str, e: &io::Error) 
                 t.is_en12830 = Some(false);
             }
         }
+    }
+}
+
+/// Classify a detect probe outcome into (resolved `is_en12830`, status string).
+/// `probe`: `Ok(())` = recorder characteristics present; `Err(kind)` = the read
+/// failed with that io kind. `prev` (the tag's current flag) is preserved when
+/// the outcome is inconclusive, so an unreachable tag is not misreported as
+/// "not a recorder".
+fn classify_detect(
+    probe: Result<(), io::ErrorKind>,
+    prev: Option<bool>,
+) -> (Option<bool>, &'static str) {
+    match probe {
+        Ok(()) => (Some(true), "ok"),
+        Err(io::ErrorKind::NotFound) => (Some(false), "ok"),
+        Err(_) => (prev, "unreachable"),
     }
 }
 
@@ -703,35 +839,86 @@ fn publish_snapshot(
     mqtt_tx: &Sender<MqttMessage>,
     now_ts: i64,
     tag_timeout_s: i64,
+    configured: &HashSet<String>,
 ) {
     let snapshot = match state.read() {
         Ok(s) => s,
         Err(_) => return,
     };
+    // Only publish tags still in the live config: this prunes a just-removed tag
+    // that a sub-second scan race may have re-materialised in state.tags (M1) and
+    // any non-configured detect target (M2).
     let tags: Vec<EyeTagPayload> = snapshot
         .tags
         .values()
-        .map(|t| EyeTagPayload {
-            mac: t.mac.clone(),
-            name: t.name.clone(),
-            temperature_c: t.temperature_c,
-            humidity_pct: t.humidity_pct,
-            battery_mv: t.battery_mv,
-            low_battery: t.low_battery,
-            magnet_present: t.magnet_present,
-            magnet_detected: t.magnet_detected,
-            moving: t.moving,
-            movement_count: t.movement_count,
-            pitch_deg: t.pitch_deg,
-            roll_deg: t.roll_deg,
-            rssi: t.rssi,
-            last_seen_ts: t.last_seen_ts,
-            stale: t.is_stale(now_ts, tag_timeout_s),
-            provisioning: t.provisioning.as_str().to_string(),
+        .filter(|t| configured.contains(&t.mac))
+        .map(|t| {
+            let stale = t.is_stale(now_ts, tag_timeout_s);
+            // A tag not seen within tag_timeout_s is offline: escalate the
+            // aggregate alarm to Disconnected (ranked above Critical by worst())
+            // so a lost tag raises a distinct alarm rather than freezing on its
+            // last-known threshold state. The viewer independently maps `stale`,
+            // but emitting it here keeps the firmware's own alarm_state honest.
+            let alarm_state = if stale {
+                t.alarm_state
+                    .worst(&crate::libs::lorawan::state::LoRaWANAlarmState::Disconnected)
+            } else {
+                t.alarm_state.clone()
+            };
+            EyeTagPayload {
+                mac: t.mac.clone(),
+                name: t.name.clone(),
+                temperature_c: t.temperature_c,
+                humidity_pct: t.humidity_pct,
+                battery_mv: t.battery_mv,
+                low_battery: t.low_battery,
+                magnet_present: t.magnet_present,
+                magnet_detected: t.magnet_detected,
+                moving: t.moving,
+                movement_count: t.movement_count,
+                pitch_deg: t.pitch_deg,
+                roll_deg: t.roll_deg,
+                rssi: t.rssi,
+                last_seen_ts: t.last_seen_ts,
+                stale,
+                provisioning: t.provisioning.as_str().to_string(),
+                is_en12830: t.is_en12830,
+                field_alarm_states: t
+                    .field_alarm_states
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_string()))
+                    .collect(),
+                alarm_state: alarm_state.to_string(),
+            }
         })
         .collect();
     if tags.is_empty() {
         return;
     }
     let _ = mqtt_tx.try_send(MqttMessage::PublishEyeSensorData { tags });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_detect_maps_outcomes() {
+        // recorder characteristics present -> definitely EN12830
+        assert_eq!(classify_detect(Ok(()), None), (Some(true), "ok"));
+        // characteristics absent -> definitely a standard (black) tag
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::NotFound), None),
+            (Some(false), "ok")
+        );
+        // inconclusive (out of range / connect fail) -> keep previous, report it
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::TimedOut), None),
+            (None, "unreachable")
+        );
+        assert_eq!(
+            classify_detect(Err(io::ErrorKind::TimedOut), Some(true)),
+            (Some(true), "unreachable")
+        );
+    }
 }

@@ -101,6 +101,18 @@ fn le16(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
 }
 
+/// Parse the ATT MTU-exchange response into the negotiated MTU. Returns the
+/// default 23 when the reply is not a well-formed MTU response — in particular
+/// this guards against a 1–2 byte `0x03` PDU that would otherwise index out of
+/// bounds in `le16`.
+fn parse_mtu_response(r: &[u8]) -> usize {
+    if r.first() == Some(&0x03) && r.len() >= 3 {
+        le16(r, 1) as usize
+    } else {
+        23
+    }
+}
+
 fn le32(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
@@ -415,11 +427,7 @@ impl Recorder {
         };
         // Exchange MTU (request 517 like the vendor app; tag replies with its max).
         let r = att.req(&[0x02, 0x05, 0x02])?;
-        let mtu = if r.first() == Some(&0x03) {
-            le16(&r, 1) as usize
-        } else {
-            23
-        };
+        let mtu = parse_mtu_response(&r);
         let handles = discover(&att)?;
         // Unlock recorder/SN reads with the plaintext PIN (Write Request).
         att.write_req(handles.password, UNLOCK_PIN)?;
@@ -535,6 +543,20 @@ pub fn enable_recording(mac: &str, interval_s: u16, now_ts: u32) -> io::Result<(
     Ok(())
 }
 
+/// Stop temperature recording on the tag (STOP_RECORD). Used by set_eye_recording
+/// with `interval_min = 0`.
+pub fn stop_recording(mac: &str) -> io::Result<()> {
+    let rec = Recorder::connect(mac)?;
+    let resp = rec.send_cmd(CMD_STOP_RECORD, &[])?;
+    if resp != RESP_OK {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("STOP_RECORD rejected: resp=0x{resp:02x}"),
+        ));
+    }
+    Ok(())
+}
+
 /// Read the tag's current Record Info (recording state, interval, count, start).
 pub fn read_record_info(mac: &str) -> io::Result<RecordInfo> {
     Recorder::connect(mac)?.read_record_info()
@@ -555,6 +577,18 @@ pub fn download_since(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mtu_response_guards_short_pdu() {
+        // Well-formed: 0x03 opcode + 2-byte little-endian MTU.
+        assert_eq!(parse_mtu_response(&[0x03, 0x00, 0x02]), 0x0200);
+        // Truncated 0x03 PDUs must not panic — fall back to 23.
+        assert_eq!(parse_mtu_response(&[0x03]), 23);
+        assert_eq!(parse_mtu_response(&[0x03, 0x00]), 23);
+        assert_eq!(parse_mtu_response(&[]), 23);
+        // Non-0x03 opcode -> default.
+        assert_eq!(parse_mtu_response(&[0x02, 0x00, 0x02]), 23);
+    }
 
     #[test]
     fn xtea_roundtrip() {

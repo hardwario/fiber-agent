@@ -241,4 +241,30 @@ mod tests {
             Err(ParseError::Truncated)
         );
     }
+
+    #[test]
+    fn parses_full_frame_all_sensors() {
+        // A complete frame with every field the provisioning profile now enables
+        // (temp+hum+magnet+movement) plus battery — exactly the byte layout the
+        // eye-sim emits with --magnet --movement. flags 0xBF =
+        // temp|hum|magnet_present|magnet_state|move_count|move_angle|batt.
+        let v = [
+            0x01, 0xBF, // version, flags
+            0x09, 0xAB, // temp 24.75
+            0x3F, // hum 63
+            0x92, 0x34, // movement: moving=true, count=0x1234
+            0x00, 0x00, 0x00, // pitch 0, roll 0
+            0x6A, // battery -> 3060 mV
+        ];
+        let r = parse_manufacturer_value(&v).unwrap();
+        assert_eq!(r.temperature_c, Some(24.75));
+        assert_eq!(r.humidity_pct, Some(63));
+        assert!(r.magnet_present);
+        assert!(r.magnet_detected);
+        assert_eq!(r.moving, Some(true));
+        assert_eq!(r.movement_count, Some(0x1234));
+        assert_eq!(r.pitch_deg, Some(0));
+        assert_eq!(r.roll_deg, Some(0));
+        assert_eq!(r.battery_mv, Some(3060));
+    }
 }

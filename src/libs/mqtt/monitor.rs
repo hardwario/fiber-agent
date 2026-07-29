@@ -1502,14 +1502,21 @@ impl MqttMonitor {
                                                             &certificate,
                                                         ) {
                                                             Ok((response_msg, maybe_command)) => {
-                                                                // Publish response
-                                                                if let Err(e) = publisher.handle_message(response_msg).await {
-                                                                    eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
-                                                                }
-
-                                                                // Execute command if approved
+                                                                // Execute FIRST, then report the real result.
+                                                                // Previously SUCCESS was published before running the
+                                                                // command and execution errors were only logged, so the
+                                                                // client always saw SUCCESS even when the command failed.
                                                                 if let Some(execute_cmd) = maybe_command {
-                                                                    if let Err(e) = Self::execute_resolved_command(
+                                                                    // Teardown commands (reboot / network reconfig) tear down
+                                                                    // the process or the MQTT-bearing interface, which races the
+                                                                    // response publish — so for those publish SUCCESS FIRST (M3).
+                                                                    let teardown = Self::is_teardown_command(&execute_cmd);
+                                                                    if teardown {
+                                                                        if let Err(e) = publisher.handle_message(response_msg.clone()).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                    }
+                                                                    let exec = Self::execute_resolved_command(
                                                                         execute_cmd,
                                                                         &config_applier,
                                                                         &stm_bridge,
@@ -1525,16 +1532,31 @@ impl MqttMonitor {
                                                                         &topics,
                                                                         &config.publish,
                                                                         &export_handle_slot,
-                                                                    ) {
+                                                                    );
+                                                                    let succeeded = exec.is_ok();
+                                                                    if let Err(ref e) = exec {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
-                                                                    } else {
-                                                                        // Publish updated config state after successful command
-                                                                        let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
-                                                                            if let Err(e) = publisher.handle_message(config_msg).await {
-                                                                                eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                    }
+                                                                    if !teardown {
+                                                                        // Execute-first: report the real SUCCESS/ERROR result.
+                                                                        let response = Self::confirm_response_message(exec, response_msg);
+                                                                        if let Err(e) = publisher.handle_message(response).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                        if succeeded {
+                                                                            // Publish updated config state after successful command
+                                                                            let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                                                                            if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &buzzer_volume, led_br) {
+                                                                                if let Err(e) = publisher.handle_message(config_msg).await {
+                                                                                    eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                                }
                                                                             }
                                                                         }
+                                                                    }
+                                                                } else {
+                                                                    // REJECTED (no command to run): publish the response as-is.
+                                                                    if let Err(e) = publisher.handle_message(response_msg).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
                                                                     }
                                                                 }
                                                             }
@@ -2234,6 +2256,63 @@ impl MqttMonitor {
             }
             "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
+            "set_eye_recording" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let interval_min = params.get("interval_min").and_then(|v| v.as_u64()).ok_or("Missing interval_min")?;
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
+                    return Err("interval_min must be 0 (off), 1, 5 or 15".to_string());
+                }
+                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+            }
+            "download_eye_history" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                Ok(MqttCommand::DownloadEyeHistory { mac })
+            }
+            "add_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let name = params.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                Ok(MqttCommand::AddEyeTag { mac, name })
+            }
+            "remove_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::RemoveEyeTag { mac })
+            }
+            "detect_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::DetectEyeTag { mac })
+            }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac,
+                    field,
+                    critical_low: params.get("critical_low").and_then(|v| v.as_f64()),
+                    warning_low: params.get("warning_low").and_then(|v| v.as_f64()),
+                    warning_high: params.get("warning_high").and_then(|v| v.as_f64()),
+                    critical_high: params.get("critical_high").and_then(|v| v.as_f64()),
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
             _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
         }
     }
@@ -2297,6 +2376,42 @@ impl MqttMonitor {
             storage_handle,
             export_handle_slot,
         )
+    }
+
+    /// Decide which response to publish for a confirmed command: the pre-built
+    /// SUCCESS response when execution succeeded, or an ERROR response (reusing
+    /// the same challenge/request ids) when it failed. Pure — unit-testable
+    /// without the async MQTT/execute machinery.
+    /// Commands whose execution tears down the process or the MQTT-bearing
+    /// network interface. Their confirmation must be published BEFORE execution
+    /// (best-effort SUCCESS), because execute-then-report would race the shutdown
+    /// and the signer would never receive the response.
+    fn is_teardown_command(cmd: &MqttCommand) -> bool {
+        matches!(
+            cmd,
+            MqttCommand::RestartApplication { .. } | MqttCommand::SetNetworkConfig { .. }
+        )
+    }
+
+    fn confirm_response_message(exec: Result<(), String>, success: MqttMessage) -> MqttMessage {
+        match exec {
+            Ok(()) => success,
+            Err(e) => match success {
+                MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    ..
+                } => MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    status: "ERROR".to_string(),
+                    applied_at: None,
+                    effective_at: None,
+                    message: format!("Execution failed: {e}"),
+                },
+                other => other,
+            },
+        }
     }
 
     /// Execute an approved configuration command
@@ -2753,6 +2868,24 @@ impl MqttMonitor {
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
+                // Persist the recording on/off + interval FIRST, so interval 0 =
+                // off survives a restart and the gap/fallback sync stops queueing
+                // downloads (which would otherwise re-START_RECORD the tag) — H1.
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_recording(mac.clone(), interval_min);
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so the running loop's
+                    // recording_on_for() updates without a restart.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_recording(&mac, interval_min);
+                        }
+                    }
+                } else {
+                    return Err("Config applier not initialized".to_string());
+                }
                 if crate::libs::eye::state::queue_eye_command(
                     crate::libs::eye::state::EyeCommand::SetRecording {
                         mac: mac.clone(),
@@ -2776,6 +2909,136 @@ impl MqttMonitor {
                     Ok(())
                 } else {
                     Err("EYE monitor not running".to_string())
+                }
+            }
+            MqttCommand::AddEyeTag { mac, name } => {
+                // Persist the tag into `eye.tags[]` so it is tracked/named
+                // explicitly (auto-provisioning still discovers unknown tags).
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_tag_config(mac.clone(), name.clone());
+                    if result.success {
+                        // Reflect the change in the monitor's live config so the
+                        // scan loop starts tracking the new tag without a restart.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.upsert_tag(&mac, name.as_deref());
+                            }
+                        }
+                        // Seed in-memory state so the tag shows up before its
+                        // first advertisement is parsed (uppercase key, matching
+                        // the scan loop and remove path).
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                let entry = s.entry(&mac.to_uppercase(), name.clone());
+                                // entry() ignores `name` for an existing tag, so a
+                                // rename must be applied explicitly (only when given).
+                                if let Some(n) = name {
+                                    entry.name = Some(n);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::RemoveEyeTag { mac } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.remove_eye_tag_config(mac.clone());
+                    if result.success {
+                        // Drop it from the live config too, so the scan loop stops
+                        // tracking it and cannot resurrect it on the next advert.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.remove_tag(&mac);
+                            }
+                        }
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                s.tags.remove(&mac.to_uppercase());
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} removed from config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DetectEyeTag { mac } => {
+                // Detection runs over raw L2CAP GATT, which must not overlap the
+                // active BLE scan — hand off to the EYE monitor via the queue.
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if crate::libs::eye::state::queue_eye_command(
+                    crate::libs::eye::state::EyeCommand::Detect { mac: mac.clone() },
+                ) {
+                    eprintln!("[MQTT Monitor] Queued EYE detect {mac}");
+                    Ok(())
+                } else {
+                    Err("EYE monitor not running".to_string())
+                }
+            }
+            MqttCommand::SetEyeFieldThreshold {
+                mac, field, critical_low, warning_low, warning_high, critical_high,
+            } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_field_threshold(
+                        mac.clone(), field.clone(),
+                        critical_low, warning_low, warning_high, critical_high,
+                    );
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so evaluate_alarms uses it next tick.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_field_threshold(&mac, crate::libs::config::FieldThreshold {
+                                field: field.clone(),
+                                critical_low, warning_low, warning_high, critical_high,
+                            });
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold set for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.delete_eye_field_threshold(mac.clone(), field.clone());
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.remove_field_threshold(&mac, &field);
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold deleted for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
                 }
             }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
@@ -3333,5 +3596,129 @@ mod tests {
         };
         let result = configure_tls_transport(&tls);
         assert!(result.is_ok(), "Should succeed loading CA, client cert, and key files: {:?}", result.err());
+    }
+
+    #[cfg(feature = "dev-platform")]
+    #[test]
+    fn test_build_dev_command_eye_arms() {
+        use serde_json::json;
+
+        // add_eye_tag: MAC uppercased, name preserved
+        match MqttMonitor::build_dev_command(
+            "add_eye_tag",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::AddEyeTag { mac, name } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(name.as_deref(), Some("Freezer"));
+            }
+            other => panic!("expected AddEyeTag, got {other:?}"),
+        }
+
+        // add_eye_tag: empty name -> None
+        assert!(matches!(
+            MqttMonitor::build_dev_command(
+                "add_eye_tag",
+                &json!({"mac": "AA:BB:CC:DD:EE:FF", "name": ""}),
+                &None,
+            )
+            .unwrap(),
+            MqttCommand::AddEyeTag { name: None, .. }
+        ));
+
+        // remove_eye_tag / detect_eye_tag uppercase the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("remove_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::RemoveEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("detect_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DetectEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set_eye_recording: valid interval accepted, 0 = off accepted, invalid rejected
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 5, .. }
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 0}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 0, .. }
+        ));
+        assert!(MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}), &None).is_err());
+
+        // download_eye_history uppercases the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("download_eye_history", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DownloadEyeHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set/delete_eye_field_threshold: MAC uppercased, field + bounds parsed
+        match MqttMonitor::build_dev_command(
+            "set_eye_field_threshold",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "battery", "warning_low": 2700.0, "critical_low": 2400.0}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_low, critical_low, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "battery");
+                assert_eq!(warning_low, Some(2700.0));
+                assert_eq!(critical_low, Some(2400.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert!(matches!(
+            MqttMonitor::build_dev_command("delete_eye_field_threshold", &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "movement"}), &None).unwrap(),
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } if mac == "AA:BB:CC:DD:EE:FF" && field == "movement"
+        ));
+
+        // malformed MAC rejected
+        assert!(MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None).is_err());
+    }
+
+    #[test]
+    fn confirm_response_message_reports_execution_result() {
+        let make = || MqttMessage::PublishConfigResponse {
+            challenge_id: "chal-1".to_string(),
+            request_id: "req-1".to_string(),
+            status: "SUCCESS".to_string(),
+            applied_at: Some(123),
+            effective_at: Some(123),
+            message: "Configuration applied: set_led_brightness".to_string(),
+        };
+
+        // Ok -> the pre-built SUCCESS response passes through unchanged.
+        match MqttMonitor::confirm_response_message(Ok(()), make()) {
+            MqttMessage::PublishConfigResponse { status, applied_at, .. } => {
+                assert_eq!(status, "SUCCESS");
+                assert_eq!(applied_at, Some(123));
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
+
+        // Err -> ERROR response, same ids, nulled timestamps, error in message.
+        match MqttMonitor::confirm_response_message(Err("boom".to_string()), make()) {
+            MqttMessage::PublishConfigResponse {
+                challenge_id,
+                request_id,
+                status,
+                applied_at,
+                effective_at,
+                message,
+            } => {
+                assert_eq!(challenge_id, "chal-1");
+                assert_eq!(request_id, "req-1");
+                assert_eq!(status, "ERROR");
+                assert_eq!(applied_at, None);
+                assert_eq!(effective_at, None);
+                assert!(message.contains("boom"), "message was: {message}");
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
     }
 }

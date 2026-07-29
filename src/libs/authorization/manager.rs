@@ -470,12 +470,17 @@ impl AuthorizationManager {
             "remove_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
             "set_eye_recording" => "set_lorawan_sensor_config",  // reuse: sensor config change
             "download_eye_history" => "set_lorawan_sensor_config",  // reuse: sensor data op
+            "add_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
+            "remove_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
+            "detect_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor data op
             "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
 
             "set_lorawan_field_threshold" => "set_threshold",
             "delete_lorawan_field_threshold" => "set_threshold",
             "set_sticker_config" => "set_lorawan_sensor_config",  // reuse sticker-management permission
             "send_sticker_raw" => "set_lorawan_sensor_config",  // reuse sticker-management permission
+            "set_eye_field_threshold" => "set_lorawan_sensor_config",
+            "delete_eye_field_threshold" => "set_lorawan_sensor_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -599,6 +604,29 @@ impl AuthorizationManager {
             "download_eye_history" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Download EYE {} temperature history", mac)
+            }
+            "add_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Add EYE tag {} (name: \"{}\")", mac, name)
+            }
+            "remove_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove EYE tag {}", mac)
+            }
+            "detect_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Detect EYE tag type for {}", mac)
+            }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Set EYE {} {} alarm thresholds", mac, field)
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Clear EYE {} {} alarm thresholds", mac, field)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -857,6 +885,41 @@ impl AuthorizationManager {
                 MqttCommand::parse_send_sticker_raw(&challenge.params)
                     .map_err(AuthError::InvalidCommand)
             }
+            "set_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
+                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
+                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac, field,
+                    critical_low, warning_low, warning_high, critical_high,
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")
                     .and_then(|v| v.as_str())
@@ -979,9 +1042,9 @@ impl AuthorizationManager {
                 let interval_min = challenge.params.get("interval_min")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing interval_min".to_string()))?;
-                if !matches!(interval_min, 1 | 5 | 15) {
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
                     return Err(AuthError::InvalidCommand(
-                        "interval_min must be 1, 5 or 15".to_string(),
+                        "interval_min must be 0 (off), 1, 5 or 15".to_string(),
                     ));
                 }
                 Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
@@ -992,6 +1055,46 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
                 Ok(MqttCommand::DownloadEyeHistory { mac })
+            }
+            "add_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                Ok(MqttCommand::AddEyeTag { mac, name })
+            }
+            "remove_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                Ok(MqttCommand::RemoveEyeTag { mac })
+            }
+            "detect_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                Ok(MqttCommand::DetectEyeTag { mac })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",
@@ -1102,6 +1205,96 @@ mod tests {
         );
 
         assert!(manager.command_type_to_permission("unknown").is_err());
+    }
+
+    #[test]
+    fn eye_tag_commands_map_to_lorawan_sensor_config_permission() {
+        let manager = create_test_manager();
+        for cmd in ["add_eye_tag", "remove_eye_tag", "detect_eye_tag"] {
+            assert_eq!(
+                manager.command_type_to_permission(cmd).unwrap(),
+                "set_lorawan_sensor_config",
+                "unexpected permission for {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_add_eye_tag_uppercases_mac_and_keeps_name() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "add_eye_tag",
+            serde_json::json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::AddEyeTag { mac, name } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(name.as_deref(), Some("Freezer"));
+            }
+            other => panic!("expected AddEyeTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_add_eye_tag_rejects_malformed_mac() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("add_eye_tag", serde_json::json!({"mac": "not-a-mac"}));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
+    }
+
+    #[test]
+    fn build_detect_eye_tag_ok() {
+        let manager = create_test_manager();
+        let challenge =
+            test_challenge("detect_eye_tag", serde_json::json!({"mac": "AA:BB:CC:DD:EE:FF"}));
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::DetectEyeTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
+            other => panic!("expected DetectEyeTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_set_eye_field_threshold_uppercases_mac_and_maps_permission() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_eye_field_threshold",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff", "field": "temperature",
+                "warning_high": 8.0, "critical_high": 12.0
+            }),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_high, critical_high, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "temperature");
+                assert_eq!(warning_high, Some(8.0));
+                assert_eq!(critical_high, Some(12.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert_eq!(
+            manager.command_type_to_permission("set_eye_field_threshold").unwrap(),
+            "set_lorawan_sensor_config",
+        );
+    }
+
+    fn test_challenge(command_type: &str, params: Value) -> crate::libs::authorization::state::PendingChallenge {
+        use crate::libs::authorization::state::{ChallengeState, PendingChallenge};
+        PendingChallenge {
+            challenge_id: "c".to_string(),
+            request_id: "r".to_string(),
+            signer_id: "s".to_string(),
+            signer_name: "S".to_string(),
+            command_type: command_type.to_string(),
+            params,
+            reason: None,
+            signature: String::new(),
+            nonce: String::new(),
+            timestamp: 0,
+            expires_at: 0,
+            state: ChallengeState::AwaitingConfirmation,
+            state_changed_at: 0,
+        }
     }
 
     fn create_test_manager() -> AuthorizationManager {

@@ -173,6 +173,15 @@ pub enum MqttMessage {
         tags: Vec<EyeTagPayload>,
     },
 
+    /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
+    /// `is_en12830` is `None` when the probe was inconclusive; `status` is
+    /// "ok" | "unreachable" | "error".
+    PublishEyeDetectResult {
+        mac: String,
+        is_en12830: Option<bool>,
+        status: String,
+    },
+
     /// Publish successful pairing response
     PublishPairingResponse(PairingResponse),
 
@@ -215,6 +224,15 @@ pub struct EyeTagPayload {
     /// Whether the tag has not been seen within the configured `tag_timeout_s`.
     pub stale: bool,
     pub provisioning: String,
+    /// `Some(true)` = EN12830 recorder (white) variant, `Some(false)` = standard
+    /// (black), `None` = not yet determined. Surfaced so the viewer can label
+    /// the tag type and expose recorder controls.
+    pub is_en12830: Option<bool>,
+    /// Per-field alarm state (field → NORMAL/WARNING/CRITICAL), evaluated on
+    /// device from the tag's configured thresholds. Empty when none are set.
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    /// Aggregate (worst-of-fields) alarm state string.
+    pub alarm_state: String,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
@@ -395,6 +413,22 @@ pub enum MqttCommand {
         field: String,
     },
 
+    /// Set a single per-field alarm threshold for an EYE tag.
+    SetEyeFieldThreshold {
+        mac: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    },
+
+    /// Remove a per-field alarm threshold for an EYE tag.
+    DeleteEyeFieldThreshold {
+        mac: String,
+        field: String,
+    },
+
     /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
     AddLoRaWANSticker {
         dev_eui: String,
@@ -451,6 +485,28 @@ pub enum MqttCommand {
 
     /// Manually back-fill the EN12830 temperature archive for an EYE tag.
     DownloadEyeHistory {
+        mac: String,
+    },
+
+    /// Register an EYE tag in the device config (`eye.tags[]`) so it is
+    /// tracked/named explicitly. Auto-provisioning still discovers unknown
+    /// tags; this pins a name/override. Signed via ConfigRequest.
+    AddEyeTag {
+        mac: String,
+        name: Option<String>,
+    },
+
+    /// Remove an EYE tag from the device config (`eye.tags[]`). Signed via
+    /// ConfigRequest.
+    RemoveEyeTag {
+        mac: String,
+    },
+
+    /// Connect to an EYE tag over BLE and determine whether it is an EN12830
+    /// recorder (white) or a standard tag (black). Result surfaces
+    /// asynchronously via `is_en12830` in the `eye/sensors` snapshot. Signed
+    /// via ConfigRequest.
+    DetectEyeTag {
         mac: String,
     },
 
@@ -556,9 +612,14 @@ impl MqttCommand {
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
+            MqttCommand::SetEyeFieldThreshold { .. } => "set_eye_field_threshold",
+            MqttCommand::DeleteEyeFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
+            MqttCommand::AddEyeTag { .. } => "add_eye_tag",
+            MqttCommand::RemoveEyeTag { .. } => "remove_eye_tag",
+            MqttCommand::DetectEyeTag { .. } => "detect_eye_tag",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
             MqttCommand::SetStickerConfig { .. } => "set_sticker_config",

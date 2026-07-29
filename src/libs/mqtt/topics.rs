@@ -201,6 +201,10 @@ impl TopicBuilder {
         self.build(&["eye", "sensors"])
     }
 
+    pub fn eye_detect(&self) -> String {
+        self.build(&["eye", "detect"])
+    }
+
     // Error topic
     pub fn errors(&self) -> String {
         self.build(&["errors"])
