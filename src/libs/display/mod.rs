@@ -454,6 +454,12 @@ impl DisplayState {
             let entries = self.ordered_entries(ds_readings);
             if entries.is_empty() { return; }
             let pos = (page * screens::ROWS_PER_PAGE).min(entries.len() - 1);
+            // Derive the page from the clamped cursor rather than carrying the
+            // old one over. Selection mode pages over the sensor list, which can
+            // be shorter than the custom-line list we're coming from — a stale
+            // page past the end would render four blank rows under a "SEL"
+            // header, with the cursor sitting on a page the operator can't see.
+            let page = pos / screens::ROWS_PER_PAGE;
             let first_global = entries[pos].global_idx;
             self.current_screen = Screen::SensorOverview {
                 page,
@@ -601,9 +607,9 @@ impl DisplayMonitor {
         let display_state_clone = display_state.clone();
 
         let thread_handle = thread::spawn(move || {
-            // Contain panics: an unhandled one here would end the thread for
-            // good, leaving the operator with a dark panel and no indication
-            // why. Every argument is cloned per attempt so the loop is
+            // Contain panics and init failures: either one left bare would end
+            // the thread for good, leaving the operator with a dark panel and no
+            // indication why. Every argument is cloned per attempt so the loop is
             // re-callable, and the restarted loop re-runs St7920::init(),
             // resetting the controller out of whatever state it was left in.
             supervise::supervise("display", &shutdown_flag_clone, || {
@@ -621,7 +627,7 @@ impl DisplayMonitor {
                     screen_brightness.clone(),
                     screen_timeout.clone(),
                     display_lines.clone(),
-                );
+                )
             });
         });
 
@@ -786,6 +792,41 @@ mod paging_tests {
         ds.exit_selection_mode();
         assert_eq!(ds.current_screen.get_page(), Some(0));
         assert_eq!(ds.current_screen.get_selected_sensor(), None);
+    }
+
+    #[test]
+    fn enter_selection_mode_clamps_stale_page() {
+        // Mirror of exit_selection_mode_clamps_stale_page, for the entry path:
+        // 16 custom lines is 4 pages, but selection mode pages over 8 sensors
+        // (2 pages). Entering from custom page 3 must land on a page that
+        // actually contains the cursor, not leave a blank "SEL" screen.
+        let mut ds = state(16);
+        ds.current_screen = Screen::SensorOverview { page: 3, selected_sensor: None };
+        ds.enter_selection_mode(&Default::default());
+
+        let page = ds.current_screen.get_page().expect("still on overview");
+        let selected = ds.current_screen.get_selected_sensor().expect("cursor set");
+        assert!(page < ds.total_pages(), "page {} out of {} pages", page, ds.total_pages());
+
+        // And the cursor must be on the page being shown.
+        let entries = ds.ordered_entries(&Default::default());
+        let pos = entries.iter().position(|e| e.global_idx == selected).unwrap();
+        assert_eq!(pos / screens::ROWS_PER_PAGE, page, "cursor is off-page");
+    }
+
+    #[test]
+    fn enter_selection_mode_keeps_valid_page() {
+        // No custom lines: page 1 of the 8-sensor list is valid in both modes
+        // and must survive, cursor landing on the first row of that page.
+        let mut ds = state(0);
+        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        ds.enter_selection_mode(&Default::default());
+        assert_eq!(ds.current_screen.get_page(), Some(1));
+
+        let selected = ds.current_screen.get_selected_sensor().expect("cursor set");
+        let entries = ds.ordered_entries(&Default::default());
+        let pos = entries.iter().position(|e| e.global_idx == selected).unwrap();
+        assert_eq!(pos, screens::ROWS_PER_PAGE, "first row of page 1");
     }
 
     #[test]

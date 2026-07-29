@@ -2584,9 +2584,11 @@ impl MqttMonitor {
                     return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
                 }
                 if let Some(handle) = display_lines.as_ref() {
-                    if let Ok(mut current) = handle.write() {
-                        *current = lines.clone();
-                    }
+                    // Poison-recovering: a skipped write here would silently
+                    // leave the panel on the old layout until the display
+                    // thread's next reconcile, or forever if it also can't
+                    // write. The config on disk is already the new one.
+                    *crate::libs::display::supervise::write_recover(handle) = lines.clone();
                 }
                 if lines.is_empty() {
                     eprintln!("[MQTT Monitor] ✓ Display lines cleared (built-in layout restored)");

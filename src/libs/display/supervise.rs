@@ -15,7 +15,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -31,16 +31,22 @@ const BACKOFF_STEP: Duration = Duration::from_millis(100);
 /// slow retry with one log line each time rather than a hot spin.
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 
-/// Run `body` until it returns cleanly or `shutdown` is set, containing and
-/// logging any panic and restarting after a backoff.
+/// Run `body` until it returns `Ok` or `shutdown` is set, restarting after a
+/// backoff on either a contained panic or a reported failure.
 ///
-/// Restarts are unbounded on purpose: a deterministic panic becomes a slow,
+/// `body` returns `Result` rather than `()` so that a loop which *declines to
+/// start* is retried too. `display_loop` bails out early when `St7920::new()`
+/// fails, and re-running `init()` is exactly the recovery this supervisor
+/// provides — treating that early exit as a clean shutdown would stop retrying
+/// in the one case where retrying is the whole point, and do it silently.
+///
+/// Restarts are unbounded on purpose: a deterministic failure becomes a slow,
 /// noisy retry loop, which is recoverable and visible in the journal. Giving up
 /// after N attempts would put us back at a permanently dead UI, which is the
 /// failure mode this exists to remove.
 pub fn supervise<F>(name: &str, shutdown: &AtomicBool, mut body: F)
 where
-    F: FnMut(),
+    F: FnMut() -> Result<(), String>,
 {
     let mut consecutive: u32 = 0;
 
@@ -51,20 +57,18 @@ where
         // half-finished frame cannot leave observably broken state behind.
         let result = std::panic::catch_unwind(AssertUnwindSafe(&mut body));
 
-        match result {
-            Ok(()) => return,
-            Err(payload) => {
-                consecutive += 1;
-                eprintln!(
-                    "[{}] PANIC contained (restart #{}): {}",
-                    name,
-                    consecutive,
-                    payload_message(&payload),
-                );
-                let backoff = (BACKOFF_STEP * consecutive).min(BACKOFF_MAX);
-                sleep_interruptible(backoff, shutdown);
-            }
-        }
+        // Distinct prefixes: a panic is a bug to chase, a reported failure is
+        // usually hardware saying no. The journal should not conflate them.
+        let reason = match result {
+            Ok(Ok(())) => return,
+            Ok(Err(e)) => format!("FAILED: {}", e),
+            Err(payload) => format!("PANIC contained: {}", payload_message(&payload)),
+        };
+
+        consecutive += 1;
+        eprintln!("[{}] {} (restart #{})", name, reason, consecutive);
+        let backoff = (BACKOFF_STEP * consecutive).min(BACKOFF_MAX);
+        sleep_interruptible(backoff, shutdown);
     }
 }
 
@@ -114,6 +118,16 @@ pub fn read_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Write-lock an `RwLock`, recovering the guard if it is poisoned.
+///
+/// See [`lock_recover`]. The `if let Ok(guard) = lock.write()` shape this
+/// replaces is the more dangerous half of the pattern: a skipped *read* costs
+/// one stale frame, but a skipped *write* means the update never lands at all,
+/// silently and for the rest of the process's life.
+pub fn write_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,7 +147,10 @@ mod tests {
     fn supervise_returns_on_clean_exit() {
         let shutdown = AtomicBool::new(false);
         let mut calls = 0;
-        supervise("test", &shutdown, || calls += 1);
+        supervise("test", &shutdown, || {
+            calls += 1;
+            Ok(())
+        });
         assert_eq!(calls, 1, "a clean return must not be restarted");
     }
 
@@ -149,6 +166,7 @@ mod tests {
                 if n < 2 {
                     panic!("boom {}", n);
                 }
+                Ok(())
             });
         });
 
@@ -157,6 +175,42 @@ mod tests {
             3,
             "two panics then a clean run"
         );
+    }
+
+    #[test]
+    fn supervise_restarts_body_after_reported_failure() {
+        // The display-init case: the loop declines to start rather than
+        // panicking, and must still be retried.
+        let shutdown = AtomicBool::new(false);
+        let mut calls = 0;
+
+        supervise("test", &shutdown, || {
+            calls += 1;
+            if calls < 3 {
+                Err(format!("display init failed (attempt {})", calls))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(calls, 3, "two reported failures then a clean run");
+    }
+
+    #[test]
+    fn supervise_stops_reporting_failures_once_shutdown_requested() {
+        // A body that never succeeds must not spin forever past a shutdown.
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_inner = shutdown.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let calls_inner = calls.clone();
+
+        supervise("test", &shutdown, move || {
+            calls_inner.fetch_add(1, Ordering::SeqCst);
+            shutdown_inner.store(true, Ordering::SeqCst);
+            Err("still failing".to_string())
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -186,7 +240,10 @@ mod tests {
     fn supervise_does_not_run_body_when_already_shut_down() {
         let shutdown = AtomicBool::new(true);
         let mut calls = 0;
-        supervise("test", &shutdown, || calls += 1);
+        supervise("test", &shutdown, || {
+            calls += 1;
+            Ok(())
+        });
         assert_eq!(calls, 0);
     }
 
@@ -224,5 +281,23 @@ mod tests {
 
         assert!(lock.read().is_err(), "precondition: lock is poisoned");
         assert_eq!(*read_recover(&lock), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn write_recover_returns_inner_after_poisoning() {
+        let lock = Arc::new(RwLock::new(vec![1, 2, 3]));
+        let poisoner = lock.clone();
+
+        without_panic_output(|| {
+            let _ = thread::spawn(move || {
+                let _guard = poisoner.write().unwrap();
+                panic!("poison it");
+            })
+            .join();
+        });
+
+        assert!(lock.write().is_err(), "precondition: lock is poisoned");
+        write_recover(&lock).push(4);
+        assert_eq!(*read_recover(&lock), vec![1, 2, 3, 4], "the write must land");
     }
 }

@@ -15,7 +15,7 @@ use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::lorawan::LoRaWANSensorState;
 
-use super::supervise::{lock_recover, read_recover};
+use super::supervise::{lock_recover, read_recover, write_recover};
 use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
 use super::screens::{
     render_sensor_overview, render_custom_overview, render_qr_code_screen,
@@ -39,18 +39,19 @@ struct DisplayConfigSnapshot {
     custom_lines: Vec<crate::libs::config::DisplayLine>,
 }
 
-/// Re-read the display-relevant config from disk.
-fn load_config_snapshot(hostname: &str) -> DisplayConfigSnapshot {
-    match crate::libs::config::Config::load_default() {
-        Ok(cfg) => DisplayConfigSnapshot {
-            device_label: cfg.system.device_label.unwrap_or_else(|| hostname.to_string()),
-            custom_lines: cfg.display.custom_lines,
-        },
-        Err(_) => DisplayConfigSnapshot {
-            device_label: hostname.to_string(),
-            custom_lines: Vec::new(),
-        },
-    }
+/// Re-read the display-relevant config from disk, or `None` if it can't be read.
+///
+/// `None` rather than a default-valued snapshot: the caller keeps the last good
+/// values instead. A transient read or parse failure must not blank the device
+/// label back to the hostname, and above all must not clear `custom_lines` —
+/// that would revert the panel to the built-in layout *and* wipe the shared
+/// handle the MQTT executor writes to.
+fn load_config_snapshot(hostname: &str) -> Option<DisplayConfigSnapshot> {
+    let cfg = crate::libs::config::Config::load_default().ok()?;
+    Some(DisplayConfigSnapshot {
+        device_label: cfg.system.device_label.unwrap_or_else(|| hostname.to_string()),
+        custom_lines: cfg.display.custom_lines,
+    })
 }
 
 /// Decide the backlight brightness to apply.
@@ -82,18 +83,13 @@ pub fn display_loop(
     screen_brightness: Arc<AtomicU8>,
     screen_timeout: Arc<AtomicU32>,
     display_lines: SharedDisplayLinesHandle,
-) {
-    // Initialize display
-    let mut display = match St7920::new(gpio) {
-        Ok(d) => {
-            eprintln!("[DisplayMonitor] Display initialized successfully");
-            d
-        }
-        Err(e) => {
-            eprintln!("[DisplayMonitor] Failed to initialize display: {}", e);
-            return;
-        }
-    };
+) -> Result<(), String> {
+    // Initialize display. Reported as an error rather than a quiet return so
+    // the supervisor retries — re-running init() is the recovery path, and a
+    // controller that isn't ready yet at boot is exactly what it's for.
+    let mut display = St7920::new(gpio)
+        .map_err(|e| format!("failed to initialize display: {}", e))?;
+    eprintln!("[DisplayMonitor] Display initialized successfully");
 
     // Boot splash: render the HARDWARIO logo once and dwell for a short
     // moment before the normal render loop takes over. Doing it here
@@ -114,13 +110,30 @@ pub fn display_loop(
     let mut last_brightness: u8 = 100; // Default to full brightness
 
     // Config values re-read periodically rather than per frame (see
-    // CONFIG_RECONCILE_MS). Backdated so the first loop iteration reconciles,
-    // populating the page count before the first frame is drawn.
+    // CONFIG_RECONCILE_MS). Seeded and published once here, before the first
+    // frame, so the in-loop reconcile can be a pure change-detector: the
+    // snapshot it compares against and the handle it writes start in agreement.
     let reconcile_interval = Duration::from_millis(CONFIG_RECONCILE_MS);
-    let mut config_snapshot = load_config_snapshot(&hostname);
-    let mut last_config_reconcile = std::time::Instant::now()
-        .checked_sub(reconcile_interval)
-        .unwrap_or_else(std::time::Instant::now);
+    // Whether the last reconcile could read the file, so the failure is logged
+    // on the transition rather than every 2 s forever.
+    let mut config_readable = true;
+    let mut config_snapshot = match load_config_snapshot(&hostname) {
+        Some(snapshot) => {
+            *write_recover(&display_lines) = snapshot.custom_lines.clone();
+            snapshot
+        }
+        None => {
+            // Unreadable at startup: keep whatever main.rs seeded the handle
+            // with, which is the same file read a moment earlier.
+            eprintln!("[DisplayMonitor] Config unreadable at startup, using the seeded display config");
+            config_readable = false;
+            DisplayConfigSnapshot {
+                device_label: hostname.clone(),
+                custom_lines: read_recover(&display_lines).clone(),
+            }
+        }
+    };
+    let mut last_config_reconcile = std::time::Instant::now();
 
     eprintln!("[DisplayMonitor] Started display loop with {}ms update interval", UPDATE_INTERVAL_MS);
 
@@ -172,9 +185,32 @@ pub fn display_loop(
         // straight to the shared handle and don't wait for this.
         if last_config_reconcile.elapsed() >= reconcile_interval {
             last_config_reconcile = std::time::Instant::now();
-            config_snapshot = load_config_snapshot(&hostname);
-            if let Ok(mut lines) = display_lines.write() {
-                *lines = config_snapshot.custom_lines.clone();
+            match load_config_snapshot(&hostname) {
+                Some(fresh) => {
+                    if !config_readable {
+                        eprintln!("[DisplayMonitor] Config readable again, resuming reconcile");
+                        config_readable = true;
+                    }
+                    // Only push on an actual on-disk change. An unconditional
+                    // write would race the MQTT executor, which writes the file
+                    // and then the handle: a reconcile that read the file just
+                    // before that write would otherwise stamp the pre-push value
+                    // back over the new one for a full interval.
+                    if fresh.custom_lines != config_snapshot.custom_lines {
+                        *write_recover(&display_lines) = fresh.custom_lines.clone();
+                    }
+                    config_snapshot = fresh;
+                }
+                None => {
+                    // Keep the last good snapshot. Logged once per transition,
+                    // not every 2 s.
+                    if config_readable {
+                        eprintln!(
+                            "[DisplayMonitor] Config unreadable, keeping the last known display config"
+                        );
+                        config_readable = false;
+                    }
+                }
             }
         }
 
@@ -392,4 +428,5 @@ pub fn display_loop(
     }
 
     eprintln!("[DisplayMonitor] Display monitor thread exited cleanly");
+    Ok(())
 }

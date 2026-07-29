@@ -88,6 +88,7 @@ impl ButtonMonitor {
                     mac_address.clone(),
                     hostname.clone(),
                 );
+                Ok(())
             });
         });
 
