@@ -1,6 +1,6 @@
 //! Display monitor thread - continuously updates the ST7920 display
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -8,6 +8,7 @@ use std::time::Duration;
 use rppal::gpio::Gpio;
 
 use crate::drivers::display::St7920;
+use crate::libs::alarms::color::LedColor;
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::sensors::SharedSensorStateHandle;
 use crate::libs::network::get_network_status;
@@ -20,6 +21,20 @@ use super::screens::{
     render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
     render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
 };
+
+/// Decide the backlight brightness to apply.
+///
+/// Returns the `configured` brightness when the display should be lit, or `0`
+/// when it should be off. The display stays lit when an alarm forces it
+/// (`force_lit`), when the idle timeout is disabled (`timeout` is zero), or
+/// while the time since the last activity (`idle`) is still within `timeout`.
+fn effective_backlight(configured: u8, idle: Duration, timeout: Duration, force_lit: bool) -> u8 {
+    if force_lit || timeout.is_zero() || idle < timeout {
+        configured
+    } else {
+        0
+    }
+}
 
 /// Main display loop - runs in dedicated thread
 pub fn display_loop(
@@ -34,6 +49,7 @@ pub fn display_loop(
     app_version: String,
     _timezone_offset_hours: i8,
     screen_brightness: Arc<AtomicU8>,
+    screen_timeout: Arc<AtomicU32>,
 ) {
     // Initialize display
     let mut display = match St7920::new(gpio) {
@@ -75,15 +91,41 @@ pub fn display_loop(
             break;
         }
 
-        // Check for brightness changes and apply via PWM
-        let current_brightness = screen_brightness.load(Ordering::Relaxed);
-        if current_brightness != last_brightness {
-            if let Err(e) = display.set_brightness(current_brightness) {
-                eprintln!("[DisplayMonitor] Failed to set brightness to {}%: {}", current_brightness, e);
-            } else {
-                eprintln!("[DisplayMonitor] Screen brightness set to {}%", current_brightness);
+        // Backlight idle timeout: off after `screen_timeout` of inactivity, but
+        // a critical error (red LED: Critical / Disconnected / Reconnecting) or
+        // audible alert forces it lit. Non-critical warnings (yellow) do not
+        // keep the screen awake. The configured brightness is preserved and
+        // restored on wake.
+        let alarm_lit = led_state.read().lines.iter().flatten()
+            .any(|l| l.led_state.color == LedColor::Red);
+        let (idle, force_lit) = match display_state.lock() {
+            Ok(mut ds) => {
+                let force = alarm_lit
+                    || ds.buzzer_priority.as_ref().is_some_and(|bp| bp.is_sensor_beeping());
+                // Keep the timer fresh while lit so a full timeout starts once the
+                // alarm clears (alarm onset counts as activity).
+                if force { ds.mark_activity(); }
+                (ds.last_activity.elapsed(), force)
             }
-            last_brightness = current_brightness;
+            Err(_) => (Duration::ZERO, alarm_lit),
+        };
+        // Read the idle timeout live each tick so runtime changes (e.g. via
+        // MQTT) take effect without a restart. 0 disables the timeout.
+        let timeout = Duration::from_secs(u64::from(screen_timeout.load(Ordering::Relaxed)));
+        let target_brightness = effective_backlight(
+            screen_brightness.load(Ordering::Relaxed), idle, timeout, force_lit);
+        if target_brightness != last_brightness {
+            // On idle timeout only the backlight is cut (PWM to 0); the panel
+            // keeps being rendered below so its content stays current and simply
+            // reappears when the backlight returns on the next activity.
+            if let Err(e) = display.set_brightness(target_brightness) {
+                eprintln!("[DisplayMonitor] Failed to set backlight to {}%: {}", target_brightness, e);
+            } else if target_brightness == 0 {
+                eprintln!("[DisplayMonitor] Backlight off (idle timeout)");
+            } else {
+                eprintln!("[DisplayMonitor] Backlight set to {}%", target_brightness);
+            }
+            last_brightness = target_brightness;
         }
 
         // Throttle updates to reduce flicker and CPU usage

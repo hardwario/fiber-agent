@@ -143,6 +143,15 @@ impl ButtonMonitor {
 
             // Process button events
             for event in events {
+                // Any button PRESS counts as user activity: wake the display
+                // backlight and reset the idle timeout. Done before the beep
+                // silence below so the silencing press still keeps the screen lit.
+                if let ButtonEvent::Press(_) = &event {
+                    if let Ok(mut ds) = display_state.lock() {
+                        ds.mark_activity();
+                    }
+                }
+
                 // Any button PRESS silences sensor beep (consumes the event)
                 if let ButtonEvent::Press(_) = &event {
                     if let Some(ref bp) = buzzer_priority {
