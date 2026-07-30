@@ -3,6 +3,17 @@
   image: rust:1.94-bookworm
   variables:
     CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  # Native build deps. rust:bookworm ships none of these, and every one of them
+  # is a hard requirement of the default feature set, so without this the jobs
+  # fail in the build-script stage before compiling any of our own code:
+  #   libdbus-1-dev      -> bluer (unconditional dep, features = ["full"])
+  #   libssl-dev         -> rusqlite "bundled-sqlcipher" links system OpenSSL
+  #   protobuf-compiler  -> build.rs calls prost_build::compile_protos
+  # build_release.yml installs the same set (:arm64) for the cross build.
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends
+        pkg-config libssl-dev libdbus-1-dev protobuf-compiler
   cache:
     key:
       files: [Cargo.lock, rust-toolchain.toml]
@@ -36,7 +47,10 @@ lint:clippy:
   #   - 29 too_many_arguments / 6 dead_code: targeted #[allow] or refactor
   #   - 2 await_holding_lock: real correctness smells — fix by hand
   allow_failure: true
+  # A job-level before_script replaces the inherited one rather than appending,
+  # so pull the base deps in explicitly.
   before_script:
+    - !reference [.mr_rust_base, before_script]
     - rustup component add clippy
   script:
     - cargo clippy --all-targets -- -D warnings

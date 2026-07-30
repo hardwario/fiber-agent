@@ -42,6 +42,11 @@ pub struct SharedSensorState {
     pub locations: [Option<String>; 8],
     /// Alarm thresholds per sensor (for detail display)
     pub thresholds: [AlarmThreshold; 8],
+    /// Whether each slot has produced at least one connected reading since
+    /// boot. Latches on and never clears, so a probe that reads once stays on
+    /// the overview even if it fails again before finishing warm-up (while in
+    /// `NeverConnected` a failed read still writes `is_connected: false`).
+    pub has_reported: [bool; 8],
 }
 
 impl SharedSensorState {
@@ -70,6 +75,7 @@ impl SharedSensorState {
                 AlarmThreshold::default_medical(),
                 AlarmThreshold::default_medical(),
             ],
+            has_reported: [false; 8],
         }
     }
 
@@ -118,6 +124,9 @@ impl SharedSensorState {
     /// Update a sensor reading
     pub fn set_reading(&mut self, sensor_idx: u8, reading: SensorReading) {
         if (sensor_idx as usize) < 8 {
+            if reading.is_connected {
+                self.has_reported[sensor_idx as usize] = true;
+            }
             self.readings[sensor_idx as usize] = Some(reading);
         }
     }

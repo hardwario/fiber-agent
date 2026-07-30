@@ -190,23 +190,53 @@ impl DisplayState {
         self.last_activity = Instant::now();
     }
 
-    /// Get the number of LoRaWAN sensors currently known
-    pub fn lorawan_sensor_count(&self) -> usize {
-        self.lorawan_state.as_ref()
-            .and_then(|s| s.read().ok())
-            .map(|s| s.sensors.len())
-            .unwrap_or(0)
+    /// Total number of overview pages: ceil(visible_sensors / 4), never below 1.
+    ///
+    /// Derived from the same filtered entry list the renderer uses, so paging
+    /// can't run past the last populated row. The floor of 1 keeps the `1/1`
+    /// header sensible and keeps [`next_page`](Self::next_page)'s modulo safe
+    /// when no sensor has ever reported.
+    pub fn total_pages(
+        &self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
+    ) -> usize {
+        crate::libs::display::screens::page_count(
+            &self.ordered_entries(ds_readings, ds_has_reported),
+        )
     }
 
-    /// Total sensor count: 8 DS18B20 + N LoRaWAN
-    pub fn total_sensor_count(&self) -> usize {
-        8 + self.lorawan_sensor_count()
-    }
+    /// Pull the overview page and the selection cursor back into range after
+    /// the visible sensor list shrinks (a LoRa sticker can leave the map), so
+    /// the screen self-corrects instead of sitting on a blank page — or in
+    /// selection mode with no cursor drawn — until the next button press.
+    /// No-op on any other screen.
+    pub fn clamp_overview(&mut self, entries: &[crate::libs::display::screens::OverviewEntry]) {
+        let Screen::SensorOverview { page, selected_sensor } = &self.current_screen else {
+            return;
+        };
+        let (page, selected_sensor) = (*page, *selected_sensor);
 
-    /// Total number of overview pages: ceil((8 + N) / 4)
-    pub fn total_pages(&self) -> usize {
-        let total = self.total_sensor_count();
-        (total + 3) / 4
+        // A cursor on a sensor that is no longer listed can't be drawn — move
+        // it to the first surviving entry, or drop out of selection mode if
+        // nothing is left.
+        let (new_page, new_selected) = match selected_sensor {
+            Some(idx) if !entries.iter().any(|e| e.global_idx == idx) => {
+                (0, entries.first().map(|e| e.global_idx))
+            }
+            _ => (
+                page.min(crate::libs::display::screens::page_count(entries) - 1),
+                selected_sensor,
+            ),
+        };
+
+        if (new_page, new_selected) != (page, selected_sensor) {
+            self.current_screen = Screen::SensorOverview {
+                page: new_page,
+                selected_sensor: new_selected,
+            };
+            self.should_update = true;
+        }
     }
 
     /// Snapshot the current ordered list of overview entries.
@@ -214,6 +244,7 @@ impl DisplayState {
     pub fn ordered_entries(
         &self,
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
     ) -> Vec<crate::libs::display::screens::OverviewEntry> {
         let lr_vec: Vec<crate::libs::lorawan::state::LoRaWANSensorState> =
             self.lorawan_state.as_ref()
@@ -224,7 +255,7 @@ impl DisplayState {
                     v
                 })
                 .unwrap_or_default();
-        crate::libs::display::screens::ordered_sensors(ds_readings, &lr_vec)
+        crate::libs::display::screens::ordered_sensors(ds_readings, ds_has_reported, &lr_vec)
     }
 
     /// Get sorted LoRaWAN dev_euis for consistent indexing
@@ -247,11 +278,15 @@ impl DisplayState {
     }
 
     /// Navigate to next page (works for sensor overview and system info when not in selection mode)
-    pub fn next_page(&mut self) {
+    pub fn next_page(
+        &mut self,
+        ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
+    ) {
         match self.current_screen {
             Screen::SensorOverview { page, selected_sensor: None } => {
-                // Dynamic page count: 2 DS18B20 + ceil(lorawan_count / 4)
-                let total = self.total_pages();
+                // Dynamic page count: ceil(visible sensors / 4)
+                let total = self.total_pages(ds_readings, ds_has_reported);
                 self.current_screen = Screen::SensorOverview {
                     page: (page + 1) % total,
                     selected_sensor: None,
@@ -356,9 +391,10 @@ impl DisplayState {
     pub fn enter_selection_mode(
         &mut self,
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
     ) {
         if let Screen::SensorOverview { page, .. } = self.current_screen {
-            let entries = self.ordered_entries(ds_readings);
+            let entries = self.ordered_entries(ds_readings, ds_has_reported);
             if entries.is_empty() { return; }
             let pos = (page * 4).min(entries.len() - 1);
             let first_global = entries[pos].global_idx;
@@ -385,9 +421,10 @@ impl DisplayState {
     pub fn selection_up(
         &mut self,
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
     ) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let entries = self.ordered_entries(ds_readings);
+            let entries = self.ordered_entries(ds_readings, ds_has_reported);
             if entries.is_empty() { return; }
             let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
             let new_pos = if pos == 0 { entries.len() - 1 } else { pos - 1 };
@@ -405,9 +442,10 @@ impl DisplayState {
     pub fn selection_down(
         &mut self,
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
     ) {
         if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
-            let entries = self.ordered_entries(ds_readings);
+            let entries = self.ordered_entries(ds_readings, ds_has_reported);
             if entries.is_empty() { return; }
             let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
             let new_pos = if pos + 1 >= entries.len() { 0 } else { pos + 1 };
@@ -444,7 +482,11 @@ impl DisplayState {
     pub fn exit_detail_view(
         &mut self,
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+        ds_has_reported: &[bool; 8],
     ) {
+        if !self.current_screen.is_sensor_detail() {
+            return;
+        }
         let target_global = match &self.current_screen {
             Screen::SensorDetail { sensor_idx } => Some(*sensor_idx),
             Screen::LoRaWANSensorDetail { dev_eui } => {
@@ -453,16 +495,25 @@ impl DisplayState {
             }
             _ => None,
         };
-        if let Some(idx) = target_global {
-            let entries = self.ordered_entries(ds_readings);
-            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
-            let page = pos / 4;
-            self.current_screen = Screen::SensorOverview {
-                page,
-                selected_sensor: Some(idx),
-            };
-            self.should_update = true;
-        }
+        // A LoRa sticker can leave the map while its detail view is open, in
+        // which case there is no global index to go back to at all. Falling
+        // through here would leave the detail screen up while the button state
+        // machine has already moved to selection mode — the click would look
+        // dead — so treat it like a sensor that is no longer listed.
+        let entries = self.ordered_entries(ds_readings, ds_has_reported);
+        let pos = target_global.and_then(|idx| entries.iter().position(|e| e.global_idx == idx));
+        // Land on a real entry rather than storing an index the renderer can't
+        // draw a cursor for, which would leave selection mode with no cursor.
+        let (page, selected) = match pos {
+            Some(pos) => (pos / 4, Some(entries[pos].global_idx)),
+            // Nothing left to select — drop out of selection mode.
+            None => (0, entries.first().map(|e| e.global_idx)),
+        };
+        self.current_screen = Screen::SensorOverview {
+            page,
+            selected_sensor: selected,
+        };
+        self.should_update = true;
     }
 }
 
@@ -560,5 +611,181 @@ impl Drop for DisplayMonitor {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+    use crate::libs::alarms::AlarmState;
+    use crate::libs::sensors::state::SensorReading;
+
+    fn connected(temp: f32) -> Option<SensorReading> {
+        Some(SensorReading { temperature: temp, is_connected: true, alarm_state: AlarmState::Normal })
+    }
+
+    fn empty_ds() -> [Option<SensorReading>; 8] {
+        [None, None, None, None, None, None, None, None]
+    }
+
+    /// No slot has latched a connected reading yet.
+    fn no_reports() -> [bool; 8] {
+        [false; 8]
+    }
+
+    #[test]
+    fn total_pages_is_at_least_one_when_nothing_reported() {
+        let state = DisplayState::new();
+        assert_eq!(state.total_pages(&empty_ds(), &no_reports()), 1);
+    }
+
+    #[test]
+    fn total_pages_counts_only_visible_sensors() {
+        let state = DisplayState::new();
+        let mut ds_arr = empty_ds();
+        for i in 0..3 { ds_arr[i] = connected(20.0); }
+        assert_eq!(state.total_pages(&ds_arr, &no_reports()), 1);
+        ds_arr[4] = connected(20.0);
+        ds_arr[5] = connected(20.0);
+        assert_eq!(state.total_pages(&ds_arr, &no_reports()), 2);
+    }
+
+    #[test]
+    fn next_page_does_not_divide_by_zero_when_nothing_reported() {
+        let mut state = DisplayState::new();
+        state.next_page(&empty_ds(), &no_reports());
+        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 0, .. }));
+    }
+
+    /// `n` visible DS18B20 entries, slots 0..n.
+    fn entries(n: usize) -> Vec<crate::libs::display::screens::OverviewEntry> {
+        use crate::libs::display::screens::{OverviewEntry, OverviewKind};
+        (0..n)
+            .map(|i| OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active: true })
+            .collect()
+    }
+
+    #[test]
+    fn clamp_overview_pulls_stale_page_back() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorOverview { page: 3, selected_sensor: None };
+        state.clamp_overview(&entries(2));
+        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 0, .. }));
+    }
+
+    #[test]
+    fn clamp_overview_leaves_valid_page_alone() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        state.clamp_overview(&entries(6));
+        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 1, .. }));
+    }
+
+    /// A cursor left pointing at a sensor that dropped off the list (a LoRa
+    /// sticker leaving the map) must move to a row the renderer can draw.
+    #[test]
+    fn clamp_overview_moves_cursor_off_a_vanished_sensor() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(9) };
+        state.clamp_overview(&entries(2));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: Some(0) }
+        ));
+        assert!(state.should_update);
+    }
+
+    #[test]
+    fn clamp_overview_drops_selection_when_nothing_visible() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorOverview { page: 0, selected_sensor: Some(3) };
+        state.clamp_overview(&entries(0));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: None }
+        ));
+    }
+
+    #[test]
+    fn clamp_overview_keeps_a_still_listed_cursor() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(5) };
+        state.clamp_overview(&entries(6));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 1, selected_sensor: Some(5) }
+        ));
+    }
+
+    #[test]
+    fn clamp_overview_ignores_other_screens() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SystemInfo { page: 2 };
+        state.clamp_overview(&entries(0));
+        assert!(matches!(state.current_screen, Screen::SystemInfo { page: 2 }));
+    }
+
+    #[test]
+    fn exit_detail_view_lands_on_a_listed_sensor() {
+        let mut state = DisplayState::new();
+        let mut ds_arr = empty_ds();
+        ds_arr[4] = connected(20.0);
+        // We were inspecting slot 1, which is not in the entry list.
+        state.current_screen = Screen::SensorDetail { sensor_idx: 1 };
+        state.exit_detail_view(&ds_arr, &no_reports());
+        // Must select something the renderer can draw a cursor for, not slot 1.
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+        ));
+    }
+
+    #[test]
+    fn exit_detail_view_keeps_selection_when_still_listed() {
+        let mut state = DisplayState::new();
+        let mut ds_arr = empty_ds();
+        ds_arr[4] = connected(20.0);
+        state.current_screen = Screen::SensorDetail { sensor_idx: 4 };
+        state.exit_detail_view(&ds_arr, &no_reports());
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+        ));
+    }
+
+    #[test]
+    fn exit_detail_view_drops_selection_when_nothing_listed() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SensorDetail { sensor_idx: 1 };
+        state.exit_detail_view(&empty_ds(), &no_reports());
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: None }
+        ));
+    }
+
+    /// Regression: a sticker that leaves the map while its detail view is open
+    /// has no global index left to resolve. We must still leave the detail
+    /// screen — the button state machine has already moved to selection mode,
+    /// so staying put makes the click look dead.
+    #[test]
+    fn exit_detail_view_leaves_screen_when_sticker_vanished() {
+        let mut state = DisplayState::new();
+        let mut ds_arr = empty_ds();
+        ds_arr[4] = connected(20.0);
+        state.current_screen = Screen::LoRaWANSensorDetail { dev_eui: "0011223344556677".to_string() };
+        state.exit_detail_view(&ds_arr, &no_reports());
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+        ));
+    }
+
+    #[test]
+    fn exit_detail_view_is_a_no_op_off_a_detail_screen() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::SystemInfo { page: 1 };
+        state.exit_detail_view(&empty_ds(), &no_reports());
+        assert!(matches!(state.current_screen, Screen::SystemInfo { page: 1 }));
     }
 }
