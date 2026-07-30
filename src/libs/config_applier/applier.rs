@@ -1,6 +1,7 @@
 //! Configuration applier with atomic updates and rollback
 
-use super::validation::{validate_device_label, ConfigValidator};
+use super::validation::{validate_device_label, validate_display_custom_lines, ConfigValidator};
+use crate::libs::config::DisplayLine;
 use serde_yaml::{Mapping, Value};
 use std::fs;
 use std::io::Write;
@@ -889,6 +890,148 @@ impl ConfigApplier {
             ) {
                 eprintln!(
                     "[ConfigApplier] audit log_audit_event(SET_DEVICE_LABEL) failed: {}",
+                    e
+                );
+            }
+        }
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Replace the configured physical-display lines (`display.custom_lines`).
+    ///
+    /// Whole-list replacement rather than per-line add/remove: the Viewer owns
+    /// the ordered list and re-sends it in full, which makes the operation
+    /// idempotent and makes reordering expressible (a per-line API cannot
+    /// express "move row 3 above row 1").
+    ///
+    /// An empty list removes the key, restoring the built-in overview layout.
+    pub fn apply_display_custom_lines(&self, lines: Vec<DisplayLine>) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // 1. Validate the whole list before touching the file, so a single bad
+        //    entry can't leave a partially-applied layout on disk.
+        if let Err(msg) = validate_display_custom_lines(&lines) {
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some(msg),
+                applied_at,
+            };
+        }
+
+        // 2. Determine config file path (main config)
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        // 3. Read current configuration
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 4. Parse YAML
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 5. Create backup
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
+        // 6. Update display.custom_lines
+        if let Err(e) = self.update_display_custom_lines(&mut config, &lines) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        // 7. Serialize to YAML
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        // 8. Write atomically
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            // Attempt rollback
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        if lines.is_empty() {
+            eprintln!("[ConfigApplier] ✓ Display lines cleared (built-in layout restored)");
+        } else {
+            eprintln!("[ConfigApplier] ✓ Display lines updated ({} lines)", lines.len());
+        }
+
+        // 9. Audit. Count only — labels and DevEUIs would put sensor identity
+        //    into every audit row for no investigative benefit.
+        if let Some(storage) = self.storage.as_ref() {
+            let details = format!(r#"{{"count":{}}}"#, lines.len());
+            if let Err(e) = storage.log_audit_event(
+                "SET_DISPLAY_LINES".to_string(),
+                Some("config".to_string()),
+                Some(details),
+            ) {
+                eprintln!(
+                    "[ConfigApplier] audit log_audit_event(SET_DISPLAY_LINES) failed: {}",
                     e
                 );
             }
@@ -2179,6 +2322,43 @@ impl ConfigApplier {
         Ok(())
     }
 
+    /// Write `display.custom_lines` into the untyped config tree, creating the
+    /// `display` section if it isn't there yet.
+    ///
+    /// An empty list removes the key entirely rather than writing `[]`, so the
+    /// on-disk config goes back to exactly the shape a device that never used
+    /// this feature has.
+    fn update_display_custom_lines(
+        &self,
+        config: &mut Value,
+        lines: &[DisplayLine],
+    ) -> Result<(), String> {
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+
+        let display_key = Value::String("display".to_string());
+        if !config_map.contains_key(&display_key) {
+            config_map.insert(display_key.clone(), Value::Mapping(Mapping::new()));
+        }
+
+        let display = config_map
+            .get_mut(&display_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Failed to get/create 'display' section".to_string())?;
+
+        let lines_key = Value::String("custom_lines".to_string());
+        if lines.is_empty() {
+            display.remove(&lines_key);
+        } else {
+            let value = serde_yaml::to_value(lines)
+                .map_err(|e| format!("Failed to serialize display lines: {}", e))?;
+            display.insert(lines_key, value);
+        }
+
+        Ok(())
+    }
+
     /// Update or insert a LoRaWAN sensor config in lorawan.sensors array (metadata only)
     fn update_lorawan_sensor_config(
         &self,
@@ -3217,5 +3397,194 @@ mod tests {
             .unwrap();
         let details = details.expect("details should be Some");
         assert!(details.contains("New Label"), "details should carry new label: {details}");
+    }
+}
+
+#[cfg(test)]
+mod display_lines_tests {
+    use super::*;
+    use crate::libs::config::{DisplayLineFormat, DisplayLineSource};
+
+    const EUI: &str = "70b3d57ed0051f2a";
+
+    fn ds_line(idx: u8) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Ds18b20,
+            line: Some(idx),
+            dev_eui: None,
+            field: "temperature".to_string(),
+            label: None,
+            format: DisplayLineFormat::default(),
+        }
+    }
+
+    fn sticker_line(field: &str) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Sticker,
+            line: None,
+            dev_eui: Some(EUI.to_string()),
+            field: field.to_string(),
+            label: Some("Chiller".to_string()),
+            format: DisplayLineFormat::default(),
+        }
+    }
+
+    /// A main config with a few unrelated sections, so the tests can check that
+    /// the untyped-Value round trip leaves them alone.
+    fn write_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let yaml = "\
+system:
+  device_label: \"KEEP-ME\"
+  screen_brightness: 50
+mqtt:
+  broker:
+    host: \"example.invalid\"
+    port: 8883
+";
+        let path = dir.join("fiber.config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        path
+    }
+
+    fn read_yaml(path: &std::path::Path) -> Value {
+        serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn creates_display_section_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        let result = applier.apply_display_custom_lines(vec![sticker_line("voltage"), ds_line(0)]);
+        assert!(result.success, "{:?}", result.error_message);
+
+        let parsed = read_yaml(&path);
+        let lines = parsed["display"]["custom_lines"].as_sequence().unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["field"].as_str(), Some("voltage"));
+        assert_eq!(lines[0]["dev_eui"].as_str(), Some(EUI));
+        assert_eq!(lines[0]["source"].as_str(), Some("sticker"));
+        assert_eq!(lines[1]["line"].as_u64(), Some(0));
+        assert_eq!(lines[1]["source"].as_str(), Some("ds18b20"));
+    }
+
+    #[test]
+    fn replaces_existing_list_wholesale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        applier.apply_display_custom_lines(vec![ds_line(0), ds_line(1), ds_line(2)]);
+        let result = applier.apply_display_custom_lines(vec![sticker_line("humidity")]);
+        assert!(result.success, "{:?}", result.error_message);
+
+        let parsed = read_yaml(&path);
+        let lines = parsed["display"]["custom_lines"].as_sequence().unwrap();
+        assert_eq!(lines.len(), 1, "old entries must be gone, not merged");
+        assert_eq!(lines[0]["field"].as_str(), Some("humidity"));
+    }
+
+    #[test]
+    fn empty_list_removes_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        applier.apply_display_custom_lines(vec![ds_line(0)]);
+        let result = applier.apply_display_custom_lines(Vec::new());
+        assert!(result.success, "{:?}", result.error_message);
+
+        let parsed = read_yaml(&path);
+        assert!(
+            parsed["display"].get("custom_lines").is_none(),
+            "empty list should remove the key, not write [] : {:?}",
+            parsed["display"],
+        );
+    }
+
+    #[test]
+    fn preserves_unrelated_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        let result = applier.apply_display_custom_lines(vec![ds_line(3)]);
+        assert!(result.success, "{:?}", result.error_message);
+
+        let parsed = read_yaml(&path);
+        assert_eq!(parsed["system"]["device_label"].as_str(), Some("KEEP-ME"));
+        assert_eq!(parsed["system"]["screen_brightness"].as_u64(), Some(50));
+        assert_eq!(parsed["mqtt"]["broker"]["host"].as_str(), Some("example.invalid"));
+        assert_eq!(parsed["mqtt"]["broker"]["port"].as_u64(), Some(8883));
+    }
+
+    #[test]
+    fn rejects_invalid_line_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        let result = applier.apply_display_custom_lines(vec![ds_line(0), ds_line(9)]);
+        assert!(!result.success);
+        let err = result.error_message.unwrap();
+        assert!(err.contains("display line 1"), "should name the index: {err}");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "file must be untouched when validation fails",
+        );
+    }
+
+    #[test]
+    fn writes_a_backup_before_changing_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        let result = applier.apply_display_custom_lines(vec![ds_line(0)]);
+        assert!(result.success, "{:?}", result.error_message);
+        let backup = result.backup_path.expect("a backup path");
+        let backup_contents = std::fs::read_to_string(&backup).unwrap();
+        assert!(
+            !backup_contents.contains("custom_lines"),
+            "backup must hold the pre-change content: {backup_contents}",
+        );
+    }
+
+    #[test]
+    fn round_trips_back_through_the_typed_config_parser() {
+        // The full write -> migrate -> parse chain, which is what the device
+        // actually does on the next config read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path());
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+
+        let mut line = sticker_line("ext_temperature_1");
+        line.format.decimals = Some(2);
+        line.format.status_char = false;
+        assert!(applier.apply_display_custom_lines(vec![line, ds_line(5)]).success);
+
+        // `Config::from_file` needs every non-defaulted section, so merge the
+        // written display section onto a full default config and re-read it.
+        let written = read_yaml(&path);
+        let mut base = match serde_yaml::to_value(crate::libs::config::Config::default_config()).unwrap() {
+            Value::Mapping(m) => m,
+            other => panic!("expected mapping, got {other:?}"),
+        };
+        base.insert(Value::String("display".into()), written["display"].clone());
+        let merged = dir.path().join("merged.yaml");
+        std::fs::write(&merged, serde_yaml::to_string(&Value::Mapping(base)).unwrap()).unwrap();
+
+        let cfg = crate::libs::config::Config::from_file(&merged).expect("must parse");
+        assert_eq!(cfg.display.custom_lines.len(), 2);
+        let first = &cfg.display.custom_lines[0];
+        assert_eq!(first.field, "ext_temperature_1");
+        assert_eq!(first.dev_eui.as_deref(), Some(EUI));
+        assert_eq!(first.format.decimals, Some(2));
+        assert!(!first.format.status_char);
+        assert_eq!(cfg.display.custom_lines[1].line, Some(5));
     }
 }

@@ -462,6 +462,12 @@ impl AuthorizationManager {
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
             "set_screen_timeout" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
+            // Deliberately NOT the screen-control permission. That one covers how
+            // brightly and how long the panel is lit; this one decides which
+            // measurements the panel lists at all, which is a different capability
+            // on a Class IIa device. The cost is accepted: certificates issued
+            // before this permission existed do not carry it and must be reissued.
+            "set_display_lines" => "set_display_lines",
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
@@ -561,6 +567,18 @@ impl AuthorizationManager {
             "set_buzzer_volume" => {
                 let volume = params.get("volume").and_then(|v| v.as_u64()).unwrap_or(100);
                 format!("Set buzzer volume to {}%", volume)
+            }
+            "set_display_lines" => {
+                let count = params
+                    .get("lines")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if count == 0 {
+                    "Restore the built-in display layout".to_string()
+                } else {
+                    format!("Set {} custom display lines", count)
+                }
             }
             "set_network_config" => {
                 let iface = params.get("interface").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -791,6 +809,27 @@ impl AuthorizationManager {
                 }
 
                 Ok(MqttCommand::SetScreenTimeout { timeout_secs: timeout_secs as u32 })
+            }
+            "set_display_lines" => {
+                let raw = challenge.params.get("lines")
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing lines".to_string()))?;
+
+                // Same `Deserialize` derive as the YAML path — one schema, two
+                // encodings, no second parser to keep in sync. Deliberately NOT
+                // the lenient on-disk deserializer: dropping a malformed line
+                // silently is right when the alternative is failing to boot, but
+                // on a command a malformed line must be a loud rejection.
+                let lines: Vec<crate::libs::config::DisplayLine> =
+                    serde_json::from_value(raw.clone()).map_err(|e| {
+                        AuthError::InvalidCommand(format!("Invalid display lines: {}", e))
+                    })?;
+
+                // Validate here rather than only in the applier so the operator
+                // learns it's wrong before the confirm round-trip.
+                crate::libs::config_applier::validation::validate_display_custom_lines(&lines)
+                    .map_err(AuthError::InvalidCommand)?;
+
+                Ok(MqttCommand::SetDisplayLines { lines })
             }
             "set_buzzer_volume" => {
                 let volume = challenge.params.get("volume")
@@ -1325,6 +1364,82 @@ mod tests {
             state: ChallengeState::AwaitingConfirmation,
             state_changed_at: 0,
         }
+    }
+
+    #[test]
+    fn set_display_lines_has_its_own_permission() {
+        let manager = create_test_manager();
+        let permission = manager.command_type_to_permission("set_display_lines").unwrap();
+        assert_eq!(permission, "set_display_lines");
+
+        // Hard cutover, asserted explicitly: choosing which sensors the local
+        // panel lists is not the same capability as dimming it. A certificate
+        // issued before this permission existed is *supposed* to be rejected, so
+        // the tempting field fix — reinstating the reuse to make an
+        // authorization failure go away — has to fail here first.
+        assert_ne!(permission, "set_screen_brightness");
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_parses_array() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_display_lines",
+            serde_json::json!({ "lines": [
+                { "source": "sticker", "dev_eui": "70b3d57ed0051f2a", "field": "ext_temperature_1",
+                  "label": "Stkr1 ext" },
+                { "source": "ds18b20", "line": 0, "field": "temperature",
+                  "format": { "decimals": 2, "status_char": false } },
+            ]}),
+        );
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetDisplayLines { lines }) => {
+                assert_eq!(lines.len(), 2, "array order is semantic and must be preserved");
+                assert_eq!(lines[0].field, "ext_temperature_1");
+                assert_eq!(lines[0].dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
+                assert_eq!(lines[1].line, Some(0));
+                assert_eq!(lines[1].format.decimals, Some(2));
+                assert!(!lines[1].format.status_char);
+            }
+            other => panic!("expected SetDisplayLines, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_accepts_empty_list() {
+        // Empty list is the documented way to restore the built-in layout.
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_display_lines", serde_json::json!({ "lines": [] }));
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetDisplayLines { lines }) => assert!(lines.is_empty()),
+            other => panic!("expected SetDisplayLines, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_rejects_invalid_field() {
+        // Unlike the on-disk path (which drops bad entries so a device can still
+        // boot), a command carrying a bad line must be rejected outright.
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_display_lines",
+            serde_json::json!({ "lines": [
+                { "source": "sticker", "dev_eui": "70b3d57ed0051f2a", "field": "battery_percent" },
+            ]}),
+        );
+        let err = manager.build_command_from_challenge(&challenge).unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("unknown sticker field"),
+            "got: {:?}",
+            err,
+        );
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_rejects_missing_lines() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_display_lines", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 
     #[test]

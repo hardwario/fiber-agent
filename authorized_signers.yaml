@@ -53,6 +53,7 @@ authorized_signers: []
 # - set_threshold: Change alarm temperature thresholds
 # - set_alarm_pattern: Change LED/buzzer alarm patterns
 # - set_display_screen: Change display screen
+# - set_display_lines: Change which values the overview screen lists
 # - flush_storage: Trigger database flush
 # - restart_application: Restart the application
 # - get_device_info: Query device information

@@ -244,6 +244,17 @@ fn main() -> io::Result<()> {
     let screen_timeout = Arc::new(AtomicU32::new(config.system.screen_timeout_secs));
     eprintln!("[main] Screen timeout initialized at {}s", config.system.screen_timeout_secs);
 
+    // Configured overview lines, seeded from the config we already parsed.
+    // Empty means the built-in layout. Shared with the MQTT monitor so a pushed
+    // change lands on the next frame instead of waiting for the display thread's
+    // periodic config reconcile.
+    let display_lines = Arc::new(std::sync::RwLock::new(config.display.custom_lines.clone()));
+    if config.display.custom_lines.is_empty() {
+        eprintln!("[main] Display: built-in overview layout (no custom lines configured)");
+    } else {
+        eprintln!("[main] Display: {} custom overview lines configured", config.display.custom_lines.len());
+    }
+
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
     // Get device label from config, defaulting to hostname
@@ -259,6 +270,7 @@ fn main() -> io::Result<()> {
         config.system.timezone_offset_hours,
         screen_brightness.clone(),
         screen_timeout.clone(),
+        display_lines.clone(),
     )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
@@ -442,6 +454,7 @@ fn main() -> io::Result<()> {
             Some(screen_brightness.clone()),
             Some(screen_timeout.clone()),
             Some(buzzer_volume.clone()),
+            Some(display_lines.clone()),
             Some(buzzer_priority_manager.clone()),
             None,
             Some(lorawan_configs.clone()),
