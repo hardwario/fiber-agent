@@ -225,6 +225,15 @@ pub fn display_loop(
             // mutex — never hold that lock while acquiring another.
             let custom_lines = read_recover(&display_lines).clone();
 
+            // Same reason, plus `overview_mode()` needs these to size the
+            // default row set: sensors that have never reported are hidden, so
+            // the row count is the filtered one. Cloned rather than held as a
+            // guard so no sensor-state reader is blocked for the whole frame.
+            let (ds_readings, ds_has_reported) = {
+                let snapshot = read_recover(&sensor_state);
+                (snapshot.readings.clone(), snapshot.has_reported)
+            };
+
             // Get current display state (screen and page)
             let (current_screen, qr_generator, lorawan_gateway_present, overview_mode, hold_bar_pixels) = {
                 let mut state = lock_recover(&display_state);
@@ -235,7 +244,7 @@ pub fn display_loop(
                 // Publish the live line count so the button thread pages over
                 // the same rows this frame is about to draw.
                 state.custom_line_count = custom_lines.len();
-                let mode = state.overview_mode();
+                let mode = state.overview_mode(&ds_readings, &ds_has_reported);
                 // Pull the active QR generator out of the live provisioning
                 // session (if any). None ⇒ either prov mode not entered or
                 // session ended → QR screen will fall through to a notice.
@@ -299,11 +308,34 @@ pub fn display_loop(
                             hold_bar_pixels,
                         )
                     } else {
-                        // Build the active-first ordered entries list for rendering
+                        // Build the active-first ordered entries list for rendering.
+                        // Sensors that never reported are filtered out here, so the
+                        // page count comes from the surviving entries rather than
+                        // `overview_mode`: identical arithmetic, but derived from the
+                        // exact list being drawn, so a reading that lands between the
+                        // two snapshots can't make the count disagree with the rows.
                         let entries = crate::libs::display::screens::ordered_sensors(
                             &sensor_snapshot.readings,
+                            &sensor_snapshot.has_reported,
                             &lorawan_sensors,
                         );
+                        let total_pages = crate::libs::display::screens::page_count(&entries);
+
+                        // A sensor disappearing can leave the stored page or cursor
+                        // out of range — reconcile first, then render what the state
+                        // actually holds so the frame matches it.
+                        let (page, selected_sensor) = {
+                            let mut ds = lock_recover(&display_state);
+                            ds.clamp_overview(&entries);
+                            match ds.current_screen {
+                                Screen::SensorOverview { page, selected_sensor } => (page, selected_sensor),
+                                // Screen changed under us (button press between the
+                                // snapshot and now) — draw the snapshot, the next
+                                // frame picks up the new screen.
+                                _ => (page.min(total_pages - 1), selected_sensor),
+                            }
+                        };
+
                         render_sensor_overview(
                             &mut display, page, &led_snapshot, &sensor_snapshot, &network_status,
                             selected_sensor, current_device_label, lorawan_gateway_present,

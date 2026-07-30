@@ -140,7 +140,6 @@ ble:
 # once (default PIN 123456) on first sight to apply the profile below.
 eye:
   enabled: false               # set true to enable the EYE tag monitor
-  scan_window_s: 60
   publish_interval_s: 30
   tag_timeout_s: 600           # mark a tag stale if unseen for this long
   auto_provision: true         # apply the PROXIMOS profile on first sight

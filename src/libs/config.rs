@@ -863,6 +863,17 @@ pub struct LoRaWANConfig {
     #[serde(default = "default_lorawan_sensor_timeout")]
     pub sensor_timeout_s: u64,
 
+    /// Pull a STICKER's buffered history automatically when it reappears after
+    /// an outage.
+    ///
+    /// Defaults to `true`, which is the behaviour that shipped. Set it to
+    /// `false` on deployments where the viewer owns backfill (PROXIMOS
+    /// application#43): both sides trigger on the same reconnect, so leaving
+    /// both enabled spends two replays of the same window — precisely the
+    /// airtime waste the viewer's job queue exists to prevent.
+    #[serde(default = "default_history_backfill_enabled")]
+    pub history_backfill_enabled: bool,
+
     /// Per-sensor configurations
     #[serde(default)]
     pub sensors: Vec<LoRaWANSensorConfig>,
@@ -882,6 +893,7 @@ impl Default for LoRaWANConfig {
             chirpstack_mqtt_password: None,
             publish_interval_s: 30,
             sensor_timeout_s: 3600, // 1 hour
+            history_backfill_enabled: default_history_backfill_enabled(),
             sensors: Vec::new(),
             gateways: Vec::new(),
         }
@@ -892,6 +904,9 @@ fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
 fn default_chirpstack_mqtt_port() -> u16 { 1883 }
 fn default_lorawan_publish_interval() -> u64 { 30 }
 fn default_lorawan_sensor_timeout() -> u64 { 3600 }
+
+/// Keeps the shipped behaviour for anyone who has not opted the viewer in.
+fn default_history_backfill_enabled() -> bool { true }
 
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,23 +40,75 @@ pub enum OverviewKind {
     LoRa,
 }
 
+/// Number of overview pages needed for `entries`, at 4 rows per page.
+/// Never below 1, so the header always reads a valid `n/m` and paging maths
+/// stay safe when no sensor has ever reported.
+pub fn page_count(entries: &[OverviewEntry]) -> usize {
+    entries.len().div_ceil(4).max(1)
+}
+
+/// True if a DS18B20 slot should appear on the overview at all.
+///
+/// A slot is hidden only while it has *never* produced a reading: either it was
+/// never written, or it is still `NeverConnected` with no live value. A probe
+/// that was working and has since dropped out stays visible (with its `E`
+/// status) — a fault must never be silently hidden.
+///
+/// `has_reported` latches once the slot delivers a connected reading and makes
+/// visibility one-way. Without it a probe can vanish again: while the state
+/// machine is still warming up towards `warmup_threshold`, a failed read writes
+/// `is_connected: false` with the state left at `NeverConnected`, so a loose
+/// connector would flap rows in and out and shift everything below them.
+///
+/// The `is_connected` check is belt-and-braces: `set_reading` latches
+/// `has_reported` on exactly that condition, so today it can only be true when
+/// the latch is already set. It stays because `readings` is a public field and
+/// a future writer that bypasses `set_reading` must not make a live probe
+/// invisible.
+pub fn ds_slot_visible(
+    slot: &Option<crate::libs::sensors::state::SensorReading>,
+    has_reported: bool,
+) -> bool {
+    if has_reported {
+        return true;
+    }
+    match slot {
+        None => false,
+        Some(r) => r.is_connected || r.alarm_state != AlarmState::NeverConnected,
+    }
+}
+
+/// True if a LoRa sticker should appear on the overview at all.
+/// Hidden until it has been heard from once; a disconnected sticker keeps its
+/// last fields and so stays visible.
+pub fn lora_sensor_visible(sensor: &crate::libs::lorawan::state::LoRaWANSensorState) -> bool {
+    !sensor.fields.is_empty()
+}
+
 /// Build the overview entries with active sensors first, inactive after.
 /// Within each group, underlying order is preserved (DS18B20 slot 0..7, then LoRa 0..N).
+///
+/// Sensors that have never produced a reading are omitted entirely (see
+/// [`ds_slot_visible`] / [`lora_sensor_visible`]). `global_idx` keeps its
+/// original meaning — the list is filtered, never renumbered — because callers
+/// use it to index `readings`/`names`/`thresholds` and to resolve detail views.
 pub fn ordered_sensors(
     ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
+    ds_has_reported: &[bool; 8],
     lorawan_sensors: &[crate::libs::lorawan::state::LoRaWANSensorState],
 ) -> Vec<OverviewEntry> {
     use crate::libs::lorawan::state::LoRaWANAlarmState;
 
     let mut all: Vec<OverviewEntry> = Vec::with_capacity(8 + lorawan_sensors.len());
     for (i, slot) in ds_readings.iter().enumerate() {
+        if !ds_slot_visible(slot, ds_has_reported[i]) { continue; }
         let active = matches!(slot, Some(r) if r.is_connected);
         all.push(OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active });
     }
     for (i, s) in lorawan_sensors.iter().enumerate() {
-        let has_reading = !s.fields.is_empty();
-        let connected = !matches!(s.alarm_state, LoRaWANAlarmState::Disconnected);
-        let active = has_reading && connected;
+        if !lora_sensor_visible(s) { continue; }
+        // Visible ⇒ it has fields, so liveness is purely the connection state.
+        let active = !matches!(s.alarm_state, LoRaWANAlarmState::Disconnected);
         all.push(OverviewEntry { kind: OverviewKind::LoRa, global_idx: 8 + i, active });
     }
     let (mut active, mut inactive): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.active);
@@ -214,6 +266,19 @@ pub fn render_sensor_overview(
         hold_bar_pixels,
     );
 
+    // No sensor has ever reported — nothing to list, so say so instead of
+    // drawing four blank rows.
+    if entries.is_empty() {
+        Text::with_alignment("No sensors", Point::new(64, 40), text_style, Alignment::Center)
+            .draw(display)
+            .ok();
+        return display.flush();
+    }
+
+    // Clamp the page: the visible count can shrink between frames, and a stale
+    // page index would otherwise slice out an empty range and draw a header
+    // over four blank rows.
+    let page = page.min(page_count(entries) - 1);
     let slice = &entries[page_window(page, entries.len())];
 
     for (row, entry) in slice.iter().enumerate() {
@@ -1290,21 +1355,107 @@ mod ordering_tests {
         }
     }
 
+    /// A slot that has never produced a reading, as the monitor writes it once
+    /// the read failures debounce (temperature filler, still `NeverConnected`).
+    fn ds_never() -> Option<SensorReading> {
+        Some(SensorReading {
+            temperature: 0.0,
+            is_connected: false,
+            alarm_state: AlarmState::NeverConnected,
+        })
+    }
+
     fn empty_ds() -> [Option<SensorReading>; 8] {
         [None, None, None, None, None, None, None, None]
     }
 
+    /// No slot has latched a connected reading yet.
+    fn no_reports() -> [bool; 8] {
+        [false; 8]
+    }
+
     #[test]
-    fn all_inactive_keeps_underlying_order() {
+    fn never_connected_sensors_are_hidden() {
         let ds_arr = empty_ds();
         let lr = vec![lora("a", None, LoRaWANAlarmState::Disconnected),
                       lora("b", None, LoRaWANAlarmState::Disconnected)];
-        let entries = ordered_sensors(&ds_arr, &lr);
-        assert_eq!(entries.len(), 10);
-        for (i, e) in entries.iter().enumerate() {
-            assert_eq!(e.global_idx, i);
-            assert!(!e.active);
-        }
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn never_connected_ds_hidden_but_disconnected_shown() {
+        let mut ds_arr = empty_ds();
+        // 0 stays None (never written), 1 debounced into NeverConnected,
+        // 2 was working and dropped out — only 2 must survive.
+        ds_arr[1] = ds_never();
+        ds_arr[2] = ds(20.0, false);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &[]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].global_idx, 2);
+        assert!(!entries[0].active);
+    }
+
+    #[test]
+    fn warmup_never_connected_but_connected_is_visible() {
+        let mut ds_arr = empty_ds();
+        ds_arr[3] = Some(SensorReading {
+            temperature: 21.5,
+            is_connected: true,
+            alarm_state: AlarmState::NeverConnected,
+        });
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &[]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].global_idx, 3);
+        assert!(entries[0].active);
+    }
+
+    /// Regression: a probe that reads once must not vanish again if it fails
+    /// before finishing warm-up. The monitor writes `is_connected: false` while
+    /// the state machine is still `NeverConnected`, which on its own looks
+    /// exactly like a slot that never reported — the latch is what keeps the row.
+    #[test]
+    fn slot_stays_visible_after_failing_during_warmup() {
+        let mut ds_arr = empty_ds();
+        ds_arr[2] = ds_never();
+        let mut reported = no_reports();
+        reported[2] = true;
+
+        let entries = ordered_sensors(&ds_arr, &reported, &[]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].global_idx, 2);
+        // Latched visible, but not active — it is not currently reading.
+        assert!(!entries[0].active);
+
+        // Without the latch the same reading disappears.
+        assert!(ordered_sensors(&ds_arr, &no_reports(), &[]).is_empty());
+    }
+
+    #[test]
+    fn lora_without_fields_hidden() {
+        let lr = vec![lora("a", None, LoRaWANAlarmState::Normal)];
+        assert!(ordered_sensors(&empty_ds(), &no_reports(), &lr).is_empty());
+    }
+
+    #[test]
+    fn lora_disconnected_with_fields_visible() {
+        let lr = vec![lora("a", Some(19.0), LoRaWANAlarmState::Disconnected)];
+        let entries = ordered_sensors(&empty_ds(), &no_reports(), &lr);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].global_idx, 8);
+    }
+
+    #[test]
+    fn global_idx_preserved_after_filtering() {
+        let mut ds_arr = empty_ds();
+        ds_arr[5] = ds(20.0, true);
+        let lr = vec![
+            lora("a", None, LoRaWANAlarmState::Normal),      // hidden
+            lora("b", Some(21.0), LoRaWANAlarmState::Normal), // visible, idx 9
+        ];
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
+        let global_indices: Vec<usize> = entries.iter().map(|e| e.global_idx).collect();
+        assert_eq!(global_indices, vec![5, 9]);
     }
 
     #[test]
@@ -1312,7 +1463,7 @@ mod ordering_tests {
         let mut ds_arr = empty_ds();
         for i in 0..8 { ds_arr[i] = ds(20.0, true); }
         let lr = vec![lora("a", Some(21.0), LoRaWANAlarmState::Normal)];
-        let entries = ordered_sensors(&ds_arr, &lr);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
         assert_eq!(entries.len(), 9);
         for (i, e) in entries.iter().enumerate() {
             assert_eq!(e.global_idx, i);
@@ -1321,7 +1472,7 @@ mod ordering_tests {
     }
 
     #[test]
-    fn mixed_active_first_then_inactive() {
+    fn mixed_keeps_only_sensors_that_reported() {
         let mut ds_arr = empty_ds();
         ds_arr[1] = ds(20.0, true);
         ds_arr[5] = ds(20.0, true);
@@ -1329,20 +1480,28 @@ mod ordering_tests {
             lora("a", None, LoRaWANAlarmState::Disconnected),
             lora("b", Some(21.0), LoRaWANAlarmState::Normal),
         ];
-        let entries = ordered_sensors(&ds_arr, &lr);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
+        // Slots 0,2,3,4,6,7 never reported and LoRa "a" has no fields — all hidden.
         let global_indices: Vec<usize> = entries.iter().map(|e| e.global_idx).collect();
-        assert_eq!(global_indices, vec![1, 5, 9, 0, 2, 3, 4, 6, 7, 8]);
-        assert!(entries[0].active);
-        assert!(entries[1].active);
-        assert!(entries[2].active);
-        assert!(!entries[3].active);
+        assert_eq!(global_indices, vec![1, 5, 9]);
+        assert!(entries.iter().all(|e| e.active));
+    }
+
+    #[test]
+    fn inactive_sorts_after_active_among_visible() {
+        let mut ds_arr = empty_ds();
+        ds_arr[1] = ds(20.0, false); // was connected, now faulted
+        ds_arr[5] = ds(20.0, true);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &[]);
+        let global_indices: Vec<usize> = entries.iter().map(|e| e.global_idx).collect();
+        assert_eq!(global_indices, vec![5, 1]);
     }
 
     #[test]
     fn lora_disconnected_with_temperature_still_inactive() {
         let ds_arr = empty_ds();
         let lr = vec![lora("a", Some(20.0), LoRaWANAlarmState::Disconnected)];
-        let entries = ordered_sensors(&ds_arr, &lr);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
         assert!(!entries[0].active);
     }
 
@@ -1355,7 +1514,7 @@ mod ordering_tests {
             alarm_state: AlarmState::Disconnected,
         });
         let lr = vec![];
-        let entries = ordered_sensors(&ds_arr, &lr);
+        let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
         assert!(!entries[0].active);
     }
 }
