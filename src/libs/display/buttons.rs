@@ -45,6 +45,19 @@ fn progress_pixels(elapsed: Duration, total: Duration) -> u8 {
     (ratio * 127.0).round() as u8
 }
 
+/// Snapshot the DS18B20 readings and their has-ever-reported flags, which the
+/// overview paging and cursor maths need. Taken under one guard, and released
+/// before the caller locks `display_state` (that order must not invert).
+/// Falls back to all-empty if the lock is poisoned.
+fn ds_readings_snapshot(
+    sensor_state: &crate::libs::sensors::SharedSensorStateHandle,
+) -> ([Option<crate::libs::sensors::state::SensorReading>; 8], [bool; 8]) {
+    sensor_state
+        .read()
+        .map(|s| (s.readings.clone(), s.has_reported))
+        .unwrap_or_else(|_| ([None, None, None, None, None, None, None, None], [false; 8]))
+}
+
 /// Button monitor thread for controlling display navigation
 pub struct ButtonMonitor {
     thread_handle: Option<JoinHandle<()>>,
@@ -201,16 +214,17 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::ShowingSystem => {
                                 // On System screen - navigate pages instead of starting hold
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.next_page();
+                                    display_state_lock.next_page(&ds_readings, &ds_reported);
                                     eprintln!("[ButtonMonitor] System info page changed");
                                 }
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor up
-                                let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.selection_up(&ds_readings);
+                                    display_state_lock.selection_up(&ds_readings, &ds_reported);
                                     eprintln!("[ButtonMonitor] Selection cursor moved up");
                                 }
                                 selection_activity = Instant::now(); // Reset inactivity timer
@@ -245,9 +259,10 @@ impl ButtonMonitor {
                             if elapsed < COUNTDOWN_DURATION {
                                 // Released early - cancel hold and navigate page
                                 eprintln!("[ButtonMonitor] UP released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
                                     if display_state_lock.current_screen.is_navigable() {
-                                        display_state_lock.next_page();
+                                        display_state_lock.next_page(&ds_readings, &ds_reported);
                                         eprintln!("[ButtonMonitor] Page changed");
                                     }
                                 }
@@ -293,8 +308,9 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::ShowingSystem => {
                                 // On System screen - navigate pages instead of starting hold
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.next_page();
+                                    display_state_lock.next_page(&ds_readings, &ds_reported);
                                     eprintln!("[ButtonMonitor] System info page changed");
                                 }
                             }
@@ -314,9 +330,9 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor down
-                                let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.selection_down(&ds_readings);
+                                    display_state_lock.selection_down(&ds_readings, &ds_reported);
                                     eprintln!("[ButtonMonitor] Selection cursor moved down");
                                 }
                                 selection_activity = Instant::now(); // Reset inactivity timer
@@ -337,8 +353,9 @@ impl ButtonMonitor {
                             if elapsed < COUNTDOWN_DURATION {
                                 // Released early - cancel hold and navigate page
                                 eprintln!("[ButtonMonitor] DOWN released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
+                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                 if let Ok(mut display_state_lock) = display_state.lock() {
-                                    display_state_lock.next_page();
+                                    display_state_lock.next_page(&ds_readings, &ds_reported);
                                     eprintln!("[ButtonMonitor] Page changed");
                                 }
                                 state = ButtonMonitorState::Idle;
@@ -443,9 +460,9 @@ impl ButtonMonitor {
 
                                         if is_double_click {
                                             // Double-click detected - enter selection mode
-                                            let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+                                            let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                             if let Ok(mut display_state_lock) = display_state.lock() {
-                                                display_state_lock.enter_selection_mode(&ds_readings);
+                                                display_state_lock.enter_selection_mode(&ds_readings, &ds_reported);
                                                 eprintln!("[ButtonMonitor] Double-click detected - entering selection mode");
                                             }
                                             state = ButtonMonitorState::SelectionMode;
@@ -506,9 +523,9 @@ impl ButtonMonitor {
                                     last_enter_click = None;
                                 } else {
                                     // Single click - exit to selection mode
-                                    let ds_readings = sensor_state.read().map(|s| s.readings.clone()).unwrap_or_else(|_| [None, None, None, None, None, None, None, None]);
+                                    let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
                                     if let Ok(mut display_state_lock) = display_state.lock() {
-                                        display_state_lock.exit_detail_view(&ds_readings);
+                                        display_state_lock.exit_detail_view(&ds_readings, &ds_reported);
                                         eprintln!("[ButtonMonitor] Exiting sensor detail view to selection mode");
                                     }
                                     state = ButtonMonitorState::SelectionMode;

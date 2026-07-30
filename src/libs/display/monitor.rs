@@ -136,13 +136,12 @@ pub fn display_loop(
             let network_status = get_network_status();
 
             // Get current display state (screen and page)
-            let (current_screen, qr_generator, lorawan_gateway_present, total_pages, hold_bar_pixels) = {
+            let (current_screen, qr_generator, lorawan_gateway_present, hold_bar_pixels) = {
                 if let Ok(mut state) = display_state.lock() {
                     // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
                     state.tick_timed_screens();
                     // Update network status in display state
                     state.network_status = network_status.clone();
-                    let tp = state.total_pages();
                     // Pull the active QR generator out of the live provisioning
                     // session (if any). None ⇒ either prov mode not entered or
                     // session ended → QR screen will fall through to a notice.
@@ -151,9 +150,9 @@ pub fn display_loop(
                             .ok()
                             .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
                     });
-                    (state.current_screen.clone(), qr, state.lorawan_gateway_present, tp, state.hold_bar_pixels)
+                    (state.current_screen.clone(), qr, state.lorawan_gateway_present, state.hold_bar_pixels)
                 } else {
-                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 2, 0)
+                    (Screen::SensorOverview { page: 0, selected_sensor: None }, None, false, 0)
                 }
             };
 
@@ -198,11 +197,32 @@ pub fn display_loop(
                         false
                     };
 
-                    // Build the active-first ordered entries list for rendering
+                    // Build the active-first ordered entries list for rendering.
+                    // Sensors that never reported are filtered out here, so the
+                    // page count has to come from the surviving entries.
                     let entries = crate::libs::display::screens::ordered_sensors(
                         &sensor_snapshot.readings,
+                        &sensor_snapshot.has_reported,
                         &lorawan_sensors,
                     );
+                    let total_pages = crate::libs::display::screens::page_count(&entries);
+
+                    // A sensor disappearing can leave the stored page or cursor
+                    // out of range — reconcile first, then render what the
+                    // state actually holds so the frame matches it.
+                    let (page, selected_sensor) = match display_state.lock() {
+                        Ok(mut ds) => {
+                            ds.clamp_overview(&entries);
+                            match ds.current_screen {
+                                Screen::SensorOverview { page, selected_sensor } => (page, selected_sensor),
+                                // Screen changed under us (button press between
+                                // the snapshot and now) — draw the snapshot,
+                                // the next frame picks up the new screen.
+                                _ => (page.min(total_pages - 1), selected_sensor),
+                            }
+                        }
+                        Err(_) => (page.min(total_pages - 1), selected_sensor),
+                    };
 
                     // Render the sensor overview screen with network status and selection cursor
                     if let Err(e) = render_sensor_overview(&mut display, page, &led_snapshot, &sensor_snapshot, &network_status, selected_sensor, &current_device_label, lorawan_gateway_present, &lorawan_sensors, &entries, total_pages, sensor_silenced, hold_bar_pixels) {
