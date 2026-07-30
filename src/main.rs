@@ -1,7 +1,7 @@
 // FIBER Medical Thermometer main application
 
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::io;
 use std::fs;
 use rppal::gpio::Gpio;
@@ -239,6 +239,11 @@ fn main() -> io::Result<()> {
     let screen_brightness = Arc::new(AtomicU8::new(100));
     eprintln!("[main] Screen brightness initialized at 100%");
 
+    // Shared screen idle-timeout (seconds; 0 = always on), seeded from config.
+    // Held live so it can be changed at runtime (e.g. via MQTT) without a restart.
+    let screen_timeout = Arc::new(AtomicU32::new(config.system.screen_timeout_secs));
+    eprintln!("[main] Screen timeout initialized at {}s", config.system.screen_timeout_secs);
+
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
     // Get device label from config, defaulting to hostname
@@ -253,6 +258,7 @@ fn main() -> io::Result<()> {
         config.system.app_version.clone(),
         config.system.timezone_offset_hours,
         screen_brightness.clone(),
+        screen_timeout.clone(),
     )?;
     eprintln!("[main] Display monitor started with 250ms update interval");
 
@@ -434,6 +440,7 @@ fn main() -> io::Result<()> {
             power_status.clone(),
             Some(stm_guard.clone()),
             Some(screen_brightness.clone()),
+            Some(screen_timeout.clone()),
             Some(buzzer_volume.clone()),
             Some(buzzer_priority_manager.clone()),
             None,

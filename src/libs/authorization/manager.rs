@@ -461,6 +461,7 @@ impl AuthorizationManager {
             "set_device_label" => "set_device_label",
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
+            "set_screen_timeout" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
@@ -548,6 +549,14 @@ impl AuthorizationManager {
             "set_screen_brightness" => {
                 let brightness = params.get("brightness").and_then(|v| v.as_u64()).unwrap_or(50);
                 format!("Set screen brightness to {}%", brightness)
+            }
+            "set_screen_timeout" => {
+                let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+                if timeout_secs == 0 {
+                    "Disable screen timeout (display always on)".to_string()
+                } else {
+                    format!("Set screen timeout to {}s", timeout_secs)
+                }
             }
             "set_buzzer_volume" => {
                 let volume = params.get("volume").and_then(|v| v.as_u64()).unwrap_or(100);
@@ -768,6 +777,20 @@ impl AuthorizationManager {
                 }
 
                 Ok(MqttCommand::SetScreenBrightness { brightness })
+            }
+            "set_screen_timeout" => {
+                let timeout_secs = challenge.params.get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing timeout_secs".to_string()))?;
+
+                // 0 disables the timeout (display always on). There is no
+                // practical upper bound beyond what the u32 field can hold, so
+                // only guard the u64 -> u32 cast.
+                if timeout_secs > u64::from(u32::MAX) {
+                    return Err(AuthError::InvalidCommand("Screen timeout out of range".to_string()));
+                }
+
+                Ok(MqttCommand::SetScreenTimeout { timeout_secs: timeout_secs as u32 })
             }
             "set_buzzer_volume" => {
                 let volume = challenge.params.get("volume")
@@ -1204,6 +1227,13 @@ mod tests {
             "restart_application"
         );
 
+        // Screen timeout reuses the screen-brightness permission so it works
+        // with certificates issued before the timeout command existed.
+        assert_eq!(
+            manager.command_type_to_permission("set_screen_timeout").unwrap(),
+            "set_screen_brightness"
+        );
+
         assert!(manager.command_type_to_permission("unknown").is_err());
     }
 
@@ -1295,6 +1325,59 @@ mod tests {
             state: ChallengeState::AwaitingConfirmation,
             state_changed_at: 0,
         }
+    }
+
+    #[test]
+    fn build_command_from_challenge_screen_timeout_ok() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 3600 }));
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetScreenTimeout { timeout_secs }) => assert_eq!(timeout_secs, 3600),
+            other => panic!("expected SetScreenTimeout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_screen_timeout_zero_allowed() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 0 }));
+        // 0 is the documented "always on" sentinel and must be accepted.
+        assert!(matches!(
+            manager.build_command_from_challenge(&challenge),
+            Ok(MqttCommand::SetScreenTimeout { timeout_secs: 0 })
+        ));
+    }
+
+    #[test]
+    fn build_command_from_challenge_screen_timeout_large_value_allowed() {
+        let manager = create_test_manager();
+        // No practical upper bound: any value that fits u32 is accepted
+        // (e.g. beyond the old 24h/86400 guardrail).
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 86_401 }));
+        assert!(matches!(
+            manager.build_command_from_challenge(&challenge),
+            Ok(MqttCommand::SetScreenTimeout { timeout_secs: 86_401 })
+        ));
+        let max = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": u32::MAX as u64 }));
+        assert!(matches!(
+            manager.build_command_from_challenge(&max),
+            Ok(MqttCommand::SetScreenTimeout { timeout_secs }) if timeout_secs == u32::MAX
+        ));
+    }
+
+    #[test]
+    fn build_command_from_challenge_screen_timeout_out_of_range_rejected() {
+        let manager = create_test_manager();
+        // Only values that overflow u32 are rejected.
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": (u32::MAX as u64) + 1 }));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
+    }
+
+    #[test]
+    fn build_command_from_challenge_screen_timeout_missing_rejected() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 
     fn create_test_manager() -> AuthorizationManager {

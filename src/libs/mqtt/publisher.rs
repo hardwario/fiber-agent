@@ -184,6 +184,7 @@ impl MqttPublisher {
             MqttMessage::PublishConfigState {
                 led_brightness,
                 screen_brightness,
+                screen_timeout_secs,
                 buzzer_volume,
                 system_info_interval_s,
                 device_label,
@@ -196,6 +197,7 @@ impl MqttPublisher {
                 self.publish_config_state(
                     led_brightness,
                     screen_brightness,
+                    screen_timeout_secs,
                     buzzer_volume,
                     system_info_interval_s,
                     &device_label,
@@ -686,6 +688,7 @@ impl MqttPublisher {
         &self,
         led_brightness: u8,
         screen_brightness: u8,
+        screen_timeout_secs: u32,
         buzzer_volume: u8,
         system_info_interval_s: u64,
         device_label: &str,
@@ -734,6 +737,7 @@ impl MqttPublisher {
             "timestamp": Self::timestamp(),
             "led_brightness": led_brightness,
             "screen_brightness": screen_brightness,
+            "screen_timeout_secs": screen_timeout_secs,
             "buzzer_volume": buzzer_volume,
             "system_info_interval_s": system_info_interval_s,
             "device_label": device_label,
