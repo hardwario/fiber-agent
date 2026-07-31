@@ -208,6 +208,13 @@ pub struct LoRaWANGatewayPayload {
 /// EYE BLE tag data payload for MQTT publishing.
 #[derive(Debug, Clone)]
 pub struct EyeTagPayload {
+    /// Hostname of the gateway that heard this tag (system#6).
+    ///
+    /// A tag can be in range of several FIBERs, so a reading is only meaningful
+    /// together with who captured it. The topic carries the hostname too, but only
+    /// when `mqtt.include_hostname` is enabled — an operator setting — so the
+    /// payload states it unconditionally.
+    pub gateway: String,
     pub mac: String,
     pub name: Option<String>,
     pub temperature_c: Option<f32>,
@@ -504,6 +511,12 @@ pub enum MqttCommand {
     /// Register an EYE tag in the device config (`eye.tags[]`) so it is
     /// tracked/named explicitly. Auto-provisioning still discovers unknown
     /// tags; this pins a name/override. Signed via ConfigRequest.
+    /// Replace the fleet allowlist of EYE MACs this gateway may listen for
+    /// (system#6). Not a registration: ownership stays with whichever gateway has
+    /// the tag in its own `eye.tags[]`.
+    SetEyeKnownTags {
+        macs: Vec<String>,
+    },
     AddEyeTag {
         mac: String,
         name: Option<String>,
@@ -632,6 +645,7 @@ impl MqttCommand {
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
+            MqttCommand::SetEyeKnownTags { .. } => "set_eye_known_tags",
             MqttCommand::AddEyeTag { .. } => "add_eye_tag",
             MqttCommand::RemoveEyeTag { .. } => "remove_eye_tag",
             MqttCommand::DetectEyeTag { .. } => "detect_eye_tag",

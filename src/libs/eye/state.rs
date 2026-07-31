@@ -1,6 +1,6 @@
 //! Shared, live state for EYE BLE tags (latest readings + provisioning status).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use super::advertising::EyeReading;
@@ -226,6 +226,52 @@ pub fn register_eye_state(state: SharedEyeState) {
     let _ = EYE_STATE.set(state);
 }
 
+/// MACs the *fleet* knows about, pushed by the server (system#6).
+///
+/// Deliberately separate from [`EyeConfig::tags`] and never written to
+/// `fiber.config.yaml`: a tag registered on another gateway must become audible
+/// here without this gateway claiming ownership of it. Ownership is what decides
+/// who runs the archive download and who evaluates the alarm thresholds — two
+/// gateways doing either for one tag would race the tag's single GATT connection
+/// and double every alarm.
+pub type SharedKnownTags = Arc<RwLock<HashSet<String>>>;
+
+static EYE_KNOWN_TAGS: OnceLock<SharedKnownTags> = OnceLock::new();
+
+/// Handle to the fleet allowlist, creating it on first use.
+pub fn eye_known_tags() -> SharedKnownTags {
+    EYE_KNOWN_TAGS
+        .get_or_init(|| Arc::new(RwLock::new(HashSet::new())))
+        .clone()
+}
+
+/// Replace the allowlist wholesale.
+///
+/// Wholesale, not merged: the server sends the full union every time, so a merge
+/// could never forget a tag that was unregistered fleet-wide — it would stay
+/// audible here until the gateway restarted.
+pub fn set_eye_known_tags<I: IntoIterator<Item = String>>(macs: I) -> usize {
+    let handle = eye_known_tags();
+    let set: HashSet<String> = macs
+        .into_iter()
+        .map(|m| m.to_uppercase())
+        .filter(|m| is_valid_mac(m))
+        .collect();
+    let n = set.len();
+    if let Ok(mut guard) = handle.write() {
+        *guard = set;
+    }
+    n
+}
+
+/// Snapshot of the allowlist, for the scan loop.
+pub fn known_tags_snapshot() -> HashSet<String> {
+    eye_known_tags()
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 pub type SharedEyeConfig = Arc<RwLock<EyeConfig>>;
 
 /// Process-wide handle to the monitor's live config. The scan loop re-reads it
@@ -351,6 +397,7 @@ mod tests {
                     critical_high: Some(90.0),
                 },
             ],
+            provisioned: None,
         };
         let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
 
@@ -398,6 +445,7 @@ mod tests {
                 warning_high: None,
                 critical_high: None,
             }],
+            provisioned: None,
         };
         let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
 
@@ -445,6 +493,7 @@ mod tests {
                 warning_high: Some(10.0),
                 critical_high: Some(50.0),
             }],
+            provisioned: None,
         };
         let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         tag.movement_count = Some(5);

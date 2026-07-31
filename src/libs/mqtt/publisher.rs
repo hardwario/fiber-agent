@@ -830,6 +830,7 @@ impl MqttPublisher {
             .iter()
             .map(|t| {
                 json!({
+                    "gateway": t.gateway,
                     "mac": t.mac,
                     "name": t.name,
                     "temperature_c": t.temperature_c,

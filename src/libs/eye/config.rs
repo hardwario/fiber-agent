@@ -39,6 +39,34 @@ pub struct EyeConfig {
     #[serde(default = "default_sync_fallback_hours")]
     pub sync_fallback_hours: u64,
 
+    /// Self-heal a wedged BLE scan. On a combo Wi-Fi/BT controller the LE scan
+    /// can stop delivering advertisements while BlueZ still reports
+    /// `Discovering: yes`, and `StartDiscovery` can start timing out on D-Bus;
+    /// neither surfaces as an error the monitor would otherwise see, so every tag
+    /// simply goes stale forever. Off leaves the old behaviour: log and wait.
+    #[serde(default = "default_true")]
+    pub scan_stall_recovery: bool,
+
+    /// Treat the scan as wedged after this many seconds with no advertisement
+    /// from any audible tag. Must comfortably exceed the slowest tag's
+    /// advertising interval — the PROXIMOS profile is 10 s, so the default is a
+    /// wide margin over that rather than a tight bound.
+    #[serde(default = "default_scan_stall_secs")]
+    pub scan_stall_secs: u64,
+
+    /// Auto-register unregistered tags seen advertising, and the cap on how many.
+    ///
+    /// **Not implemented on this branch** — carried so the applier's YAML rewrite
+    /// round-trips them instead of deleting them. A field absent from this struct
+    /// is silently dropped when `EyeConfig` is serialised back to
+    /// `fiber.config.yaml`, which would strip an operator's setting irreversibly:
+    /// rolling the binary back would not bring the key back, because the file was
+    /// already overwritten. FIBER-OFFICE-5 has `auto_discover: true` on disk today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover_max: Option<u32>,
+
     /// Bluetooth adapter for the EYE scan (e.g. "hci1"). `None` uses the default
     /// adapter. Lets the monitor bind a second controller so a co-located tag or
     /// simulator on another adapter is scannable (a controller can't scan its own
@@ -89,6 +117,7 @@ impl EyeConfig {
                 logging_interval_min: None,
                 recording: None,
                 field_thresholds: Vec::new(),
+                provisioned: None,
             });
         }
     }
@@ -113,6 +142,20 @@ impl EyeConfig {
             if interval_min != 0 {
                 t.logging_interval_min = Some(interval_min);
             }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record that a tag's flash now has the PROXIMOS profile. Updates the live
+    /// config so the next applier-driven YAML rewrite carries it, and so a
+    /// re-read of the shared config inside the scan loop does not undo the
+    /// in-memory `ProvisioningStatus`. Returns whether a matching tag was found.
+    pub fn set_provisioned(&mut self, mac: &str, provisioned: bool) -> bool {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            t.provisioned = Some(provisioned);
             true
         } else {
             false
@@ -170,6 +213,21 @@ pub struct EyeTagConfig {
     /// the LoRaWAN sticker field-threshold model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+
+    /// Has this tag already had the PROXIMOS profile written to its flash?
+    ///
+    /// `ProvisioningStatus` is in-memory only, so without this every restart
+    /// resets all tags to `PendingProvisioning` and — with `auto_provision` on —
+    /// re-provisions the whole set at once. On a 16-tag gateway that burst
+    /// contends with the scan for the adapter, which is exactly the failure this
+    /// avoids. Writing to the tag's flash is idempotent but not free.
+    ///
+    /// Also the reason this field exists rather than being inferred: the applier
+    /// serialises `EyeConfig` back to `fiber.config.yaml` on every tag change, so
+    /// a key the struct does not know about is silently dropped from the file.
+    /// `None` means "never provisioned, or written by a build that predates this".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioned: Option<bool>,
 }
 
 fn default_publish_interval_s() -> u64 {
@@ -186,6 +244,9 @@ fn default_sync_fallback_hours() -> u64 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_scan_stall_secs() -> u64 {
+    180
 }
 
 #[cfg(test)]
