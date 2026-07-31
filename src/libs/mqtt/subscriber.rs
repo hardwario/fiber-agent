@@ -372,7 +372,14 @@ impl MqttSubscriber {
             return Err("Reason too long (max 256 characters)".to_string());
         }
 
-        Ok(MqttCommand::RestartApplication { reason })
+        // The unsigned path carries no signer, and the dispatch loop drops
+        // RestartApplication anyway — an unauthenticated remote reboot is exactly
+        // what the signing scheme exists to prevent. Named so an audit row that
+        // somehow reaches the DB is not mistaken for an authorized one.
+        Ok(MqttCommand::RestartApplication {
+            reason,
+            requested_by: "unsigned".to_string(),
+        })
     }
 
     /// Parse set_interval command

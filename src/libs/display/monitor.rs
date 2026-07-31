@@ -15,6 +15,7 @@ use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
 use crate::libs::lorawan::LoRaWANSensorState;
 
+use super::blank;
 use super::supervise::{lock_recover, read_recover, write_recover};
 use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
 use super::screens::{
@@ -95,12 +96,18 @@ pub fn display_loop(
     // moment before the normal render loop takes over. Doing it here
     // (inside the display thread, after St7920::new) keeps main.rs out of
     // the drawing path — the display is only owned by this thread.
-    display.clear_buffer();
-    super::splash::render_splash(&mut display);
-    if let Err(e) = display.flush() {
-        eprintln!("[DisplayMonitor] Boot splash flush failed: {}", e);
+    // Skipped when a power-off is already pending: this loop restarting at just
+    // the wrong moment must not answer a shutdown with a two-second logo dwell.
+    // Falling through leaves the panel untouched for one 50 ms iteration, then
+    // the blanking arm below clears it.
+    if blank::blank_state() == blank::LIVE {
+        display.clear_buffer();
+        super::splash::render_splash(&mut display);
+        if let Err(e) = display.flush() {
+            eprintln!("[DisplayMonitor] Boot splash flush failed: {}", e);
+        }
+        thread::sleep(super::splash::SPLASH_DURATION);
     }
-    thread::sleep(super::splash::SPLASH_DURATION);
 
     const UPDATE_INTERVAL_MS: u64 = 250; // Update display every 250ms
     let update_interval = Duration::from_millis(UPDATE_INTERVAL_MS);
@@ -143,6 +150,39 @@ pub fn display_loop(
         if shutdown_flag.load(Ordering::Relaxed) {
             eprintln!("[DisplayMonitor] Shutdown signal received, exiting display thread");
             break;
+        }
+
+        // Power-off blanking, checked before the backlight and render blocks so
+        // neither can repaint the panel we just cleared. Deliberately not a
+        // `return Ok(())`: `supervise` treats a clean return as "done" and never
+        // restarts the loop, which would leave a permanently dead UI on a
+        // power-off that failed to happen.
+        match blank::blank_state() {
+            blank::REQUESTED => {
+                display.clear_buffer();
+                if let Err(e) = display.flush() {
+                    eprintln!("[DisplayMonitor] Power-off blank flush failed: {}", e);
+                }
+                if let Err(e) = display.set_brightness(0) {
+                    eprintln!("[DisplayMonitor] Power-off backlight off failed: {}", e);
+                }
+                // The brightness block below only writes the PWM on a change, so
+                // this has to reflect what the hardware is actually at — leaving
+                // it stale would strand the panel dark if the blank is cancelled.
+                last_brightness = 0;
+                eprintln!("[DisplayMonitor] Panel blanked for power-off");
+                blank::mark_blanked();
+                continue;
+            }
+            blank::BLANKED => {
+                // Hold it: no reconcile, no render, just keep watching the
+                // shutdown flag and the cancel above.
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            // Live — including the frame right after a cancel, which repaints
+            // and restores the backlight through the normal path below.
+            _ => {}
         }
 
         // Backlight idle timeout: off after `screen_timeout` of inactivity, but

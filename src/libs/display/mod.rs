@@ -77,6 +77,7 @@ impl OverviewMode {
 /// Number of pages on the system info screen.
 pub const SYSTEM_INFO_PAGES: usize = 3;
 
+pub mod blank;
 pub mod font;
 pub mod monitor;
 pub mod screens;

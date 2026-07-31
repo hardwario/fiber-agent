@@ -335,8 +335,32 @@ pub enum MqttCommand {
     /// Set sensor probe location (signed via ConfigRequest)
     SetSensorLocation { line: u8, location: String },
 
-    /// Restart application
-    RestartApplication { reason: String },
+    /// Reboot the device at OS level. Unlike `PowerOffDevice` the unit comes
+    /// back on its own, but the interruption is a gap in monitoring either way,
+    /// so the executor flushes and audits before it goes down.
+    ///
+    /// `requested_by` is carried for the same reason as on `PowerOffDevice`: the
+    /// executor never sees the signer, and the authorization audit lives on
+    /// tmpfs (`/tmp/fiber_audit.db`, and the unit sets `PrivateTmp=true`), which
+    /// a reboot wipes just as thoroughly as a power-off.
+    RestartApplication {
+        reason: String,
+        requested_by: String,
+    },
+
+    /// Power the device off at OS level. Unlike `RestartApplication` the unit
+    /// does not come back on its own — it has to be powered on by hand — so the
+    /// executor flushes the audit trail before the rails drop.
+    ///
+    /// `requested_by` is carried in the command rather than read at the call
+    /// site because the executor never sees the signer, and the authorization
+    /// audit for this command lives on tmpfs (`/tmp/fiber_audit.db`) — the
+    /// power-off destroys it. The durable row in the encrypted DB is the only
+    /// surviving evidence of who took the monitoring function offline.
+    PowerOffDevice {
+        reason: String,
+        requested_by: String,
+    },
 
     /// Set sensor intervals (sample, aggregation, report)
     SetInterval {
@@ -613,6 +637,7 @@ impl MqttCommand {
             MqttCommand::SetSensorName { .. } => "set_sensor_name",
             MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
             MqttCommand::RestartApplication { .. } => "restart_application",
+            MqttCommand::PowerOffDevice { .. } => "power_off",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",
             MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
