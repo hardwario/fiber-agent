@@ -1162,7 +1162,25 @@ impl Config {
                 // firmware). Fall back to raw read so the typed parser can
                 // produce a more user-friendly error if the file is just
                 // malformed, or surface the migration error if it's fatal.
-                eprintln!("[config] migration failed: {} — falling back to direct read", e);
+                //
+                // Logged only when the message changes. `from_file` is on a
+                // periodic path — the display loop reconciles every
+                // `CONFIG_RECONCILE_MS` and the sensor monitor hot-reloads
+                // intervals — so a *stable* failure (a yaml newer than the
+                // firmware, which is the normal state on a device that ran a
+                // later build) otherwise repeats forever: measured at 32 lines
+                // in 4 minutes on FIBER-CE3D59F8, ~11k/day, burying everything
+                // else in the journal. De-duplicating on the message keeps the
+                // first occurrence and any genuinely new failure.
+                let msg = e.to_string();
+                static LAST_MIGRATION_WARNING: std::sync::Mutex<Option<String>> =
+                    std::sync::Mutex::new(None);
+                if let Ok(mut last) = LAST_MIGRATION_WARNING.lock() {
+                    if last.as_deref() != Some(msg.as_str()) {
+                        eprintln!("[config] migration failed: {} — falling back to direct read", msg);
+                        *last = Some(msg);
+                    }
+                }
                 fs::read_to_string(path.as_ref())?
             }
         };

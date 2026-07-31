@@ -559,11 +559,24 @@ fn lorawan_send(
         Err(r) => return r,
     };
     let _guard = ctx.lorawan_lock.lock(); // serialize with other device ops
+    // Additionally serialise against the device's single 8-s deferred-action slot,
+    // which the MQTT path shares. lorawan_lock only covers this process's control
+    // socket, so it alone cannot stop an MQTT save from colliding with a reboot.
+    let _action_guard = if command.is_action_bearing() {
+        match sticker_config::try_action_guard(dev_eui) {
+            Ok(g) => Some(g),
+            Err(reason) => return Response::err_coded("device_busy", reason, json!(null)),
+        }
+    } else {
+        None
+    };
     let proto_cmd = match command {
         LorawanSimpleCommand::GetInfo => sc::build_get_info(),
         LorawanSimpleCommand::Reboot => sc::build_reboot(),
         LorawanSimpleCommand::ForceSend => sc::build_force_send(),
         LorawanSimpleCommand::ResetCounters => sc::build_reset_counters(),
+        LorawanSimpleCommand::DeviceReset => sc::build_device_reset(),
+        LorawanSimpleCommand::FactoryReset => sc::build_factory_reset(),
         LorawanSimpleCommand::ClockSync => {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
             sc::build_clock_sync(now)
@@ -576,13 +589,25 @@ fn lorawan_send(
     );
     match handle.send_command(dev_eui, proto_cmd, ctx.command_timeout) {
         Ok(dr) => Response::ok(decoded_to_json(&dr, &[])),
-        Err(e) => {
-            if matches!(command, LorawanSimpleCommand::Reboot) {
-                Response::ok(json!({ "note": "no reply (reboot); expect unsolicited Info on rejoin", "transport_error": e }))
-            } else {
-                Response::err_coded("transport", format!("no response from device: {e}"), json!(null))
+        Err(e) => match command {
+            // Both reboot and device_reset cold-restart 8 s after the Ack, so a
+            // missing reply is the expected outcome rather than a failure. The
+            // rejoin then emits an unsolicited Info, which #65 now captures.
+            LorawanSimpleCommand::Reboot | LorawanSimpleCommand::DeviceReset => {
+                Response::ok(json!({
+                    "note": "no reply (device restarts); expect unsolicited Info on rejoin",
+                    "transport_error": e,
+                }))
             }
-        }
+            // force_send never sends an fPort-85 body at all (app_cmd.c:699-711):
+            // the fPort-2 telemetry frame is the answer, so a timeout here says
+            // nothing about whether the command worked.
+            LorawanSimpleCommand::ForceSend => Response::ok(json!({
+                "note": "no fPort-85 reply by design; the answer is the next telemetry uplink",
+                "expect": "telemetry_uplink",
+            })),
+            _ => Response::err_coded("transport", format!("no response from device: {e}"), json!(null)),
+        },
     }
 }
 
@@ -601,13 +626,22 @@ fn decoded_to_json(
     use crate::libs::lorawan::sticker_response::ResponseKind as K;
     let kind = match &dr.kind {
         K::Ack => json!({ "kind": "ack" }),
-        // claim_token is a provisioning secret — deliberately omitted from the
-        // control-plane projection (would otherwise land in terminals/CI logs).
-        K::Info { fw_version, build_type, serial_number, uptime_s, unix_time, debug, claim_token } => json!({
-            "kind": "info", "fw_version": fw_version, "build_type": build_type,
-            "serial_number": serial_number, "uptime_s": uptime_s, "unix_time": unix_time,
-            "debug": debug, "has_claim_token": claim_token.is_some(),
-        }),
+        // Shares one projection with the MQTT publish so the CLI and the bus can
+        // never disagree about field names or redaction. claim_token is a
+        // provisioning secret and is reduced to has_claim_token there.
+        K::Info(info) => {
+            let mut v = sticker_config::info_to_json(info, "", "query", dr.seq, "");
+            if let Some(map) = v.as_object_mut() {
+                // dev_eui/synced_at/source belong to the publish envelope, not to
+                // a CLI reply that already knows which device it asked.
+                map.remove("dev_eui");
+                map.remove("synced_at");
+                map.remove("source");
+                map.remove("seq");
+                map.insert("kind".into(), json!("info"));
+            }
+            v
+        }
         K::Error { code, fault_field, detail } => json!({
             "kind": "error", "code": code, "fault_field": fault_field,
             "fault_key": sc::describe_fault(*fault_field, sent_keys.iter().copied()),
@@ -621,6 +655,8 @@ fn decoded_to_json(
             "kind": "history_frame", "frame_index": frame_index, "frame_count": frame_count,
         }),
         K::W1Scan { roms } => json!({ "kind": "w1_scan", "roms": roms }),
+        // NFC-only over the wire, so seeing one here means the firmware changed.
+        K::Sample => json!({ "kind": "sample" }),
         K::Empty => json!({ "kind": "empty" }),
     };
     json!({ "seq": dr.seq, "response": kind })

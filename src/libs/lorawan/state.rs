@@ -260,6 +260,7 @@ mod tests {
             rssi: Some(-80),
             snr: Some(7.0),
             received_at: "2026-05-12T10:00:00Z".into(),
+            fport: Some(2),
         }
     }
 
