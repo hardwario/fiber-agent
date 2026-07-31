@@ -451,6 +451,7 @@ impl AuthorizationManager {
             "set_screen" => "set_screen",
             "flush_storage" => "flush_storage",
             "restart_application" => "restart_application",
+            "power_off" => "power_off_device",
             "set_interval" => "set_interval",
             "set_system_info_interval" => "set_system_info_interval",
             "get_info" => "get_info",
@@ -525,6 +526,7 @@ impl AuthorizationManager {
                 format!("Change sensor line {} location to \"{}\"", line, location)
             }
             "restart_application" => "Reboot the device".to_string(),
+            "power_off" => "Power the device off. It will stop monitoring and must be powered on by hand — it cannot be woken remotely".to_string(),
             "set_interval" => {
                 let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -706,7 +708,17 @@ impl AuthorizationManager {
             }
             "restart_application" => {
                 let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());
-                Ok(MqttCommand::RestartApplication { reason })
+                Ok(MqttCommand::RestartApplication {
+                    reason,
+                    requested_by: challenge.signer_id.clone(),
+                })
+            }
+            "power_off" => {
+                let reason = challenge.reason.clone().unwrap_or_else(|| "Remote power-off".to_string());
+                Ok(MqttCommand::PowerOffDevice {
+                    reason,
+                    requested_by: challenge.signer_id.clone(),
+                })
             }
             "set_interval" => {
                 let sample_interval_ms = challenge.params.get("sample_interval_ms")
@@ -1261,9 +1273,21 @@ mod tests {
             "set_threshold"
         );
 
+        // The Viewer must issue certificates carrying this literal. It used to
+        // issue "restart_device" — a name that exists nowhere in this table — so
+        // every remote reboot was rejected here with PermissionDenied while the
+        // Viewer's API reported success. Do not "fix" a future authorization
+        // failure by loosening this to accept the old name; reissue the
+        // certificate instead.
         assert_eq!(
             manager.command_type_to_permission("restart_application").unwrap(),
             "restart_application"
+        );
+        // A reboot self-recovers, a power-off does not: holding one must never
+        // imply the other. The Viewer asserts the same inequality.
+        assert_ne!(
+            manager.command_type_to_permission("restart_application").unwrap(),
+            manager.command_type_to_permission("power_off").unwrap()
         );
 
         // Screen timeout reuses the screen-brightness permission so it works
@@ -1378,6 +1402,92 @@ mod tests {
         // the tempting field fix — reinstating the reuse to make an
         // authorization failure go away — has to fail here first.
         assert_ne!(permission, "set_screen_brightness");
+    }
+
+    #[test]
+    fn power_off_has_its_own_permission() {
+        let manager = create_test_manager();
+        let permission = manager.command_type_to_permission("power_off").unwrap();
+        assert_eq!(permission, "power_off_device");
+
+        // Same hard cutover as above, for a sharper reason: a reboot comes back
+        // on its own, a power-off leaves the unit dark until someone walks to it.
+        // Reusing the reboot permission would silently hand every already-issued
+        // certificate the power to take a Class IIa monitor offline indefinitely,
+        // so that shortcut has to fail here first.
+        assert_ne!(permission, "restart_application");
+    }
+
+    #[test]
+    fn build_command_from_challenge_power_off_carries_signer_and_reason() {
+        let manager = create_test_manager();
+
+        let mut challenge = test_challenge("power_off", json!({}));
+        challenge.reason = Some("Fridge decommissioned".to_string());
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::PowerOffDevice {
+                reason,
+                requested_by,
+            } => {
+                assert_eq!(reason, "Fridge decommissioned");
+                // Not cosmetic: /tmp/fiber_audit.db does not survive the
+                // power-off, so this is the only record of who authorized it.
+                assert_eq!(requested_by, "s");
+            }
+            other => panic!("expected PowerOffDevice, got {other:?}"),
+        }
+
+        // No reason given still yields a command — the device must not refuse a
+        // validly signed power-off over missing prose — but it must not end up
+        // with an empty reason in the audit row either.
+        let bare = test_challenge("power_off", json!({}));
+        match manager.build_command_from_challenge(&bare).unwrap() {
+            MqttCommand::PowerOffDevice { reason, .. } => assert!(!reason.is_empty()),
+            other => panic!("expected PowerOffDevice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_reboot_carries_signer_and_reason() {
+        let manager = create_test_manager();
+
+        let mut challenge = test_challenge("restart_application", json!({}));
+        challenge.reason = Some("Applying new config".to_string());
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::RestartApplication {
+                reason,
+                requested_by,
+            } => {
+                assert_eq!(reason, "Applying new config");
+                // /tmp/fiber_audit.db is on tmpfs and the unit runs with
+                // PrivateTmp=true, so a reboot wipes the authorization record
+                // just as a power-off does. This is what the durable row keeps.
+                assert_eq!(requested_by, "s");
+            }
+            other => panic!("expected RestartApplication, got {other:?}"),
+        }
+
+        let bare = test_challenge("restart_application", json!({}));
+        match manager.build_command_from_challenge(&bare).unwrap() {
+            MqttCommand::RestartApplication { reason, .. } => assert!(!reason.is_empty()),
+            other => panic!("expected RestartApplication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_change_power_off_spells_out_the_consequence() {
+        let manager = create_test_manager();
+        let description = manager.describe_change("power_off", &json!({}));
+
+        // This string is the preview the signer confirms against, so it has to
+        // say that monitoring stops and that the device will not come back by
+        // itself. A generic "Execute command: power_off" fallback would let
+        // someone approve an irreversible action blind.
+        assert!(!description.starts_with("Execute command"), "got: {description}");
+        let lower = description.to_lowercase();
+        assert!(lower.contains("power"), "got: {description}");
+        assert!(lower.contains("monitoring"), "got: {description}");
+        assert!(lower.contains("by hand") || lower.contains("physically"), "got: {description}");
     }
 
     #[test]
