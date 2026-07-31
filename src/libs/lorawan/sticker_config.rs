@@ -10,7 +10,7 @@
 //! returns structured Rust data — no JSON, no MQTT here.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::monitor::LoRaWANHandle;
 use super::sticker_command::{self as sc, ConfigError};
@@ -25,6 +25,16 @@ pub struct ConfigRead {
     pub page_count: u32,
     /// `seq` of the last device response received.
     pub last_seq: u32,
+    /// Keys whose chunk failed, so the caller can report a partial read honestly
+    /// and re-request just the gap instead of repeating the whole thing.
+    pub failed_keys: Vec<String>,
+}
+
+impl ConfigRead {
+    /// True when every requested chunk came back.
+    pub fn is_complete(&self) -> bool {
+        self.failed_keys.is_empty()
+    }
 }
 
 /// Outcome of one SetParam batch within a write sequence.
@@ -60,10 +70,15 @@ pub fn read_config(
     keys: &[&str],
     timeout: Duration,
 ) -> Result<ConfigRead, String> {
-    // Default to the full settable set when the caller selects nothing.
+    // Default to the SMALL core set when the caller selects nothing, deliberately
+    // not the whole settable surface. The #69 work grew SETTABLE from 4 scalars to
+    // 20, and a Class-A read is chunked six fields at a time with a 180 s timeout
+    // per chunk — so defaulting to everything would turn every unqualified read
+    // into minutes of airtime. This keeps the live-verified default path requesting
+    // exactly what it always has; the wider sets are opt-in.
     let owned_all: Vec<&str>;
     let selected: &[&str] = if keys.is_empty() {
-        owned_all = sc::all_settable_keys();
+        owned_all = sc::core_settable_keys();
         &owned_all
     } else {
         keys
@@ -80,14 +95,48 @@ pub fn read_config(
     // — e.g. the 16 alarm slots — into small chunks so we never hit that cap.
     // See docs/sticker-alarm-readback-issue.md.
     const MAX_FIELDS_PER_GETPARAM: usize = 6;
+    // Accumulate across chunks and record the ones that failed, rather than
+    // abandoning the whole read on the first failure. With the #69 surface a full
+    // read is several chunks, and one flaky Class-A round trip used to discard every
+    // chunk already received — so an operator saw nothing instead of most of it.
+    let mut failed_keys: Vec<String> = Vec::new();
+    let mut chunks_attempted = 0usize;
+    // Why the first chunk failed. Kept so a read that got nothing can say what
+    // went wrong instead of only how many keys it lost — the reason was being
+    // logged to the journal and then discarded, so the operator-visible error
+    // pointed at the sticker even when the gateway was the one at fault.
+    let mut first_failure: Option<String> = None;
+
     for chunk in selected.chunks(MAX_FIELDS_PER_GETPARAM) {
+        chunks_attempted += 1;
         let mut page = 0u32;
         loop {
             let command = sc::build_get_param_page(chunk, page);
-            let dr = handle.send_command(dev_eui, command, timeout)?;
+            let dr = match handle.send_command(dev_eui, command, timeout) {
+                Ok(dr) => dr,
+                Err(e) => {
+                    eprintln!(
+                        "[sticker] {dev_eui}: config read chunk {chunk:?} failed: {e} \
+                         (keeping the chunks already read)"
+                    );
+                    if first_failure.is_none() {
+                        first_failure = Some(e);
+                    }
+                    failed_keys.extend(chunk.iter().map(|k| k.to_string()));
+                    break;
+                }
+            };
             last_seq = dr.seq;
             let ResponseKind::ConfigDump { page_index, page_count: pc, config } = dr.kind else {
-                return Err(format!("expected ConfigDump, got {:?}", dr.kind));
+                eprintln!(
+                    "[sticker] {dev_eui}: expected ConfigDump for {chunk:?}, got {:?}",
+                    dr.kind
+                );
+                if first_failure.is_none() {
+                    first_failure = Some("device answered something other than a ConfigDump".into());
+                }
+                failed_keys.extend(chunk.iter().map(|k| k.to_string()));
+                break;
             };
             for (k, v) in config {
                 merged.insert(k, v);
@@ -101,7 +150,170 @@ pub fn read_config(
         }
     }
 
-    Ok(ConfigRead { config: merged, page_count: page_count_max.max(1), last_seq })
+    // Only a read that got nothing at all is an error. A partial read is a
+    // legitimate outcome the caller reports as partial.
+    if merged.is_empty() && chunks_attempted > 0 && !failed_keys.is_empty() {
+        return Err(match first_failure {
+            Some(why) => format!(
+                "config read failed for every requested key ({} keys): {}",
+                failed_keys.len(),
+                why
+            ),
+            None => format!(
+                "config read failed for every requested key ({} keys)",
+                failed_keys.len()
+            ),
+        });
+    }
+
+    Ok(ConfigRead {
+        config: merged,
+        page_count: page_count_max.max(1),
+        last_seq,
+        failed_keys,
+    })
+}
+
+/// Read a STICKER's device info: one `GetInfo` downlink, one `Info` uplink (#65).
+///
+/// Returns the device's `seq` alongside the decoded info so a caller can report
+/// which exchange produced it.
+///
+/// A device with several latched alarms can answer with
+/// `Error{unknown, "response too large"}`: v1.4.0's `Info` carries
+/// `active_alarms` on both transports and the fPort-85 response buffer is only
+/// 64 bytes (`app_cmd.c:1133-1144`). That error is returned verbatim rather than
+/// retried — a retry would produce the same reply and only burn airtime.
+pub fn read_info(
+    handle: &LoRaWANHandle,
+    dev_eui: &str,
+    timeout: Duration,
+) -> Result<(u32, super::sticker_response::DeviceInfo), String> {
+    let dr = handle.send_command(dev_eui, sc::build_get_info(), timeout)?;
+    match dr.kind {
+        ResponseKind::Info(info) => Ok((dr.seq, info)),
+        ResponseKind::Error { code, detail, .. } => {
+            Err(format!("device error {code}: {detail}"))
+        }
+        other => Err(format!("expected Info, got {other:?}")),
+    }
+}
+
+/// How long a device is considered busy after an action-bearing command.
+///
+/// The sticker does not run a deferred action immediately: it answers first and
+/// schedules the action 8 s later (`app_lrw.c:738-743`). 12 s leaves margin for
+/// the reply itself plus the scheduling delay.
+pub const ACTION_SETTLE: Duration = Duration::from_secs(12);
+
+/// "Busy until" per dev_eui, for [`try_action_guard`].
+fn action_busy_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Held while an action-bearing fPort-85 command settles on one device. Dropping
+/// it does **not** release the device early — the 8 s deferred action is still
+/// pending on the sticker regardless of what the gateway does next.
+#[derive(Debug)]
+pub struct ActionGuard {
+    dev_eui: String,
+}
+
+impl ActionGuard {
+    /// The device this guard covers.
+    pub fn dev_eui(&self) -> &str {
+        &self.dev_eui
+    }
+}
+
+/// Serialise **action-bearing** fPort-85 commands per device.
+///
+/// The sticker holds a single `m_post_cmd_action` slot (`app_lrw.c:254`) and its
+/// downlink queue is two deep, and `dl_request_work_handler` drains the whole
+/// queue in one pass — so if two action-bearing commands arrive together, the
+/// second overwrites the first and only it ever runs. The first command still
+/// answers `Ack`, so the loss is completely silent.
+///
+/// Action-bearing commands are `SetParam{save:true}`, `reboot`, `device_reset`,
+/// `reset_counters`, `settings_save`, `enter_calibration`, `lrw_reset` and
+/// `lrw_join`.
+///
+/// This closes a race that predates the #71 commands: `control/server.rs` took
+/// `ctx.lorawan_lock` but the MQTT write path did not, so an MQTT
+/// `set_sticker_config{save:true}` could already collide with a `fiberctl reboot`.
+///
+/// Deliberately **try**-style rather than blocking: a viewer gets an immediate
+/// "device busy, retry in Ns" instead of a request that hangs for 12 s.
+pub fn try_action_guard(dev_eui: &str) -> Result<ActionGuard, String> {
+    try_action_guard_at(dev_eui, Instant::now(), ACTION_SETTLE)
+}
+
+/// [`try_action_guard`] with an explicit clock and settle time, so the behaviour
+/// is testable without sleeping for the real 12 s.
+fn try_action_guard_at(
+    dev_eui: &str,
+    now: Instant,
+    settle: Duration,
+) -> Result<ActionGuard, String> {
+    let mut map = action_busy_map()
+        .lock()
+        .map_err(|_| "action guard poisoned".to_string())?;
+    // Opportunistic sweep so a long-lived process does not accumulate an entry
+    // per sticker it has ever talked to.
+    map.retain(|_, busy_until| *busy_until > now);
+    if let Some(busy_until) = map.get(dev_eui) {
+        let remaining = busy_until.saturating_duration_since(now).as_secs() + 1;
+        return Err(format!(
+            "device busy: another action command is still settling, retry in {remaining}s"
+        ));
+    }
+    map.insert(dev_eui.to_string(), now + settle);
+    Ok(ActionGuard { dev_eui: dev_eui.to_string() })
+}
+
+/// Minimum spacing between unsigned `force_send` triggers for one device.
+pub const FORCE_SEND_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// "Next allowed at" per dev_eui, for [`check_force_send_cooldown`].
+fn force_send_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Rate-limit `force_send` per device.
+///
+/// `force_send` is unsigned — it changes no device state, so requiring the
+/// Ed25519 handshake for it would be theatre. But that also means anything with
+/// broker access can trigger uplinks, and a sticker has a finite duty cycle: a
+/// tight loop would exhaust its airtime budget and starve real telemetry. The
+/// global subscriber rate limit is not per-device, so it cannot prevent this.
+pub fn check_force_send_cooldown(dev_eui: &str) -> Result<(), String> {
+    check_force_send_cooldown_at(dev_eui, Instant::now(), FORCE_SEND_COOLDOWN)
+}
+
+fn check_force_send_cooldown_at(
+    dev_eui: &str,
+    now: Instant,
+    cooldown: Duration,
+) -> Result<(), String> {
+    let mut map = force_send_map()
+        .lock()
+        .map_err(|_| "force_send cooldown poisoned".to_string())?;
+    map.retain(|_, next_allowed| *next_allowed > now);
+    if let Some(next_allowed) = map.get(dev_eui) {
+        let remaining = next_allowed.saturating_duration_since(now).as_secs() + 1;
+        return Err(format!(
+            "force_send rate limited for this device, retry in {remaining}s \
+             (a sticker's duty cycle is finite)"
+        ));
+    }
+    map.insert(dev_eui.to_string(), now + cooldown);
+    Ok(())
 }
 
 /// Validate + write a desired config. Validation failures return `Err` before
@@ -116,6 +328,21 @@ pub fn write_config(
     timeout: Duration,
 ) -> Result<ConfigWrite, Vec<ConfigError>> {
     let commands = sc::build_set_param(config, sc::DR0_COMMAND_BUDGET, save)?;
+
+    // save=true makes the last batch action-bearing (SETTINGS_SAVE -> persist +
+    // reboot), so it must not overlap another action command on the same device.
+    // Reported as a validation-style error because that is the channel this
+    // signature already has for "refused before spending airtime".
+    let _guard = if save {
+        match try_action_guard(dev_eui) {
+            Ok(g) => Some(g),
+            Err(reason) => {
+                return Err(vec![ConfigError { key: "save".to_string(), reason }]);
+            }
+        }
+    } else {
+        None
+    };
 
     let n = commands.len();
     let mut batches = Vec::with_capacity(n);
@@ -172,6 +399,75 @@ fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
         ConfigValue::Uint(n) => serde_json::json!(n),
         ConfigValue::Enum(s) | ConfigValue::Hex(s) => serde_json::json!(s),
     }
+}
+
+/// Project a decoded `DeviceInfo` into the JSON shape both front-ends publish, so
+/// the control socket, the MQTT query reply and the unsolicited join-time Info can
+/// never disagree about field names or redaction.
+///
+/// `source` distinguishes how the Info arrived: `"query"` (a GetInfo we sent) or
+/// `"unsolicited"` (the `seq=0` Info the sticker sends on every join, and the
+/// deferred answer to an empty-body clock_sync).
+///
+/// Two deliberate shape choices:
+///   * **`claim_token` is never emitted** — it is a provisioning secret, and this
+///     payload is published to a retained MQTT topic that every new subscriber
+///     replays. Callers get `has_claim_token` instead.
+///   * `unix_time == 0` and `battery_mv == 0` are the firmware's "unavailable"
+///     sentinels, so they publish as `null` rather than as 1970 / 0 V. Absent then
+///     honestly means absent, and `device_status.flags` carries `time_unsynced`
+///     for the clock case.
+pub fn info_to_json(
+    info: &super::sticker_response::DeviceInfo,
+    dev_eui: &str,
+    source: &str,
+    seq: u32,
+    synced_at: &str,
+) -> serde_json::Value {
+    use super::sticker_alarm::{quantity_name, source_name};
+    use super::sticker_response::{alarm_type_name, device_status_flags};
+
+    let alarms: Vec<serde_json::Value> = info
+        .active_alarms
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "source_id": a.source,
+                "source": source_name(a.source as u8),
+                "quantity_id": a.quantity,
+                "quantity": quantity_name(a.quantity as u8),
+                "type_id": a.kind,
+                "type": alarm_type_name(a.kind),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "dev_eui": dev_eui,
+        "source": source,
+        "seq": seq,
+        "synced_at": synced_at,
+        "fw_version": info.fw_version,
+        "build_type": info.build_type,
+        "debug": info.debug,
+        "serial_number": info.serial_number,
+        "uptime_s": info.uptime_s,
+        "unix_time": (info.unix_time != 0).then_some(info.unix_time),
+        "battery_mv": (info.battery_mv != 0).then_some(info.battery_mv),
+        "reset_cause": info.reset_cause,
+        // Both raw and decoded: an unknown future bit still reaches the UI as
+        // "bitN" while the raw value stays available for diagnosis.
+        "device_status": {
+            "raw": info.device_status,
+            "flags": device_status_flags(info.device_status),
+        },
+        "active_alarms": alarms,
+        // NFC-only over the wire, so normally null over LoRaWAN. Kept in the shape
+        // so a consumer does not have to special-case a missing key.
+        "lrw_state": info.lrw_state,
+        "dev_eui_reported": info.dev_eui,
+        "has_claim_token": info.claim_token.is_some(),
+    })
 }
 
 /// One page of a STICKER's on-device history (an expanded fPort-85 HistoryFrame).
@@ -311,6 +607,123 @@ pub fn history_record_to_json(r: &HistoryRecord) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device_info() -> super::super::sticker_response::DeviceInfo {
+        use super::super::sticker_response::{ActiveAlarm, DeviceInfo};
+        DeviceInfo {
+            fw_version: "1.4.0".into(),
+            build_type: "main",
+            serial_number: 2_162_164_514,
+            uptime_s: 1097,
+            unix_time: 1_782_198_249,
+            debug: false,
+            claim_token: Some("158a6a5d5b54c5118e62a8f4af0de8d2".into()),
+            battery_mv: 2740,
+            reset_cause: 1,
+            device_status: (1 << 0) | (1 << 11),
+            lrw_state: None,
+            dev_eui: None,
+            active_alarms: vec![ActiveAlarm { source: 0, quantity: 0, kind: 2 }],
+        }
+    }
+
+    #[test]
+    fn info_to_json_never_leaks_the_claim_token() {
+        // The claim token is a provisioning secret and this payload is published
+        // RETAINED, so a single leak is replayed to every future subscriber.
+        let v = info_to_json(&device_info(), "70b3d57ed80051b2", "query", 12, "2026-07-28T19:00:00Z");
+        let text = v.to_string();
+        assert!(!text.contains("158a6a5d"), "claim token must never be published");
+        assert!(!text.contains("claim_token\":\""), "no claim_token value key");
+        assert_eq!(v["has_claim_token"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn info_to_json_shape_and_sentinels() {
+        let v = info_to_json(&device_info(), "70b3d57ed80051b2", "query", 12, "2026-07-28T19:00:00Z");
+        assert_eq!(v["dev_eui"], serde_json::json!("70b3d57ed80051b2"));
+        assert_eq!(v["source"], serde_json::json!("query"));
+        assert_eq!(v["fw_version"], serde_json::json!("1.4.0"));
+        assert_eq!(v["battery_mv"], serde_json::json!(2740));
+        // Raw kept alongside decoded names so an unknown future bit is still visible.
+        assert_eq!(v["device_status"]["raw"], serde_json::json!(2049));
+        assert_eq!(
+            v["device_status"]["flags"],
+            serde_json::json!(["alarm_any", "time_unsynced"])
+        );
+        // Enums carry both the symbol and the id, so an unknown id still renders.
+        assert_eq!(v["active_alarms"][0]["type"], serde_json::json!("high"));
+        assert_eq!(v["active_alarms"][0]["type_id"], serde_json::json!(2));
+        // NFC-only fields are explicitly null rather than absent, so a consumer
+        // does not have to special-case a missing key.
+        assert!(v["lrw_state"].is_null());
+        assert!(v["dev_eui_reported"].is_null());
+    }
+
+    #[test]
+    fn info_to_json_maps_zero_sentinels_to_null() {
+        // The firmware uses 0 for "RTC not synced" and "battery unavailable".
+        // Publishing them as 0 would render as 1970 and 0 V — both look like data.
+        let mut info = device_info();
+        info.unix_time = 0;
+        info.battery_mv = 0;
+        let v = info_to_json(&info, "aabb", "unsolicited", 0, "2026-07-28T19:00:00Z");
+        assert!(v["unix_time"].is_null(), "unix_time 0 must publish as null");
+        assert!(v["battery_mv"].is_null(), "battery 0 must publish as null");
+        assert_eq!(v["source"], serde_json::json!("unsolicited"));
+        assert_eq!(v["seq"], serde_json::json!(0));
+    }
+
+    // The guard is process-global by design (it models one physical device), so
+    // each test uses its own dev_eui to stay independent of test ordering.
+    #[test]
+    fn action_guard_is_exclusive_per_device() {
+        let now = Instant::now();
+        let eui = "guard00000000001";
+        let first = try_action_guard_at(eui, now, Duration::from_secs(12));
+        assert!(first.is_ok());
+        let second = try_action_guard_at(eui, now, Duration::from_secs(12));
+        let err = second.expect_err("a second action command must be refused");
+        assert!(err.contains("device busy"), "got {err:?}");
+        // The caller is told how long to wait rather than just being refused.
+        assert!(err.contains("retry in"), "got {err:?}");
+    }
+
+    #[test]
+    fn action_guard_allows_different_devices_concurrently() {
+        // The single m_post_cmd_action slot is per sticker, so one busy device must
+        // never block commands to another.
+        let now = Instant::now();
+        assert!(try_action_guard_at("guard00000000002", now, Duration::from_secs(12)).is_ok());
+        assert!(try_action_guard_at("guard00000000003", now, Duration::from_secs(12)).is_ok());
+    }
+
+    #[test]
+    fn action_guard_releases_after_the_settle_window() {
+        let t0 = Instant::now();
+        let eui = "guard00000000004";
+        assert!(try_action_guard_at(eui, t0, Duration::from_secs(12)).is_ok());
+        // Still inside the window: refused.
+        assert!(try_action_guard_at(eui, t0 + Duration::from_secs(11), Duration::from_secs(12))
+            .is_err());
+        // Past the deferred action: allowed again.
+        assert!(try_action_guard_at(eui, t0 + Duration::from_secs(13), Duration::from_secs(12))
+            .is_ok());
+    }
+
+    #[test]
+    fn action_guard_does_not_leak_entries_for_settled_devices() {
+        let t0 = Instant::now();
+        assert!(try_action_guard_at("guard00000000005", t0, Duration::from_secs(12)).is_ok());
+        assert!(try_action_guard_at("guard00000000006", t0, Duration::from_secs(12)).is_ok());
+        // A later call sweeps every expired entry, so a long-lived process does not
+        // accumulate one per sticker it has ever talked to.
+        let far = t0 + Duration::from_secs(600);
+        assert!(try_action_guard_at("guard00000000007", far, Duration::from_secs(12)).is_ok());
+        let map = action_busy_map().lock().unwrap();
+        assert!(!map.contains_key("guard00000000005"));
+        assert!(!map.contains_key("guard00000000006"));
+    }
 
     fn hist(frame_index: u32, frame_count: u32) -> DecodedResponse {
         DecodedResponse {

@@ -141,18 +141,55 @@ pub struct DecodedResponse {
     pub kind: ResponseKind,
 }
 
+/// One latched alarm from `Response.Info.active_alarms` (proto field 15). The
+/// numeric ids share the `app_alarm_source` / `app_alarm_quantity` enums used by
+/// fPort-3 alarm reports, so `sticker_alarm`'s name tables resolve them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveAlarm {
+    pub source: u32,
+    pub quantity: u32,
+    /// `Response.AlarmStatus.type` — none/low/high/trigger/no_data.
+    pub kind: u32,
+}
+
+/// A decoded `Response.Info` (fPort-85 `GetInfo` reply, and the unsolicited
+/// `seq=0` Info the sticker emits on every join).
+///
+/// Its own struct rather than an inline enum variant: v1.4.0 takes this to 13
+/// fields, and the previous inline form meant every exhaustive `match` pattern
+/// across the crate broke whenever the firmware added one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceInfo {
+    pub fw_version: String,
+    pub build_type: &'static str,
+    pub serial_number: u32,
+    pub uptime_s: u32,
+    /// Wall clock (UTC seconds). `0` means the RTC is not synced yet — cross-check
+    /// `device_status` bit 11 (`time_unsynced`).
+    pub unix_time: u32,
+    pub debug: bool,
+    pub claim_token: Option<String>,
+    /// Supply voltage in **mV** (`0` = unavailable). Deliberately not named
+    /// `voltage`: the fPort-2 telemetry field of that name is in volts.
+    pub battery_mv: u32,
+    /// hwinfo reset-cause bitmask of the last boot (`0` = unknown).
+    pub reset_cause: u32,
+    /// `APP_DEVICE_STATUS_*` bitmask (`0` = all OK). Decode with
+    /// [`device_status_flags`].
+    pub device_status: u32,
+    /// NFC-only in firmware v1.4.0 (`app_cmd.c:252-263`), so always `None` over
+    /// LoRaWAN. Never render a default here — "idle" would be a fabrication.
+    pub lrw_state: Option<&'static str>,
+    /// NFC-only, as above. The LNS already knows the DevEUI from device context.
+    pub dev_eui: Option<String>,
+    /// Emitted on both transports; empty when nothing is latched.
+    pub active_alarms: Vec<ActiveAlarm>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseKind {
     Ack,
-    Info {
-        fw_version: String,
-        build_type: &'static str,
-        serial_number: u32,
-        uptime_s: u32,
-        unix_time: u32,
-        debug: bool,
-        claim_token: Option<String>,
-    },
+    Info(DeviceInfo),
     ConfigDump {
         page_index: u32,
         page_count: u32,
@@ -177,6 +214,16 @@ pub enum ResponseKind {
     W1Scan {
         roms: Vec<String>,
     },
+    /// `Response.sample` — a full `Telemetry` snapshot answering the `Sample`
+    /// command (proto id 21).
+    ///
+    /// Unreachable over LoRaWAN by firmware design: `app_cmd_handle_sample`
+    /// (`app_cmd.c:726-731`) only sets this body for `APP_CMD_TRANSPORT_NFC`,
+    /// because a full `Telemetry` would not fit the 64-byte fPort-85 response
+    /// buffer. Over the radio the fPort-2 frame is the answer instead. The variant
+    /// exists so the decode match stays exhaustive and an unexpected sample is
+    /// reported rather than mistaken for `Empty`.
+    Sample,
     /// Response with no body set (forward-compat / unknown variant).
     Empty,
 }
@@ -235,10 +282,20 @@ fn motion_name(v: i32) -> &'static str {
     }
 }
 
+/// `AppConfigMessage.Lorawan.Mode` → symbolic name (v1.4.0, proto field 15).
+fn mode_name(v: i32) -> &'static str {
+    match v {
+        0 => "OFF",
+        1 => "LORAWAN",
+        2 => "P2P",
+        _ => "unknown",
+    }
+}
+
 /// Flatten a `ConfigDump` page into `group.field` → value entries. Only fields
 /// present on the wire are emitted (every config field is `optional`, so prost
 /// preserves present-vs-absent). Mirrors the `ttn.js` config-decode name maps.
-fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
+pub(crate) fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
     let mut m: BTreeMap<String, ConfigValue> = BTreeMap::new();
 
     macro_rules! ins_bool {
@@ -284,13 +341,20 @@ fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
         ins_hex!(l, "lorawan", devaddr);
         ins_uint!(l, "lorawan", link_check_interval);
         ins_uint!(l, "lorawan", link_check_fail_rejoin);
+        ins_enum!(l, "lorawan", mode, mode_name);
         // nwkkey/appkey/nwkskey/appskey deliberately omitted (secrets).
     }
     if let Some(a) = &c.application {
+        ins_bool!(a, "application", calibration);
         ins_uint!(a, "application", interval_sample);
         ins_uint!(a, "application", interval_report);
         ins_bool!(a, "application", history_enable);
         ins_uint!(a, "application", history_sensors);
+        // battery_level is settable (#69), so it MUST decode — otherwise a
+        // successful write reads back as absent and diff_config reports it
+        // permanently unverified.
+        ins_uint!(a, "application", battery_level);
+        ins_bool!(a, "application", vendor_reset_allow);
     }
     if let Some(s) = &c.sensors {
         ins_bool!(s, "sensors", cap_hall_left);
@@ -315,6 +379,7 @@ fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, ConfigValue> {
     if let Some(al) = &c.alarms {
         ins_uint!(al, "alarms", alarm_limit);
         ins_uint!(al, "alarms", alarm_notif_time);
+        ins_uint!(al, "alarms", alarm_light_confirm_delay);
         ins_hex!(al, "alarms", alarm_0);
         ins_hex!(al, "alarms", alarm_1);
         ins_hex!(al, "alarms", alarm_2);
@@ -385,6 +450,68 @@ fn build_type_name(v: i32) -> &'static str {
     }
 }
 
+/// `Response.Info.LrwState` → symbolic name (`app_lrw_state`).
+fn lrw_state_name(v: i32) -> &'static str {
+    match v {
+        0 => "idle",
+        1 => "joining",
+        2 => "healthy",
+        3 => "warning",
+        4 => "reconnect",
+        5 => "disabled",
+        _ => "unknown",
+    }
+}
+
+/// `Response.AlarmStatus.type` → symbolic name (`app_alarm_type`).
+pub fn alarm_type_name(v: u32) -> &'static str {
+    match v {
+        0 => "none",
+        1 => "low",
+        2 => "high",
+        3 => "trigger",
+        4 => "no_data",
+        _ => "unknown",
+    }
+}
+
+/// Decode an `Info.device_status` bitmask into stable flag names.
+///
+/// Mirrors `APP_DEVICE_STATUS_*` (`app_cmd.h:39-50`). Bits 6 and 7 are reserved by
+/// the firmware and have no name yet. **An unrecognised bit is reported as
+/// `bitN`** rather than dropped, so a firmware that adds a status cannot go
+/// silently unnoticed here.
+pub fn device_status_flags(v: u32) -> Vec<String> {
+    const NAMES: &[(u32, &str)] = &[
+        (0, "alarm_any"),
+        (1, "alarm_threshold"),
+        (2, "alarm_state"),
+        (3, "alarm_rate"),
+        (4, "alarm_no_data"),
+        (5, "alarm_low_batt"),
+        (8, "nfc_down"),
+        (9, "history_down"),
+        (10, "i2c_wedged"),
+        (11, "time_unsynced"),
+        (12, "lrw_disabled"),
+    ];
+    let mut out = Vec::new();
+    for bit in 0..32 {
+        if v & (1 << bit) == 0 {
+            continue;
+        }
+        match NAMES.iter().find(|(b, _)| *b == bit) {
+            Some((_, name)) => out.push((*name).to_string()),
+            None => out.push(format!("bit{bit}")),
+        }
+    }
+    out
+}
+
+/// `Response.Error.Code` → the stable string the control socket and MQTT expose.
+/// Mirrors the enum in `app_config.proto` @ sticker `v1.4.0`. A code this table
+/// does not know collapses to "unknown", so a firmware that adds one needs a
+/// line here before the UI can tell it apart.
 fn error_code_name(v: i32) -> &'static str {
     match v {
         0 => "unknown",
@@ -394,6 +521,13 @@ fn error_code_name(v: i32) -> &'static str {
         4 => "history_unavailable",
         5 => "unsupported_field",
         6 => "persist_failed",
+        // NOT_SUPPORTED (L-54): the command tag is unknown to the firmware or was
+        // removed. Distinct from bad_request — retrying cannot help.
+        7 => "not_supported",
+        // NOT_WRITABLE (M-3): the field exists but this transport may not write
+        // it. Over LoRaWAN the whole `lorawan.*` group answers this way, and so
+        // does `factory_reset` (id 23), which is NFC/shell-only.
+        8 => "not_writable",
         _ => "unknown",
     }
 }
@@ -403,7 +537,7 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
     let r = Response::decode(bytes).map_err(|e| format!("Response protobuf decode failed: {e}"))?;
     let kind = match r.body {
         Some(response::Body::Ack(_)) => ResponseKind::Ack,
-        Some(response::Body::Info(i)) => ResponseKind::Info {
+        Some(response::Body::Info(i)) => ResponseKind::Info(DeviceInfo {
             fw_version: format!("{}.{}.{}", i.fw_major, i.fw_minor, i.fw_patch),
             build_type: build_type_name(i.build_type),
             serial_number: i.serial_number,
@@ -411,7 +545,19 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
             unix_time: i.unix_time,
             debug: i.debug,
             claim_token: i.claim_token.as_deref().map(hex),
-        },
+            battery_mv: i.battery,
+            reset_cause: i.reset_cause,
+            device_status: i.device_status,
+            // Both are absent over LoRaWAN by firmware design, so map absent to
+            // None instead of substituting a default that would read as fact.
+            lrw_state: i.lrw_state.map(lrw_state_name),
+            dev_eui: i.dev_eui.as_deref().map(hex),
+            active_alarms: i
+                .active_alarms
+                .iter()
+                .map(|a| ActiveAlarm { source: a.source, quantity: a.quantity, kind: a.r#type })
+                .collect(),
+        }),
         Some(response::Body::ConfigDump(c)) => ResponseKind::ConfigDump {
             page_index: c.page_index,
             page_count: c.page_count,
@@ -440,6 +586,10 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
         Some(response::Body::W1Scan(w)) => ResponseKind::W1Scan {
             roms: w.rom.iter().map(|r| hex(r)).collect(),
         },
+        // NFC-only over the wire (see ResponseKind::Sample); the payload is
+        // deliberately dropped rather than decoded, since nothing here can ask
+        // for it.
+        Some(response::Body::Sample(_)) => ResponseKind::Sample,
         None => ResponseKind::Empty,
     };
     Ok(DecodedResponse { seq: r.seq, kind })
@@ -585,20 +735,96 @@ mod tests {
                 unix_time: 1_780_000_000,
                 debug: true,
                 claim_token: Some(vec![0xaa; 16]),
+                // Fields 10-15, new in v1.4.0, left at their defaults so this test
+                // keeps asserting exactly the pre-v1.4.0 subset. Their absence is
+                // itself asserted below: a device that never sends them must not
+                // acquire invented values.
+                ..Default::default()
             })),
         };
         let d = decode_response(&resp.encode_to_vec()).unwrap();
         assert_eq!(d.seq, 7);
         match d.kind {
-            ResponseKind::Info { fw_version, build_type, serial_number, debug, claim_token, .. } => {
-                assert_eq!(fw_version, "1.4.0");
-                assert_eq!(build_type, "custom");
-                assert_eq!(serial_number, 12345);
-                assert!(debug);
-                assert_eq!(claim_token.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            ResponseKind::Info(i) => {
+                assert_eq!(i.fw_version, "1.4.0");
+                assert_eq!(i.build_type, "custom");
+                assert_eq!(i.serial_number, 12345);
+                assert!(i.debug);
+                assert_eq!(i.claim_token.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+                // Backward compatibility: an Info without fields 10-15 decodes to
+                // "unavailable", not to a fabricated reading.
+                assert_eq!(i.battery_mv, 0);
+                assert_eq!(i.reset_cause, 0);
+                assert_eq!(i.device_status, 0);
+                assert!(i.lrw_state.is_none(), "lrw_state is NFC-only; absent must stay absent");
+                assert!(i.dev_eui.is_none(), "dev_eui is NFC-only; absent must stay absent");
+                assert!(i.active_alarms.is_empty());
             }
             other => panic!("expected Info, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn info_v140_fields_and_status_flags_decode() {
+        let resp = Response {
+            seq: 21,
+            body: Some(response::Body::Info(response::Info {
+                fw_major: 1,
+                fw_minor: 4,
+                fw_patch: 0,
+                build_type: 0,
+                serial_number: 2_162_164_514,
+                uptime_s: 1097,
+                unix_time: 0, // RTC not synced — pairs with time_unsynced below
+                debug: false,
+                claim_token: None,
+                battery: 2740,
+                reset_cause: 1,
+                // alarm_any (0) | alarm_low_batt (5) | time_unsynced (11)
+                device_status: (1 << 0) | (1 << 5) | (1 << 11),
+                lrw_state: None, // NFC-only, so absent over LoRaWAN
+                dev_eui: None,
+                active_alarms: vec![
+                    response::AlarmStatus { source: 0, quantity: 0, r#type: 2 },
+                    response::AlarmStatus { source: 11, quantity: 8, r#type: 1 },
+                ],
+            })),
+        };
+        let d = decode_response(&resp.encode_to_vec()).unwrap();
+        match d.kind {
+            ResponseKind::Info(i) => {
+                assert_eq!(i.battery_mv, 2740);
+                assert_eq!(i.reset_cause, 1);
+                assert_eq!(i.unix_time, 0);
+                assert!(i.claim_token.is_none());
+                assert_eq!(
+                    device_status_flags(i.device_status),
+                    vec!["alarm_any", "alarm_low_batt", "time_unsynced"]
+                );
+                assert_eq!(i.active_alarms.len(), 2);
+                assert_eq!(i.active_alarms[0], ActiveAlarm { source: 0, quantity: 0, kind: 2 });
+                assert_eq!(alarm_type_name(i.active_alarms[0].kind), "high");
+                // source 11 = battery, quantity 8 = voltage, type 1 = low
+                assert_eq!(alarm_type_name(i.active_alarms[1].kind), "low");
+            }
+            other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_status_flags_names_known_bits_and_preserves_unknown() {
+        assert!(device_status_flags(0).is_empty());
+        assert_eq!(device_status_flags(1 << 11), vec!["time_unsynced"]);
+        assert_eq!(device_status_flags(1 << 10), vec!["i2c_wedged"]);
+        // Bits 6/7 are firmware-reserved and 13+ do not exist yet: an unnamed bit
+        // must still reach the caller rather than being silently dropped.
+        assert_eq!(device_status_flags(1 << 6), vec!["bit6"]);
+        assert_eq!(device_status_flags(1 << 13), vec!["bit13"]);
+        assert_eq!(device_status_flags(1 << 31), vec!["bit31"]);
+        assert_eq!(
+            device_status_flags((1 << 1) | (1 << 7) | (1 << 12)),
+            vec!["alarm_threshold", "bit7", "lrw_disabled"]
+        );
     }
 
     #[test]
@@ -620,6 +846,44 @@ mod tests {
     }
 
     #[test]
+    fn v140_error_codes_not_supported_and_not_writable_decode() {
+        // Both codes are new in sticker v1.4.0 and used on paths this branch adds:
+        //   NOT_WRITABLE (8) — any `lorawan.*` write over LoRaWAN. fault_field is
+        //     group-encoded, so 104 is lorawan (group 1) field 4 = adr.
+        //   NOT_SUPPORTED (7) — an unknown/removed command tag.
+        // Before this fix both decoded as "unknown", which made a permission
+        // rejection indistinguishable from a firmware fault.
+        let not_writable = Response {
+            seq: 11,
+            body: Some(response::Body::Error(response::Error {
+                code: 8,
+                fault_field: 104,
+                detail: "transport not allowed".into(),
+            })),
+        };
+        let d = decode_response(&not_writable.encode_to_vec()).unwrap();
+        assert_eq!(
+            d.kind,
+            ResponseKind::Error {
+                code: "not_writable",
+                fault_field: 104,
+                detail: "transport not allowed".into(),
+            }
+        );
+
+        let not_supported = Response {
+            seq: 12,
+            body: Some(response::Body::Error(response::Error {
+                code: 7,
+                fault_field: 0,
+                detail: "command not supported".into(),
+            })),
+        };
+        let d = decode_response(&not_supported.encode_to_vec()).unwrap();
+        assert!(matches!(d.kind, ResponseKind::Error { code: "not_supported", .. }));
+    }
+
+    #[test]
     fn real_e2e_fport85_info_decodes() {
         // GOLDEN VECTOR: live fPort-85 `Response{Info}` captured from a STICKER
         // (get_info reply), with the 0x01 proto-version byte stripped. Confirms
@@ -632,12 +896,18 @@ mod tests {
         let d = decode_response(bytes).unwrap();
         assert_eq!(d.seq, 3);
         match d.kind {
-            ResponseKind::Info { fw_version, build_type, serial_number, debug, claim_token, .. } => {
-                assert_eq!(fw_version, "1.4.0");
-                assert_eq!(build_type, "custom");
-                assert_eq!(serial_number, 2162164514);
-                assert!(debug);
-                assert_eq!(claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+            ResponseKind::Info(i) => {
+                // Asserted values unchanged from before the v1.4.0 widening — this
+                // is the wire-contract canary.
+                assert_eq!(i.fw_version, "1.4.0");
+                assert_eq!(i.build_type, "custom");
+                assert_eq!(i.serial_number, 2162164514);
+                assert!(i.debug);
+                assert_eq!(i.claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+                // This capture predates fields 10-15, so they must read as
+                // unavailable rather than as a decode artefact.
+                assert_eq!((i.battery_mv, i.reset_cause, i.device_status), (0, 0, 0));
+                assert!(i.lrw_state.is_none() && i.dev_eui.is_none());
             }
             other => panic!("expected Info, got {other:?}"),
         }
@@ -720,19 +990,22 @@ mod tests {
     fn real_e2e_fport85_unsolicited_info_on_join() {
         // GOLDEN VECTOR: the unsolicited device-info the STICKER sends as its FIRST
         // uplink after every join (fCnt=1, seq=0), captured live on a FIBER device
-        // after `ats device reboot`. seq=0 => no pending command; the monitor logs
-        // it as an unmatched response. Confirms the unsolicited-Info path.
+        // after `ats device reboot`. seq=0 => no pending command, so it is routed by
+        // dev_eui rather than by seq correlation.
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
         let raw = B64.decode("ARooCAEQBCACKKKGgIcIMBE4pPLo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==").unwrap();
         let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
         assert_eq!(d.seq, 0); // unsolicited
         match d.kind {
-            ResponseKind::Info { fw_version, build_type, serial_number, debug, claim_token, .. } => {
-                assert_eq!(fw_version, "1.4.0");
-                assert_eq!(build_type, "custom");
-                assert_eq!(serial_number, 2162164514);
-                assert!(debug);
-                assert_eq!(claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+            ResponseKind::Info(i) => {
+                assert_eq!(i.fw_version, "1.4.0");
+                assert_eq!(i.build_type, "custom");
+                assert_eq!(i.serial_number, 2162164514);
+                assert!(i.debug);
+                assert_eq!(i.claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+                // uptime_s is tiny here precisely because this is the post-reboot
+                // join: 17 s, which is what makes the vector an unsolicited one.
+                assert_eq!(i.uptime_s, 17);
             }
             other => panic!("expected Info, got {other:?}"),
         }

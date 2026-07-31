@@ -493,6 +493,16 @@ impl AuthorizationManager {
             "send_sticker_raw" => "set_lorawan_sensor_config",  // reuse sticker-management permission
             "set_eye_field_threshold" => "set_lorawan_sensor_config",
             "delete_eye_field_threshold" => "set_lorawan_sensor_config",
+            // #71 control commands. They reuse the sticker-management permission
+            // rather than introducing a new one, because anyone who can already
+            // write sticker config can already reboot the device via
+            // SetParam{save:true} — a dedicated permission would raise no real bar
+            // while forcing every provisioned signer certificate to be re-issued.
+            // Tightening this is a follow-up, not a prerequisite.
+            "sticker_reboot" => "set_lorawan_sensor_config",
+            "sticker_device_reset" => "set_lorawan_sensor_config",
+            "sticker_reset_counters" => "set_lorawan_sensor_config",
+            "sticker_clock_sync" => "set_lorawan_sensor_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -628,6 +638,59 @@ impl AuthorizationManager {
                 let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let hex = params.get("hex").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Send raw downlink to STICKER {} ({} hex chars)", dev_eui, hex.len())
+            }
+            // These strings are what an operator actually reads before confirming a
+            // signed command, so they state the real consequence rather than the
+            // command name.
+            "sticker_reboot" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!(
+                    "Reboot STICKER {} — cold restart about 8 s after the acknowledgement. \
+                     Any staged but unsaved configuration is discarded; saved settings, \
+                     alarm rules and counters are unaffected.",
+                    dev_eui
+                )
+            }
+            "sticker_device_reset" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!(
+                    "Reset STICKER {} to defaults. Identity and the full LoRaWAN \
+                     configuration are KEPT, so the device stays joined and needs no \
+                     re-provisioning — but ALL sensor capabilities, alarm rules, intervals \
+                     and history settings are lost. This is not the same as an NFC factory \
+                     reset, which cannot be performed over the radio.",
+                    dev_eui
+                )
+            }
+            "sticker_reset_counters" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let mut chans: Vec<&str> = Vec::new();
+                if params.get("all").and_then(|v| v.as_bool()) == Some(true) {
+                    chans = vec!["hall_left", "hall_right", "input_a", "input_b"];
+                } else if let Some(arr) = params.get("counters").and_then(|v| v.as_array()) {
+                    chans = arr.iter().filter_map(|v| v.as_str()).collect();
+                }
+                format!(
+                    "Reset STICKER {} pulse counters: {:?}. Irreversible — the totals are \
+                     zeroed and persisted. Does NOT reset motion_count or \
+                     accel_motion_count, which are RAM-only on the device.",
+                    dev_eui, chans
+                )
+            }
+            "sticker_clock_sync" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                match params.get("unix_time").and_then(|v| v.as_u64()) {
+                    Some(t) => format!(
+                        "Set STICKER {} clock to Unix time {}. Absolute history timestamps \
+                         depend on this.",
+                        dev_eui, t
+                    ),
+                    None => format!(
+                        "Ask STICKER {} to re-sync its clock from the network. No immediate \
+                         reply — the device reports the result in a later device-info uplink.",
+                        dev_eui
+                    ),
+                }
             }
             "set_eye_recording" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -1007,6 +1070,22 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
                 Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
+            "sticker_reboot" => {
+                MqttCommand::parse_sticker_reboot(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_device_reset" => {
+                MqttCommand::parse_sticker_device_reset(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_reset_counters" => {
+                MqttCommand::parse_sticker_reset_counters(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_clock_sync" => {
+                MqttCommand::parse_sticker_clock_sync(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
             }
             "add_lorawan_sticker" => {
                 let dev_eui = challenge.params.get("dev_eui")

@@ -15,6 +15,7 @@ pub mod sticker_command;
 pub mod sticker_config;
 pub mod sticker_payload;
 pub mod sticker_proto;
+pub mod sticker_reassembly;
 pub mod sticker_response;
 
 pub use sticker_add::{add_lorawan_sticker, StickerAddDeps};

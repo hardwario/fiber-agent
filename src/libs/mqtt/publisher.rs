@@ -28,7 +28,7 @@ impl MqttPublisher {
     }
 
     /// Get current timestamp as ISO 8601 string
-    fn timestamp() -> String {
+    pub(crate) fn timestamp() -> String {
         let now: DateTime<Utc> = Utc::now();
         now.to_rfc3339()
     }
@@ -233,6 +233,48 @@ impl MqttPublisher {
                     page_count,
                     last_seq,
                     last_result,
+                )
+                .await
+            }
+
+            MqttMessage::PublishStickerFullConfig {
+                dev_eui,
+                config,
+                page_count,
+                last_seq,
+                read_status,
+                missing,
+            } => {
+                self.publish_sticker_full_config(
+                    dev_eui,
+                    config,
+                    page_count,
+                    last_seq,
+                    read_status,
+                    missing,
+                )
+                .await
+            }
+
+            MqttMessage::PublishStickerInfo { dev_eui, info } => {
+                self.publish_sticker_info(dev_eui, info).await
+            }
+
+            MqttMessage::ClearStickerInfo { dev_eui } => {
+                self.clear_sticker_info(&dev_eui).await
+            }
+
+            MqttMessage::PublishStickerCommandResult {
+                dev_eui,
+                command,
+                seq,
+                result,
+                expect,
+                detail,
+                fault_key,
+            } => {
+                self.publish_sticker_command_result(
+                    dev_eui, command, seq, result, expect, detail, fault_key,
                 )
                 .await
             }
@@ -887,6 +929,108 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.lorawan_sensor_config(&dev_eui);
+        // Evict any retained value left on this topic by an older build before
+        // publishing the real, non-retained snapshot. `/config` is deliberately
+        // not retained — a config read is a point-in-time answer, and a retained
+        // one is served to every new subscriber as if it were current. An earlier
+        // build did retain it, and the leftover survives in the broker until
+        // something overwrites it: measured on FIBER-CE3D59F8, a fresh subscriber
+        // with no command in flight was handed a snapshot stamped four hours
+        // earlier, which the viewer would render as the live config. The empty
+        // retained payload is the standard tombstone, same as `clear_sticker_info`.
+        let _ = self.publish(topic.clone(), String::new(), QoS::AtLeastOnce, true).await;
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+    }
+
+    /// Publish the full non-secret config read-back. `chunks_done`/`chunks_total`
+    /// are derived from `missing` rather than tracked separately: the reader
+    /// batches at most `MAX_FIELDS_PER_GETPARAM` keys per chunk, so the counts a
+    /// progress bar needs are just "how many keys landed out of how many asked".
+    async fn publish_sticker_full_config(
+        &self,
+        dev_eui: String,
+        config: std::collections::BTreeMap<String, serde_json::Value>,
+        page_count: u32,
+        last_seq: u32,
+        read_status: String,
+        missing: Vec<String>,
+    ) -> Result<(), String> {
+        let asked = config.len() + missing.len();
+        let payload = json!({
+            "dev_eui": dev_eui,
+            "config": config,
+            "page_count": page_count,
+            "synced_at": Self::timestamp(),
+            "last_seq": last_seq,
+            "read_status": read_status,
+            "missing": missing,
+            "chunks_done": config.len(),
+            "chunks_total": asked,
+        });
+
+        let topic = self.topics.lorawan_sensor_full_config(&dev_eui);
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+    }
+
+    /// Publish a STICKER's fPort-85 device info to
+    /// `lorawan/sensors/<dev_eui>/info` (#65), **retained**.
+    ///
+    /// Retained because this is device identity plus last-known health, and a
+    /// sticker only reports every `interval_report` (900 s by default): a viewer
+    /// that reconnects has to be able to render a firmware version and health
+    /// flags immediately rather than showing blanks until someone re-queries.
+    ///
+    /// `info` arrives already projected by `sticker_config::info_to_json`, which
+    /// reduces `claim_token` to `has_claim_token`. That redaction matters here
+    /// specifically *because* the message is retained: the broker replays it to
+    /// every future subscriber, so a secret published once would leak indefinitely.
+    async fn publish_sticker_info(
+        &self,
+        dev_eui: String,
+        info: serde_json::Value,
+    ) -> Result<(), String> {
+        let topic = self.topics.lorawan_sensor_info(&dev_eui);
+        self.publish(topic, info.to_string(), QoS::AtLeastOnce, true).await
+    }
+
+    /// Clear the retained device-info for a decommissioned sticker. Without this a
+    /// removed device's info would be replayed to new subscribers forever.
+    async fn clear_sticker_info(&self, dev_eui: &str) -> Result<(), String> {
+        let topic = self.topics.lorawan_sensor_info(dev_eui);
+        self.publish(topic, String::new(), QoS::AtLeastOnce, true).await
+    }
+
+    /// Publish the outcome of a STICKER control command (#71) to
+    /// `lorawan/sensors/<dev_eui>/command`.
+    ///
+    /// `expect` is what makes this payload honest. Three of the five commands
+    /// cannot report success at the moment they are acknowledged: `force_send`
+    /// sends no fPort-85 reply at all, an empty-body `clock_sync` answers with a
+    /// deferred `Info`, and `reboot`/`device_reset` restart 8 s later. Carrying the
+    /// outstanding expectation lets the viewer render "requested" rather than
+    /// claiming a success it cannot know about yet.
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_sticker_command_result(
+        &self,
+        dev_eui: String,
+        command: String,
+        seq: u32,
+        result: String,
+        expect: Option<String>,
+        detail: Option<String>,
+        fault_key: Option<String>,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "dev_eui": dev_eui,
+            "command": command,
+            "seq": seq,
+            "result": result,
+            "expect": expect,
+            "detail": detail,
+            "fault_key": fault_key,
+            "ts": Self::timestamp(),
+        });
+        let topic = self.topics.lorawan_sensor_command(&dev_eui);
         self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
     }
 

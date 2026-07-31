@@ -773,6 +773,249 @@ impl MqttMonitor {
     /// the merged result to `lorawan/sensors/<dev_eui>/config`. Detached so the
     /// MQTT event loop stays responsive while the blocking downlink round-trips
     /// run on a blocking thread.
+    /// Run one STICKER control command (#71) and publish its outcome.
+    ///
+    /// The three commands that cannot be confirmed at Ack time are handled
+    /// explicitly rather than left to time out into a false failure:
+    ///
+    ///   * `sticker_force_send` sends no fPort-85 reply at all
+    ///     (`app_cmd.c:699-711`) — the fPort-2 telemetry frame is the answer. It
+    ///     goes out fire-and-forget, with no `seq` allocated, so it can never alias
+    ///     a pending waiter.
+    ///   * `sticker_clock_sync` with no `unix_time` asks the device to re-sync from
+    ///     the network, which also produces no immediate reply; the deferred `Info`
+    ///     arrives later and is picked up by the unsolicited-Info path from #65.
+    ///   * `sticker_reboot` / `sticker_device_reset` answer `Ack` and then restart
+    ///     8 s later, so a missing reply is expected rather than a failure.
+    fn spawn_sticker_command(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        cmd: MqttCommand,
+    ) {
+        use crate::libs::lorawan::sticker_command as sc;
+        use crate::libs::lorawan::sticker_config;
+        use crate::libs::lorawan::sticker_proto::Command as ProtoCommand;
+        use crate::libs::lorawan::sticker_response::ResponseKind;
+        use prost::Message as _;
+
+        tokio::spawn(async move {
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            let name = cmd.name().to_string();
+
+            // dev_eui + the proto command + what remains outstanding after the reply.
+            let (dev_eui, proto, expect, action_bearing): (String, ProtoCommand, Option<&str>, bool) =
+                match &cmd {
+                    MqttCommand::StickerReboot { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_reboot(),
+                        Some("unsolicited_info_on_rejoin"),
+                        true,
+                    ),
+                    MqttCommand::StickerDeviceReset { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_device_reset(),
+                        Some("unsolicited_info_on_rejoin"),
+                        true,
+                    ),
+                    MqttCommand::StickerResetCounters {
+                        dev_eui,
+                        hall_left,
+                        hall_right,
+                        input_a,
+                        input_b,
+                    } => (
+                        dev_eui.clone(),
+                        sc::build_reset_counters_selective(
+                            *hall_left, *hall_right, *input_a, *input_b,
+                        ),
+                        None,
+                        true,
+                    ),
+                    MqttCommand::StickerForceSend { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_force_send(),
+                        Some("telemetry_uplink"),
+                        false,
+                    ),
+                    MqttCommand::StickerClockSync { dev_eui, unix_time } => match unix_time {
+                        Some(t) => (dev_eui.clone(), sc::build_clock_sync(*t), None, false),
+                        None => (
+                            dev_eui.clone(),
+                            sc::build_clock_sync_from_network(),
+                            Some("deferred_info"),
+                            false,
+                        ),
+                    },
+                    other => {
+                        eprintln!("[MQTT Monitor] spawn_sticker_command: not a control command: {}", other.name());
+                        return;
+                    }
+                };
+
+            // force_send is unsigned, so broker access alone can trigger uplinks.
+            // A sticker's duty cycle is finite, so space them per device.
+            if matches!(cmd, MqttCommand::StickerForceSend { .. }) {
+                if let Err(reason) = sticker_config::check_force_send_cooldown(&dev_eui) {
+                    let msg = MqttMessage::PublishStickerCommandResult {
+                        dev_eui,
+                        command: name,
+                        seq: 0,
+                        result: "rate_limited".to_string(),
+                        expect: None,
+                        detail: Some(reason),
+                        fault_key: None,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish command result: {}", e);
+                    }
+                    return;
+                }
+            }
+
+            // Commands that leave a deferred action on the device's single slot must
+            // not overlap. Refuse immediately rather than queueing behind a lock.
+            let guard = if action_bearing {
+                match sticker_config::try_action_guard(&dev_eui) {
+                    Ok(g) => Some(g),
+                    Err(reason) => {
+                        let msg = MqttMessage::PublishStickerCommandResult {
+                            dev_eui,
+                            command: name,
+                            seq: 0,
+                            result: "device_busy".to_string(),
+                            expect: None,
+                            detail: Some(reason),
+                            fault_key: None,
+                        };
+                        if let Err(e) = publisher.handle_message(msg).await {
+                            eprintln!("[MQTT Monitor] Failed to publish command result: {}", e);
+                        }
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            // No fPort-85 reply is ever coming for these two, so do not allocate a
+            // seq and do not wait for one.
+            let no_reply_expected =
+                matches!(expect, Some("telemetry_uplink") | Some("deferred_info"));
+
+            let dev_eui_blocking = dev_eui.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _guard = guard; // held for the duration of the exchange
+                if no_reply_expected {
+                    handle
+                        .send_raw(&dev_eui_blocking, proto.encode_to_vec(), 85)
+                        .map(|()| None)
+                } else {
+                    handle
+                        .send_command(&dev_eui_blocking, proto, STICKER_COMMAND_TIMEOUT)
+                        .map(Some)
+                }
+            })
+            .await;
+
+            let (seq, result, detail, fault_key) = match outcome {
+                // Fire-and-forget succeeded: honestly "requested", never "ok".
+                Ok(Ok(None)) => (0, "requested".to_string(), None, None),
+                Ok(Ok(Some(dr))) => match dr.kind {
+                    ResponseKind::Ack => (dr.seq, "ok".to_string(), None, None),
+                    ResponseKind::Info(_) => (dr.seq, "ok".to_string(), None, None),
+                    ResponseKind::Error { code, detail, fault_field } => (
+                        dr.seq,
+                        code.to_string(),
+                        Some(detail),
+                        sc::describe_fault(fault_field, std::iter::empty()),
+                    ),
+                    other => (dr.seq, "ok".to_string(), Some(format!("{other:?}")), None),
+                },
+                Ok(Err(e)) => {
+                    // A reboot/device_reset that never answers is the expected case:
+                    // the device restarts 8 s after the Ack.
+                    if expect == Some("unsolicited_info_on_rejoin") {
+                        (0, "requested".to_string(), Some(e), None)
+                    } else {
+                        (0, "transport_error".to_string(), Some(e), None)
+                    }
+                }
+                Err(join_err) => {
+                    (0, "transport_error".to_string(), Some(join_err.to_string()), None)
+                }
+            };
+
+            let msg = MqttMessage::PublishStickerCommandResult {
+                dev_eui,
+                command: name,
+                seq,
+                result,
+                expect: expect.map(|s| s.to_string()),
+                detail,
+                fault_key,
+            };
+            if let Err(e) = publisher.handle_message(msg).await {
+                eprintln!("[MQTT Monitor] Failed to publish sticker command result: {}", e);
+            }
+        });
+    }
+
+    /// Answer a `get_sticker_info` query (#65): one `GetInfo` round trip, then
+    /// publish the decoded info on the retained `.../info` topic.
+    fn spawn_sticker_info_read(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+    ) {
+        tokio::spawn(async move {
+            let dev_eui_blocking = dev_eui.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                crate::libs::lorawan::sticker_config::read_info(
+                    &handle,
+                    &dev_eui_blocking,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match read {
+                Ok(Ok((seq, info))) => {
+                    let msg = MqttMessage::PublishStickerInfo {
+                        info: crate::libs::lorawan::sticker_config::info_to_json(
+                            &info,
+                            &dev_eui,
+                            "query",
+                            seq,
+                            &crate::libs::mqtt::publisher::MqttPublisher::timestamp(),
+                        ),
+                        dev_eui,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker info: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    // Includes the honest 64-byte-buffer overflow case: a sticker
+                    // with several latched alarms answers "response too large".
+                    // Reported as-is and never retried — the reply would not change.
+                    if let Err(pe) =
+                        publisher.publish_error("get_sticker_info", "transport", &e).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker info error: {}", pe);
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!("[MQTT Monitor] get_sticker_info task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
     fn spawn_sticker_config_read(
         client: AsyncClient,
         topics: TopicBuilder,
@@ -798,13 +1041,25 @@ impl MqttMonitor {
             let publisher = MqttPublisher::new(client, topics, &publish_cfg);
             match read {
                 Ok(Ok(cfg)) => {
+                    // A read that only partly came back is reported as partial, not
+                    // as "ok" — the viewer must be able to tell "this key is absent
+                    // from the device" from "we never managed to read this key".
+                    let last_result = if cfg.is_complete() {
+                        "ok".to_string()
+                    } else {
+                        eprintln!(
+                            "[MQTT Monitor] partial sticker config read: {} key(s) not read",
+                            cfg.failed_keys.len()
+                        );
+                        "partial".to_string()
+                    };
                     let msg = MqttMessage::PublishStickerConfig {
                         dev_eui,
                         config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
                         page_index: 0,
                         page_count: cfg.page_count,
                         last_seq: cfg.last_seq,
-                        last_result: "ok".to_string(),
+                        last_result,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
                         eprintln!("[MQTT Monitor] Failed to publish sticker config: {}", e);
@@ -819,6 +1074,87 @@ impl MqttMonitor {
                 }
                 Err(join_err) => {
                     eprintln!("[MQTT Monitor] get_sticker_config task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
+    /// Spawn a detached task that reads *every* readable STICKER key and
+    /// publishes it to `lorawan/sensors/<dev_eui>/full-config`.
+    ///
+    /// Same engine as the settable read, a wider key list, a different topic. It
+    /// is a lot of airtime — `all_readable_keys()` is 37 settable plus 17
+    /// read-only, batched six to a chunk, one chunk per Class-A reporting cycle —
+    /// so a partial result is the normal case rather than a fault, and is reported
+    /// as `partial` with the missing keys named instead of being retried here. A
+    /// retry would cost another full pass and produce the same answer if the
+    /// device genuinely will not serve those keys.
+    fn spawn_sticker_full_config_read(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+    ) {
+        tokio::spawn(async move {
+            let dev_eui_blocking = dev_eui.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                let keys = crate::libs::lorawan::sticker_command::all_readable_keys();
+                crate::libs::lorawan::sticker_config::read_config(
+                    &handle,
+                    &dev_eui_blocking,
+                    &keys,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match read {
+                Ok(Ok(cfg)) => {
+                    let read_status = if cfg.is_complete() {
+                        "complete".to_string()
+                    } else {
+                        eprintln!(
+                            "[MQTT Monitor] partial sticker full-config read: {} key(s) not read",
+                            cfg.failed_keys.len()
+                        );
+                        "partial".to_string()
+                    };
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_full_config {}: {}, {} key(s)",
+                        dev_eui,
+                        read_status,
+                        cfg.config.len()
+                    );
+                    let msg = MqttMessage::PublishStickerFullConfig {
+                        dev_eui,
+                        config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
+                        page_count: cfg.page_count,
+                        last_seq: cfg.last_seq,
+                        read_status,
+                        missing: cfg.failed_keys,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker full config: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    if let Err(pe) = publisher
+                        .publish_error("get_sticker_full_config", "transport", &e)
+                        .await
+                    {
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker full config error: {}",
+                            pe
+                        );
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_full_config task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -1763,6 +2099,67 @@ impl MqttMonitor {
                                                     }
                                                 }
 
+                                                // Unsigned control command (#71).
+                                                // Rate-limited per device below.
+                                                MqttCommand::StickerForceSend { ref dev_eui } => {
+                                                    let dev_eui = dev_eui.clone();
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_command(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                MqttCommand::StickerForceSend { dev_eui },
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "sticker_force_send",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                MqttCommand::GetStickerInfo { dev_eui } => {
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_info_read(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                dev_eui,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "get_sticker_info",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 MqttCommand::GetStickerConfig { dev_eui, keys } => {
                                                     match lorawan_handle_slot
                                                         .lock()
@@ -1783,6 +2180,36 @@ impl MqttMonitor {
                                                             if let Err(pe) = publisher
                                                                 .publish_error(
                                                                     "get_sticker_config",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                MqttCommand::GetStickerFullConfig { dev_eui } => {
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_full_config_read(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                dev_eui,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "get_sticker_full_config",
                                                                     "lorawan_unavailable",
                                                                     "LoRaWAN command handle not available",
                                                                 )
@@ -2438,6 +2865,31 @@ impl MqttMonitor {
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
+        // #71 control commands: signed, so they arrive here already authorised.
+        // Handled before execute_config_command because they talk to the radio
+        // rather than to on-disk config.
+        if matches!(
+            cmd,
+            MqttCommand::StickerReboot { .. }
+                | MqttCommand::StickerDeviceReset { .. }
+                | MqttCommand::StickerResetCounters { .. }
+                | MqttCommand::StickerClockSync { .. }
+                | MqttCommand::StickerForceSend { .. }
+        ) {
+            return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
+                Some(handle) => {
+                    Self::spawn_sticker_command(
+                        client.clone(),
+                        topics.clone(),
+                        publish_cfg.clone(),
+                        handle,
+                        cmd,
+                    );
+                    Ok(())
+                }
+                None => Err("LoRaWAN command handle not available".to_string()),
+            };
+        }
         if let MqttCommand::SetStickerConfig { dev_eui, fields, save } = cmd {
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
                 Some(handle) => {
@@ -2455,7 +2907,14 @@ impl MqttMonitor {
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
-        Self::execute_config_command(
+        // Captured before `cmd` is moved: a successful removal has to clear the
+        // sticker's retained device-info topic, or the broker replays a
+        // decommissioned device's info to every new subscriber indefinitely (#65).
+        let removed_sticker = match &cmd {
+            MqttCommand::RemoveLoRaWANSticker { dev_eui } => Some(dev_eui.clone()),
+            _ => None,
+        };
+        let result = Self::execute_config_command(
             cmd,
             config_applier,
             stm_bridge,
@@ -2469,7 +2928,21 @@ impl MqttMonitor {
             lorawan_configs,
             storage_handle,
             export_handle_slot,
-        )
+        );
+        if result.is_ok() {
+            if let Some(dev_eui) = removed_sticker {
+                let publisher =
+                    MqttPublisher::new(client.clone(), topics.clone(), publish_cfg);
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        publisher.handle_message(MqttMessage::ClearStickerInfo { dev_eui }).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to clear retained sticker info: {}", e);
+                    }
+                });
+            }
+        }
+        result
     }
 
     /// Decide which response to publish for a confirmed command: the pre-built
