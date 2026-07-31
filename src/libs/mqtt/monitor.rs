@@ -2349,6 +2349,23 @@ impl MqttMonitor {
                 let name = params.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
                 Ok(MqttCommand::AddEyeTag { mac, name })
             }
+            "set_eye_known_tags" => {
+                // An empty list is legal and meaningful: it means the fleet knows of
+                // no tags beyond this gateway's own, so stop listening for borrowed
+                // ones. Malformed MACs are dropped rather than failing the whole
+                // push — one bad row must not stop the rest of the fleet's tags
+                // from being audible.
+                let macs: Vec<String> = params
+                    .get("macs")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing macs (array)")?
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_uppercase())
+                    .filter(|s| crate::libs::eye::state::is_valid_mac(s))
+                    .collect();
+                Ok(MqttCommand::SetEyeKnownTags { macs })
+            }
             "remove_eye_tag" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
@@ -3135,6 +3152,15 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
+            MqttCommand::SetEyeKnownTags { macs } => {
+                // Held in memory only, never written to fiber.config.yaml: the
+                // server re-pushes the union on every connect (the topic is
+                // retained), and persisting it would blur the line between "this
+                // gateway owns the tag" and "the fleet knows about it".
+                let n = crate::libs::eye::state::set_eye_known_tags(macs);
+                eprintln!("[MQTT Monitor] EYE fleet allowlist set: {n} MAC(s)");
+                Ok(())
+            }
             MqttCommand::AddEyeTag { mac, name } => {
                 // Persist the tag into `eye.tags[]` so it is tracked/named
                 // explicitly (auto-provisioning still discovers unknown tags).
@@ -3279,7 +3305,11 @@ impl MqttMonitor {
                 let export_handle = export_handle_slot.lock().ok().and_then(|g| g.clone());
                 let single = [stream.as_str()];
                 let streams_to_reset: &[&str] = if stream == "all" {
-                    &["sticker", "probe", "probe_1m", "alarm"]
+                    // Must stay in step with `Stream::as_str` / `default_streams()`.
+                    // "eye" was missing here, so "reset all cursors" quietly
+                    // skipped the one stream an operator is most likely to be
+                    // resetting after a history gap.
+                    &["sticker", "probe", "probe_1m", "alarm", "eye"]
                 } else {
                     &single
                 };

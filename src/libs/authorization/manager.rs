@@ -481,6 +481,10 @@ impl AuthorizationManager {
             "add_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
             "remove_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
             "detect_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor data op
+            // system#6. Not a registration — it only widens what this gateway
+            // listens for — but it is still a fleet-scoped write, so it takes the
+            // same permission as adding a tag rather than a read permission.
+            "set_eye_known_tags" => "set_lorawan_sensor_config",
             "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
 
             "set_lorawan_field_threshold" => "set_threshold",
@@ -656,6 +660,16 @@ impl AuthorizationManager {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Clear EYE {} {} alarm thresholds", mac, field)
+            }
+            "set_eye_known_tags" => {
+                let n = params
+                    .get("macs")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                // The count, not the list: a fleet allowlist is long enough that
+                // spelling it out would bury the rest of the confirmation prompt.
+                format!("Listen for {} fleet-known EYE tag(s)", n)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -1146,6 +1160,34 @@ impl AuthorizationManager {
                     .map(|s| s.to_string());
                 Ok(MqttCommand::AddEyeTag { mac, name })
             }
+            "set_eye_known_tags" => {
+                let arr = challenge.params.get("macs")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing or non-array 'macs'".to_string())
+                    })?;
+                // Validated and normalised here rather than left to the monitor, so
+                // a malformed push is rejected at the door with a reason the caller
+                // can act on. An empty list is legal and means "stop listening for
+                // borrowed tags" — refusing it would leave no way to clear the
+                // allowlist.
+                let mut macs = Vec::with_capacity(arr.len());
+                for v in arr {
+                    let mac = v
+                        .as_str()
+                        .ok_or_else(|| {
+                            AuthError::InvalidCommand("'macs' entries must be strings".to_string())
+                        })?
+                        .to_uppercase();
+                    if !crate::libs::eye::state::is_valid_mac(&mac) {
+                        return Err(AuthError::InvalidCommand(format!(
+                            "Invalid MAC address: {mac}"
+                        )));
+                    }
+                    macs.push(mac);
+                }
+                Ok(MqttCommand::SetEyeKnownTags { macs })
+            }
             "remove_eye_tag" => {
                 let mac = challenge.params.get("mac")
                     .and_then(|v| v.as_str())
@@ -1560,6 +1602,66 @@ mod tests {
             Ok(MqttCommand::SetScreenTimeout { timeout_secs }) => assert_eq!(timeout_secs, 3600),
             other => panic!("expected SetScreenTimeout, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn set_eye_known_tags_is_reachable_in_a_production_build() {
+        // The whole point of routing this through the signed path: the only other
+        // way to construct the command lives in `build_dev_command`, which is
+        // `#[cfg(feature = "dev-platform")]`. Without an arm here, system#6 could
+        // never be enabled on a real gateway — and a dev-platform build must not be
+        // deployed to one, since it disables command verification.
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_eye_known_tags",
+            serde_json::json!({ "macs": ["7c:d9:f4:13:10:de", "7C:D9:F4:13:10:DF"] }),
+        );
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetEyeKnownTags { macs }) => {
+                // Normalised to uppercase, because the scan compares against
+                // uppercased MACs.
+                assert_eq!(macs, vec!["7C:D9:F4:13:10:DE", "7C:D9:F4:13:10:DF"]);
+            }
+            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_eye_known_tags_accepts_an_empty_list() {
+        // Empty is the only way to stop listening for borrowed tags, so rejecting
+        // it would make the allowlist one-way.
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [] }));
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetEyeKnownTags { macs }) => assert!(macs.is_empty()),
+            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_eye_known_tags_rejects_a_malformed_mac_and_a_missing_list() {
+        let manager = create_test_manager();
+        let bad_mac = test_challenge(
+            "set_eye_known_tags",
+            serde_json::json!({ "macs": ["7C:D9:F4:13:10:DE", "not-a-mac"] }),
+        );
+        assert!(manager.build_command_from_challenge(&bad_mac).is_err());
+
+        let not_strings =
+            test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [42] }));
+        assert!(manager.build_command_from_challenge(&not_strings).is_err());
+
+        let missing = test_challenge("set_eye_known_tags", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&missing).is_err());
+    }
+
+    #[test]
+    fn set_eye_known_tags_takes_the_sticker_management_permission() {
+        let manager = create_test_manager();
+        assert_eq!(
+            manager.command_type_to_permission("set_eye_known_tags").unwrap(),
+            "set_lorawan_sensor_config",
+        );
     }
 
     #[test]
