@@ -15,6 +15,60 @@ pub enum SensorStatus {
     Error,
 }
 
+/// Lowest temperature a DS18B20 can measure, per datasheet
+const DS18B20_MIN_CELSIUS: f32 = -55.0;
+
+/// Highest temperature a DS18B20 can measure, per datasheet.
+/// Anything above this is a bus artefact, not a measurement — most commonly
+/// 127.9375 (raw 0x07FF, an all-ones scratchpad read from a line that is not
+/// answering yet: rails just energised, conversion incomplete, bus still
+/// settling).
+///
+/// Note the mirror-image artefact 0xFFFF (-0.0625°C) is deliberately *not*
+/// filtered: it is indistinguishable from a genuine reading just below zero,
+/// which is squarely in range for the cold-chain this device monitors.
+const DS18B20_MAX_CELSIUS: f32 = 125.0;
+
+/// Value the DS18B20 temperature register holds after power-on, before the
+/// first conversion completes
+const DS18B20_POWER_ON_CELSIUS: f32 = 85.0;
+
+/// Reject readings the hardware cannot have produced, so the caller's failure
+/// debouncing handles them instead of the alarm thresholds.
+///
+/// Returns the temperature unchanged when it is plausible, or an
+/// `InvalidData` error naming the rule that rejected it.
+fn validate_temperature(temp_c: f32) -> io::Result<f32> {
+    if !temp_c.is_finite() {
+        // "NaN" and "inf" both parse successfully as f32, so a malformed sysfs
+        // read reaches us as a number and would compare false against every
+        // threshold.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Sensor returned a non-finite value ({})", temp_c),
+        ));
+    }
+
+    if (temp_c - DS18B20_POWER_ON_CELSIUS).abs() < 0.1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Sensor returned power-on default value (85°C)",
+        ));
+    }
+
+    if temp_c < DS18B20_MIN_CELSIUS || temp_c > DS18B20_MAX_CELSIUS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Sensor returned {:.4}°C, outside the DS18B20 range {}..={}°C",
+                temp_c, DS18B20_MIN_CELSIUS, DS18B20_MAX_CELSIUS
+            ),
+        ));
+    }
+
+    Ok(temp_c)
+}
+
 /// W1 device reader for enumerating and reading DS18B20 sensors
 pub struct W1DeviceReader {
     base_path: String,
@@ -115,18 +169,10 @@ impl W1DeviceReader {
                     // e.g., "25125" means 25.125°C
                     let temp_str = content.trim();
                     if let Ok(temp_millic) = temp_str.parse::<f32>() {
-                        let temp_c = temp_millic / 1000.0;
-
-                        // DS18B20 returns 85°C as default power-on value before first conversion
-                        // This is not a valid reading - reject it so debouncing handles it as a failure
-                        if (temp_c - 85.0).abs() < 0.1 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Sensor returned power-on default value (85°C)",
-                            ));
-                        }
-
-                        return Ok(temp_c);
+                        // Anything implausible is returned as an error so the
+                        // caller's failure debouncing handles it, rather than
+                        // reaching the alarm thresholds as a real reading.
+                        return validate_temperature(temp_millic / 1000.0);
                     } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -177,5 +223,64 @@ mod tests {
     fn test_sensor_status_disconnected() {
         let status = SensorStatus::Disconnected;
         assert_eq!(status, SensorStatus::Disconnected);
+    }
+
+    #[test]
+    fn plausible_temperatures_pass_through_unchanged() {
+        for temp in [25.0_f32, -40.0, 0.0, 36.6, DS18B20_MIN_CELSIUS, DS18B20_MAX_CELSIUS] {
+            assert_eq!(
+                validate_temperature(temp).expect("should accept"),
+                temp,
+                "{}°C is within the DS18B20 range and must be accepted",
+                temp
+            );
+        }
+    }
+
+    #[test]
+    fn all_ones_scratchpad_is_rejected() {
+        // 0x07FF * 0.0625 = 127.9375 — the value a line reports at power-on
+        // before it is really answering. Would otherwise be a CRITICAL alarm.
+        assert!(validate_temperature(127.9375).is_err());
+        // Same reading as it arrives through the sysfs millidegree file (127937)
+        assert!(validate_temperature(127.937).is_err());
+    }
+
+    #[test]
+    fn power_on_default_is_rejected() {
+        assert!(validate_temperature(DS18B20_POWER_ON_CELSIUS).is_err());
+        assert!(validate_temperature(85.0).is_err());
+    }
+
+    #[test]
+    fn values_outside_the_sensor_range_are_rejected() {
+        assert!(validate_temperature(-55.1).is_err());
+        assert!(validate_temperature(125.1).is_err());
+        assert!(validate_temperature(-273.0).is_err());
+    }
+
+    #[test]
+    fn sub_zero_readings_are_kept() {
+        // The 0xFFFF artefact reads out as -0.0625°C, but so does a real probe
+        // just below freezing — and this device monitors the cold chain, so the
+        // range check must not reach up and swallow it.
+        assert!(validate_temperature(-0.0625).is_ok());
+        assert!(validate_temperature(-18.0).is_ok());
+    }
+
+    #[test]
+    fn non_finite_values_are_rejected() {
+        // "NaN" and "inf" both parse as f32, so they reach validation as numbers
+        assert!(validate_temperature(f32::NAN).is_err());
+        assert!(validate_temperature(f32::INFINITY).is_err());
+        assert!(validate_temperature(f32::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn rejections_are_invalid_data_so_callers_debounce_them() {
+        // SensorMonitor treats any Err as a read failure and debounces it; the
+        // kind matters only for logging, but it must not be a TimedOut lookalike.
+        let err = validate_temperature(127.9375).expect_err("must reject");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }
