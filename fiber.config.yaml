@@ -6,10 +6,37 @@ power:
     low_threshold_percent: 20
     critical_threshold_percent: 5
   ac_power:
+    # DC-present hysteresis. One signal drives the LED, the LCD, MQTT, fiberctl,
+    # the POWER_DISCONNECT alarm and the standby resume, so they cannot disagree.
+    #
+    # Not 12000: the southbridge reports VIN through two integer truncations, so a
+    # perfect 12.000 V input reports 11998 mV and 12000 is not even reachable.
+    # VIN is either the ~12 V rail or near zero on battery, so 11000/10000
+    # separates the two states with room to spare.
+    dc_connect_mv: 11000
+    dc_disconnect_mv: 10000
+    # Superseded by the two above; kept so older configs keep parsing.
     detection_threshold_mv: 12000
     battery_mode_threshold_mv: 11000
   led_blink:
     toggle_count: 10
+  standby:
+    # Deep standby is what a Viewer power-off puts the device into. The agent
+    # stays alive reading VIN so that reconnecting PoE brings it back — nothing
+    # on this board can wake a halted CM4.
+    #
+    # Polled far more often than update_interval_ms above. This interval is both
+    # the wake latency and the window in which a PoE interruption can be sampled
+    # directly — at 5000 a quick unplug/replug fell between two polls and the
+    # device never woke. Costs almost nothing: the SoC is awake regardless and
+    # each read is one UART round trip.
+    poll_interval_ms: 1000
+    resume_on_dc: true
+    # Consecutive above-threshold reads before resuming, so a cable being
+    # wiggled cannot thrash the device in and out of standby.
+    confirm_polls: 2
+    # Empty string leaves the governor alone.
+    cpu_governor: powersave
   buzzer:
     enabled: true
     battery_mode_beep_interval_ms: 10000

@@ -147,6 +147,18 @@ fn fiberctl_power_status() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["vbat_mv"], 3700);
+
+    // A service engineer looking at a dark, silent unit uses this to tell
+    // "switched off, waiting for PoE" from "wedged", so the field has to be
+    // present and unambiguous rather than merely absent when awake.
+    assert_eq!(
+        v["data"]["standby"], false,
+        "a running device must report itself awake"
+    );
+    assert!(
+        v["data"]["standby_since"].is_null(),
+        "no entry timestamp while awake"
+    );
 }
 
 #[test]

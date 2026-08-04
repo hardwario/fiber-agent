@@ -712,16 +712,33 @@ fn lorawan_loop(
                 // Notify the buzzer priority manager only on transitions to avoid log
                 // spam. On NEW critical transitions (off→on), also clear the 30-min
                 // button silence so the user hears the new alarm.
-                if let Some(ref pm) = buzzer_priority_manager {
-                    if any_sticker_critical != prev_any_sticker_critical {
-                        if any_sticker_critical {
-                            // off → on transition: break button silence (same as sensors do).
-                            pm.on_new_sensor_alarm();
+                //
+                // In standby the flag is held clear instead. It latches exactly like
+                // the sensor one, so a device switched off while a STICKER was
+                // critical would otherwise keep beeping on a dark, silent-looking
+                // unit — and no readings are being persisted there, so the state it
+                // was asserting is stale anyway. Forcing the tracker to false is
+                // what re-arms the edge, so a resume re-asserts if it is still
+                // critical.
+                if crate::libs::power::standby::is_standby() {
+                    if prev_any_sticker_critical {
+                        if let Some(ref pm) = buzzer_priority_manager {
+                            pm.set_sticker_critical(false);
                         }
-                        pm.set_sticker_critical(any_sticker_critical);
+                        prev_any_sticker_critical = false;
                     }
+                } else {
+                    if let Some(ref pm) = buzzer_priority_manager {
+                        if any_sticker_critical != prev_any_sticker_critical {
+                            if any_sticker_critical {
+                                // off → on transition: break button silence (same as sensors do).
+                                pm.on_new_sensor_alarm();
+                            }
+                            pm.set_sticker_critical(any_sticker_critical);
+                        }
+                    }
+                    prev_any_sticker_critical = any_sticker_critical;
                 }
-                prev_any_sticker_critical = any_sticker_critical;
 
                 // Publish sensor data periodically
                 if last_publish.elapsed() >= publish_interval {
@@ -919,6 +936,16 @@ fn handle_telemetry_reading(
     self_handle: &LoRaWANHandle,
     mqtt_tx: &Sender<MqttMessage>,
 ) {
+    // A device the operator has switched off must not keep recording patients.
+    // STICKER readings arrive over the network rather than from this board's own
+    // sensors, so nothing else in the standby path stops them: without this a
+    // device reporting itself off would go on writing rows to the medical
+    // database. Dropped rather than queued — the gap is real and the audit row
+    // for the power-off is what explains it.
+    if crate::libs::power::standby::is_standby() {
+        return;
+    }
+
     let reading = &done.reading;
     if done.was_split() {
         eprintln!(

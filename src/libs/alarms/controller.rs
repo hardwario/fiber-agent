@@ -99,6 +99,22 @@ impl AlarmController {
         self.thresholds = new_thresholds;
     }
 
+    /// Forget everything observed so far, back to `NeverConnected`.
+    ///
+    /// Thresholds, callbacks and the failure/warmup/reconnect configuration are
+    /// kept — only what the controller has *seen* is dropped.
+    ///
+    /// Used when the device enters standby. The sensor rails are switched off
+    /// there and no readings are taken, so a latched `Critical` or `Disconnected`
+    /// is an assertion the device can no longer justify: it would keep the buzzer
+    /// going and, on resume, either report a transition out of a state nothing
+    /// observed or stay silently latched. `NeverConnected` is the state the
+    /// machine boots in precisely because it raises no alarm, so a resume warms up
+    /// from live readings exactly like a fresh start.
+    pub fn reset(&mut self) {
+        self.state_machine = AlarmStateMachine::new();
+    }
+
     /// Check if we just entered the Reconnecting state
     pub fn just_reconnecting(&self) -> bool {
         self.state_machine.just_reconnecting()
@@ -212,6 +228,65 @@ mod tests {
     fn test_controller_creation() {
         let thresholds = AlarmThreshold::default_medical();
         let controller = AlarmController::new(thresholds, 3, 5, 1);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::NeverConnected
+        );
+    }
+
+    #[test]
+    fn reset_returns_a_critical_controller_to_never_connected() {
+        // What entering standby does. A latched Critical would keep the buzzer
+        // going on a device the operator has switched off, and the rails are down
+        // so nothing can justify it any more.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        controller.update(45.0);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Critical
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::NeverConnected
+        );
+        let led = controller.get_led_state();
+        assert_eq!(led.color, LedColor::Off, "a reset line raises no alarm");
+        assert_eq!(led.pattern, BlinkPattern::Steady);
+    }
+
+    #[test]
+    fn reset_keeps_thresholds_so_a_resume_still_alarms() {
+        // Only what the controller has *seen* is dropped. If the temperature is
+        // still critical when the device wakes, it must say so again.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        controller.update(45.0);
+        controller.reset();
+
+        let led = controller.update(45.0);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Critical,
+            "the thresholds survived the reset"
+        );
+        assert_eq!(led.color, LedColor::Red);
+    }
+
+    #[test]
+    fn reset_clears_a_disconnected_line_too() {
+        // The rails are switched off in standby, so every line would otherwise be
+        // latched Disconnected — eight red LEDs and a beeping device.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 1, 1, 1);
+        controller.update(37.0);
+        controller.mark_read_failure();
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Disconnected
+        );
+
+        controller.reset();
         assert_eq!(
             controller.state(),
             crate::libs::alarms::state::AlarmState::NeverConnected

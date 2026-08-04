@@ -176,15 +176,81 @@ fn main() -> io::Result<()> {
     let stm = StmBridge::new_with_config(&config.serial.port, config.serial.baud_rate)?;
     eprintln!("[main] STM32 bridge initialized successfully");
 
-    // Initialize sensor power lines
-    eprintln!("[main] Activating sensor power...");
     let stm_guard = Arc::new(Mutex::new(stm));
+
+    // Decide whether this boot is a normal one or a return to standby, before
+    // anything is powered up or starts measuring.
+    //
+    // This needs a VIN reading, and the PowerMonitor that normally produces one
+    // is not started until near the end of boot — by which point the sensors,
+    // BLE and MQTT are already running. So take one synchronous reading here: a
+    // single UART round trip, in exchange for never bringing a device that is
+    // meant to be off up as far as advertising and publishing first.
+    fiber_app::libs::power::standby::init(
+        fiber_app::libs::power::standby::marker_dir(&config.storage.db_path),
+        config.power.standby.clone(),
+    );
+    let boot_vin_mv = {
+        let mut stm_locked = stm_guard.lock().unwrap_or_else(|e| e.into_inner());
+        match stm_locked.read_adc_data() {
+            Ok((vin_opt, _)) => vin_opt.map(|adc| adc.voltage_mv as u16),
+            Err(e) => {
+                eprintln!("[main] Warning: could not read VIN at boot: {}", e);
+                None
+            }
+        }
+    };
+    let marker_dir = fiber_app::libs::power::standby::configured_marker_dir();
+    let boot_marker = fiber_app::libs::power::standby::StandbyMarker::read(&marker_dir);
+    let boot_decision = fiber_app::libs::power::standby::boot_decision(
+        boot_marker.is_some(),
+        boot_vin_mv,
+        config.power.ac_power.dc_thresholds().connect_mv,
+    );
+    let resuming_into_standby = match boot_decision {
+        fiber_app::libs::power::BootDecision::ReenterStandby => {
+            // A crash-restart (the unit is Restart=on-failure) or a cold boot
+            // after the battery gave out with no PoE. Either way the operator
+            // asked for this device to be off and nothing has changed that, so it
+            // must not quietly resume patient monitoring.
+            eprintln!(
+                "[main] Standby marker present and VIN is {} — returning to standby",
+                boot_vin_mv.map_or("unreadable".to_string(), |mv| format!("{} mV", mv))
+            );
+            fiber_app::libs::power::standby::request_standby();
+            true
+        }
+        fiber_app::libs::power::BootDecision::Awake => {
+            if boot_marker.is_some() {
+                eprintln!("[main] Standby marker present but DC power is — booting normally");
+                fiber_app::libs::power::standby::StandbyMarker::clear(&marker_dir);
+            }
+            false
+        }
+    };
+
+    // Initialize sensor power lines
     {
         let mut stm_locked = stm_guard.lock().unwrap_or_else(|e| e.into_inner());
-        stm_locked.init_sensor_power()?;
+        if resuming_into_standby {
+            // Not merely "don't turn them on": they boot HIGH in firmware, so
+            // leaving them alone would energise all eight lines.
+            eprintln!("[main] Standby: keeping sensor power off");
+            stm_locked.set_sensor_power(false)?;
+        } else {
+            eprintln!("[main] Activating sensor power...");
+            stm_locked.init_sensor_power()?;
+        }
         stm_locked.init_leds_off()?;
     }
-    eprintln!("[main] Sensor power activated, LEDs initialized");
+    eprintln!("[main] Sensor power settled, LEDs initialized");
+
+    // Nothing has drawn to the panel yet, so claiming the blank now means the
+    // display thread comes up dark instead of flashing the splash and an
+    // overview screen at a device that is supposed to be off.
+    if resuming_into_standby {
+        fiber_app::libs::display::blank::request_blank();
+    }
 
     // Create and spawn dedicated LED monitoring thread
     eprintln!("[main] Starting LED monitor...");
@@ -618,6 +684,9 @@ fn main() -> io::Result<()> {
         buzzer_priority_manager.clone(),
         power_status.clone(),
         mqtt_sender,
+        config.power.standby.clone(),
+        config.power.ac_power.dc_thresholds(),
+        Some(storage_handle.clone()),
     )?;
     eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
 

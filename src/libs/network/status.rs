@@ -32,11 +32,17 @@ impl NetworkStatus {
 }
 
 /// Get current network connection status from system files
+/// Ethernet interface names to try, in order.
+///
+/// Shared with [`crate::libs::power::link`], which watches the same interface's
+/// carrier counter — one list so the two cannot pick different interfaces.
+pub const ETH_INTERFACES: [&str; 5] = ["eth0", "enp0s3", "enp4s0", "enp0s31f6", "end0"];
+
 pub fn get_network_status() -> NetworkStatus {
     let mut status = NetworkStatus::disconnected();
 
     // Check Ethernet connection (try common names)
-    let eth_interfaces = ["eth0", "enp0s3", "enp4s0", "enp0s31f6", "end0"];
+    let eth_interfaces = ETH_INTERFACES;
     for iface in &eth_interfaces {
         if is_interface_up(iface) {
             status.ethernet_connected = true;

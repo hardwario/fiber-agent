@@ -223,11 +223,29 @@ fn status(ctx: &ControlContext) -> Response {
 fn power_json(ctx: &ControlContext) -> Value {
     let Some(p) = &ctx.power else { return Value::Null };
     let g = p.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Standby is read straight from the process-wide signal rather than from the
+    // marker, so `fiberctl power` reports what the device is actually doing. A
+    // service engineer looking at a dark, silent unit needs this to distinguish
+    // "switched off, waiting for PoE" from "wedged".
+    let in_standby = crate::libs::power::standby::is_standby();
+    let marker = if in_standby {
+        crate::libs::power::standby::StandbyMarker::read(
+            &crate::libs::power::standby::configured_marker_dir(),
+        )
+    } else {
+        None
+    };
+
     json!({
         "vbat_mv": g.vbat_mv,
         "battery_percent": g.battery_percent,
         "vin_mv": g.vin_mv,
         "on_dc_power": g.on_dc_power,
+        "standby": in_standby,
+        "standby_since": marker.as_ref().map(|m| m.entered_at_rfc3339()),
+        "standby_reason": marker.as_ref().map(|m| m.reason.clone()),
+        "standby_requested_by": marker.as_ref().map(|m| m.requested_by.clone()),
     })
 }
 

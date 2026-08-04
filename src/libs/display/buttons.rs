@@ -151,6 +151,8 @@ impl ButtonMonitor {
         let mut up_hold_start = Instant::now();
         let mut selection_activity = Instant::now(); // Track last activity in selection/detail mode
         let mut last_enter_click: Option<Instant> = None; // Track last ENTER click for double-click detection
+        // When a button was first pressed while in standby, for the wake hold.
+        let mut standby_hold_start: Option<Instant> = None;
 
         // Main button monitoring loop
         loop {
@@ -159,6 +161,53 @@ impl ButtonMonitor {
                 eprintln!("[ButtonMonitor] Shutdown signal received, exiting button thread");
                 break;
             }
+
+            // A device in standby is dark and is meant to look off. Buttons must
+            // not light the panel, walk the menus, or — via the ENTER hold at
+            // :592 — start BLE advertising and make it pairable.
+            //
+            // The one exception is a deliberate long hold, which wakes the device.
+            // That is the escape hatch: PoE detection can fail (a wedged STM, a
+            // supply the ADC cannot see), and a monitoring device must never be
+            // strandable in a state only a battery-pull can leave. A hold rather
+            // than a press so a knock or something resting on the unit cannot do
+            // it.
+            //
+            // The wake is a request, not an action: this thread owns no hardware,
+            // and every standby hardware transition belongs to PowerMonitor, which
+            // holds the STM bridge, the buzzer and the storage handle.
+            if crate::libs::power::standby::is_standby() {
+                for event in buttons.poll() {
+                    match event {
+                        ButtonEvent::Press(_) => {
+                            if standby_hold_start.is_none() {
+                                standby_hold_start = Some(Instant::now());
+                            }
+                        }
+                        // Any release abandons the hold — this must be a
+                        // deliberate, sustained press.
+                        ButtonEvent::Release(_) => standby_hold_start = None,
+                    }
+                }
+                if let Some(started) = standby_hold_start {
+                    if started.elapsed() >= COUNTDOWN_DURATION {
+                        eprintln!(
+                            "[ButtonMonitor] Standby wake: button held for {:?}",
+                            COUNTDOWN_DURATION
+                        );
+                        crate::libs::power::standby::request_wake(
+                            crate::libs::power::standby::WakeReason::Button,
+                        );
+                        standby_hold_start = None;
+                    }
+                }
+                // Menu state must not carry across a standby, or the panel would
+                // come back mid-navigation.
+                state = ButtonMonitorState::Idle;
+                thread::sleep(poll_interval);
+                continue;
+            }
+            standby_hold_start = None;
 
             // Poll buttons for events
             let events = buttons.poll();

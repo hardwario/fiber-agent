@@ -2418,7 +2418,18 @@ impl MqttMonitor {
                     // Periodic status reporting (every 60 seconds)
                     _ = async {
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        if last_status_log.elapsed() > Duration::from_secs(60) {
+                        // Not in standby: nothing is being measured, so there is no
+                        // status worth reporting, and the retained power/standby
+                        // topic already explains the silence. The connection itself
+                        // stays up — this loop still has to carry commands and the
+                        // resume event.
+                        //
+                        // Deliberately left as an unmet condition rather than
+                        // resetting the timer, so waking publishes a fresh status
+                        // straight away instead of up to a minute later.
+                        if last_status_log.elapsed() > Duration::from_secs(60)
+                            && !crate::libs::power::standby::is_standby()
+                        {
                             if let Ok(state) = connection_state.lock() {
                                 eprintln!("[MQTT Monitor] === STATUS REPORT ===");
                                 eprintln!("[MQTT Monitor]   State: {:?}", state.state());
@@ -2953,12 +2964,18 @@ impl MqttMonitor {
     /// network interface. Their confirmation must be published BEFORE execution
     /// (best-effort SUCCESS), because execute-then-report would race the shutdown
     /// and the signer would never receive the response.
+    ///
+    /// `PowerOffDevice` is deliberately *not* one of them. It used to run
+    /// `systemctl poweroff` and so had to ack first, but it now enters standby:
+    /// the process and the MQTT connection both survive, and it can genuinely
+    /// fail (a marker it cannot persist means it must refuse — see
+    /// [`Self::execute_standby`]). Acking first would tell the signer the device
+    /// is off while it carries on monitoring, which is the one outcome the
+    /// preview text must never be wrong about.
     fn is_teardown_command(cmd: &MqttCommand) -> bool {
         matches!(
             cmd,
-            MqttCommand::RestartApplication { .. }
-                | MqttCommand::PowerOffDevice { .. }
-                | MqttCommand::SetNetworkConfig { .. }
+            MqttCommand::RestartApplication { .. } | MqttCommand::SetNetworkConfig { .. }
         )
     }
 
@@ -2991,6 +3008,129 @@ impl MqttMonitor {
     /// therefore the only surviving evidence that the gap in monitoring was
     /// authorized and by whom, which is why this waits for it to land.
     ///
+    /// Write the authorization record for a command that interrupts monitoring,
+    /// and block until it is durable.
+    ///
+    /// Shared by reboot and standby. `label` is only used for log prefixes.
+    ///
+    /// Never fails the caller: an unaudited teardown is bad, but refusing to act
+    /// on a signed command because the audit database is unhappy would leave a
+    /// device that cannot be stopped at all.
+    fn audit_and_flush(
+        label: &str,
+        audit_event: &'static str,
+        reason: &str,
+        requested_by: &str,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+    ) {
+        let Some(storage) = storage_handle else {
+            eprintln!("[MQTT Monitor] WARN: no storage handle — {label} will not be audited");
+            return;
+        };
+
+        let details = format!(
+            r#"{{"reason":{},"requested_by":{}}}"#,
+            serde_json::Value::String(reason.to_string()),
+            serde_json::Value::String(requested_by.to_string()),
+        );
+        if let Err(e) = storage.log_audit_event(
+            audit_event.to_string(),
+            Some("audit_log".to_string()),
+            Some(details),
+        ) {
+            eprintln!("[MQTT Monitor] WARN: failed to queue {label} audit row: {e}");
+        }
+        // The storage worker is a single thread draining one FIFO channel,
+        // so a FlushSync reply also proves the audit row queued above was
+        // committed and checkpointed. It is also what keeps unwritten
+        // temperature samples from being lost across the restart.
+        if let Err(e) = storage.flush_sync(TEARDOWN_AUDIT_FLUSH_TIMEOUT) {
+            eprintln!("[MQTT Monitor] WARN: {label} audit row may not be durable: {e}");
+        }
+    }
+
+    /// Put the device into deep standby — what a Viewer power-off now does.
+    ///
+    /// It used to run `systemctl poweroff`. That halts the BCM2711 while the
+    /// battery holds the rails up, and nothing on this board can wake a halted
+    /// CM4 (see [`crate::libs::power::standby`]), so the device stayed
+    /// unreachable until someone pulled the battery — including when PoE came
+    /// back. Standby keeps the agent alive reading VIN instead, and
+    /// `PowerMonitor` brings the device back when DC returns.
+    ///
+    /// Ordering is load-bearing:
+    ///
+    /// * The marker is written **first**, and a failure to write it aborts the
+    ///   whole thing. The unit runs with `Restart=on-failure`, so a standby the
+    ///   next boot cannot detect is a device that comes back up monitoring while
+    ///   the operator has been told it is off. Better to refuse and stay running.
+    /// * The audit row is flushed **before** anything is torn down, so the only
+    ///   surviving evidence that this gap in monitoring was authorized is on disk
+    ///   before monitoring stops.
+    /// * Sensor rails go down here rather than in `PowerMonitor`, because that
+    ///   loop's interval is a configured 60 s on-device and eight DS18B20 lines
+    ///   must not stay energised for a minute after a power-off.
+    ///
+    /// Unlike the reboot path this runs inline: there is no process teardown to
+    /// race, and the caller has already queued the SUCCESS ack.
+    fn execute_standby(
+        reason: String,
+        requested_by: String,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+        stm_bridge: &Option<SharedStmBridge>,
+    ) -> Result<(), String> {
+        use crate::libs::power::standby;
+
+        eprintln!(
+            "[MQTT Monitor] Device standby requested by {}: {}",
+            requested_by, reason
+        );
+
+        let marker_dir = standby::configured_marker_dir();
+        let marker = standby::StandbyMarker::new(reason.clone(), requested_by.clone());
+        marker.write(&marker_dir).map_err(|e| {
+            format!(
+                "cannot record standby in {}: {e} — device stays up",
+                marker_dir.display()
+            )
+        })?;
+
+        Self::audit_and_flush("standby", "POWER_OFF", &reason, &requested_by, storage_handle);
+
+        if !standby::request_standby() {
+            eprintln!("[MQTT Monitor] Device was already in standby — nothing to do");
+            return Ok(());
+        }
+
+        // Rails down before the panel goes dark, so the device is genuinely not
+        // measuring by the time it looks like it is not measuring.
+        if let Some(stm) = stm_bridge {
+            match stm.lock() {
+                Ok(mut guard) => {
+                    if let Err(e) = guard.set_sensor_power(false) {
+                        eprintln!("[MQTT Monitor] WARN: could not drop sensor rails: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[MQTT Monitor] WARN: STM bridge lock poisoned: {e}");
+                }
+            }
+        }
+
+        crate::libs::display::blank::request_blank();
+        if !crate::libs::display::blank::wait_until_blank(DISPLAY_BLANK_TIMEOUT) {
+            eprintln!("[standby] WARN: display did not confirm blank — continuing anyway");
+        }
+
+        standby::apply_cpu_governor(&standby::config().cpu_governor);
+
+        eprintln!(
+            "[standby] Device is in standby; waiting for PoE (resume_on_dc={})",
+            standby::config().resume_on_dc
+        );
+        Ok(())
+    }
+
     /// `verb` is the systemctl subcommand ("reboot"/"poweroff") and doubles as
     /// the worker-thread name and log prefix.
     fn execute_teardown(
@@ -3005,29 +3145,7 @@ impl MqttMonitor {
             verb, requested_by, reason
         );
 
-        if let Some(storage) = storage_handle {
-            let details = format!(
-                r#"{{"reason":{},"requested_by":{}}}"#,
-                serde_json::Value::String(reason.clone()),
-                serde_json::Value::String(requested_by.clone()),
-            );
-            if let Err(e) = storage.log_audit_event(
-                audit_event.to_string(),
-                Some("audit_log".to_string()),
-                Some(details),
-            ) {
-                eprintln!("[MQTT Monitor] WARN: failed to queue {verb} audit row: {e}");
-            }
-            // The storage worker is a single thread draining one FIFO channel,
-            // so a FlushSync reply also proves the audit row queued above was
-            // committed and checkpointed. It is also what keeps unwritten
-            // temperature samples from being lost across the restart.
-            if let Err(e) = storage.flush_sync(TEARDOWN_AUDIT_FLUSH_TIMEOUT) {
-                eprintln!("[MQTT Monitor] WARN: {verb} audit row may not be durable: {e}");
-            }
-        } else {
-            eprintln!("[MQTT Monitor] WARN: no storage handle — {verb} will not be audited");
-        }
+        Self::audit_and_flush(verb, audit_event, &reason, &requested_by, storage_handle);
 
         // Spawn and return immediately; do NOT wait on the child here. The
         // SUCCESS ack for a teardown command is only *queued* at this point:
@@ -3172,13 +3290,7 @@ impl MqttMonitor {
             MqttCommand::PowerOffDevice {
                 reason,
                 requested_by,
-            } => Self::execute_teardown(
-                "poweroff",
-                "POWER_OFF",
-                reason,
-                requested_by,
-                storage_handle,
-            ),
+            } => Self::execute_standby(reason, requested_by, storage_handle, stm_bridge),
             MqttCommand::SetInterval {
                 sample_interval_ms,
                 aggregation_interval_ms,
@@ -4416,17 +4528,20 @@ mod tests {
     }
 
     #[test]
-    fn power_off_is_a_teardown_command() {
+    fn power_off_is_not_a_teardown_command() {
         // Teardown classification decides whether the SUCCESS ack is published
-        // BEFORE execution. Get this wrong for a power-off and the ack is queued
-        // behind a halt that never lets the event loop run again — every
-        // successful power-off would look like a failure to the operator.
-        assert!(MqttMonitor::is_teardown_command(&MqttCommand::PowerOffDevice {
+        // BEFORE execution. A power-off used to halt the SoC, so it had to ack
+        // first — the ack would otherwise queue behind a halt that never lets the
+        // event loop run again. Now it enters standby: the process and the MQTT
+        // connection both survive, and it can legitimately refuse (a standby it
+        // cannot persist must not happen). So it must be acked from its real
+        // result, or a device that stayed up monitoring would report itself off.
+        assert!(!MqttMonitor::is_teardown_command(&MqttCommand::PowerOffDevice {
             reason: "decommissioned".to_string(),
             requested_by: "dr.jane@hospital.eu".to_string(),
         }));
 
-        // The pre-existing members must stay classified.
+        // The genuine teardowns must stay classified.
         assert!(MqttMonitor::is_teardown_command(&MqttCommand::RestartApplication {
             reason: "r".to_string(),
             requested_by: "dr.jane@hospital.eu".to_string(),

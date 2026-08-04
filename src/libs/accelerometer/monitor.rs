@@ -73,6 +73,14 @@ impl AccelerometerMonitor {
                 break;
             }
 
+            // A device in standby is often in standby because it is being moved.
+            // Reading at 100 ms and publishing motion events from something the
+            // operator has switched off is noise at best.
+            if crate::libs::power::standby::is_standby() {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+
             // Read accelerometer data
             match accel.read() {
                 Ok(accel_data) => {

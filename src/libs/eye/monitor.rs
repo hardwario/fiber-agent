@@ -371,6 +371,17 @@ fn eye_loop(
                 break;
             }
 
+            // Standby: no LE scan, no recorder jobs, nothing written. An active
+            // scan is one of the more expensive things this device does, and
+            // persisting tag readings on a unit the operator has switched off
+            // would put patient data in the medical database during a gap the
+            // audit log says is authorised. The BlueZ session is rebuilt at the
+            // top of every iteration anyway, so skipping the body is safe.
+            if crate::libs::power::standby::is_standby() {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+
             // --- Run queued recorder jobs while the BlueZ scan is stopped. Raw
             // L2CAP (recorder) and an active LE scan must not overlap on the same
             // adapter, so this deliberately runs before discovery is (re)started. ---
