@@ -116,6 +116,76 @@ pub struct PowerConfig {
 
     /// LED blinking configuration
     pub led_blink: LedBlinkConfig,
+
+    /// Deep-standby behaviour: how the device waits for PoE while powered down.
+    #[serde(default)]
+    pub standby: StandbyConfig,
+}
+
+/// Deep standby — the state a powered-down device waits for PoE in.
+///
+/// `#[serde(default)]` throughout so an existing on-device
+/// `/data/fiber/config/fiber.config.yaml` keeps parsing without a migration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandbyConfig {
+    /// How often to read VIN while in standby.
+    ///
+    /// Deliberately separate from `update_interval_ms`, which ships as 60000:
+    /// reusing it would make a device take up to a minute to notice PoE. The
+    /// shorter interval is close to free — the SoC is awake either way and each
+    /// read is one UART round trip — so this is a wake-latency knob, not a
+    /// power one.
+    #[serde(default = "default_standby_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+
+    /// Whether PoE arriving should bring the device back up by itself.
+    ///
+    /// Turning this off leaves a device that must be woken by power-cycling it,
+    /// which is the pre-standby behaviour.
+    #[serde(default = "default_resume_on_dc")]
+    pub resume_on_dc: bool,
+
+    /// Consecutive above-threshold VIN readings required before resuming, so a
+    /// cable being wiggled cannot thrash the device in and out of standby.
+    #[serde(default = "default_standby_confirm_polls")]
+    pub confirm_polls: u32,
+
+    /// CPU governor to select on the way into standby, restored on resume.
+    /// Empty leaves the governor alone.
+    #[serde(default = "default_standby_cpu_governor")]
+    pub cpu_governor: String,
+}
+
+fn default_standby_poll_interval_ms() -> u64 {
+    // 1 s, not 5 s. This interval is the window in which a PoE interruption can
+    // be sampled directly, and at 5 s a quick unplug/replug fell entirely between
+    // two polls — the device never saw the absence and so never woke. The carrier
+    // counter is the backstop for anything shorter, but sampling the dip itself is
+    // the stronger evidence, so make it the common case.
+    1000
+}
+
+fn default_resume_on_dc() -> bool {
+    true
+}
+
+fn default_standby_confirm_polls() -> u32 {
+    2
+}
+
+fn default_standby_cpu_governor() -> String {
+    "powersave".to_string()
+}
+
+impl Default for StandbyConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: default_standby_poll_interval_ms(),
+            resume_on_dc: default_resume_on_dc(),
+            confirm_polls: default_standby_confirm_polls(),
+            cpu_governor: default_standby_cpu_governor(),
+        }
+    }
 }
 
 /// Battery voltage and state configuration
@@ -137,11 +207,45 @@ pub struct BatteryConfig {
 /// AC power detection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcPowerConfig {
-    /// Voltage above which system considers AC power connected (mV)
+    /// Superseded by `dc_connect_mv`. Kept so existing on-device configs keep
+    /// parsing; no longer read.
+    ///
+    /// It shipped as 12000, which the southbridge's VIN maths makes unusable: two
+    /// integer truncations mean a perfect 12.000 V input reports 11998 mV and
+    /// 12000 is not reachable at all. Devices whose supply reported just under it
+    /// were classified as running on battery while on mains.
     pub detection_threshold_mv: u16,
 
-    /// Voltage below which system is in battery mode (mV)
+    /// Superseded by `dc_disconnect_mv`. Was never read even before that.
     pub battery_mode_threshold_mv: u16,
+
+    /// VIN at or above which DC power counts as present (mV).
+    ///
+    /// Defaulted rather than required, so deployed
+    /// `/data/fiber/config/fiber.config.yaml` files — which carry the old 12000
+    /// under the legacy key — pick up the corrected value with no migration.
+    #[serde(default = "default_dc_connect_mv")]
+    pub dc_connect_mv: u16,
+
+    /// VIN below which DC power counts as gone (mV). Below `dc_connect_mv`, so a
+    /// supply resting near the boundary cannot chatter.
+    #[serde(default = "default_dc_disconnect_mv")]
+    pub dc_disconnect_mv: u16,
+}
+
+fn default_dc_connect_mv() -> u16 {
+    crate::libs::power::status::DEFAULT_DC_CONNECT_MV
+}
+
+fn default_dc_disconnect_mv() -> u16 {
+    crate::libs::power::status::DEFAULT_DC_DISCONNECT_MV
+}
+
+impl AcPowerConfig {
+    /// The hysteresis pair this config describes, validated.
+    pub fn dc_thresholds(&self) -> crate::libs::power::status::DcThresholds {
+        crate::libs::power::status::DcThresholds::new(self.dc_connect_mv, self.dc_disconnect_mv)
+    }
 }
 
 /// LED blinking configuration
@@ -1238,10 +1342,13 @@ impl Config {
                 ac_power: AcPowerConfig {
                     detection_threshold_mv: 12000,
                     battery_mode_threshold_mv: 11000,
+                    dc_connect_mv: default_dc_connect_mv(),
+                    dc_disconnect_mv: default_dc_disconnect_mv(),
                 },
                 led_blink: LedBlinkConfig {
                     toggle_count: 8,
                 },
+                standby: StandbyConfig::default(),
             },
             sensors: SensorConfig {
                 num_lines: 8,
