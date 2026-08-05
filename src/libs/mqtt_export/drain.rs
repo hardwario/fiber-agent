@@ -105,8 +105,7 @@ pub async fn drain_one_batch(
             rows.len()
         }
         Stream::Eye => {
-            let rows =
-                StorageReader::fetch_eye_readings_after(conn, cursor_in, cfg.batch_size)?;
+            let rows = StorageReader::fetch_eye_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::eye_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
@@ -118,8 +117,7 @@ pub async fn drain_one_batch(
             rows.len()
         }
         Stream::Probe => {
-            let rows =
-                StorageReader::fetch_sensor_readings_after(conn, cursor_in, cfg.batch_size)?;
+            let rows = StorageReader::fetch_sensor_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::probe_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
@@ -140,8 +138,7 @@ pub async fn drain_one_batch(
             let mut last_completed_minute = cursor_in;
             let mut current_minute_ok = true;
             for (i, row) in rows.iter().enumerate() {
-                let starting_new_minute = i == 0
-                    || rows[i - 1].minute_ts != row.minute_ts;
+                let starting_new_minute = i == 0 || rows[i - 1].minute_ts != row.minute_ts;
                 if starting_new_minute && i > 0 && current_minute_ok {
                     last_completed_minute = rows[i - 1].minute_ts;
                 }
@@ -165,8 +162,7 @@ pub async fn drain_one_batch(
             rows.len()
         }
         Stream::Alarm => {
-            let rows =
-                StorageReader::fetch_alarm_events_after(conn, cursor_in, cfg.batch_size)?;
+            let rows = StorageReader::fetch_alarm_events_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
                 let (topic, payload) = super::envelope::alarm_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
@@ -214,7 +210,10 @@ mod tests {
                     return Err("simulated".into());
                 }
             }
-            g.push((topic.to_string(), String::from_utf8_lossy(payload).into_owned()));
+            g.push((
+                topic.to_string(),
+                String::from_utf8_lossy(payload).into_owned(),
+            ));
             Ok(())
         }
     }
@@ -256,10 +255,9 @@ mod tests {
 
         let db = Database::new(&path, 1).unwrap();
         let conn = db.connect().unwrap();
-        let (n, new_cursor) =
-            drain_one_batch(&cfg, Stream::Sticker, &stub, &storage, &conn, 0)
-                .await
-                .unwrap();
+        let (n, new_cursor) = drain_one_batch(&cfg, Stream::Sticker, &stub, &storage, &conn, 0)
+            .await
+            .unwrap();
         assert_eq!(n, 5);
         assert_eq!(stub.calls.lock().unwrap().len(), 3); // succeeds 3 then fails
         assert_eq!(new_cursor, 3, "returned cursor should be last published id");
@@ -315,12 +313,18 @@ mod tests {
             drain_interval_ms: 0,
         };
 
-        let (_n, new_cursor) =
-            drain_one_batch(&cfg, Stream::Probe1m, &stub, &storage, &conn, 0)
-                .await
-                .unwrap();
-        assert_eq!(stub.calls.lock().unwrap().len(), 2, "two rows published before failure");
-        assert_eq!(new_cursor, 600, "cursor must only advance to the last complete minute");
+        let (_n, new_cursor) = drain_one_batch(&cfg, Stream::Probe1m, &stub, &storage, &conn, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            stub.calls.lock().unwrap().len(),
+            2,
+            "two rows published before failure"
+        );
+        assert_eq!(
+            new_cursor, 600,
+            "cursor must only advance to the last complete minute"
+        );
 
         // Next pass should retry minute 660 in full (no successes lost upstream).
         let stub2 = StubPub {
@@ -332,7 +336,11 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(new_cursor2, 660, "second pass finishes minute 660");
-        assert_eq!(stub2.calls.lock().unwrap().len(), 2, "two rows for minute 660");
+        assert_eq!(
+            stub2.calls.lock().unwrap().len(),
+            2,
+            "two rows for minute 660"
+        );
 
         storage.shutdown().unwrap();
         join.join().unwrap();

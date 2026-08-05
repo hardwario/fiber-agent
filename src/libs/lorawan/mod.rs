@@ -20,10 +20,9 @@ pub mod sticker_response;
 
 pub use sticker_add::{add_lorawan_sticker, StickerAddDeps};
 
-pub use monitor::{LoRaWANMonitor, LoRaWANHandle};
-pub use state::{
-    LoRaWANState, LoRaWANSensorState, SharedLoRaWANState, create_shared_lorawan_state,
-    SharedLoRaWANSensorConfigs, create_shared_lorawan_sensor_configs,
-    SharedFieldThresholdDefaults,
-};
 pub use detector::detect_gateway;
+pub use monitor::{LoRaWANHandle, LoRaWANMonitor};
+pub use state::{
+    create_shared_lorawan_sensor_configs, create_shared_lorawan_state, LoRaWANSensorState,
+    LoRaWANState, SharedFieldThresholdDefaults, SharedLoRaWANSensorConfigs, SharedLoRaWANState,
+};

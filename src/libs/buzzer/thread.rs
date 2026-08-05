@@ -21,7 +21,11 @@ pub fn spawn_buzzer_thread(
 }
 
 /// Dedicated buzzer control thread - runs independently
-fn buzzer_control_loop(shutdown_flag: Arc<AtomicBool>, buzzer_state: Arc<SharedBuzzerState>, gpio: Arc<Gpio>) {
+fn buzzer_control_loop(
+    shutdown_flag: Arc<AtomicBool>,
+    buzzer_state: Arc<SharedBuzzerState>,
+    gpio: Arc<Gpio>,
+) {
     // Initialize buzzer hardware
     let mut buzzer = match Buzzer::new(&gpio) {
         Ok(b) => {
@@ -73,7 +77,9 @@ fn buzzer_control_loop(shutdown_flag: Arc<AtomicBool>, buzzer_state: Arc<SharedB
                             false
                         } else {
                             let phase = elapsed % 1050;
-                            let is_beep_phase = (phase < 200) || (phase >= 350 && phase < 550) || (phase >= 700 && phase < 900);
+                            let is_beep_phase = (phase < 200)
+                                || (phase >= 350 && phase < 550)
+                                || (phase >= 700 && phase < 900);
 
                             // Simulate PWM by toggling rapidly within beep phase
                             if is_beep_phase {
@@ -108,14 +114,16 @@ fn buzzer_control_loop(shutdown_flag: Arc<AtomicBool>, buzzer_state: Arc<SharedB
                     _ => {
                         // Standard repeating beep patterns: DisconnectedBeep, CriticalBeep
                         let (on_ms, off_ms) = match &state_inner.pattern {
-                            BuzzerPattern::DisconnectedBeep(timing) => (timing.on_ms, timing.off_ms),
+                            BuzzerPattern::DisconnectedBeep(timing) => {
+                                (timing.on_ms, timing.off_ms)
+                            }
                             BuzzerPattern::CriticalBeep(timing) => (timing.on_ms, timing.off_ms),
                             _ => (0, 0),
                         };
 
                         // Guard against zero duration to avoid division by zero
                         if on_ms + off_ms == 0 {
-                            false  // No beep if duration is 0
+                            false // No beep if duration is 0
                         } else {
                             let cycle_duration = on_ms + off_ms;
                             let cycle_pos = elapsed % cycle_duration;

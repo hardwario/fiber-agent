@@ -3,10 +3,10 @@
 //! This callback publishes alarm events to the MQTT broker when a sensor's
 //! alarm state changes (e.g., Normal -> Warning -> Alarm -> Critical).
 
-use std::sync::{Arc, RwLock};
 use crate::libs::alarms::callbacks::{AlarmCallback, AlarmEvent};
 use crate::libs::alarms::state::AlarmState;
 use crate::libs::mqtt::MqttHandle;
+use std::sync::{Arc, RwLock};
 
 /// Callback that sends alarm events to MQTT
 pub struct MqttAlarmCallback {
@@ -69,12 +69,16 @@ impl AlarmCallback for MqttAlarmCallback {
                 }
 
                 // Get the current sensor name
-                let name = self.name.read()
+                let name = self
+                    .name
+                    .read()
                     .map(|n| n.clone())
                     .unwrap_or_else(|_| format!("Sensor {}", self.line));
 
                 // Get the last known temperature
-                let temperature = self.last_temperature.read()
+                let temperature = self
+                    .last_temperature
+                    .read()
                     .map(|t| t.unwrap_or(0.0))
                     .unwrap_or(0.0);
 
@@ -84,17 +88,14 @@ impl AlarmCallback for MqttAlarmCallback {
                 );
 
                 // Send the alarm event via MQTT
-                self.mqtt.send_alarm_event(
-                    self.line,
-                    &name,
-                    from,
-                    to,
-                    temperature,
-                );
+                self.mqtt
+                    .send_alarm_event(self.line, &name, from, to, temperature);
             }
             // We also want to publish specific alarm events with temperature
             AlarmEvent::Warning { value } => {
-                let name = self.name.read()
+                let name = self
+                    .name
+                    .read()
                     .map(|n| n.clone())
                     .unwrap_or_else(|_| format!("Sensor {}", self.line));
 

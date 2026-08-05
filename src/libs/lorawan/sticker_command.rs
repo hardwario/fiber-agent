@@ -41,7 +41,11 @@ pub struct ConfigError {
 enum Kind {
     Bool,
     /// inclusive `[min, max]`; `zero_ok` allows the sentinel 0 outside the range.
-    Uint { min: u64, max: u64, zero_ok: bool },
+    Uint {
+        min: u64,
+        max: u64,
+        zero_ok: bool,
+    },
     /// free uint32 (e.g. bitmask) — only range-checked to u32.
     Bitmask,
     /// A 34-char hex alarm slot (17 bytes); validated by decoding to an AlarmSlot.
@@ -65,11 +69,35 @@ enum Kind {
 /// recompaction and uses different numbers (interval_report = 4, history_enable
 /// = 49, …); our proto tracks the branch, matching the bench device.
 const SETTABLE: &[(&str, u32, Kind)] = &[
-    ("application.interval_sample", 2, Kind::Uint { min: 5, max: 3600, zero_ok: true }),
-    ("application.interval_report", 3, Kind::Uint { min: 60, max: 86400, zero_ok: false }),
+    (
+        "application.interval_sample",
+        2,
+        Kind::Uint {
+            min: 5,
+            max: 3600,
+            zero_ok: true,
+        },
+    ),
+    (
+        "application.interval_report",
+        3,
+        Kind::Uint {
+            min: 60,
+            max: 86400,
+            zero_ok: false,
+        },
+    ),
     ("application.history_enable", 4, Kind::Bool),
     ("application.history_sensors", 5, Kind::Bitmask),
-    ("application.battery_level", 6, Kind::Uint { min: 1000, max: 3600, zero_ok: false }),
+    (
+        "application.battery_level",
+        6,
+        Kind::Uint {
+            min: 1000,
+            max: 3600,
+            zero_ok: false,
+        },
+    ),
     // Sensors group. The firmware applies these over LoRaWAN without a transport
     // gate (`app_config_apply_sensors` is ARG_UNUSED(tp)), so they are genuinely
     // writable over the radio — unlike the `lorawan.*` group, which the firmware
@@ -88,12 +116,36 @@ const SETTABLE: &[(&str, u32, Kind)] = &[
     ("sensors.hall_right_counter", 16, Kind::Bool),
     ("sensors.input_a_counter", 17, Kind::Bool),
     ("sensors.input_b_counter", 18, Kind::Bool),
-    ("alarms.alarm_limit", 1, Kind::Uint { min: 0, max: 3600, zero_ok: false }),
-    ("alarms.alarm_notif_time", 2, Kind::Uint { min: 1, max: 60, zero_ok: false }),
+    (
+        "alarms.alarm_limit",
+        1,
+        Kind::Uint {
+            min: 0,
+            max: 3600,
+            zero_ok: false,
+        },
+    ),
+    (
+        "alarms.alarm_notif_time",
+        2,
+        Kind::Uint {
+            min: 1,
+            max: 60,
+            zero_ok: false,
+        },
+    ),
     // #319. `zero_ok` because 0 is the documented "alarm immediately, no
     // confirmation re-sample" value, not an unset sentinel — range and meaning
     // taken from the device's own `app_config.yml`.
-    ("alarms.alarm_light_confirm_delay", 19, Kind::Uint { min: 0, max: 3600, zero_ok: true }),
+    (
+        "alarms.alarm_light_confirm_delay",
+        19,
+        Kind::Uint {
+            min: 0,
+            max: 3600,
+            zero_ok: true,
+        },
+    ),
     // Alarm rule slots: 17-byte packed rules, sent/read as 34-char hex. proto
     // field = 3 + N (alarm_0 = 3 … alarm_15 = 18); validated by decoding.
     ("alarms.alarm_0", 3, Kind::AlarmHex),
@@ -155,7 +207,10 @@ const READ_ONLY: &[(&str, u32)] = &[
 ];
 
 fn spec(key: &str) -> Option<(u32, Kind)> {
-    SETTABLE.iter().find(|(k, _, _)| *k == key).map(|(_, f, k)| (*f, *k))
+    SETTABLE
+        .iter()
+        .find(|(k, _, _)| *k == key)
+        .map(|(_, f, k)| (*f, *k))
 }
 
 /// The proto field number for any key we can read — settable or read-only.
@@ -173,7 +228,12 @@ fn is_read_only(key: &str) -> bool {
 /// Proto group ids, as the firmware uses them when reporting a fault. Also the
 /// dispatch order `set_param` applies groups in, so a fault names the first
 /// group that failed.
-const GROUPS: &[(&str, u32)] = &[("lorawan", 1), ("application", 2), ("sensors", 3), ("alarms", 4)];
+const GROUPS: &[(&str, u32)] = &[
+    ("lorawan", 1),
+    ("application", 2),
+    ("sensors", 3),
+    ("alarms", 4),
+];
 
 /// The group id for a `group.field` key, or `None` for an unknown prefix.
 fn group_id(key: &str) -> Option<u32> {
@@ -196,7 +256,10 @@ fn group_id(key: &str) -> Option<u32> {
 ///   * `group == 0` is either "no fault field set" (0, the firmware default) or a
 ///     pre-v1.4.0 bare tag, so it falls back to the old ambiguous match to keep
 ///     older firmware working.
-pub fn describe_fault<'a>(fault_field: u32, sent_keys: impl IntoIterator<Item = &'a str>) -> Option<String> {
+pub fn describe_fault<'a>(
+    fault_field: u32,
+    sent_keys: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
     if fault_field == 0 {
         return None; // firmware default: the error carries no field reference
     }
@@ -224,7 +287,10 @@ pub fn describe_fault<'a>(fault_field: u32, sent_keys: impl IntoIterator<Item = 
 
 /// Validate one value against its field spec.
 fn validate_one(key: &str, v: &ConfigValue) -> Result<(), ConfigError> {
-    let err = |reason: String| ConfigError { key: key.to_string(), reason };
+    let err = |reason: String| ConfigError {
+        key: key.to_string(),
+        reason,
+    };
     // A read-only key gets its OWN reason, distinct from an unknown one, so the UI
     // can grey the field out instead of flagging it as a typo.
     let (_, kind) = spec(key).ok_or_else(|| {
@@ -260,7 +326,9 @@ fn validate_one(key: &str, v: &ConfigValue) -> Result<(), ConfigError> {
         (Kind::MotionEnum, ConfigValue::Enum(s)) => {
             Err(err(format!("expected off/low/medium/high, got {s:?}")))
         }
-        (Kind::MotionEnum, _) => Err(err("expected a motion sensitivity (off/low/medium/high)".into())),
+        (Kind::MotionEnum, _) => Err(err(
+            "expected a motion sensitivity (off/low/medium/high)".into()
+        )),
     }
 }
 
@@ -295,7 +363,9 @@ fn motion_config_value(n: i32) -> ConfigValue {
 /// Validate every key in a desired config. Returns all errors at once (so the
 /// UI can show them together) — or the ordered list of validated settable
 /// fields, in `SETTABLE` order for deterministic batching.
-pub fn validate(config: &BTreeMap<String, ConfigValue>) -> Result<Vec<(String, ConfigValue)>, Vec<ConfigError>> {
+pub fn validate(
+    config: &BTreeMap<String, ConfigValue>,
+) -> Result<Vec<(String, ConfigValue)>, Vec<ConfigError>> {
     let mut errors = Vec::new();
     for (k, v) in config {
         if let Err(e) = validate_one(k, v) {
@@ -321,19 +391,29 @@ fn apply(sp: &mut command::SetParam, key: &str, v: &ConfigValue) {
     let group = key.split('.').next().unwrap_or("");
     match (group, key, v) {
         ("application", "application.interval_sample", ConfigValue::Uint(n)) => {
-            sp.application.get_or_insert_with(Application::default).interval_sample = Some(*n as u32);
+            sp.application
+                .get_or_insert_with(Application::default)
+                .interval_sample = Some(*n as u32);
         }
         ("application", "application.interval_report", ConfigValue::Uint(n)) => {
-            sp.application.get_or_insert_with(Application::default).interval_report = Some(*n as u32);
+            sp.application
+                .get_or_insert_with(Application::default)
+                .interval_report = Some(*n as u32);
         }
         ("application", "application.history_enable", ConfigValue::Bool(b)) => {
-            sp.application.get_or_insert_with(Application::default).history_enable = Some(*b);
+            sp.application
+                .get_or_insert_with(Application::default)
+                .history_enable = Some(*b);
         }
         ("application", "application.history_sensors", ConfigValue::Uint(n)) => {
-            sp.application.get_or_insert_with(Application::default).history_sensors = Some(*n as u32);
+            sp.application
+                .get_or_insert_with(Application::default)
+                .history_sensors = Some(*n as u32);
         }
         ("application", "application.battery_level", ConfigValue::Uint(n)) => {
-            sp.application.get_or_insert_with(Application::default).battery_level = Some(*n as u32);
+            sp.application
+                .get_or_insert_with(Application::default)
+                .battery_level = Some(*n as u32);
         }
         ("sensors", k, v) => {
             let s = sp.sensors.get_or_insert_with(Sensors::default);
@@ -346,9 +426,15 @@ fn apply(sp: &mut command::SetParam, key: &str, v: &ConfigValue) {
                 ("sensors.cap_barometer", ConfigValue::Bool(b)) => s.cap_barometer = Some(*b),
                 ("sensors.cap_pir_detector", ConfigValue::Bool(b)) => s.cap_pir_detector = Some(*b),
                 ("sensors.cap_w1_sensors", ConfigValue::Bool(b)) => s.cap_w1_sensors = Some(*b),
-                ("sensors.cap_accelerometer", ConfigValue::Bool(b)) => s.cap_accelerometer = Some(*b),
-                ("sensors.hall_left_counter", ConfigValue::Bool(b)) => s.hall_left_counter = Some(*b),
-                ("sensors.hall_right_counter", ConfigValue::Bool(b)) => s.hall_right_counter = Some(*b),
+                ("sensors.cap_accelerometer", ConfigValue::Bool(b)) => {
+                    s.cap_accelerometer = Some(*b)
+                }
+                ("sensors.hall_left_counter", ConfigValue::Bool(b)) => {
+                    s.hall_left_counter = Some(*b)
+                }
+                ("sensors.hall_right_counter", ConfigValue::Bool(b)) => {
+                    s.hall_right_counter = Some(*b)
+                }
                 ("sensors.input_a_counter", ConfigValue::Bool(b)) => s.input_a_counter = Some(*b),
                 ("sensors.input_b_counter", ConfigValue::Bool(b)) => s.input_b_counter = Some(*b),
                 ("sensors.accel_motion_sensitivity", ConfigValue::Enum(name)) => {
@@ -363,7 +449,9 @@ fn apply(sp: &mut command::SetParam, key: &str, v: &ConfigValue) {
             sp.alarms.get_or_insert_with(Alarms::default).alarm_limit = Some(*n as u32);
         }
         ("alarms", "alarms.alarm_notif_time", ConfigValue::Uint(n)) => {
-            sp.alarms.get_or_insert_with(Alarms::default).alarm_notif_time = Some(*n as u32);
+            sp.alarms
+                .get_or_insert_with(Alarms::default)
+                .alarm_notif_time = Some(*n as u32);
         }
         ("alarms", k, ConfigValue::Hex(s)) if alarm_slot_index(k).is_some() => {
             if let (Some(n), Ok(bytes)) = (alarm_slot_index(k), hex::decode(s)) {
@@ -405,7 +493,10 @@ fn set_alarm_slot(al: &mut Alarms, n: u8, bytes: Vec<u8>) {
 }
 
 fn set_param_command(sp: command::SetParam) -> Command {
-    Command { seq: 0, body: Some(command::Body::SetParam(sp)) }
+    Command {
+        seq: 0,
+        body: Some(command::Body::SetParam(sp)),
+    }
 }
 
 /// Build the `SetParam` downlink(s) for a desired config. Validates first
@@ -460,7 +551,10 @@ pub fn build_set_param(
 // --- simple no-arg / read command builders (used by read-back + #71) ---
 
 fn cmd(body: command::Body) -> Command {
-    Command { seq: 0, body: Some(body) }
+    Command {
+        seq: 0,
+        body: Some(body),
+    }
 }
 
 /// `GetParam` reading back the given `group.field` keys — the read-side partner
@@ -624,7 +718,9 @@ pub fn build_device_reset() -> Command {
 
 /// `ClockSync` carrying an explicit wall-clock (Unix seconds) to push to the device.
 pub fn build_clock_sync(unix_time: u32) -> Command {
-    cmd(command::Body::ClockSync(command::ClockSync { unix_time: Some(unix_time) }))
+    cmd(command::Body::ClockSync(command::ClockSync {
+        unix_time: Some(unix_time),
+    }))
 }
 
 /// `ClockSync` with an empty body: ask the device to re-sync from the network
@@ -636,7 +732,9 @@ pub fn build_clock_sync(unix_time: u32) -> Command {
 /// is a deferred `Info` uplink once `LORAWAN_TIME_UPDATED` lands. So a caller must
 /// not wait for a correlated response to this one.
 pub fn build_clock_sync_from_network() -> Command {
-    cmd(command::Body::ClockSync(command::ClockSync { unix_time: None }))
+    cmd(command::Body::ClockSync(command::ClockSync {
+        unix_time: None,
+    }))
 }
 
 /// `ReqHistory` requesting the device's on-device history buffer (#39).
@@ -645,14 +743,20 @@ pub fn build_clock_sync_from_network() -> Command {
 /// command's seq (collected by the history backfill path), each expanded with
 /// [`super::sticker_response::expand_history_frame`].
 pub fn build_req_history(from_unix: Option<u32>, to_unix: Option<u32>) -> Command {
-    cmd(command::Body::ReqHistory(command::ReqHistory { from_unix, to_unix }))
+    cmd(command::Body::ReqHistory(command::ReqHistory {
+        from_unix,
+        to_unix,
+    }))
 }
 
 /// Parse a raw `key=value` string into a [`ConfigValue`] of the type the field
 /// expects (bool vs unsigned), per the [`SETTABLE`] spec. Range validation
 /// happens later in [`build_set_param`]/[`validate`]; this only fixes the type.
 pub fn parse_value(key: &str, raw: &str) -> Result<ConfigValue, ConfigError> {
-    let err = |reason: String| ConfigError { key: key.to_string(), reason };
+    let err = |reason: String| ConfigError {
+        key: key.to_string(),
+        reason,
+    };
     let (_, kind) = spec(key).ok_or_else(|| {
         if is_read_only(key) {
             err("read-only over LoRaWAN".into())
@@ -684,11 +788,15 @@ pub fn parse_value(key: &str, raw: &str) -> Result<ConfigValue, ConfigError> {
                 if (0..=3).contains(&n) {
                     return Ok(motion_config_value(n));
                 }
-                return Err(err(format!("motion sensitivity out of range 0..=3, got {n}")));
+                return Err(err(format!(
+                    "motion sensitivity out of range 0..=3, got {n}"
+                )));
             }
             match motion_value(t) {
                 Some(n) => Ok(motion_config_value(n)),
-                None => Err(err(format!("expected off/low/medium/high or 0..=3, got {raw:?}"))),
+                None => Err(err(format!(
+                    "expected off/low/medium/high or 0..=3, got {raw:?}"
+                ))),
             }
         }
     }
@@ -700,7 +808,10 @@ mod tests {
     use crate::libs::lorawan::sticker_proto::{command, Command};
 
     fn cfg(pairs: &[(&str, ConfigValue)]) -> BTreeMap<String, ConfigValue> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
     }
 
     fn decode_set_param(c: &Command) -> command::SetParam {
@@ -727,8 +838,16 @@ mod tests {
     #[test]
     fn validate_allows_zero_sentinel_for_interval_sample() {
         // interval_sample has zero_allowed (0 = precede report), range 5..3600
-        assert!(validate(&cfg(&[("application.interval_sample", ConfigValue::Uint(0))])).is_ok());
-        assert!(validate(&cfg(&[("application.interval_sample", ConfigValue::Uint(4))])).is_err());
+        assert!(validate(&cfg(&[(
+            "application.interval_sample",
+            ConfigValue::Uint(0)
+        )]))
+        .is_ok());
+        assert!(validate(&cfg(&[(
+            "application.interval_sample",
+            ConfigValue::Uint(4)
+        )]))
+        .is_err());
     }
 
     #[test]
@@ -781,15 +900,27 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(cmds.len() >= 2, "expected multiple batches, got {}", cmds.len());
+        assert!(
+            cmds.len() >= 2,
+            "expected multiple batches, got {}",
+            cmds.len()
+        );
         for (i, c) in cmds.iter().enumerate() {
             let sp = decode_set_param(c);
             let is_last = i == cmds.len() - 1;
-            assert_eq!(sp.save, if is_last { Some(true) } else { None }, "save placement at #{i}");
+            assert_eq!(
+                sp.save,
+                if is_last { Some(true) } else { None },
+                "save placement at #{i}"
+            );
             // non-final batches must respect the budget; the final one may exceed
             // it only by the 2-byte save flag (unavoidable on the commit message).
             if !is_last {
-                assert!(c.encoded_len() <= budget, "batch #{i} = {} B > {budget}", c.encoded_len());
+                assert!(
+                    c.encoded_len() <= budget,
+                    "batch #{i} = {} B > {budget}",
+                    c.encoded_len()
+                );
             }
         }
         // round-trip: every requested field is present across the batches
@@ -814,24 +945,42 @@ mod tests {
         // Firmware v1.4.0 sends group * 100 + tag (app_cmd.c:332), so
         // application (group 2) field 3 arrives as 203 — NOT as a bare 3.
         let sent = ["application.interval_report", "application.history_enable"];
-        assert_eq!(describe_fault(203, sent), Some("application.interval_report".to_string()));
-        assert_eq!(describe_fault(204, sent), Some("application.history_enable".to_string()));
+        assert_eq!(
+            describe_fault(203, sent),
+            Some("application.interval_report".to_string())
+        );
+        assert_eq!(
+            describe_fault(204, sent),
+            Some("application.history_enable".to_string())
+        );
 
         // A tag we did not send is still attributed to its group rather than lost.
-        assert_eq!(describe_fault(205, sent), Some("application.<field 5>".to_string()));
+        assert_eq!(
+            describe_fault(205, sent),
+            Some("application.<field 5>".to_string())
+        );
 
         // The same tag in a different group must not be confused with ours: 103 is
         // lorawan field 3 (network), which is not settable over LoRaWAN at all.
-        assert_eq!(describe_fault(103, sent), Some("lorawan.<field 3>".to_string()));
+        assert_eq!(
+            describe_fault(103, sent),
+            Some("lorawan.<field 3>".to_string())
+        );
 
         // Group-scoped fault with no specific field: the alarm-rule reload reports
         // 400 when a rule fails validation (app_cmd.c:343).
-        assert_eq!(describe_fault(400, sent), Some("alarms (whole group)".to_string()));
+        assert_eq!(
+            describe_fault(400, sent),
+            Some("alarms (whole group)".to_string())
+        );
 
         // sensors is group 3. The group resolves even though no `sensors.*` key is
         // settable yet (that arrives with the #69 surface), so a NOT_WRITABLE on a
         // capability is already attributable instead of silently unnamed.
-        assert_eq!(describe_fault(306, sent), Some("sensors.<field 6>".to_string()));
+        assert_eq!(
+            describe_fault(306, sent),
+            Some("sensors.<field 6>".to_string())
+        );
     }
 
     #[test]
@@ -839,8 +988,14 @@ mod tests {
         // Pre-v1.4.0 firmware sent a bare proto tag (group id 0). Keep resolving
         // those against the sent keys so an older device still names its fault.
         let sent = ["application.interval_report", "application.history_enable"];
-        assert_eq!(describe_fault(3, sent), Some("application.interval_report".to_string()));
-        assert_eq!(describe_fault(4, sent), Some("application.history_enable".to_string()));
+        assert_eq!(
+            describe_fault(3, sent),
+            Some("application.interval_report".to_string())
+        );
+        assert_eq!(
+            describe_fault(4, sent),
+            Some("application.history_enable".to_string())
+        );
         assert_eq!(describe_fault(99, sent), None);
     }
 
@@ -868,7 +1023,9 @@ mod tests {
         assert_eq!(hex(&all.encode_to_vec()), "080752080801100118012001");
 
         // An empty body must never be what we send, so assert it differs.
-        let mut empty = cmd(command::Body::ResetCounters(command::ResetCounters::default()));
+        let mut empty = cmd(command::Body::ResetCounters(
+            command::ResetCounters::default(),
+        ));
         empty.seq = 7;
         assert_ne!(
             hex(&all.encode_to_vec()),
@@ -924,7 +1081,9 @@ mod tests {
         // shell-inject path and replied Response{seq, Ack} (action 1=save was
         // recognised, just not executed from a shell inject). Ties our builder
         // output to bytes real firmware parses, plus the decode of its Ack.
-        use crate::libs::lorawan::sticker_response::{decode_response, DecodedResponse, ResponseKind};
+        use crate::libs::lorawan::sticker_response::{
+            decode_response, DecodedResponse, ResponseKind,
+        };
         let config = cfg(&[
             ("application.interval_report", ConfigValue::Uint(1200)),
             ("application.history_enable", ConfigValue::Bool(true)),
@@ -937,7 +1096,13 @@ mod tests {
         // the real Ack the device returned (on-wire, incl. 0x01 version byte)
         let resp = [0x01u8, 0x08, 0x09, 0x12, 0x00];
         let d = decode_response(&resp[1..]).unwrap();
-        assert_eq!(d, DecodedResponse { seq: 9, kind: ResponseKind::Ack });
+        assert_eq!(
+            d,
+            DecodedResponse {
+                seq: 9,
+                kind: ResponseKind::Ack
+            }
+        );
     }
 
     // Onboard temperature threshold slot (matches the sticker_alarm vector).
@@ -955,14 +1120,21 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         let sp = decode_set_param(&cmds[0]);
         let alarms = sp.alarms.expect("alarms group present");
-        assert_eq!(alarms.alarm_3.as_deref().map(hex), Some(ALARM_HEX.to_string()));
+        assert_eq!(
+            alarms.alarm_3.as_deref().map(hex),
+            Some(ALARM_HEX.to_string())
+        );
     }
 
     #[test]
     fn alarm_invalid_source_quantity_rejected() {
         // present+enabled pressure(2) on s1(1) — pressure is onboard-only.
         let bad = "0301020000000000000000803f00000000";
-        let errs = validate(&cfg(&[("alarms.alarm_0", ConfigValue::Hex(bad.to_string()))])).unwrap_err();
+        let errs = validate(&cfg(&[(
+            "alarms.alarm_0",
+            ConfigValue::Hex(bad.to_string()),
+        )]))
+        .unwrap_err();
         assert!(errs.iter().any(|e| e.key == "alarms.alarm_0"));
     }
 
@@ -974,7 +1146,11 @@ mod tests {
             ("alarms.alarm_2", ConfigValue::Hex(ALARM_HEX.to_string())),
         ]);
         let cmds = build_set_param(&config, DR0_COMMAND_BUDGET, true).unwrap();
-        assert!(cmds.len() >= 2, "3 slots should not fit one DR0 command, got {}", cmds.len());
+        assert!(
+            cmds.len() >= 2,
+            "3 slots should not fit one DR0 command, got {}",
+            cmds.len()
+        );
         for c in &cmds {
             assert!(c.encode_to_vec().len() <= DR0_COMMAND_BUDGET);
         }
@@ -1021,12 +1197,26 @@ mod tests {
         // "alarms." and dropped every other key in SILENCE, so a sensors.* read
         // looked accepted and simply never came back.
         let c = build_get_param_page(
-            &["sensors.cap_barometer", "sensors.accel_motion_sensitivity", "lorawan.region"],
+            &[
+                "sensors.cap_barometer",
+                "sensors.accel_motion_sensitivity",
+                "lorawan.region",
+            ],
             0,
         );
-        let Some(command::Body::GetParam(gp)) = &c.body else { panic!("expected GetParam") };
-        assert_eq!(gp.sensors_field, vec![6, 10], "cap_barometer=6, accel_motion_sensitivity=10");
-        assert_eq!(gp.lorawan_field, vec![1], "region=1, read-only but readable");
+        let Some(command::Body::GetParam(gp)) = &c.body else {
+            panic!("expected GetParam")
+        };
+        assert_eq!(
+            gp.sensors_field,
+            vec![6, 10],
+            "cap_barometer=6, accel_motion_sensitivity=10"
+        );
+        assert_eq!(
+            gp.lorawan_field,
+            vec![1],
+            "region=1, read-only but readable"
+        );
         assert!(gp.application_field.is_empty());
     }
 
@@ -1039,7 +1229,11 @@ mod tests {
         assert_eq!(e[0].key, "lorawan.adr");
         assert_eq!(e[0].reason, "read-only over LoRaWAN");
 
-        let e = validate(&cfg(&[("sensors.sensor1_rom", ConfigValue::Hex("00".into()))])).unwrap_err();
+        let e = validate(&cfg(&[(
+            "sensors.sensor1_rom",
+            ConfigValue::Hex("00".into()),
+        )]))
+        .unwrap_err();
         assert_eq!(e[0].reason, "read-only over LoRaWAN");
 
         let e = validate(&cfg(&[("application.nonsense", ConfigValue::Bool(true))])).unwrap_err();
@@ -1048,9 +1242,9 @@ mod tests {
 
     #[test]
     fn motion_sensitivity_write_and_read_back_agree() {
-        use crate::libs::lorawan::sticker_response::{decode_config, diff_config};
         use crate::libs::lorawan::sticker_proto::app_config_message::Sensors as PSensors;
         use crate::libs::lorawan::sticker_proto::response;
+        use crate::libs::lorawan::sticker_response::{decode_config, diff_config};
 
         // A write accepts a name or the numeric proto value, and BOTH normalise to
         // the Enum spelling reads emit.
@@ -1060,17 +1254,26 @@ mod tests {
         assert_eq!(from_num, from_name);
 
         // It reaches the wire as the numeric proto value.
-        let cmds =
-            build_set_param(&cfg(&[("sensors.accel_motion_sensitivity", from_num.clone())]), DR0_COMMAND_BUDGET, false)
-                .unwrap();
+        let cmds = build_set_param(
+            &cfg(&[("sensors.accel_motion_sensitivity", from_num.clone())]),
+            DR0_COMMAND_BUDGET,
+            false,
+        )
+        .unwrap();
         let sp = decode_set_param(&cmds[0]);
-        assert_eq!(sp.sensors.as_ref().unwrap().accel_motion_sensitivity, Some(2));
+        assert_eq!(
+            sp.sensors.as_ref().unwrap().accel_motion_sensitivity,
+            Some(2)
+        );
 
         // THE POINT: the device's read-back of that write must diff clean. Storing
         // Uint(2) instead would leave diff_config reporting a mismatch forever, on
         // the one field that was just written successfully.
         let dump = response::ConfigDump {
-            sensors: Some(PSensors { accel_motion_sensitivity: Some(2), ..Default::default() }),
+            sensors: Some(PSensors {
+                accel_motion_sensitivity: Some(2),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let actual = decode_config(&dump);
@@ -1088,12 +1291,12 @@ mod tests {
         // reads back as absent forever, so diff_config reports it permanently
         // unverified and the UI can never show it as applied. battery_level was
         // exactly this until decode_config learned it.
-        use crate::libs::lorawan::sticker_response::decode_config;
         use crate::libs::lorawan::sticker_proto::app_config_message::{
             Alarms as PAlarms, Application as PApplication, Lorawan as PLorawan,
             Sensors as PSensors,
         };
         use crate::libs::lorawan::sticker_proto::response;
+        use crate::libs::lorawan::sticker_response::decode_config;
 
         let dump = response::ConfigDump {
             lorawan: Some(PLorawan {
@@ -1172,7 +1375,7 @@ mod tests {
     fn req_history_encodes_range() {
         let mut c = build_req_history(Some(1000), Some(2000));
         c.seq = 7; // sender stamps the seq
-        // seq(1)=7, req_history(11)={ from_unix(1)=1000, to_unix(2)=2000 }
+                   // seq(1)=7, req_history(11)={ from_unix(1)=1000, to_unix(2)=2000 }
         assert_eq!(hex(&c.encode_to_vec()), "08075a0608e80710d00f");
         match c.body {
             Some(command::Body::ReqHistory(r)) => {

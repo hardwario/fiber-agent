@@ -103,7 +103,9 @@ fn a_boot_with_no_vin_reading_stays_off_rather_than_guessing() {
     // power is present keeps the device visibly off instead of quietly resuming
     // clinical measurement; the next successful read wakes it seconds later.
     let dir = TempDir::new().unwrap();
-    marker_for("r", "dr.jane@hospital.eu").write(dir.path()).unwrap();
+    marker_for("r", "dr.jane@hospital.eu")
+        .write(dir.path())
+        .unwrap();
 
     assert_eq!(
         boot_decision(true, None, CONNECT_MV),
@@ -186,7 +188,10 @@ fn a_replug_faster_than_the_poll_interval_still_wakes_the_device() {
 
     // The unplug and replug both happened between this poll and the last, so VIN
     // still reads present. Only the kernel's monotonic carrier count remembers.
-    assert!(!watch.observe(true, true), "armed by the link, now confirming");
+    assert!(
+        !watch.observe(true, true),
+        "armed by the link, now confirming"
+    );
     assert_eq!(watch.evidence(), Some(ArmEvidence::LinkDown));
     assert!(
         watch.observe(true, true),

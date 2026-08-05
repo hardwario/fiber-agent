@@ -74,8 +74,8 @@ pub fn is_threshold(quantity: u8) -> bool {
 /// battery/voltage is watchdog-only and intentionally excluded.
 pub fn valid_source_quantity(source: u8, quantity: u8) -> bool {
     match quantity {
-        0 | 1 => matches!(source, 0..=4),     // temperature, humidity: onboard + s1..s4
-        2 => source == 0,                     // pressure: onboard
+        0 | 1 => matches!(source, 0..=4), // temperature, humidity: onboard + s1..s4
+        2 => source == 0,                 // pressure: onboard
         3 | 4 | 5 => matches!(source, 1..=4), // illuminance, magnetic_field, tilt: 1-Wire slots s1..s4
         6 | 7 => matches!(source, 5..=10),    // state, count: hall l/r, input a/b, pir, accel
         _ => false,                           // voltage/unknown: not user-settable
@@ -169,7 +169,7 @@ mod tests {
         let s = AlarmSlot {
             present: true,
             enabled: true,
-            source: 5, // hall_left
+            source: 5,   // hall_left
             quantity: 7, // count
             from_state: 0,
             to_state: 0,
@@ -179,7 +179,10 @@ mod tests {
         };
         assert_eq!(decode_slot(&hex::encode(encode_slot(&s))).unwrap(), s);
         // and the known vector encodes back to its exact bytes
-        assert_eq!(hex::encode(encode_slot(&decode_slot(KNOWN_HEX).unwrap())), KNOWN_HEX);
+        assert_eq!(
+            hex::encode(encode_slot(&decode_slot(KNOWN_HEX).unwrap())),
+            KNOWN_HEX
+        );
     }
 
     #[test]
@@ -198,16 +201,23 @@ mod tests {
     #[test]
     fn validates_source_quantity_matrix() {
         let mk = |source, quantity| AlarmSlot {
-            present: true, enabled: true, source, quantity,
-            from_state: 0, to_state: 0, lo: 0.0, hi: 1.0, hst: 0.0,
+            present: true,
+            enabled: true,
+            source,
+            quantity,
+            from_state: 0,
+            to_state: 0,
+            lo: 0.0,
+            hi: 1.0,
+            hst: 0.0,
         };
         assert!(validate_slot(&mk(0, 0)).is_ok()); // onboard temperature
         assert!(validate_slot(&mk(1, 0)).is_ok()); // s1 temperature
         assert!(validate_slot(&mk(1, 2)).is_err()); // pressure only onboard
         assert!(validate_slot(&mk(5, 7)).is_ok()); // hall_left count
         assert!(validate_slot(&mk(11, 8)).is_err()); // battery/voltage excluded
-        // Mirror app_alarm_rules.c: illuminance/magnetic/tilt live on the 1-Wire
-        // slots s1..s4 (not onboard/hall/accel); state+count on the digital sources.
+                                                     // Mirror app_alarm_rules.c: illuminance/magnetic/tilt live on the 1-Wire
+                                                     // slots s1..s4 (not onboard/hall/accel); state+count on the digital sources.
         assert!(validate_slot(&mk(1, 3)).is_ok()); // s1 illuminance
         assert!(validate_slot(&mk(0, 3)).is_err()); // onboard has no illuminance rule
         assert!(validate_slot(&mk(2, 4)).is_ok()); // s2 magnetic_field
@@ -218,8 +228,15 @@ mod tests {
     #[test]
     fn rejects_inverted_threshold() {
         let s = AlarmSlot {
-            present: true, enabled: true, source: 0, quantity: 0,
-            from_state: 0, to_state: 0, lo: 25.0, hi: 15.0, hst: 0.0,
+            present: true,
+            enabled: true,
+            source: 0,
+            quantity: 0,
+            from_state: 0,
+            to_state: 0,
+            lo: 25.0,
+            hi: 15.0,
+            hst: 0.0,
         };
         assert!(validate_slot(&s).is_err());
     }

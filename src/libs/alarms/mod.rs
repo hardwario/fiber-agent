@@ -15,7 +15,9 @@ pub mod mqtt_callback;
 pub mod state;
 pub mod threshold;
 
-pub use callbacks::{AlarmCallback, AlarmEvent, LoggingCallback, BuzzerCallback, BuzzerStateCallback, BeepPattern};
+pub use callbacks::{
+    AlarmCallback, AlarmEvent, BeepPattern, BuzzerCallback, BuzzerStateCallback, LoggingCallback,
+};
 pub use color::{BlinkPattern, LedColor};
 pub use controller::AlarmController;
 pub use mqtt_callback::MqttAlarmCallback;

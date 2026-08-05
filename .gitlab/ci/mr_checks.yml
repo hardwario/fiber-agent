@@ -17,7 +17,9 @@
   cache:
     key:
       files: [Cargo.lock, rust-toolchain.toml]
-    paths: [.cargo/registry/index, .cargo/registry/cache, target/]
+    # .cargo/bin caches cargo-nextest/cargo-audit binaries (see below) so
+    # they aren't re-downloaded/rebuilt on every pipeline run.
+    paths: [.cargo/registry/index, .cargo/registry/cache, .cargo/bin, target/]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 
@@ -30,11 +32,44 @@ build:check:
 test:unit:
   extends: .mr_rust_base
   stage: test
-  # --test-threads=1: several tests share global state and race under the
-  # default multi-threaded runner. Serializing keeps the gate deterministic.
+  # cargo-nextest, not cargo test: gives us JUnit output (wired below) for
+  # GitLab's Test Report tab, which plain `cargo test` has no stable way to
+  # produce (JSON test output is nightly-only).
+  # --test-threads 1: several tests share global state and race under a
+  # multi-threaded runner. Serializing keeps the gate deterministic.
   # FOLLOW-UP: fix the shared-state races so the suite is parallel-safe.
+  before_script:
+    - !reference [.mr_rust_base, before_script]
+    - mkdir -p "${CARGO_HOME}/bin"
+    - command -v cargo-nextest || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME}/bin"
   script:
-    - cargo test --locked -- --test-threads=1
+    - cargo nextest run --locked --profile ci --test-threads 1
+  artifacts:
+    when: always
+    reports:
+      junit: target/nextest/ci/junit.xml
+
+lint:fmt:
+  extends: .mr_rust_base
+  stage: test
+  before_script:
+    - !reference [.mr_rust_base, before_script]
+    - rustup component add rustfmt
+  script:
+    - cargo fmt --check
+
+audit:deps:
+  extends: .mr_rust_base
+  stage: test
+  # Non-blocking for now, same posture as lint:clippy below: report on every
+  # MR while we confirm the dependency tree is actually clean.
+  # FOLLOW-UP: remove allow_failure once a clean baseline is confirmed.
+  allow_failure: true
+  before_script:
+    - !reference [.mr_rust_base, before_script]
+    - command -v cargo-audit || cargo install cargo-audit --locked
+  script:
+    - cargo audit
 
 lint:clippy:
   extends: .mr_rust_base

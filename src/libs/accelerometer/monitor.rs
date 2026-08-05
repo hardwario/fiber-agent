@@ -8,10 +8,10 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam::channel::Sender;
 
+use super::state::{MotionDetector, MotionState};
 use crate::drivers::lis2dh12::Lis2dh12;
 use crate::libs::config::AccelerometerConfig;
 use crate::libs::mqtt::messages::MqttMessage;
-use super::state::{MotionDetector, MotionState};
 
 /// Background accelerometer monitoring thread
 pub struct AccelerometerMonitor {
@@ -69,7 +69,9 @@ impl AccelerometerMonitor {
         loop {
             // Check for shutdown signal
             if shutdown_flag.load(Ordering::Relaxed) {
-                eprintln!("[AccelerometerMonitor] Shutdown signal received, exiting monitor thread");
+                eprintln!(
+                    "[AccelerometerMonitor] Shutdown signal received, exiting monitor thread"
+                );
                 break;
             }
 
@@ -104,7 +106,10 @@ impl AccelerometerMonitor {
                                     );
                                 }
                                 MotionState::Idle => {
-                                    eprintln!("[AccelerometerMonitor] Motion stopped at {}", timestamp);
+                                    eprintln!(
+                                        "[AccelerometerMonitor] Motion stopped at {}",
+                                        timestamp
+                                    );
                                 }
                                 MotionState::Debouncing { .. } => {}
                             }

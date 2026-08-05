@@ -168,7 +168,11 @@ impl EyeConfig {
     pub fn set_field_threshold(&mut self, mac: &str, t: FieldThreshold) {
         let up = mac.to_uppercase();
         if let Some(tag) = self.tags.iter_mut().find(|x| x.mac.to_uppercase() == up) {
-            if let Some(existing) = tag.field_thresholds.iter_mut().find(|ft| ft.field == t.field) {
+            if let Some(existing) = tag
+                .field_thresholds
+                .iter_mut()
+                .find(|ft| ft.field == t.field)
+            {
                 *existing = t;
             } else {
                 tag.field_thresholds.push(t);
@@ -300,7 +304,10 @@ mod tests {
         assert!(cfg.set_recording("AA:BB:CC:DD:EE:FF", 0));
         let tag = cfg.tags[0].clone();
         assert_eq!(tag.recording, Some(false));
-        assert!(!cfg.recording_on_for(&tag), "interval 0 must turn recording off");
+        assert!(
+            !cfg.recording_on_for(&tag),
+            "interval 0 must turn recording off"
+        );
         // unknown MAC -> false
         assert!(!cfg.set_recording("11:22:33:44:55:66", 1));
     }

@@ -9,7 +9,7 @@ use crate::libs::config::{
     effective_field_thresholds, FieldThreshold, FieldThresholdBounds, LoRaWANSensorConfig,
 };
 
-use super::chirpstack::{StickerReading, StickerEvent};
+use super::chirpstack::{StickerEvent, StickerReading};
 
 const MAX_RECENT_EVENTS: usize = 32;
 
@@ -59,10 +59,26 @@ pub(crate) fn evaluate_threshold(
     warning_high: Option<f64>,
     critical_high: Option<f64>,
 ) -> LoRaWANAlarmState {
-    if let Some(cl) = critical_low { if value < cl { return LoRaWANAlarmState::Critical; } }
-    if let Some(ch) = critical_high { if value > ch { return LoRaWANAlarmState::Critical; } }
-    if let Some(wl) = warning_low { if value < wl { return LoRaWANAlarmState::Warning; } }
-    if let Some(wh) = warning_high { if value > wh { return LoRaWANAlarmState::Warning; } }
+    if let Some(cl) = critical_low {
+        if value < cl {
+            return LoRaWANAlarmState::Critical;
+        }
+    }
+    if let Some(ch) = critical_high {
+        if value > ch {
+            return LoRaWANAlarmState::Critical;
+        }
+    }
+    if let Some(wl) = warning_low {
+        if value < wl {
+            return LoRaWANAlarmState::Warning;
+        }
+    }
+    if let Some(wh) = warning_high {
+        if value > wh {
+            return LoRaWANAlarmState::Warning;
+        }
+    }
     LoRaWANAlarmState::Normal
 }
 
@@ -90,7 +106,9 @@ pub struct LoRaWANSensorState {
 impl LoRaWANSensorState {
     pub fn from_reading(reading: &StickerReading) -> Self {
         let mut events: VecDeque<StickerEvent> = reading.events.iter().cloned().collect();
-        while events.len() > MAX_RECENT_EVENTS { events.pop_front(); }
+        while events.len() > MAX_RECENT_EVENTS {
+            events.pop_front();
+        }
         Self {
             dev_eui: reading.dev_eui.clone(),
             name: reading.device_name.clone(),
@@ -116,11 +134,17 @@ impl LoRaWANSensorState {
         if !reading.device_name.is_empty() {
             self.name = reading.device_name.clone();
         }
-        for (k, v) in &reading.fields { self.fields.insert(k.clone(), *v); }
-        for (k, v) in &reading.counters { self.counters.insert(k.clone(), *v); }
+        for (k, v) in &reading.fields {
+            self.fields.insert(k.clone(), *v);
+        }
+        for (k, v) in &reading.counters {
+            self.counters.insert(k.clone(), *v);
+        }
         for ev in &reading.events {
             self.recent_events.push_back(ev.clone());
-            if self.recent_events.len() > MAX_RECENT_EVENTS { self.recent_events.pop_front(); }
+            if self.recent_events.len() > MAX_RECENT_EVENTS {
+                self.recent_events.pop_front();
+            }
         }
         self.rssi = reading.rssi;
         self.snr = reading.snr;
@@ -139,7 +163,9 @@ impl LoRaWANSensorState {
         self.field_alarm_states.clear();
         self.field_thresholds.clear();
         if let Some(cfg) = config {
-            if let Some(ref name) = cfg.name { self.name = name.clone(); }
+            if let Some(ref name) = cfg.name {
+                self.name = name.clone();
+            }
             self.serial_number = cfg.serial_number.clone();
             self.location = cfg.location.clone();
         }
@@ -153,13 +179,18 @@ impl LoRaWANSensorState {
             if let Some(&v) = self.fields.get(&t.field) {
                 let s = evaluate_threshold(
                     v,
-                    t.critical_low, t.warning_low,
-                    t.warning_high, t.critical_high,
+                    t.critical_low,
+                    t.warning_low,
+                    t.warning_high,
+                    t.critical_high,
                 );
                 self.field_alarm_states.insert(t.field.clone(), s);
             }
         }
-        self.alarm_state = self.field_alarm_states.values().cloned()
+        self.alarm_state = self
+            .field_alarm_states
+            .values()
+            .cloned()
             .fold(LoRaWANAlarmState::Normal, |a, b| a.worst(&b));
     }
 }
@@ -190,7 +221,10 @@ impl LoRaWANState {
                 LoRaWANSensorState::from_reading(reading),
             );
         } else {
-            self.sensors.get_mut(&reading.dev_eui).unwrap().update_from_reading(reading);
+            self.sensors
+                .get_mut(&reading.dev_eui)
+                .unwrap()
+                .update_from_reading(reading);
         }
     }
 
@@ -286,19 +320,26 @@ mod tests {
             field_thresholds: vec![
                 FieldThreshold {
                     field: "temperature".into(),
-                    critical_low: Some(0.0), warning_low: Some(10.0),
-                    warning_high: Some(35.0), critical_high: Some(40.0),
+                    critical_low: Some(0.0),
+                    warning_low: Some(10.0),
+                    warning_high: Some(35.0),
+                    critical_high: Some(40.0),
                 },
                 FieldThreshold {
                     field: "humidity".into(),
-                    critical_low: None, warning_low: Some(20.0),
-                    warning_high: Some(80.0), critical_high: Some(90.0),
+                    critical_low: None,
+                    warning_low: Some(20.0),
+                    warning_high: Some(80.0),
+                    critical_high: Some(90.0),
                 },
             ],
         };
         state.evaluate_alarms(&[cfg], &HashMap::new());
         let s = &state.sensors["aabb"];
-        assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Critical);
+        assert_eq!(
+            s.field_alarm_states["temperature"],
+            LoRaWANAlarmState::Critical
+        );
         assert_eq!(s.field_alarm_states["humidity"], LoRaWANAlarmState::Normal);
         assert_eq!(s.alarm_state, LoRaWANAlarmState::Critical);
     }
@@ -308,8 +349,12 @@ mod tests {
         let mut state = LoRaWANState::new(true);
         state.update_sensor(&reading_with_fields("aabb", 22.0, 50.0));
         let cfg = LoRaWANSensorConfig {
-            dev_eui: "aabb".into(), name: None, serial_number: None,
-            location: None, enabled: true, field_thresholds: vec![],
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: vec![],
         };
         state.evaluate_alarms(&[cfg], &HashMap::new());
         assert!(state.sensors["aabb"].field_alarm_states.is_empty());
@@ -321,20 +366,36 @@ mod tests {
         let mut state = LoRaWANState::new(true);
         state.update_sensor(&reading_with_fields("aabb", 45.0, 50.0));
         let cfg = LoRaWANSensorConfig {
-            dev_eui: "aabb".into(), name: None, serial_number: None,
-            location: None, enabled: true, field_thresholds: vec![],
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: vec![],
         };
         let mut defaults: HashMap<String, FieldThresholdBounds> = HashMap::new();
-        defaults.insert("temperature".into(), FieldThresholdBounds {
-            critical_low: Some(0.0), warning_low: Some(5.0),
-            warning_high: Some(30.0), critical_high: Some(40.0),
-        });
+        defaults.insert(
+            "temperature".into(),
+            FieldThresholdBounds {
+                critical_low: Some(0.0),
+                warning_low: Some(5.0),
+                warning_high: Some(30.0),
+                critical_high: Some(40.0),
+            },
+        );
         state.evaluate_alarms(&[cfg], &defaults);
         let s = &state.sensors["aabb"];
-        assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Critical);
+        assert_eq!(
+            s.field_alarm_states["temperature"],
+            LoRaWANAlarmState::Critical
+        );
         assert_eq!(s.alarm_state, LoRaWANAlarmState::Critical);
         // Effective thresholds are surfaced so the publisher/display can read them.
-        let t = s.field_thresholds.iter().find(|t| t.field == "temperature").unwrap();
+        let t = s
+            .field_thresholds
+            .iter()
+            .find(|t| t.field == "temperature")
+            .unwrap();
         assert_eq!(t.critical_high, Some(40.0));
     }
 
@@ -343,24 +404,37 @@ mod tests {
         let mut state = LoRaWANState::new(true);
         state.update_sensor(&reading_with_fields("aabb", 42.0, 50.0));
         let cfg = LoRaWANSensorConfig {
-            dev_eui: "aabb".into(), name: None, serial_number: None,
-            location: None, enabled: true,
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
             // Override only critical_high; other bounds come from defaults.
             field_thresholds: vec![FieldThreshold {
                 field: "temperature".into(),
-                critical_low: None, warning_low: None,
-                warning_high: None, critical_high: Some(50.0),
+                critical_low: None,
+                warning_low: None,
+                warning_high: None,
+                critical_high: Some(50.0),
             }],
         };
         let mut defaults: HashMap<String, FieldThresholdBounds> = HashMap::new();
-        defaults.insert("temperature".into(), FieldThresholdBounds {
-            critical_low: Some(0.0), warning_low: Some(5.0),
-            warning_high: Some(30.0), critical_high: Some(40.0),
-        });
+        defaults.insert(
+            "temperature".into(),
+            FieldThresholdBounds {
+                critical_low: Some(0.0),
+                warning_low: Some(5.0),
+                warning_high: Some(30.0),
+                critical_high: Some(40.0),
+            },
+        );
         state.evaluate_alarms(&[cfg], &defaults);
         let s = &state.sensors["aabb"];
         // 42°C: warning_high (30) exceeded but critical_high override is 50 → Warning.
-        assert_eq!(s.field_alarm_states["temperature"], LoRaWANAlarmState::Warning);
+        assert_eq!(
+            s.field_alarm_states["temperature"],
+            LoRaWANAlarmState::Warning
+        );
     }
 
     #[test]
@@ -381,20 +455,20 @@ mod tests {
 
     #[test]
     fn shared_lorawan_sensor_configs_round_trip() {
-        let cfgs = create_shared_lorawan_sensor_configs(vec![
-            LoRaWANSensorConfig {
-                dev_eui: "aabb".into(),
-                name: Some("A".into()),
-                serial_number: None,
-                location: None,
-                enabled: true,
-                field_thresholds: vec![FieldThreshold {
-                    field: "temperature".into(),
-                    critical_low: Some(0.0), warning_low: None,
-                    warning_high: None, critical_high: Some(40.0),
-                }],
-            },
-        ]);
+        let cfgs = create_shared_lorawan_sensor_configs(vec![LoRaWANSensorConfig {
+            dev_eui: "aabb".into(),
+            name: Some("A".into()),
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: vec![FieldThreshold {
+                field: "temperature".into(),
+                critical_low: Some(0.0),
+                warning_low: None,
+                warning_high: None,
+                critical_high: Some(40.0),
+            }],
+        }]);
         assert_eq!(cfgs.read().unwrap().len(), 1);
     }
 }

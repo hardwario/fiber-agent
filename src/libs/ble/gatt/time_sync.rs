@@ -42,7 +42,10 @@ pub fn validate_epoch(epoch: i64) -> Result<(), String> {
     if (EPOCH_MIN..=EPOCH_MAX).contains(&epoch) {
         Ok(())
     } else {
-        Err(format!("epoch {} out of plausible range [{}, {}]", epoch, EPOCH_MIN, EPOCH_MAX))
+        Err(format!(
+            "epoch {} out of plausible range [{}, {}]",
+            epoch, EPOCH_MIN, EPOCH_MAX
+        ))
     }
 }
 
@@ -61,13 +64,20 @@ fn is_synchronized() -> bool {
         .args(["show", "-p", "NTPSynchronized", "--value"])
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("yes"))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .eq_ignore_ascii_case("yes")
+        })
         .unwrap_or(false)
 }
 
 /// Current device clock state for FB0B read.
 pub fn get_time_status() -> TimeStatusResponse {
-    TimeStatusResponse { epoch: now_epoch(), synchronized: is_synchronized() }
+    TimeStatusResponse {
+        epoch: now_epoch(),
+        synchronized: is_synchronized(),
+    }
 }
 
 /// Set the system clock to `epoch` (validated) and persist it into the RTC.
@@ -82,7 +92,10 @@ pub fn set_system_time(epoch: i64) -> Result<(), String> {
         .output()
         .map_err(|e| format!("spawn date: {}", e))?;
     if !out.status.success() {
-        return Err(format!("date failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "date failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
 
     // Persist to RTC — best-effort: the wall clock is already set, and not
@@ -135,7 +148,11 @@ mod tests {
 
     #[test]
     fn status_serializes_expected_fields() {
-        let json = serde_json::to_string(&TimeStatusResponse { epoch: 1_719_403_899, synchronized: true }).unwrap();
+        let json = serde_json::to_string(&TimeStatusResponse {
+            epoch: 1_719_403_899,
+            synchronized: true,
+        })
+        .unwrap();
         assert!(json.contains("epoch"));
         assert!(json.contains("synchronized"));
     }

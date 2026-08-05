@@ -76,12 +76,21 @@ fn simulate_fb0d_write(
     }
 }
 
-fn deps_on(dir: &std::path::Path) -> (StickerAddDeps, fiber_app::libs::lorawan::SharedLoRaWANSensorConfigs, fiber_app::libs::lorawan::SharedLoRaWANState) {
+fn deps_on(
+    dir: &std::path::Path,
+) -> (
+    StickerAddDeps,
+    fiber_app::libs::lorawan::SharedLoRaWANSensorConfigs,
+    fiber_app::libs::lorawan::SharedLoRaWANState,
+) {
     // apply_lorawan_sensor_config edits an existing fiber.config.yaml (the
     // lorawan.sensors array lives there). On a device it always exists; for
     // the test we seed a minimal valid one.
-    std::fs::write(dir.join("fiber.config.yaml"), "system:\n  device_label: TEST\n")
-        .expect("seed fiber.config.yaml");
+    std::fs::write(
+        dir.join("fiber.config.yaml"),
+        "system:\n  device_label: TEST\n",
+    )
+    .expect("seed fiber.config.yaml");
     let applier = ConfigApplier::new(dir).expect("ConfigApplier on tempdir");
     let configs = create_shared_lorawan_sensor_configs(vec![]);
     let state = create_shared_lorawan_state(false);
@@ -113,7 +122,11 @@ fn fb0d_add_persists_config_and_state_without_chirpstack() {
     let resp = simulate_fb0d_write(&slot, &deps, &req("0011223344556677"));
 
     // ChirpStack is offline, but config save still succeeds → success.
-    assert!(resp.success, "expected success via config save, got {:?}", resp);
+    assert!(
+        resp.success,
+        "expected success via config save, got {:?}",
+        resp
+    );
     assert_eq!(resp.deveui, "0011223344556677");
     assert_eq!(resp.message, "sticker enrolled");
 
@@ -125,12 +138,20 @@ fn fb0d_add_persists_config_and_state_without_chirpstack() {
 
     // The sticker is now in the in-memory configs list…
     assert!(
-        configs.read().unwrap().iter().any(|c| c.dev_eui == "0011223344556677"),
+        configs
+            .read()
+            .unwrap()
+            .iter()
+            .any(|c| c.dev_eui == "0011223344556677"),
         "lorawan_configs should contain the new sticker"
     );
     // …and an optimistic stub is in shared state (so it shows before first uplink).
     assert!(
-        state.read().unwrap().sensors.contains_key("0011223344556677"),
+        state
+            .read()
+            .unwrap()
+            .sensors
+            .contains_key("0011223344556677"),
         "lorawan_state should hold the sticker stub"
     );
     // The sticker dev_eui was persisted into fiber.config.yaml (lorawan.sensors).
@@ -152,7 +173,10 @@ fn fb0d_add_rejects_invalid_appkey_and_does_not_persist() {
 
     let resp = simulate_fb0d_write(&slot, &deps, &bad);
 
-    assert!(!resp.success, "invalid appkey must be rejected before any provisioning");
+    assert!(
+        !resp.success,
+        "invalid appkey must be rejected before any provisioning"
+    );
     assert!(resp.message.contains("appkey"));
     assert_eq!(resp.deveui, "1122334455667788");
     // Slot must not be left in pending after a parse/prepare failure.
@@ -177,7 +201,10 @@ fn fb0d_add_is_idempotent_no_duplicate_config_entry() {
         .iter()
         .filter(|c| c.dev_eui == "aabbccddeeff0011")
         .count();
-    assert_eq!(count, 1, "re-adding the same dev_eui must not duplicate the config entry");
+    assert_eq!(
+        count, 1,
+        "re-adding the same dev_eui must not duplicate the config entry"
+    );
 }
 
 #[test]
@@ -208,7 +235,10 @@ fn fb0d_disconnect_clears_pending_slot() {
     sticker::reset(&slot);
     let r = sticker::read(&slot);
     assert!(!r.pending);
-    assert!(r.deveui.is_empty(), "previous client's deveui must not leak");
+    assert!(
+        r.deveui.is_empty(),
+        "previous client's deveui must not leak"
+    );
     // The slot is free for the next connection.
     assert!(sticker::try_begin(&slot, "1122334455667788".to_string()));
 }

@@ -52,7 +52,10 @@ impl CarrierWatch {
         for iface in ETH_INTERFACES {
             let path = Self::counter_path(Path::new("/sys/class/net"), iface);
             if let Some(count) = Self::read_count(&path) {
-                eprintln!("[standby] Watching {} for carrier changes (count={count})", path.display());
+                eprintln!(
+                    "[standby] Watching {} for carrier changes (count={count})",
+                    path.display()
+                );
                 return Some(Self {
                     path,
                     baseline: count,
@@ -78,11 +81,7 @@ impl CarrierWatch {
     }
 
     fn read_count(path: &Path) -> Option<u64> {
-        fs::read_to_string(path)
-            .ok()?
-            .trim()
-            .parse::<u64>()
-            .ok()
+        fs::read_to_string(path).ok()?.trim().parse::<u64>().ok()
     }
 
     /// Current counter value, or `None` if it has become unreadable (the

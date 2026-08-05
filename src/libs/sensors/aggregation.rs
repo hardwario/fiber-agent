@@ -88,7 +88,13 @@ impl SensorAggregation {
     /// Add a sample to the aggregation window
     /// `persistent_alarm_ts` is the timestamp when the sensor entered its current alarm state
     /// (managed by AggregationState, persists across windows)
-    pub fn add_sample(&mut self, temperature: f32, is_connected: bool, alarm_state: AlarmState, persistent_alarm_ts: Option<u64>) {
+    pub fn add_sample(
+        &mut self,
+        temperature: f32,
+        is_connected: bool,
+        alarm_state: AlarmState,
+        persistent_alarm_ts: Option<u64>,
+    ) {
         // Track alarm state counts
         self.alarm_counts.increment(alarm_state);
 
@@ -102,7 +108,8 @@ impl SensorAggregation {
             self.max_temp_celsius = self.max_temp_celsius.max(temperature);
 
             // Running average formula: new_avg = old_avg + (new_value - old_avg) / count
-            self.avg_temp_celsius += (temperature - self.avg_temp_celsius) / self.sample_count as f32;
+            self.avg_temp_celsius +=
+                (temperature - self.avg_temp_celsius) / self.sample_count as f32;
         } else {
             // Track disconnected samples
             self.disconnected_count += 1;
@@ -202,7 +209,13 @@ impl AggregationState {
     }
 
     /// Add a reading to the appropriate sensor's aggregation window
-    pub fn add_reading(&mut self, line: u8, temperature: f32, is_connected: bool, alarm_state: AlarmState) {
+    pub fn add_reading(
+        &mut self,
+        line: u8,
+        temperature: f32,
+        is_connected: bool,
+        alarm_state: AlarmState,
+    ) {
         let line_idx = line as usize;
         if line_idx >= 8 {
             return;
@@ -224,7 +237,12 @@ impl AggregationState {
 
         // Add sample to the current window
         if let Some(sensor) = self.current_windows.get_mut(line_idx) {
-            sensor.add_sample(temperature, is_connected, alarm_state, self.alarm_state_timestamps[line_idx]);
+            sensor.add_sample(
+                temperature,
+                is_connected,
+                alarm_state,
+                self.alarm_state_timestamps[line_idx],
+            );
         }
     }
 
@@ -293,7 +311,10 @@ impl AggregationState {
     pub fn take_completed_periods(&mut self) -> Vec<AggregationPeriod> {
         let periods: Vec<_> = self.completed_periods.drain(..).collect();
         if !periods.is_empty() {
-            eprintln!("[Aggregation] Taking {} periods for MQTT publishing", periods.len());
+            eprintln!(
+                "[Aggregation] Taking {} periods for MQTT publishing",
+                periods.len()
+            );
         }
         periods
     }
@@ -309,7 +330,11 @@ impl AggregationState {
         let data = serde_json::to_string(&periods)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(path, data)?;
-        eprintln!("[Aggregation] Saved {} pending periods to {:?}", periods.len(), path);
+        eprintln!(
+            "[Aggregation] Saved {} pending periods to {:?}",
+            periods.len(),
+            path
+        );
         Ok(())
     }
 
@@ -320,11 +345,18 @@ impl AggregationState {
                 let _ = std::fs::remove_file(path); // Consume on load
                 match serde_json::from_str::<Vec<AggregationPeriod>>(&data) {
                     Ok(periods) => {
-                        eprintln!("[Aggregation] Loaded {} pending periods from {:?}", periods.len(), path);
+                        eprintln!(
+                            "[Aggregation] Loaded {} pending periods from {:?}",
+                            periods.len(),
+                            path
+                        );
                         periods
                     }
                     Err(e) => {
-                        eprintln!("[Aggregation] Warning: Failed to parse pending periods: {}", e);
+                        eprintln!(
+                            "[Aggregation] Warning: Failed to parse pending periods: {}",
+                            e
+                        );
                         Vec::new()
                     }
                 }
@@ -338,7 +370,10 @@ impl AggregationState {
         if periods.is_empty() {
             return;
         }
-        eprintln!("[Aggregation] Prepending {} recovered periods to queue", periods.len());
+        eprintln!(
+            "[Aggregation] Prepending {} recovered periods to queue",
+            periods.len()
+        );
         for period in periods.into_iter().rev() {
             self.completed_periods.push_front(period);
         }

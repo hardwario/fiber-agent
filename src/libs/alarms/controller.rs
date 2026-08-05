@@ -44,7 +44,12 @@ impl fmt::Debug for AlarmController {
 
 impl AlarmController {
     /// Create a new alarm controller
-    pub fn new(thresholds: AlarmThreshold, failure_threshold: u8, reconnect_blinks: u8, warmup_threshold: u8) -> Self {
+    pub fn new(
+        thresholds: AlarmThreshold,
+        failure_threshold: u8,
+        reconnect_blinks: u8,
+        warmup_threshold: u8,
+    ) -> Self {
         Self {
             thresholds,
             state_machine: AlarmStateMachine::new(),
@@ -59,8 +64,11 @@ impl AlarmController {
     /// Returns the LED state (color and blink pattern) for this cycle
     pub fn update(&mut self, value: f32) -> LedState {
         // Mark read as successful
-        self.state_machine
-            .update_from_read_result(true, self.failure_threshold, self.warmup_threshold);
+        self.state_machine.update_from_read_result(
+            true,
+            self.failure_threshold,
+            self.warmup_threshold,
+        );
 
         // Evaluate against thresholds
         let is_critical = self.thresholds.is_critical(value);
@@ -80,8 +88,11 @@ impl AlarmController {
     /// Mark a read failure
     /// Returns the LED state (for disconnection state)
     pub fn mark_read_failure(&mut self) -> LedState {
-        self.state_machine
-            .update_from_read_result(false, self.failure_threshold, self.warmup_threshold);
+        self.state_machine.update_from_read_result(
+            false,
+            self.failure_threshold,
+            self.warmup_threshold,
+        );
 
         // Fire callbacks if state changed (no temperature value on failure)
         self.fire_callbacks(None);
@@ -296,8 +307,7 @@ mod tests {
 
     #[test]
     fn test_normal_temperature_returns_green() {
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(37.0);
         assert_eq!(led_state.color, LedColor::Green);
         assert_eq!(led_state.pattern, BlinkPattern::Steady);
@@ -307,8 +317,7 @@ mod tests {
     fn test_high_temperature_warning() {
         // 39.5°C is above warning_high (39.0) but below critical_high (40.0)
         // In the 4-level system, this is Warning (yellow, slow blink)
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(39.5);
         assert_eq!(led_state.color, LedColor::Yellow);
         assert_eq!(led_state.pattern, BlinkPattern::BlinkSlow);
@@ -318,8 +327,7 @@ mod tests {
     fn test_low_temperature_warning() {
         // 33.0°C is below warning_low (34.0) but above critical_low (32.0)
         // In the 4-level system, this is Warning (yellow, slow blink)
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(33.0);
         assert_eq!(led_state.color, LedColor::Yellow);
         assert_eq!(led_state.pattern, BlinkPattern::BlinkSlow);
@@ -329,8 +337,7 @@ mod tests {
     fn test_former_alarm_zone_now_normal() {
         // With alarm thresholds disabled (0.0/100.0), temperatures like 38.5
         // that were previously in the alarm zone are now Normal
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(38.5);
         assert_eq!(led_state.color, LedColor::Green);
         assert_eq!(led_state.pattern, BlinkPattern::Steady);
@@ -338,8 +345,7 @@ mod tests {
 
     #[test]
     fn test_critical_temperature_returns_blinking_red() {
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(31.0); // Below critical_low (32.0)
         assert_eq!(led_state.color, LedColor::Red);
         assert_eq!(led_state.pattern, BlinkPattern::BlinkFast);
@@ -347,11 +353,10 @@ mod tests {
 
     #[test]
     fn test_read_failures_trigger_disconnection() {
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         // First, get out of NeverConnected state
-        let _ = controller.update(37.0);  // Successful read moves to Reconnecting
-        // Now simulate disconnection
+        let _ = controller.update(37.0); // Successful read moves to Reconnecting
+                                         // Now simulate disconnection
         controller.mark_read_failure();
         controller.mark_read_failure();
         controller.mark_read_failure();
@@ -363,8 +368,7 @@ mod tests {
 
     #[test]
     fn test_reconnection_after_failures() {
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         // First successful read to get out of NeverConnected
         let _ = controller.update(37.0);
         // Now simulate disconnection
@@ -390,8 +394,7 @@ mod tests {
 
     #[test]
     fn test_callback_registration() {
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let callback = Arc::new(LoggingCallback::default());
         controller.register_callback(callback);
         assert_eq!(controller.callbacks.len(), 1);
@@ -401,8 +404,7 @@ mod tests {
     fn test_25_celsius_triggers_critical_blinking_red() {
         // 25°C is CRITICAL (below critical_low 32°C)
         // So it should show blinking red, not warning
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(25.0);
 
         // 25°C < critical_low (32°C), so it's critical
@@ -577,8 +579,7 @@ mod tests {
     #[test]
     fn test_33_5_celsius_triggers_warning() {
         // 33.5°C is below warning_low (34°C), so it's Warning
-        let mut controller =
-            AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
         let led_state = controller.update(33.5);
 
         assert_eq!(

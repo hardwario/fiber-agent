@@ -10,5 +10,5 @@
 pub mod applier;
 pub mod validation;
 
-pub use applier::{ConfigApplier, ApplyResult};
+pub use applier::{ApplyResult, ConfigApplier};
 pub use validation::ConfigValidator;

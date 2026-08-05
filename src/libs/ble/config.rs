@@ -25,7 +25,9 @@ pub struct BleConfig {
     pub advertising_name: Option<String>,
 }
 
-fn default_enable_terminal() -> bool { true }
+fn default_enable_terminal() -> bool {
+    true
+}
 
 impl Default for BleConfig {
     fn default() -> Self {

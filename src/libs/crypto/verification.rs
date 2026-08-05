@@ -191,7 +191,10 @@ impl SignatureVerifier {
         }
 
         for ca in enabled_cas {
-            if certificate.verify_signature(&ca.ca_public_key_ed25519).is_ok() {
+            if certificate
+                .verify_signature(&ca.ca_public_key_ed25519)
+                .is_ok()
+            {
                 return Ok(());
             }
         }

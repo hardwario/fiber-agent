@@ -136,7 +136,12 @@ impl W1DeviceReader {
     /// line_num: which w1_bus_master line (0-based)
     /// timeout_ms: timeout in milliseconds for the read operation
     /// Returns temperature in Celsius or error
-    pub fn read_temperature(&self, line_num: u8, device_id: &str, timeout_ms: u64) -> io::Result<f32> {
+    pub fn read_temperature(
+        &self,
+        line_num: u8,
+        device_id: &str,
+        timeout_ms: u64,
+    ) -> io::Result<f32> {
         self.read_temperature_with_callback(line_num, device_id, timeout_ms, &mut |_| {})
     }
 
@@ -227,7 +232,14 @@ mod tests {
 
     #[test]
     fn plausible_temperatures_pass_through_unchanged() {
-        for temp in [25.0_f32, -40.0, 0.0, 36.6, DS18B20_MIN_CELSIUS, DS18B20_MAX_CELSIUS] {
+        for temp in [
+            25.0_f32,
+            -40.0,
+            0.0,
+            36.6,
+            DS18B20_MIN_CELSIUS,
+            DS18B20_MAX_CELSIUS,
+        ] {
             assert_eq!(
                 validate_temperature(temp).expect("should accept"),
                 temp,

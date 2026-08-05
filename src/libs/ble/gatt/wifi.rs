@@ -61,15 +61,19 @@ pub fn parse_ip_addr_show(stdout: &str) -> String {
         let trimmed = line.trim();
         if trimmed.starts_with("inet ") {
             if let Some(addr_with_mask) = trimmed.split_whitespace().nth(1) {
-                return addr_with_mask.split('/').next().unwrap_or(addr_with_mask).to_string();
+                return addr_with_mask
+                    .split('/')
+                    .next()
+                    .unwrap_or(addr_with_mask)
+                    .to_string();
             }
         }
     }
     String::new()
 }
 
-use std::process::Command;
 use regex::Regex;
+use std::process::Command;
 
 /// Scan for available WiFi networks using nmcli, falling back to iwlist.
 pub(crate) fn scan_wifi() -> Vec<WiFiNetwork> {
@@ -157,16 +161,23 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
 
     // Step 2: refresh scan cache. Best-effort — failures here aren't fatal
     // since the network may still be reachable.
-    let _ = Command::new("nmcli").args(["dev", "wifi", "rescan"]).output();
+    let _ = Command::new("nmcli")
+        .args(["dev", "wifi", "rescan"])
+        .output();
 
     // Step 3: create the profile.
     let add_result = Command::new("nmcli")
         .args([
-            "connection", "add",
-            "type", "wifi",
-            "con-name", ssid,
-            "ifname", "wlan0",
-            "ssid", ssid,
+            "connection",
+            "add",
+            "type",
+            "wifi",
+            "con-name",
+            ssid,
+            "ifname",
+            "wlan0",
+            "ssid",
+            ssid,
         ])
         .output();
     match add_result {
@@ -186,22 +197,34 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
     if !password.is_empty() {
         let modify_result = Command::new("nmcli")
             .args([
-                "connection", "modify", ssid,
-                "wifi-sec.key-mgmt", "wpa-psk",
-                "wifi-sec.psk", password,
+                "connection",
+                "modify",
+                ssid,
+                "wifi-sec.key-mgmt",
+                "wpa-psk",
+                "wifi-sec.psk",
+                password,
             ])
             .output();
         match modify_result {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                eprintln!("[WiFi] connection modify '{}' FAILED: {}", ssid, stderr.trim());
-                let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+                eprintln!(
+                    "[WiFi] connection modify '{}' FAILED: {}",
+                    ssid,
+                    stderr.trim()
+                );
+                let _ = Command::new("nmcli")
+                    .args(["connection", "delete", ssid])
+                    .output();
                 return failure(ssid, stderr);
             }
             Err(e) => {
                 eprintln!("[WiFi] connection modify '{}' spawn error: {}", ssid, e);
-                let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+                let _ = Command::new("nmcli")
+                    .args(["connection", "delete", ssid])
+                    .output();
                 return failure(ssid, e.to_string());
             }
         }
@@ -225,12 +248,16 @@ pub(crate) fn connect_wifi(ssid: &str, password: &str) -> WiFiStatusResponse {
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).to_string();
             eprintln!("[WiFi] connection up '{}' FAILED: {}", ssid, stderr.trim());
-            let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+            let _ = Command::new("nmcli")
+                .args(["connection", "delete", ssid])
+                .output();
             failure(ssid, stderr)
         }
         Err(e) => {
             eprintln!("[WiFi] connection up '{}' spawn error: {}", ssid, e);
-            let _ = Command::new("nmcli").args(["connection", "delete", ssid]).output();
+            let _ = Command::new("nmcli")
+                .args(["connection", "delete", ssid])
+                .output();
             failure(ssid, e.to_string())
         }
     }
@@ -367,8 +394,14 @@ mod tests {
         let stdout = "MyHome:85:WPA2\nGuestWiFi:60:--\n:0:WPA2\nFiberLab:42:WPA1 WPA2";
         let parsed = parse_nmcli_wifi_list(stdout);
         assert_eq!(parsed.len(), 3, "empty-SSID line must be skipped");
-        assert_eq!(parsed[0], WiFiNetwork {
-            ssid: "MyHome".into(), signal: 85, security: "WPA2".into() });
+        assert_eq!(
+            parsed[0],
+            WiFiNetwork {
+                ssid: "MyHome".into(),
+                signal: 85,
+                security: "WPA2".into()
+            }
+        );
         assert_eq!(parsed[1].security, "--");
         assert_eq!(parsed[2].security, "WPA1 WPA2");
     }
@@ -389,8 +422,10 @@ mod tests {
     #[test]
     fn parse_dev_status_connected() {
         let stdout = "lo:unmanaged:\nwlan0:connected:MyHome\neth0:disconnected:";
-        assert_eq!(parse_nmcli_dev_status(stdout),
-                   Some(("wlan0".to_string(), "MyHome".to_string())));
+        assert_eq!(
+            parse_nmcli_dev_status(stdout),
+            Some(("wlan0".to_string(), "MyHome".to_string()))
+        );
     }
 
     #[test]

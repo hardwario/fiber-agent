@@ -1,9 +1,9 @@
 //! Custom font based on ProFont 9-point with patched '%' glyph
 
 use embedded_graphics::{
+    geometry::Size,
     image::ImageRaw,
     mono_font::{mapping::StrGlyphMapping, DecorationDimensions, MonoFont},
-    geometry::Size,
 };
 
 const CHARS_PER_ROW: u32 = 32;
@@ -13,10 +13,7 @@ const GLYPH_MAPPING: StrGlyphMapping =
 
 /// ProFont 9-point with corrected '%' glyph
 pub const PROFONT_9_POINT: MonoFont = MonoFont {
-    image: ImageRaw::new(
-        include_bytes!("ProFont9Point.raw"),
-        CHARS_PER_ROW * 6,
-    ),
+    image: ImageRaw::new(include_bytes!("ProFont9Point.raw"), CHARS_PER_ROW * 6),
     character_size: Size::new(6, 11),
     character_spacing: 0,
     baseline: 8,

@@ -106,7 +106,8 @@ pub fn expand_history_frame(
                     let raw = u16::from_le_bytes([samples[p], samples[p + 1]]);
                     p += 2;
                     if raw != HIST_TEMP_SENTINEL {
-                        rec.fields.insert((*name).to_string(), raw as i16 as f64 / 100.0);
+                        rec.fields
+                            .insert((*name).to_string(), raw as i16 as f64 / 100.0);
                     }
                 }
                 Enc::Hum => {
@@ -301,14 +302,20 @@ pub(crate) fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, Config
     macro_rules! ins_bool {
         ($src:expr, $grp:literal, $field:ident) => {
             if let Some(v) = $src.$field {
-                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Bool(v));
+                m.insert(
+                    concat!($grp, ".", stringify!($field)).to_string(),
+                    ConfigValue::Bool(v),
+                );
             }
         };
     }
     macro_rules! ins_uint {
         ($src:expr, $grp:literal, $field:ident) => {
             if let Some(v) = $src.$field {
-                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Uint(v as u64));
+                m.insert(
+                    concat!($grp, ".", stringify!($field)).to_string(),
+                    ConfigValue::Uint(v as u64),
+                );
             }
         };
     }
@@ -325,7 +332,10 @@ pub(crate) fn decode_config(c: &response::ConfigDump) -> BTreeMap<String, Config
     macro_rules! ins_hex {
         ($src:expr, $grp:literal, $field:ident) => {
             if let Some(v) = &$src.$field {
-                m.insert(concat!($grp, ".", stringify!($field)).to_string(), ConfigValue::Hex(hex(v)));
+                m.insert(
+                    concat!($grp, ".", stringify!($field)).to_string(),
+                    ConfigValue::Hex(hex(v)),
+                );
             }
         };
     }
@@ -432,7 +442,11 @@ pub fn diff_config(
                 desired: dv.clone(),
                 actual: Some(av.clone()),
             }),
-            None => Some(ConfigMismatch { key: k.clone(), desired: dv.clone(), actual: None }),
+            None => Some(ConfigMismatch {
+                key: k.clone(),
+                desired: dv.clone(),
+                actual: None,
+            }),
         })
         .collect()
 }
@@ -555,7 +569,11 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
             active_alarms: i
                 .active_alarms
                 .iter()
-                .map(|a| ActiveAlarm { source: a.source, quantity: a.quantity, kind: a.r#type })
+                .map(|a| ActiveAlarm {
+                    source: a.source,
+                    quantity: a.quantity,
+                    kind: a.r#type,
+                })
                 .collect(),
         }),
         Some(response::Body::ConfigDump(c)) => ResponseKind::ConfigDump {
@@ -598,7 +616,9 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::sticker_proto::app_config_message::{self, Application, Lorawan, Sensors};
+    use crate::libs::lorawan::sticker_proto::app_config_message::{
+        self, Application, Lorawan, Sensors,
+    };
     use crate::libs::lorawan::sticker_proto::{response, Response};
 
     #[test]
@@ -629,14 +649,30 @@ mod tests {
         let d = decode_response(&resp.encode_to_vec()).unwrap();
         assert_eq!(d.seq, 5);
         match d.kind {
-            ResponseKind::ConfigDump { page_index, page_count, config } => {
+            ResponseKind::ConfigDump {
+                page_index,
+                page_count,
+                config,
+            } => {
                 assert_eq!((page_index, page_count), (1, 2));
                 assert_eq!(config["lorawan.region"], ConfigValue::Enum("EU868".into()));
-                assert_eq!(config["lorawan.activation"], ConfigValue::Enum("OTAA".into()));
+                assert_eq!(
+                    config["lorawan.activation"],
+                    ConfigValue::Enum("OTAA".into())
+                );
                 assert_eq!(config["lorawan.adr"], ConfigValue::Bool(true));
-                assert_eq!(config["lorawan.deveui"], ConfigValue::Hex("5876070000000001".into()));
-                assert_eq!(config["application.interval_report"], ConfigValue::Uint(3600));
-                assert_eq!(config["application.history_enable"], ConfigValue::Bool(true));
+                assert_eq!(
+                    config["lorawan.deveui"],
+                    ConfigValue::Hex("5876070000000001".into())
+                );
+                assert_eq!(
+                    config["application.interval_report"],
+                    ConfigValue::Uint(3600)
+                );
+                assert_eq!(
+                    config["application.history_enable"],
+                    ConfigValue::Bool(true)
+                );
                 // absent fields must not appear
                 assert!(!config.contains_key("lorawan.sub_band"));
                 assert!(!config.contains_key("application.calibration"));
@@ -661,13 +697,26 @@ mod tests {
         let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
         assert_eq!(d.seq, 9);
         match d.kind {
-            ResponseKind::ConfigDump { page_index, page_count, config } => {
+            ResponseKind::ConfigDump {
+                page_index,
+                page_count,
+                config,
+            } => {
                 assert_eq!((page_index, page_count), (0, 1));
                 assert_eq!(config["lorawan.region"], ConfigValue::Enum("EU868".into()));
                 assert_eq!(config["lorawan.adr"], ConfigValue::Bool(true));
-                assert_eq!(config["lorawan.activation"], ConfigValue::Enum("OTAA".into()));
-                assert_eq!(config["application.interval_report"], ConfigValue::Uint(900));
-                assert_eq!(config["application.history_enable"], ConfigValue::Bool(true));
+                assert_eq!(
+                    config["lorawan.activation"],
+                    ConfigValue::Enum("OTAA".into())
+                );
+                assert_eq!(
+                    config["application.interval_report"],
+                    ConfigValue::Uint(900)
+                );
+                assert_eq!(
+                    config["application.history_enable"],
+                    ConfigValue::Bool(true)
+                );
                 assert_eq!(config["sensors.cap_hall_left"], ConfigValue::Bool(true));
                 // nothing we didn't request leaked in
                 assert_eq!(config.len(), 6);
@@ -682,13 +731,19 @@ mod tests {
         let page1 = response::ConfigDump {
             page_index: 1,
             page_count: 2,
-            lorawan: Some(Lorawan { adr: Some(true), ..Default::default() }),
+            lorawan: Some(Lorawan {
+                adr: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let page2 = response::ConfigDump {
             page_index: 2,
             page_count: 2,
-            sensors: Some(Sensors { cap_hall_left: Some(true), ..Default::default() }),
+            sensors: Some(Sensors {
+                cap_hall_left: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let m1 = decode_config(&page1);
@@ -702,15 +757,27 @@ mod tests {
     #[test]
     fn config_diff_reports_mismatch_and_missing() {
         let desired = BTreeMap::from([
-            ("application.interval_report".to_string(), ConfigValue::Uint(3600)),
+            (
+                "application.interval_report".to_string(),
+                ConfigValue::Uint(3600),
+            ),
             ("lorawan.adr".to_string(), ConfigValue::Bool(true)),
-            ("sensors.cap_pir_detector".to_string(), ConfigValue::Bool(true)),
+            (
+                "sensors.cap_pir_detector".to_string(),
+                ConfigValue::Bool(true),
+            ),
         ]);
         let actual = BTreeMap::from([
-            ("application.interval_report".to_string(), ConfigValue::Uint(900)), // differs
-            ("lorawan.adr".to_string(), ConfigValue::Bool(true)),               // matches
+            (
+                "application.interval_report".to_string(),
+                ConfigValue::Uint(900),
+            ), // differs
+            ("lorawan.adr".to_string(), ConfigValue::Bool(true)), // matches
             // cap_pir_detector absent -> missing
-            ("lorawan.region".to_string(), ConfigValue::Enum("EU868".into())),  // extra, ignored
+            (
+                "lorawan.region".to_string(),
+                ConfigValue::Enum("EU868".into()),
+            ), // extra, ignored
         ]);
         let mut diffs = diff_config(&desired, &actual);
         diffs.sort_by(|a, b| a.key.cmp(&b.key));
@@ -750,14 +817,23 @@ mod tests {
                 assert_eq!(i.build_type, "custom");
                 assert_eq!(i.serial_number, 12345);
                 assert!(i.debug);
-                assert_eq!(i.claim_token.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+                assert_eq!(
+                    i.claim_token.as_deref(),
+                    Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                );
                 // Backward compatibility: an Info without fields 10-15 decodes to
                 // "unavailable", not to a fabricated reading.
                 assert_eq!(i.battery_mv, 0);
                 assert_eq!(i.reset_cause, 0);
                 assert_eq!(i.device_status, 0);
-                assert!(i.lrw_state.is_none(), "lrw_state is NFC-only; absent must stay absent");
-                assert!(i.dev_eui.is_none(), "dev_eui is NFC-only; absent must stay absent");
+                assert!(
+                    i.lrw_state.is_none(),
+                    "lrw_state is NFC-only; absent must stay absent"
+                );
+                assert!(
+                    i.dev_eui.is_none(),
+                    "dev_eui is NFC-only; absent must stay absent"
+                );
                 assert!(i.active_alarms.is_empty());
             }
             other => panic!("expected Info, got {other:?}"),
@@ -785,8 +861,16 @@ mod tests {
                 lrw_state: None, // NFC-only, so absent over LoRaWAN
                 dev_eui: None,
                 active_alarms: vec![
-                    response::AlarmStatus { source: 0, quantity: 0, r#type: 2 },
-                    response::AlarmStatus { source: 11, quantity: 8, r#type: 1 },
+                    response::AlarmStatus {
+                        source: 0,
+                        quantity: 0,
+                        r#type: 2,
+                    },
+                    response::AlarmStatus {
+                        source: 11,
+                        quantity: 8,
+                        r#type: 1,
+                    },
                 ],
             })),
         };
@@ -802,7 +886,14 @@ mod tests {
                     vec!["alarm_any", "alarm_low_batt", "time_unsynced"]
                 );
                 assert_eq!(i.active_alarms.len(), 2);
-                assert_eq!(i.active_alarms[0], ActiveAlarm { source: 0, quantity: 0, kind: 2 });
+                assert_eq!(
+                    i.active_alarms[0],
+                    ActiveAlarm {
+                        source: 0,
+                        quantity: 0,
+                        kind: 2
+                    }
+                );
                 assert_eq!(alarm_type_name(i.active_alarms[0].kind), "high");
                 // source 11 = battery, quantity 8 = voltage, type 1 = low
                 assert_eq!(alarm_type_name(i.active_alarms[1].kind), "low");
@@ -841,7 +932,11 @@ mod tests {
         assert_eq!(d.seq, 3);
         assert_eq!(
             d.kind,
-            ResponseKind::Error { code: "out_of_range", fault_field: 4, detail: "out of range".into() }
+            ResponseKind::Error {
+                code: "out_of_range",
+                fault_field: 4,
+                detail: "out of range".into()
+            }
         );
     }
 
@@ -880,7 +975,13 @@ mod tests {
             })),
         };
         let d = decode_response(&not_supported.encode_to_vec()).unwrap();
-        assert!(matches!(d.kind, ResponseKind::Error { code: "not_supported", .. }));
+        assert!(matches!(
+            d.kind,
+            ResponseKind::Error {
+                code: "not_supported",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -903,7 +1004,10 @@ mod tests {
                 assert_eq!(i.build_type, "custom");
                 assert_eq!(i.serial_number, 2162164514);
                 assert!(i.debug);
-                assert_eq!(i.claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+                assert_eq!(
+                    i.claim_token.as_deref(),
+                    Some("158a6a5d5b54c5118e62a8f4af0de8d2")
+                );
                 // This capture predates fields 10-15, so they must read as
                 // unavailable rather than as a decode artefact.
                 assert_eq!((i.battery_mv, i.reset_cause, i.device_status), (0, 0, 0));
@@ -976,7 +1080,11 @@ mod tests {
         let d = decode_response(&resp.encode_to_vec()).unwrap();
         assert_eq!(d.seq, 11);
         match d.kind {
-            ResponseKind::HistoryFrame { records, frame_count, .. } => {
+            ResponseKind::HistoryFrame {
+                records,
+                frame_count,
+                ..
+            } => {
                 assert_eq!(frame_count, 1);
                 assert_eq!(records.len(), 1);
                 assert_eq!(records[0].fields["temperature"], 23.5);
@@ -993,7 +1101,9 @@ mod tests {
         // after `ats device reboot`. seq=0 => no pending command, so it is routed by
         // dev_eui rather than by seq correlation.
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-        let raw = B64.decode("ARooCAEQBCACKKKGgIcIMBE4pPLo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==").unwrap();
+        let raw = B64
+            .decode("ARooCAEQBCACKKKGgIcIMBE4pPLo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==")
+            .unwrap();
         let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
         assert_eq!(d.seq, 0); // unsolicited
         match d.kind {
@@ -1002,7 +1112,10 @@ mod tests {
                 assert_eq!(i.build_type, "custom");
                 assert_eq!(i.serial_number, 2162164514);
                 assert!(i.debug);
-                assert_eq!(i.claim_token.as_deref(), Some("158a6a5d5b54c5118e62a8f4af0de8d2"));
+                assert_eq!(
+                    i.claim_token.as_deref(),
+                    Some("158a6a5d5b54c5118e62a8f4af0de8d2")
+                );
                 // uptime_s is tiny here precisely because this is the post-reboot
                 // join: 17 s, which is what makes the vector an unsolicited one.
                 assert_eq!(i.uptime_s, 17);
@@ -1017,12 +1130,19 @@ mod tests {
         // STICKER (ReqHistory reply) over RF -> local RAK gateway -> ChirpStack
         // on a FIBER device. Validates expand_history_frame against real output.
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-        let raw = B64.decode("AQgBKhsQARjp3+jRBiILgAluAAAAAAAAAAAogxgwhAc=").unwrap();
+        let raw = B64
+            .decode("AQgBKhsQARjp3+jRBiILgAluAAAAAAAAAAAogxgwhAc=")
+            .unwrap();
         let d = decode_response(&raw[1..]).unwrap(); // strip APP_PROTO_VERSION
         assert_eq!(d.seq, 1);
         match d.kind {
             ResponseKind::HistoryFrame {
-                frame_count, t0_unix, interval_s, present, records, ..
+                frame_count,
+                t0_unix,
+                interval_s,
+                present,
+                records,
+                ..
             } => {
                 assert_eq!(frame_count, 1);
                 assert_eq!(t0_unix, 1_782_198_249);

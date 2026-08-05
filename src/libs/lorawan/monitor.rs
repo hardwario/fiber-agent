@@ -23,7 +23,7 @@ use crate::libs::storage::StorageHandle;
 
 use super::chirpstack;
 use super::detector;
-use super::state::{SharedLoRaWANState, create_shared_lorawan_state};
+use super::state::{create_shared_lorawan_state, SharedLoRaWANState};
 use super::sticker_config;
 use super::sticker_proto::Command;
 use super::sticker_reassembly;
@@ -157,7 +157,12 @@ impl LoRaWANHandle {
         // (Error/Empty/…) leave target 0 and return as a single item.
         let mut seen = std::collections::HashSet::<u32>::new();
         let mut target: u32 = 0;
-        if let ResponseKind::HistoryFrame { frame_index, frame_count, .. } = &first.kind {
+        if let ResponseKind::HistoryFrame {
+            frame_index,
+            frame_count,
+            ..
+        } = &first.kind
+        {
             seen.insert(*frame_index);
             target = (*frame_count).max(1);
         }
@@ -165,7 +170,12 @@ impl LoRaWANHandle {
         while (seen.len() as u32) < target {
             match resp_rx.recv_timeout(frame_timeout) {
                 Ok(resp) => {
-                    if let ResponseKind::HistoryFrame { frame_index, frame_count, .. } = &resp.kind {
+                    if let ResponseKind::HistoryFrame {
+                        frame_index,
+                        frame_count,
+                        ..
+                    } = &resp.kind
+                    {
                         seen.insert(*frame_index);
                         target = target.max((*frame_count).max(1));
                     }
@@ -852,10 +862,7 @@ fn spawn_auto_backfill(
                     });
                 }
             }
-            Ok(Err(e)) => eprintln!(
-                "[LoRaWAN Monitor] auto-backfill {} failed: {}",
-                dev_eui, e
-            ),
+            Ok(Err(e)) => eprintln!("[LoRaWAN Monitor] auto-backfill {} failed: {}", dev_eui, e),
             Err(join_err) => eprintln!(
                 "[LoRaWAN Monitor] auto-backfill {} task panicked: {}",
                 dev_eui, join_err
@@ -884,10 +891,7 @@ mod auto_backfill_tests {
             auto_backfill_window_if_enabled(true, Some(1000), 5000, 300),
             auto_backfill_window(Some(1000), 5000, 300)
         );
-        assert_eq!(
-            auto_backfill_window_if_enabled(true, None, 1000, 300),
-            None
-        );
+        assert_eq!(auto_backfill_window_if_enabled(true, None, 1000, 300), None);
     }
 
     #[test]
@@ -904,7 +908,10 @@ mod auto_backfill_tests {
     #[test]
     fn window_after_outage() {
         // 4000 s gap >> 300 s threshold -> backfill the whole gap.
-        assert_eq!(auto_backfill_window(Some(1000), 5000, 300), Some((1000, 5000)));
+        assert_eq!(
+            auto_backfill_window(Some(1000), 5000, 300),
+            Some((1000, 5000))
+        );
     }
 
     #[test]
@@ -915,7 +922,10 @@ mod auto_backfill_tests {
     #[test]
     fn boundary_gap_equal_threshold_triggers() {
         // gap == threshold counts as an outage (>= threshold).
-        assert_eq!(auto_backfill_window(Some(1000), 1300, 300), Some((1000, 1300)));
+        assert_eq!(
+            auto_backfill_window(Some(1000), 1300, 300),
+            Some((1000, 1300))
+        );
     }
 }
 
@@ -965,7 +975,9 @@ fn handle_telemetry_reading(
         .unwrap_or_default()
         .as_secs() as i64;
     let message_id = chirpstack::message_id_for(reading, now_ts);
-    let epoch = storage.get_provisioning_epoch(reading.dev_eui.clone()).unwrap_or(1);
+    let epoch = storage
+        .get_provisioning_epoch(reading.dev_eui.clone())
+        .unwrap_or(1);
     // `reassembly` records how this snapshot was formed. It lives in the payload
     // envelope rather than in `counters`, which the viewer renders as sensor
     // counters — and it is here because the merge is heuristic (the wire carries no
@@ -1003,8 +1015,16 @@ fn handle_telemetry_reading(
     let prev_last_seen = state
         .read()
         .ok()
-        .and_then(|s| s.sensors.get(&reading.dev_eui).and_then(|se| se.last_seen.clone()))
-        .and_then(|ls| chrono::DateTime::parse_from_rfc3339(&ls).ok().map(|dt| dt.timestamp()));
+        .and_then(|s| {
+            s.sensors
+                .get(&reading.dev_eui)
+                .and_then(|se| se.last_seen.clone())
+        })
+        .and_then(|ls| {
+            chrono::DateTime::parse_from_rfc3339(&ls)
+                .ok()
+                .map(|dt| dt.timestamp())
+        });
     if let Some((from_unix, to_unix)) = auto_backfill_window_if_enabled(
         config.history_backfill_enabled,
         prev_last_seen,
@@ -1048,18 +1068,26 @@ fn publish_lorawan_sensors(
     let allowed_dev_euis: Option<std::collections::HashSet<String>> = Some(
         loaded
             .as_ref()
-            .and_then(|c| c.lorawan.as_ref().map(|l| {
-                l.sensors.iter().map(|s| s.dev_eui.clone()).collect()
-            }))
+            .and_then(|c| {
+                c.lorawan
+                    .as_ref()
+                    .map(|l| l.sensors.iter().map(|s| s.dev_eui.clone()).collect())
+            })
             .unwrap_or_default(),
     );
 
     let sensors: Vec<crate::libs::mqtt::messages::LoRaWANSensorPayload> = state_snapshot
         .sensors
         .values()
-        .filter(|s| allowed_dev_euis.as_ref().map_or(true, |set| set.contains(&s.dev_eui)))
+        .filter(|s| {
+            allowed_dev_euis
+                .as_ref()
+                .map_or(true, |set| set.contains(&s.dev_eui))
+        })
         .map(|s| {
-            let field_alarm_states = s.field_alarm_states.iter()
+            let field_alarm_states = s
+                .field_alarm_states
+                .iter()
                 .map(|(k, v)| (k.clone(), v.to_string()))
                 .collect();
             crate::libs::mqtt::messages::LoRaWANSensorPayload {
@@ -1102,7 +1130,9 @@ async fn publish_lorawan_gateways(mqtt_tx: &Sender<MqttMessage>) {
     // Always publish (even an empty list) so the viewer can reconcile/clear
     // stale gateway entries — mirrors publish_lorawan_sensors.
     if enabled.is_empty() {
-        let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData { gateways: Vec::new() });
+        let _ = mqtt_tx.try_send(MqttMessage::PublishLoRaWANGatewayData {
+            gateways: Vec::new(),
+        });
         return;
     }
 
@@ -1112,8 +1142,13 @@ async fn publish_lorawan_gateways(mqtt_tx: &Sender<MqttMessage>) {
     })
     .await
     .unwrap_or_default();
-    let status_map: std::collections::HashMap<String, crate::libs::lorawan::provisioning::GatewayStatus> =
-        status.into_iter().map(|s| (s.gateway_eui.clone(), s)).collect();
+    let status_map: std::collections::HashMap<
+        String,
+        crate::libs::lorawan::provisioning::GatewayStatus,
+    > = status
+        .into_iter()
+        .map(|s| (s.gateway_eui.clone(), s))
+        .collect();
 
     let gateways: Vec<crate::libs::mqtt::messages::LoRaWANGatewayPayload> = enabled
         .iter()

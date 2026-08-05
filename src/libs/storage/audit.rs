@@ -39,8 +39,8 @@ impl AuditLogger {
             record_count,
             duration_ms,
             &thread_id,
-            None,  // details
-            None,  // error_msg
+            None, // details
+            None, // error_msg
             previous_hash.as_deref(),
         );
 
@@ -147,10 +147,10 @@ impl AuditLogger {
             now,
             operation,
             table_name,
-            None,  // record_count
+            None, // record_count
             duration_ms,
             &thread_id,
-            None,  // details
+            None, // details
             Some(error_msg),
             previous_hash.as_deref(),
         );
@@ -166,12 +166,12 @@ impl AuditLogger {
     }
 
     /// Log a schema change (critical for MDR compliance)
-    pub fn log_schema_change(
-        conn: &Connection,
-        change_description: &str,
-    ) -> StorageResult<()> {
+    pub fn log_schema_change(conn: &Connection, change_description: &str) -> StorageResult<()> {
         Self::log_operation(conn, "SCHEMA_CHANGE", None, None, None).map_err(|e| {
-            eprintln!("CRITICAL: Failed to log schema change: {}. Change: {}", e, change_description);
+            eprintln!(
+                "CRITICAL: Failed to log schema change: {}. Change: {}",
+                e, change_description
+            );
             e
         })?;
 
@@ -211,7 +211,7 @@ impl AuditLogger {
             Some(duration_ms),
             &thread_id,
             Some(&details),
-            None,  // error_msg
+            None, // error_msg
             previous_hash.as_deref(),
         );
 
@@ -255,21 +255,24 @@ impl AuditLogger {
             .map_err(|e| StorageError::QueryError(format!("Failed to prepare query: {}", e)))?;
 
         let entries = stmt
-            .query_map(rusqlite::params![from_timestamp, to_timestamp, limit], |row| {
-                Ok(AuditLogEntry {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    operation: row.get(2)?,
-                    table_name: row.get(3)?,
-                    record_count: row.get(4)?,
-                    duration_ms: row.get(5)?,
-                    thread_id: row.get(6)?,
-                    details: row.get(7)?,
-                    error_msg: row.get(8)?,
-                    record_hash: row.get(9)?,
-                    previous_hash: row.get(10)?,
-                })
-            })
+            .query_map(
+                rusqlite::params![from_timestamp, to_timestamp, limit],
+                |row| {
+                    Ok(AuditLogEntry {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        operation: row.get(2)?,
+                        table_name: row.get(3)?,
+                        record_count: row.get(4)?,
+                        duration_ms: row.get(5)?,
+                        thread_id: row.get(6)?,
+                        details: row.get(7)?,
+                        error_msg: row.get(8)?,
+                        record_hash: row.get(9)?,
+                        previous_hash: row.get(10)?,
+                    })
+                },
+            )
             .map_err(|e| StorageError::QueryError(format!("Failed to query logs: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| StorageError::QueryError(format!("Failed to map logs: {}", e)))?;
@@ -295,21 +298,24 @@ impl AuditLogger {
             .map_err(|e| StorageError::QueryError(format!("Failed to prepare query: {}", e)))?;
 
         let entries = stmt
-            .query_map(rusqlite::params![from_timestamp, to_timestamp, limit], |row| {
-                Ok(AuditLogEntry {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    operation: row.get(2)?,
-                    table_name: row.get(3)?,
-                    record_count: row.get(4)?,
-                    duration_ms: row.get(5)?,
-                    thread_id: row.get(6)?,
-                    details: row.get(7)?,
-                    error_msg: row.get(8)?,
-                    record_hash: row.get(9)?,
-                    previous_hash: row.get(10)?,
-                })
-            })
+            .query_map(
+                rusqlite::params![from_timestamp, to_timestamp, limit],
+                |row| {
+                    Ok(AuditLogEntry {
+                        id: row.get(0)?,
+                        timestamp: row.get(1)?,
+                        operation: row.get(2)?,
+                        table_name: row.get(3)?,
+                        record_count: row.get(4)?,
+                        duration_ms: row.get(5)?,
+                        thread_id: row.get(6)?,
+                        details: row.get(7)?,
+                        error_msg: row.get(8)?,
+                        record_hash: row.get(9)?,
+                        previous_hash: row.get(10)?,
+                    })
+                },
+            )
             .map_err(|e| StorageError::QueryError(format!("Failed to query errors: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| StorageError::QueryError(format!("Failed to map errors: {}", e)))?;
@@ -351,7 +357,8 @@ mod tests {
         let (_dir, db) = test_db("audit.db");
         let conn = db.connect().expect("Failed to connect");
 
-        let result = AuditLogger::log_operation(&conn, "TEST_OP", Some("test_table"), Some(10), Some(5));
+        let result =
+            AuditLogger::log_operation(&conn, "TEST_OP", Some("test_table"), Some(10), Some(5));
         assert!(result.is_ok());
 
         // Verify it was logged
@@ -364,8 +371,13 @@ mod tests {
         let (_dir, db) = test_db("audit_error.db");
         let conn = db.connect().expect("Failed to connect");
 
-        let result =
-            AuditLogger::log_error(&conn, "TEST_ERROR", Some("test_table"), "Test error message", Some(5));
+        let result = AuditLogger::log_error(
+            &conn,
+            "TEST_ERROR",
+            Some("test_table"),
+            "Test error message",
+            Some(5),
+        );
         assert!(result.is_ok());
 
         // Query the error
@@ -374,7 +386,8 @@ mod tests {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let errors = AuditLogger::query_errors(&conn, now - 100, now + 100, 10).expect("Failed to query");
+        let errors =
+            AuditLogger::query_errors(&conn, now - 100, now + 100, 10).expect("Failed to query");
         assert!(!errors.is_empty());
         assert!(errors[0].error_msg.is_some());
     }

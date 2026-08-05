@@ -132,7 +132,10 @@ async fn run(
                     return ReplayOutcome {
                         status: "error",
                         rows_sent,
-                        error: Some(format!("fetch [{},{}] line {}: {}", from, chunk_to, line, e)),
+                        error: Some(format!(
+                            "fetch [{},{}] line {}: {}",
+                            from, chunk_to, line, e
+                        )),
                     };
                 }
             };
@@ -284,15 +287,9 @@ mod tests {
 
         let topics = TopicBuilder::new("fiber".into(), "myhost".into(), true);
         let mut published: Vec<(String, String)> = Vec::new();
-        let outcome = replay_with_publisher(
-            &topics,
-            &path,
-            "req-2",
-            Some(1),
-            600,
-            660,
-            |t, p| published.push((t, p)),
-        )
+        let outcome = replay_with_publisher(&topics, &path, "req-2", Some(1), 600, 660, |t, p| {
+            published.push((t, p))
+        })
         .await;
 
         assert_eq!(outcome.rows_sent, 1, "only line 1 should be published");

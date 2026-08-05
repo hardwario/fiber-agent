@@ -105,11 +105,15 @@ impl From<ConfigSetCmd> for ConfigSetting {
         match c {
             ConfigSetCmd::DeviceLabel { label } => ConfigSetting::DeviceLabel { label },
             ConfigSetCmd::Name { line, name } => ConfigSetting::SensorName { line, name },
-            ConfigSetCmd::Location { line, location } => ConfigSetting::SensorLocation { line, location },
+            ConfigSetCmd::Location { line, location } => {
+                ConfigSetting::SensorLocation { line, location }
+            }
             ConfigSetCmd::LedBrightness { value } => ConfigSetting::LedBrightness { value },
             ConfigSetCmd::ScreenBrightness { value } => ConfigSetting::ScreenBrightness { value },
             ConfigSetCmd::BuzzerVolume { value } => ConfigSetting::BuzzerVolume { value },
-            ConfigSetCmd::SystemInfoInterval { seconds } => ConfigSetting::SystemInfoInterval { seconds },
+            ConfigSetCmd::SystemInfoInterval { seconds } => {
+                ConfigSetting::SystemInfoInterval { seconds }
+            }
         }
     }
 }
@@ -196,20 +200,44 @@ fn build_command(cmd: TopCmd) -> Result<Command, String> {
         TopCmd::Config { action } => match action {
             ConfigCmd::Show => Command::ConfigShow,
             ConfigCmd::Get { key } => Command::ConfigGet { key },
-            ConfigCmd::Set { setting, force } => Command::ConfigSet { setting: setting.into(), force },
+            ConfigCmd::Set { setting, force } => Command::ConfigSet {
+                setting: setting.into(),
+                force,
+            },
         },
         TopCmd::Lorawan { action } => match action {
-            LorawanCmd::SetParam { dev_eui, fields, save, force } => Command::LorawanSetParam {
+            LorawanCmd::SetParam {
+                dev_eui,
+                fields,
+                save,
+                force,
+            } => Command::LorawanSetParam {
                 dev_eui,
                 fields: parse_kv(&fields)?,
                 save,
                 force,
             },
-            LorawanCmd::GetParam { dev_eui, keys, diff } => {
-                let desired = if diff.is_empty() { None } else { Some(parse_kv(&diff)?) };
-                Command::LorawanGetParam { dev_eui, keys, desired }
+            LorawanCmd::GetParam {
+                dev_eui,
+                keys,
+                diff,
+            } => {
+                let desired = if diff.is_empty() {
+                    None
+                } else {
+                    Some(parse_kv(&diff)?)
+                };
+                Command::LorawanGetParam {
+                    dev_eui,
+                    keys,
+                    desired,
+                }
             }
-            LorawanCmd::Send { dev_eui, command, force } => Command::LorawanSend {
+            LorawanCmd::Send {
+                dev_eui,
+                command,
+                force,
+            } => Command::LorawanSend {
                 dev_eui,
                 command: command.into(),
                 force,
@@ -231,11 +259,20 @@ fn print_response(resp: &Response, as_json: bool) {
         return;
     }
     if resp.ok {
-        println!("{}", serde_json::to_string_pretty(&resp.data).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&resp.data).unwrap_or_default()
+        );
     } else {
-        eprintln!("error: {}", resp.error.as_deref().unwrap_or("unknown error"));
+        eprintln!(
+            "error: {}",
+            resp.error.as_deref().unwrap_or("unknown error")
+        );
         if !resp.data.is_null() {
-            eprintln!("{}", serde_json::to_string_pretty(&resp.data).unwrap_or_default());
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&resp.data).unwrap_or_default()
+            );
         }
     }
 }

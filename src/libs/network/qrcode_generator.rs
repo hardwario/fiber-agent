@@ -52,15 +52,11 @@ impl QrCodeGenerator {
     }
 
     fn qr_to_matrix(code: &QrCode) -> Vec<Vec<bool>> {
-        let rendered = code.render::<char>()
-            .quiet_zone(false)
-            .build();
+        let rendered = code.render::<char>().quiet_zone(false).build();
 
         let mut matrix = Vec::new();
         for line in rendered.lines() {
-            let row: Vec<bool> = line.chars()
-                .map(|c| c == '█')
-                .collect();
+            let row: Vec<bool> = line.chars().map(|c| c == '█').collect();
             matrix.push(row);
         }
         matrix
@@ -73,7 +69,11 @@ impl QrCodeGenerator {
 
     /// QR side length in modules (always square).
     pub fn get_qr_dimension(&self) -> usize {
-        if self.qr_matrix.is_empty() { 0 } else { self.qr_matrix.len() }
+        if self.qr_matrix.is_empty() {
+            0
+        } else {
+            self.qr_matrix.len()
+        }
     }
 
     pub fn get_mac_address(&self) -> &str {
@@ -114,7 +114,8 @@ mod tests {
             "ABC123".to_string(),
             1_735_689_600,
             "FIBER-001".to_string(),
-        ).expect("Failed to create QR generator");
+        )
+        .expect("Failed to create QR generator");
 
         assert_eq!(generator.get_mac_address(), "AA:BB:CC:DD:EE:FF");
         assert_eq!(generator.get_token(), "ABC123");
@@ -133,7 +134,8 @@ mod tests {
             "ZZZ999".to_string(),
             42,
             "TEST-DEVICE".to_string(),
-        ).expect("Failed to create QR generator");
+        )
+        .expect("Failed to create QR generator");
 
         let matrix = generator.get_qr_matrix();
         let dim = generator.get_qr_dimension();

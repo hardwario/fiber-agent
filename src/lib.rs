@@ -5,20 +5,20 @@ pub mod drivers;
 pub mod libs;
 
 // Re-export key types for convenience
-pub use drivers::{StmBridge, St7920, Buttons, Button, ButtonEvent, Buzzer, Lis2dh12};
-pub use libs::power::{PowerStatus, SharedPowerStatus, PowerController, PowerMonitor};
-pub use libs::config::Config;
+pub use drivers::{Button, ButtonEvent, Buttons, Buzzer, Lis2dh12, St7920, StmBridge};
 pub use libs::accelerometer::AccelerometerMonitor;
-pub use libs::sensors::{SensorMonitor, SharedSensorStateHandle};
-pub use libs::leds::{LedMonitor, SharedLedState};
+pub use libs::ble::{spawn_ble_event_router, BleConfig, BleEvent, BleHandle, BleMonitor};
 pub use libs::buzzer::BuzzerController;
-pub use libs::display::{DisplayMonitor, ButtonMonitor};
+pub use libs::config::Config;
+pub use libs::config_applier::ConfigApplier;
+pub use libs::display::{ButtonMonitor, DisplayMonitor};
+pub use libs::leds::{LedMonitor, SharedLedState};
+pub use libs::lorawan::{LoRaWANHandle, LoRaWANMonitor};
+pub use libs::mqtt::{MqttHandle, MqttMonitor};
 pub use libs::network::{
     new_shared_provisioning_session, touch_shared, ProvisioningSession, QrCodeGenerator,
     SharedProvisioningSession, DEFAULT_SESSION_DURATION, IDLE_TIMEOUT,
 };
-pub use libs::mqtt::{MqttMonitor, MqttHandle};
-pub use libs::pairing::{PairingMonitor, PairingHandle};
-pub use libs::lorawan::{LoRaWANMonitor, LoRaWANHandle};
-pub use libs::ble::{BleMonitor, BleHandle, BleEvent, BleConfig, spawn_ble_event_router};
-pub use libs::config_applier::ConfigApplier;
+pub use libs::pairing::{PairingHandle, PairingMonitor};
+pub use libs::power::{PowerController, PowerMonitor, PowerStatus, SharedPowerStatus};
+pub use libs::sensors::{SensorMonitor, SharedSensorStateHandle};

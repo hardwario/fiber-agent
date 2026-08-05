@@ -137,7 +137,11 @@ impl std::error::Error for ProvisionError {}
 /// persist to flash. Leaves the device connected on success — the caller
 /// decides when to disconnect.
 pub async fn provision(device: &Device, profile: &EyeProfile) -> Result<(), ProvisionError> {
-    if !device.is_connected().await.map_err(ProvisionError::Connect)? {
+    if !device
+        .is_connected()
+        .await
+        .map_err(ProvisionError::Connect)?
+    {
         device.connect().await.map_err(ProvisionError::Connect)?;
     }
 
