@@ -41,7 +41,9 @@ pub fn auth_response(authenticated: bool) -> AuthResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::network::{new_shared_provisioning_session, ProvisioningSession, IDLE_TIMEOUT};
+    use crate::libs::network::{
+        new_shared_provisioning_session, ProvisioningSession, IDLE_TIMEOUT,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn shared_with(session: ProvisioningSession) -> SharedProvisioningSession {

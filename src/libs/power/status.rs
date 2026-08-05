@@ -63,19 +63,19 @@ impl PowerStatus {
         }
     }
 
-    /// Check if battery is low (3100mV ≤ VBAT ≤ 3200mV)
+    /// Check if battery is low (< 20%, matches Config's low_threshold_percent)
     pub fn is_low(&self) -> bool {
-        self.vbat_mv >= 3100 && self.vbat_mv <= 3200
+        self.battery_percent < 20
     }
 
-    /// Check if battery is critical (VBAT < 3100mV)
+    /// Check if battery is critical (< 5%, matches Config's critical_threshold_percent)
     pub fn is_critical(&self) -> bool {
-        self.vbat_mv < 3100
+        self.battery_percent < 5
     }
 
-    /// Check if battery is normal (VBAT > 3200mV)
+    /// Check if battery is normal (>= 20%)
     pub fn is_normal_battery(&self) -> bool {
-        self.vbat_mv > 3200
+        self.battery_percent >= 20
     }
 
     /// Check if on DC power (VIN > 11000mV)
@@ -91,9 +91,9 @@ impl PowerStatus {
     /// Get LED control state for power indicator (PWRLEDG / PWRLEDY)
     /// Returns (color, blink) using PowerLedColor enum
     /// - DC Power: GREEN (steady)
-    /// - Battery OK (>3200mV): YELLOW (blinking)
-    /// - Battery Low (3100-3200mV): YELLOW (steady)
-    /// - Battery Critical (<3100mV): YELLOW (blinking)
+    /// - Battery OK (>= 20%): YELLOW (blinking)
+    /// - Battery Low (5-19%): YELLOW (steady)
+    /// - Battery Critical (< 5%): YELLOW (blinking)
     pub fn get_pwr_led_state(&self) -> (crate::libs::leds::state::PowerLedColor, bool) {
         use crate::libs::leds::state::PowerLedColor;
 
@@ -156,7 +156,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing failure: is_critical() threshold drift. FOLLOW-UP: reconcile expected critical threshold and unignore."]
     fn test_battery_low_critical() {
         let low = PowerStatus::from_vbat(3150); // ~16%
         assert!(low.is_low());
@@ -201,7 +200,11 @@ mod tests {
         // Battery critical: YELLOW blinking
         let battery_critical = PowerStatus::new(3050, 5000);
         let (color, blink) = battery_critical.get_pwr_led_state();
-        assert_eq!(color, PowerLedColor::Yellow, "Battery critical should be YELLOW");
+        assert_eq!(
+            color,
+            PowerLedColor::Yellow,
+            "Battery critical should be YELLOW"
+        );
         assert!(blink, "Battery critical should blink");
     }
 }

@@ -96,7 +96,12 @@ pub fn prepare(req: &EyeTagAddRequest) -> Result<PreparedEyeAdd, String> {
     if !crate::libs::eye::state::is_valid_mac(&mac) {
         return Err(format!("invalid MAC address: {mac}"));
     }
-    let name = match req.name.as_ref().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+    let name = match req
+        .name
+        .as_ref()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+    {
         None => None,
         Some(n) => {
             if n.chars().count() > MAX_NAME_CHARS {
@@ -145,8 +150,16 @@ mod tests {
 
     #[test]
     fn prepare_rejects_bad_mac() {
-        for bad in ["not-a-mac", "AA:BB:CC:DD:EE", "AABBCCDDEEFF", "GG:BB:CC:DD:EE:FF"] {
-            let r = prepare(&EyeTagAddRequest { mac: bad.to_string(), name: None });
+        for bad in [
+            "not-a-mac",
+            "AA:BB:CC:DD:EE",
+            "AABBCCDDEEFF",
+            "GG:BB:CC:DD:EE:FF",
+        ] {
+            let r = prepare(&EyeTagAddRequest {
+                mac: bad.to_string(),
+                name: None,
+            });
             assert!(r.is_err(), "{bad} must be rejected");
             assert!(r.unwrap_err().contains("invalid MAC"));
         }
@@ -172,8 +185,7 @@ mod tests {
 
     #[test]
     fn deserialize_defaults_name_and_rejects_unknown_fields() {
-        let ok: EyeTagAddRequest =
-            serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF"}"#).unwrap();
+        let ok: EyeTagAddRequest = serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF"}"#).unwrap();
         assert_eq!(ok.name, None);
         let bad: Result<EyeTagAddRequest, _> =
             serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF","sneaky":1}"#);
@@ -184,8 +196,20 @@ mod tests {
     fn slot_store_read_reset_roundtrip() {
         let slot = new_slot();
         assert_eq!(read(&slot), EyeTagAddResponse::default());
-        store(&slot, EyeTagAddResponse { success: true, message: "ok".into() });
-        assert_eq!(read(&slot), EyeTagAddResponse { success: true, message: "ok".into() });
+        store(
+            &slot,
+            EyeTagAddResponse {
+                success: true,
+                message: "ok".into(),
+            },
+        );
+        assert_eq!(
+            read(&slot),
+            EyeTagAddResponse {
+                success: true,
+                message: "ok".into()
+            }
+        );
         reset(&slot);
         assert!(!read(&slot).success);
         assert!(read(&slot).message.is_empty());

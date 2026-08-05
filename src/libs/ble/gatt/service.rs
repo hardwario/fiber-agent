@@ -13,16 +13,15 @@ use bluer::gatt::local::{
     CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod, ReqError, Service,
 };
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 // --- UUID constants -----------------------------------------------------------
 
 pub const FIBER_SERVICE_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB00_0000_1000_8000_00805F9B34FB);
 
-const AUTH_CHAR_UUID: uuid::Uuid =
-    uuid::Uuid::from_u128(0x0000FB01_0000_1000_8000_00805F9B34FB);
+const AUTH_CHAR_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x0000FB01_0000_1000_8000_00805F9B34FB);
 const WIFI_SCAN_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB02_0000_1000_8000_00805F9B34FB);
 const WIFI_CONNECT_CHAR_UUID: uuid::Uuid =
@@ -62,7 +61,6 @@ pub async fn create_gatt_app(
     event_tx: mpsc::Sender<super::BleEvent>,
     enable_terminal: bool,
 ) -> bluer::Result<Application> {
-
     // --- Auth characteristic (FB01) ------------------------------------------
     let auth_char = Characteristic {
         uuid: AUTH_CHAR_UUID.into(),
@@ -76,8 +74,7 @@ pub async fn create_gatt_app(
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
-                        let token_attempt =
-                            String::from_utf8_lossy(&new_value).trim().to_string();
+                        let token_attempt = String::from_utf8_lossy(&new_value).trim().to_string();
                         let state_guard = state.lock().await;
 
                         // Phone is talking to us → reset the idle timer
@@ -112,8 +109,7 @@ pub async fn create_gatt_app(
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         let is_auth = state_guard.authenticated.load(Ordering::SeqCst);
-                        let response =
-                            crate::libs::ble::gatt::auth::auth_response(is_auth);
+                        let response = crate::libs::ble::gatt::auth::auth_response(is_auth);
                         Ok(serde_json::to_vec(&response).unwrap_or_default())
                     })
                 }
@@ -434,9 +430,7 @@ pub async fn create_gatt_app(
                         // corrected clock so the session survives.
                         if result.is_ok() {
                             let state_guard = state.lock().await;
-                            crate::libs::network::touch_shared(
-                                &state_guard.provisioning_session,
-                            );
+                            crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         }
 
                         result.map_err(|_| ReqError::Failed)
@@ -578,9 +572,7 @@ pub async fn create_gatt_app(
                             })
                             .await
                             .unwrap_or_else(|join_err| {
-                                eprintln!(
-                                    "[gatt::sticker] enrollment task failed: {join_err}"
-                                );
+                                eprintln!("[gatt::sticker] enrollment task failed: {join_err}");
                                 Err("internal task error".to_string())
                             });
 
@@ -681,7 +673,10 @@ pub async fn create_gatt_app(
                             Err(msg) => {
                                 eye_tag_add::store(
                                     &slot,
-                                    eye_tag_add::EyeTagAddResponse { success: false, message: msg },
+                                    eye_tag_add::EyeTagAddResponse {
+                                        success: false,
+                                        message: msg,
+                                    },
                                 );
                                 return Err(ReqError::Failed);
                             }
@@ -705,14 +700,18 @@ pub async fn create_gatt_app(
                         drop(state_guard);
 
                         // Persist to eye.tags[] (atomic + rollback inside the applier).
-                        let result =
-                            applier.apply_eye_tag_config(prepared.mac.clone(), prepared.name.clone());
+                        let result = applier
+                            .apply_eye_tag_config(prepared.mac.clone(), prepared.name.clone());
                         if !result.success {
-                            let message =
-                                result.error_message.unwrap_or_else(|| "unknown error".to_string());
+                            let message = result
+                                .error_message
+                                .unwrap_or_else(|| "unknown error".to_string());
                             eye_tag_add::store(
                                 &slot,
-                                eye_tag_add::EyeTagAddResponse { success: false, message },
+                                eye_tag_add::EyeTagAddResponse {
+                                    success: false,
+                                    message,
+                                },
                             );
                             return Err(ReqError::Failed);
                         }
@@ -741,7 +740,10 @@ pub async fn create_gatt_app(
                         );
                         eye_tag_add::store(
                             &slot,
-                            eye_tag_add::EyeTagAddResponse { success: true, message: String::new() },
+                            eye_tag_add::EyeTagAddResponse {
+                                success: true,
+                                message: String::new(),
+                            },
                         );
                         Ok(())
                     })
@@ -833,20 +835,18 @@ pub async fn create_gatt_app(
                         }
                         let _guard = InFlightGuard(in_flight);
 
-                        let request: lan::LanConfigRequest =
-                            serde_json::from_slice(&new_value)
-                                .map_err(|_| ReqError::InvalidValueLength)?;
+                        let request: lan::LanConfigRequest = serde_json::from_slice(&new_value)
+                            .map_err(|_| ReqError::InvalidValueLength)?;
 
                         // apply_lan_config drives nmcli synchronously and `up`
                         // can block for seconds — offload it so the async BLE
                         // worker thread is not tied up while NM works.
-                        let apply_result = tokio::task::spawn_blocking(move || {
-                            lan::apply_lan_config(&request)
-                        })
-                        .await
-                        .unwrap_or(Err(
-                            crate::libs::ble::gatt::net_error::NetworkErrorCategory::Other,
-                        ));
+                        let apply_result =
+                            tokio::task::spawn_blocking(move || lan::apply_lan_config(&request))
+                                .await
+                                .unwrap_or(Err(
+                                    crate::libs::ble::gatt::net_error::NetworkErrorCategory::Other,
+                                ));
 
                         match apply_result {
                             Ok(()) => {
@@ -924,8 +924,7 @@ pub async fn create_gatt_app(
                 move |new_value, _req| {
                     let state = state.clone();
                     Box::pin(async move {
-                        let command =
-                            String::from_utf8_lossy(&new_value).trim().to_string();
+                        let command = String::from_utf8_lossy(&new_value).trim().to_string();
 
                         // Fetch auth flag + shared handles without holding the lock
                         // across the slow shell-spawn path.
@@ -990,17 +989,13 @@ pub async fn create_gatt_app(
                                         eprintln!("[Terminal] Storing shell in state...");
                                         {
                                             let mut state_guard = state.lock().await;
-                                            state_guard.shell_process =
-                                                Some(shell_arc.clone());
+                                            state_guard.shell_process = Some(shell_arc.clone());
                                         }
                                         eprintln!("[Terminal] Shell initialized and stored");
                                         shell_arc
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "[Terminal] Failed to spawn shell: {}",
-                                            e
-                                        );
+                                        eprintln!("[Terminal] Failed to spawn shell: {}", e);
                                         return Err(ReqError::Failed);
                                     }
                                 }
@@ -1012,9 +1007,7 @@ pub async fn create_gatt_app(
                         {
                             let mut shell_guard = shell.lock().await;
                             let cmd = format!("{}\n", command);
-                            if let Err(e) =
-                                shell_guard.stdin.write_all(cmd.as_bytes()).await
-                            {
+                            if let Err(e) = shell_guard.stdin.write_all(cmd.as_bytes()).await {
                                 eprintln!("[Terminal] Shell write error: {}", e);
                                 return Err(ReqError::Failed);
                             }
@@ -1040,14 +1033,11 @@ pub async fn create_gatt_app(
                 move |notifier| {
                     let state = state.clone();
                     Box::pin(async move {
-                        eprintln!(
-                            "[Terminal] Client subscribed to RX notifications"
-                        );
+                        eprintln!("[Terminal] Client subscribed to RX notifications");
                         {
                             let mut state_guard = state.lock().await;
                             crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                            state_guard.terminal_notifier =
-                                Some(Arc::new(Mutex::new(notifier)));
+                            state_guard.terminal_notifier = Some(Arc::new(Mutex::new(notifier)));
                             eprintln!("[Terminal] Notifier stored in state");
                         }
                         // Keep alive until client unsubscribes.

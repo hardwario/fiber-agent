@@ -106,9 +106,9 @@ impl StorageReader {
                  WHERE sensor_line = ?1 AND minute_ts >= ?2 AND minute_ts <= ?3
                  ORDER BY minute_ts ASC",
             )
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to prepare aggregate query: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("Failed to prepare aggregate query: {}", e))
+            })?;
 
         let rows = stmt
             .query_map(rusqlite::params![sensor_line, from_ts, to_ts], |row| {
@@ -125,35 +125,26 @@ impl StorageReader {
                     data_hmac: row.get(9)?,
                 })
             })
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to query aggregates: {}", e),
-            ))?;
+            .map_err(|e| StorageError::QueryError(format!("Failed to query aggregates: {}", e)))?;
 
-        let out: Vec<MinuteAggregateRow> = rows
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to collect aggregates: {}", e),
-            ))?;
+        let out: Vec<MinuteAggregateRow> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            StorageError::QueryError(format!("Failed to collect aggregates: {}", e))
+        })?;
 
         Ok(out)
     }
 
     /// Get overall storage statistics
-    pub fn get_storage_stats(
-        conn: &Connection,
-        db_path: &str,
-    ) -> StorageResult<StorageStats> {
+    pub fn get_storage_stats(conn: &Connection, db_path: &str) -> StorageResult<StorageStats> {
         let total_readings: i64 = conn
             .query_row("SELECT COUNT(*) FROM sensor_readings", [], |row| row.get(0))
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to count readings: {}", e),
-            ))?;
+            .map_err(|e| StorageError::QueryError(format!("Failed to count readings: {}", e)))?;
 
         let total_alarm_events: i64 = conn
             .query_row("SELECT COUNT(*) FROM alarm_events", [], |row| row.get(0))
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to count alarm events: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("Failed to count alarm events: {}", e))
+            })?;
 
         let total_audit_entries: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
@@ -169,9 +160,9 @@ impl StorageReader {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .map_err(|e| StorageError::QueryError(
-                format!("Failed to query timestamp range: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("Failed to query timestamp range: {}", e))
+            })?;
 
         Ok(StorageStats {
             total_readings,
@@ -201,7 +192,9 @@ impl StorageReader {
                  ORDER BY id ASC
                  LIMIT ?",
             )
-            .map_err(|e| StorageError::QueryError(format!("prepare sticker_readings_after: {}", e)))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("prepare sticker_readings_after: {}", e))
+            })?;
 
         let rows = stmt
             .query_map(rusqlite::params![last_id, limit as i64], |r| {
@@ -219,7 +212,9 @@ impl StorageReader {
             })
             .map_err(|e| StorageError::QueryError(format!("query sticker_readings_after: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StorageError::QueryError(format!("collect sticker_readings_after: {}", e)))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("collect sticker_readings_after: {}", e))
+            })?;
 
         Ok(rows)
     }
@@ -290,7 +285,9 @@ impl StorageReader {
                  ORDER BY id ASC
                  LIMIT ?",
             )
-            .map_err(|e| StorageError::QueryError(format!("prepare sensor_readings_after: {}", e)))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("prepare sensor_readings_after: {}", e))
+            })?;
 
         let rows = stmt
             .query_map(rusqlite::params![last_id, limit as i64], |r| {
@@ -307,7 +304,9 @@ impl StorageReader {
             })
             .map_err(|e| StorageError::QueryError(format!("query sensor_readings_after: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StorageError::QueryError(format!("collect sensor_readings_after: {}", e)))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("collect sensor_readings_after: {}", e))
+            })?;
 
         Ok(rows)
     }
@@ -342,9 +341,9 @@ impl StorageReader {
                        ?1)
                  ORDER BY minute_ts ASC, sensor_line ASC",
             )
-            .map_err(|e| StorageError::QueryError(
-                format!("prepare minute_aggregates_after: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("prepare minute_aggregates_after: {}", e))
+            })?;
 
         let rows = stmt
             .query_map(
@@ -364,15 +363,13 @@ impl StorageReader {
                     })
                 },
             )
-            .map_err(|e| StorageError::QueryError(
-                format!("query minute_aggregates_after: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::QueryError(format!("query minute_aggregates_after: {}", e))
+            })?;
 
-        let out: Vec<MinuteAggregateRow> = rows
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| StorageError::QueryError(
-                format!("collect minute_aggregates_after: {}", e),
-            ))?;
+        let out: Vec<MinuteAggregateRow> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            StorageError::QueryError(format!("collect minute_aggregates_after: {}", e))
+        })?;
 
         Ok(out)
     }
@@ -387,7 +384,9 @@ impl StorageReader {
         stream: &str,
     ) -> StorageResult<i64> {
         let mut stmt = conn
-            .prepare("SELECT last_exported_id FROM export_cursor WHERE broker_id = ? AND stream = ?")
+            .prepare(
+                "SELECT last_exported_id FROM export_cursor WHERE broker_id = ? AND stream = ?",
+            )
             .map_err(|e| StorageError::QueryError(format!("prepare cursor: {}", e)))?;
         let v: Option<i64> = stmt
             .query_row(rusqlite::params![broker_id, stream], |r| r.get(0))
@@ -471,7 +470,8 @@ mod tests {
         StorageWriter::write_sensor_reading(&conn, &reading2, None).expect("Failed to write");
         StorageWriter::write_sensor_reading(&conn, &reading3, None).expect("Failed to write");
 
-        let results = StorageReader::get_readings_in_range(&conn, 0, 1200, 1800).expect("Failed to read");
+        let results =
+            StorageReader::get_readings_in_range(&conn, 0, 1200, 1800).expect("Failed to read");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].timestamp, 1500);
 

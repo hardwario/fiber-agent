@@ -1,5 +1,6 @@
 //! Screen rendering functions for display
 
+use super::font::PROFONT_9_POINT;
 use embedded_graphics::{
     mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
@@ -7,20 +8,19 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle, Rectangle},
     text::{Alignment, Text},
 };
-use super::font::PROFONT_9_POINT;
 
-use std::time::UNIX_EPOCH;
 use chrono::Local;
+use std::time::UNIX_EPOCH;
 
 use crate::drivers::display::St7920;
 use crate::libs::alarms::AlarmState;
-use crate::libs::leds::state::SharedLedState;
-use crate::libs::sensors::state::SharedSensorState;
-use crate::libs::network::{QrCodeGenerator, NetworkStatus};
 use crate::libs::display::icons;
 use crate::libs::display::overview::RenderedLine;
+use crate::libs::leds::state::SharedLedState;
+use crate::libs::lorawan::state::{LoRaWANAlarmState, LoRaWANSensorState};
+use crate::libs::network::{NetworkStatus, QrCodeGenerator};
 use crate::libs::power::PowerStatus;
-use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
+use crate::libs::sensors::state::SharedSensorState;
 
 /// A single row of the sensor overview, with its identity and active flag.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,15 +101,27 @@ pub fn ordered_sensors(
 
     let mut all: Vec<OverviewEntry> = Vec::with_capacity(8 + lorawan_sensors.len());
     for (i, slot) in ds_readings.iter().enumerate() {
-        if !ds_slot_visible(slot, ds_has_reported[i]) { continue; }
+        if !ds_slot_visible(slot, ds_has_reported[i]) {
+            continue;
+        }
         let active = matches!(slot, Some(r) if r.is_connected);
-        all.push(OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active });
+        all.push(OverviewEntry {
+            kind: OverviewKind::Ds18b20,
+            global_idx: i,
+            active,
+        });
     }
     for (i, s) in lorawan_sensors.iter().enumerate() {
-        if !lora_sensor_visible(s) { continue; }
+        if !lora_sensor_visible(s) {
+            continue;
+        }
         // Visible ⇒ it has fields, so liveness is purely the connection state.
         let active = !matches!(s.alarm_state, LoRaWANAlarmState::Disconnected);
-        all.push(OverviewEntry { kind: OverviewKind::LoRa, global_idx: 8 + i, active });
+        all.push(OverviewEntry {
+            kind: OverviewKind::LoRa,
+            global_idx: 8 + i,
+            active,
+        });
     }
     let (mut active, mut inactive): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| e.active);
     active.append(&mut inactive);
@@ -198,14 +210,9 @@ fn draw_overview_chrome(
     } else {
         format!("{}/{}", page + 1, total_pages)
     };
-    Text::with_alignment(
-        &mode_str,
-        Point::new(126, 9),
-        text_style,
-        Alignment::Right,
-    )
-    .draw(display)
-    .ok();
+    Text::with_alignment(&mode_str, Point::new(126, 9), text_style, Alignment::Right)
+        .draw(display)
+        .ok();
 
     // Draw horizontal separator line
     Line::new(Point::new(0, 14), Point::new(127, 14))
@@ -269,9 +276,14 @@ pub fn render_sensor_overview(
     // No sensor has ever reported — nothing to list, so say so instead of
     // drawing four blank rows.
     if entries.is_empty() {
-        Text::with_alignment("No sensors", Point::new(64, 40), text_style, Alignment::Center)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            "No sensors",
+            Point::new(64, 40),
+            text_style,
+            Alignment::Center,
+        )
+        .draw(display)
+        .ok();
         return display.flush();
     }
 
@@ -288,18 +300,19 @@ pub fn render_sensor_overview(
         match entry.kind {
             OverviewKind::Ds18b20 => {
                 let sensor_idx = entry.global_idx;
-                let (status_char, is_alarm) = if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
-                    match reading.alarm_state {
-                        AlarmState::NeverConnected => ("-", false),
-                        AlarmState::Disconnected => ("E", false),
-                        AlarmState::Reconnecting => ("W", false),
-                        AlarmState::Normal => ("N", false),
-                        AlarmState::Warning => ("W", false),
-                        AlarmState::Critical => ("C", true),
-                    }
-                } else {
-                    ("?", false)
-                };
+                let (status_char, is_alarm) =
+                    if let Some(reading) = sensor_state.readings[sensor_idx].as_ref() {
+                        match reading.alarm_state {
+                            AlarmState::NeverConnected => ("-", false),
+                            AlarmState::Disconnected => ("E", false),
+                            AlarmState::Reconnecting => ("W", false),
+                            AlarmState::Normal => ("N", false),
+                            AlarmState::Warning => ("W", false),
+                            AlarmState::Critical => ("C", true),
+                        }
+                    } else {
+                        ("?", false)
+                    };
                 let name = &sensor_state.names[sensor_idx];
                 let max_name_len = if selected_sensor.is_some() { 7 } else { 8 };
                 // truncate_chars, not a byte slice: sensor names come from
@@ -318,11 +331,23 @@ pub fn render_sensor_overview(
                 } else {
                     "--.-°C".to_string()
                 };
-                draw_sensor_row(display, y, label_x, is_selected, is_alarm, &label, &temp_str, status_char, &text_style);
+                draw_sensor_row(
+                    display,
+                    y,
+                    label_x,
+                    is_selected,
+                    is_alarm,
+                    &label,
+                    &temp_str,
+                    status_char,
+                    &text_style,
+                );
             }
             OverviewKind::LoRa => {
                 let lr_idx = entry.global_idx - 8;
-                if lr_idx >= lorawan_sensors.len() { continue; }
+                if lr_idx >= lorawan_sensors.len() {
+                    continue;
+                }
                 let sensor = &lorawan_sensors[lr_idx];
                 let (status_char, is_alarm) = match sensor.alarm_state {
                     LoRaWANAlarmState::Normal => ("N", false),
@@ -331,10 +356,27 @@ pub fn render_sensor_overview(
                     LoRaWANAlarmState::Disconnected => ("E", false),
                 };
                 let name = truncate_chars(&sensor.name, 6);
-                let temp_str = sensor.fields.get("temperature").map(|t| format!("{:.1}", t)).unwrap_or_else(|| "--.-".to_string());
-                let hum_str = sensor.fields.get("humidity").map(|h| format!("{:.0}%", h)).unwrap_or_else(|| "--%".to_string());
+                let temp_str = sensor
+                    .fields
+                    .get("temperature")
+                    .map(|t| format!("{:.1}", t))
+                    .unwrap_or_else(|| "--.-".to_string());
+                let hum_str = sensor
+                    .fields
+                    .get("humidity")
+                    .map(|h| format!("{:.0}%", h))
+                    .unwrap_or_else(|| "--%".to_string());
                 let label = format!("{:6} {}° {}", name, temp_str, hum_str);
-                draw_sensor_row_wide(display, y, label_x, is_selected, is_alarm, &label, status_char, &text_style);
+                draw_sensor_row_wide(
+                    display,
+                    y,
+                    label_x,
+                    is_selected,
+                    is_alarm,
+                    &label,
+                    status_char,
+                    &text_style,
+                );
             }
         }
     }
@@ -455,11 +497,13 @@ pub fn render_lorawan_sensor_detail(
 
 // Threshold formatting helpers
 fn fmt_thresh_temp(v: Option<f32>) -> String {
-    v.map(|x| format!("{:.1}", x)).unwrap_or_else(|| "--".to_string())
+    v.map(|x| format!("{:.1}", x))
+        .unwrap_or_else(|| "--".to_string())
 }
 
 fn fmt_thresh_hum(v: Option<f32>) -> String {
-    v.map(|x| format!("{:.0}", x)).unwrap_or_else(|| "--".to_string())
+    v.map(|x| format!("{:.0}", x))
+        .unwrap_or_else(|| "--".to_string())
 }
 
 /// Truncate `s` to at most `max` Unicode characters (not bytes).
@@ -518,15 +562,23 @@ fn render_lorawan_detail_header(
 
     let display_name = truncate_chars(&sensor.name, 12);
 
-    Text::with_alignment(&display_name, Point::new(64, 9), text_style, Alignment::Center)
-        .draw(display).ok();
+    Text::with_alignment(
+        &display_name,
+        Point::new(64, 9),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
 
     Text::with_alignment(page_label, Point::new(126, 9), text_style, Alignment::Right)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Line::new(Point::new(0, 11), Point::new(127, 11))
         .into_styled(line_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 }
 
 fn render_lorawan_detail_page_readings(
@@ -546,31 +598,53 @@ fn render_lorawan_detail_page_readings(
     };
 
     // Line 1 (y=24): Temperature and alarm state
-    let temp_str = sensor.fields.get("temperature")
+    let temp_str = sensor
+        .fields
+        .get("temperature")
         .map(|t| format!("{:.1}C", t))
         .unwrap_or_else(|| "--.-C".to_string());
     let temp_alarm = alarm_glyph(
-        sensor.field_alarm_states.get("temperature").unwrap_or(&LoRaWANAlarmState::Normal),
+        sensor
+            .field_alarm_states
+            .get("temperature")
+            .unwrap_or(&LoRaWANAlarmState::Normal),
     );
-    Text::new(&format!("Temp:{} [{}]", temp_str, temp_alarm), Point::new(2, 24), text_style)
-        .draw(display).ok();
+    Text::new(
+        &format!("Temp:{} [{}]", temp_str, temp_alarm),
+        Point::new(2, 24),
+        text_style,
+    )
+    .draw(display)
+    .ok();
 
     // Line 2 (y=37): Humidity and alarm state
-    let hum_str = sensor.fields.get("humidity")
+    let hum_str = sensor
+        .fields
+        .get("humidity")
         .map(|h| format!("{:.1}%", h))
         .unwrap_or_else(|| "--.--%".to_string());
     let hum_alarm = alarm_glyph(
-        sensor.field_alarm_states.get("humidity").unwrap_or(&LoRaWANAlarmState::Normal),
+        sensor
+            .field_alarm_states
+            .get("humidity")
+            .unwrap_or(&LoRaWANAlarmState::Normal),
     );
-    Text::new(&format!("Hum:{} [{}]", hum_str, hum_alarm), Point::new(2, 37), text_style)
-        .draw(display).ok();
+    Text::new(
+        &format!("Hum:{} [{}]", hum_str, hum_alarm),
+        Point::new(2, 37),
+        text_style,
+    )
+    .draw(display)
+    .ok();
 
     // Line 3 (y=50): RSSI
-    let rssi_str = sensor.rssi
+    let rssi_str = sensor
+        .rssi
         .map(|r| format!("{}dBm", r))
         .unwrap_or_else(|| "N/A".to_string());
     Text::new(&format!("RSSI:{}", rssi_str), Point::new(2, 50), text_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     // Line 4 (y=63): Serial number or last seen
     let info_line = if let Some(ref serial) = sensor.serial_number {
@@ -578,13 +652,18 @@ fn render_lorawan_detail_page_readings(
     } else if let Some(ref last_seen) = sensor.last_seen {
         // RFC3339 looks like "2026-05-12T14:30:00Z" — extract HH:MM:SS safely.
         let time_part: String = last_seen.chars().skip(11).take(8).collect();
-        let time_display = if time_part.is_empty() { "--:--:--".to_string() } else { time_part };
+        let time_display = if time_part.is_empty() {
+            "--:--:--".to_string()
+        } else {
+            time_part
+        };
         format!("Seen:{}", time_display)
     } else {
         "No data".to_string()
     };
     Text::new(&info_line, Point::new(2, 63), text_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     display.flush()
 }
@@ -608,8 +687,14 @@ fn render_lorawan_detail_page_thresholds(
     let f32_opt = |v: Option<f64>| v.map(|x| x as f32);
     let (tcl, twl, twh, tch, hcl, hwl, hwh, hch) = match (temp_thr, hum_thr) {
         (None, None) => (
-            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
-            "--".to_string(), "--".to_string(), "--".to_string(), "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
+            "--".to_string(),
         ),
         (t, h) => (
             fmt_thresh_temp(f32_opt(t.and_then(|t| t.critical_low))),
@@ -623,14 +708,34 @@ fn render_lorawan_detail_page_thresholds(
         ),
     };
 
-    Text::new(&format!("T crit:{} - {}", tcl, tch), Point::new(2, 24), text_style)
-        .draw(display).ok();
-    Text::new(&format!("T warn:{} - {}", twl, twh), Point::new(2, 37), text_style)
-        .draw(display).ok();
-    Text::new(&format!("H crit:{} - {}", hcl, hch), Point::new(2, 50), text_style)
-        .draw(display).ok();
-    Text::new(&format!("H warn:{} - {}", hwl, hwh), Point::new(2, 63), text_style)
-        .draw(display).ok();
+    Text::new(
+        &format!("T crit:{} - {}", tcl, tch),
+        Point::new(2, 24),
+        text_style,
+    )
+    .draw(display)
+    .ok();
+    Text::new(
+        &format!("T warn:{} - {}", twl, twh),
+        Point::new(2, 37),
+        text_style,
+    )
+    .draw(display)
+    .ok();
+    Text::new(
+        &format!("H crit:{} - {}", hcl, hch),
+        Point::new(2, 50),
+        text_style,
+    )
+    .draw(display)
+    .ok();
+    Text::new(
+        &format!("H warn:{} - {}", hwl, hwh),
+        Point::new(2, 63),
+        text_style,
+    )
+    .draw(display)
+    .ok();
 
     display.flush()
 }
@@ -648,18 +753,26 @@ fn render_lorawan_detail_page_location(
         .and_then(|c| c.location.as_deref())
         .filter(|s| !s.is_empty());
 
-    Text::new("Location:", Point::new(2, 24), text_style).draw(display).ok();
+    Text::new("Location:", Point::new(2, 24), text_style)
+        .draw(display)
+        .ok();
 
     match location_str {
         Some(loc) => {
             let lines = wrap_two_lines(loc, 21);
-            Text::new(&lines[0], Point::new(2, 37), text_style).draw(display).ok();
+            Text::new(&lines[0], Point::new(2, 37), text_style)
+                .draw(display)
+                .ok();
             if !lines[1].is_empty() {
-                Text::new(&lines[1], Point::new(2, 50), text_style).draw(display).ok();
+                Text::new(&lines[1], Point::new(2, 50), text_style)
+                    .draw(display)
+                    .ok();
             }
         }
         None => {
-            Text::new("--", Point::new(2, 37), text_style).draw(display).ok();
+            Text::new("--", Point::new(2, 37), text_style)
+                .draw(display)
+                .ok();
         }
     }
 
@@ -695,9 +808,14 @@ fn draw_sensor_row(
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            inverted_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     } else if is_alarm {
         invert_row(display, y);
 
@@ -711,9 +829,14 @@ fn draw_sensor_row(
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            inverted_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     } else {
         Text::new(label, Point::new(label_x, y), *text_style)
             .draw(display)
@@ -723,9 +846,14 @@ fn draw_sensor_row(
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), *text_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            *text_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     }
 }
 
@@ -753,9 +881,14 @@ fn draw_sensor_row_wide(
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            inverted_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     } else if is_alarm {
         invert_row(display, y);
 
@@ -765,17 +898,27 @@ fn draw_sensor_row_wide(
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), inverted_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            inverted_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     } else {
         Text::new(label, Point::new(label_x, y), *text_style)
             .draw(display)
             .ok();
 
-        Text::with_alignment(status_char, Point::new(126, y), *text_style, Alignment::Right)
-            .draw(display)
-            .ok();
+        Text::with_alignment(
+            status_char,
+            Point::new(126, y),
+            *text_style,
+            Alignment::Right,
+        )
+        .draw(display)
+        .ok();
     }
 }
 
@@ -837,18 +980,14 @@ pub fn render_qr_code_screen(
 
                     // Only draw if within bounds
                     if x >= 0 && y >= 0 && x < 128 && y < 64 {
-                        Rectangle::new(
-                            Point::new(x, y),
-                            Size::new(scale, scale),
-                        )
-                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                        .draw(display)
-                        .ok();
+                        Rectangle::new(Point::new(x, y), Size::new(scale, scale))
+                            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                            .draw(display)
+                            .ok();
                     }
                 }
             }
         }
-
     } else {
         eprintln!("[Screen] Warning: QR matrix is empty!");
         Text::with_alignment(
@@ -929,14 +1068,9 @@ pub fn render_system_info(
     } else {
         format!("SYSTEM INFO {}/3", page + 1)
     };
-    Text::with_alignment(
-        &header,
-        Point::new(64, 9),
-        text_style,
-        Alignment::Center,
-    )
-    .draw(display)
-    .ok();
+    Text::with_alignment(&header, Point::new(64, 9), text_style, Alignment::Center)
+        .draw(display)
+        .ok();
 
     // Separator line
     Line::new(Point::new(0, 11), Point::new(127, 11))
@@ -964,22 +1098,33 @@ pub fn render_system_info(
             .ok();
 
         let connected = count_connected_probes(sensor_state);
-        let power_str = if power_status.on_dc_power { "PoE" } else { "Bat" };
+        let power_str = if power_status.on_dc_power {
+            "PoE"
+        } else {
+            "Bat"
+        };
         let status_line = format!("Probes:{}/8 PWR:{}", connected, power_str);
         Text::new(&status_line, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
-
     } else if page == 1 {
         // PAGE 2: Network & Power Info
 
-        let wifi = if network_status.wifi_connected { "On" } else { "Off" };
+        let wifi = if network_status.wifi_connected {
+            "On"
+        } else {
+            "Off"
+        };
         let wifi_line = format!("WiFi:{}", wifi);
         Text::new(&wifi_line, Point::new(2, 23), text_style)
             .draw(display)
             .ok();
 
-        let eth = if network_status.ethernet_connected { "On" } else { "Off" };
+        let eth = if network_status.ethernet_connected {
+            "On"
+        } else {
+            "Off"
+        };
         let eth_line = format!("Ethernet:{}", eth);
         Text::new(&eth_line, Point::new(2, 35), text_style)
             .draw(display)
@@ -995,7 +1140,6 @@ pub fn render_system_info(
         Text::new(&alarm_line, Point::new(2, 59), text_style)
             .draw(display)
             .ok();
-
     } else {
         // PAGE 3: Device Label, IPs & Version
 
@@ -1046,7 +1190,9 @@ fn format_time() -> String {
 
 /// Count number of connected probes
 fn count_connected_probes(sensor_state: &SharedSensorState) -> usize {
-    sensor_state.readings.iter()
+    sensor_state
+        .readings
+        .iter()
         .filter(|r| r.as_ref().map_or(false, |reading| reading.is_connected))
         .count()
 }
@@ -1067,10 +1213,7 @@ fn format_last_alarm(power_status: &PowerStatus) -> String {
 }
 
 /// Render the pairing mode screen showing the pairing code
-pub fn render_pairing_screen(
-    display: &mut St7920,
-    code: &str,
-) -> anyhow::Result<()> {
+pub fn render_pairing_screen(display: &mut St7920, code: &str) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
@@ -1103,7 +1246,8 @@ pub fn render_pairing_screen(
     .ok();
 
     // Draw the pairing code prominently (larger space between chars)
-    let spaced_code: String = code.chars()
+    let spaced_code: String = code
+        .chars()
         .map(|c| c.to_string())
         .collect::<Vec<_>>()
         .join(" ");
@@ -1200,13 +1344,19 @@ pub fn render_sensor_detail(
         .ok();
 
     // Line 2 (y=37): Critical thresholds
-    let critical_line = format!("CL:{:.1} CH:{:.1}", threshold.critical_low_celsius, threshold.critical_high_celsius);
+    let critical_line = format!(
+        "CL:{:.1} CH:{:.1}",
+        threshold.critical_low_celsius, threshold.critical_high_celsius
+    );
     Text::new(&critical_line, Point::new(2, 37), text_style)
         .draw(display)
         .ok();
 
     // Line 3 (y=50): Warning thresholds
-    let warning_line = format!("WL:{:.1} WH:{:.1}", threshold.warning_low_celsius, threshold.warning_high_celsius);
+    let warning_line = format!(
+        "WL:{:.1} WH:{:.1}",
+        threshold.warning_low_celsius, threshold.warning_high_celsius
+    );
     Text::new(&warning_line, Point::new(2, 50), text_style)
         .draw(display)
         .ok();
@@ -1214,7 +1364,14 @@ pub fn render_sensor_detail(
     // Line 4 (y=63): Location (if set)
     if let Some(location) = sensor_state.get_location(sensor_idx as u8) {
         if !location.is_empty() {
-            let loc_line = format!("Loc:{}", if location.len() > 12 { &location[..12] } else { location });
+            let loc_line = format!(
+                "Loc:{}",
+                if location.len() > 12 {
+                    &location[..12]
+                } else {
+                    location
+                }
+            );
             Text::new(&loc_line, Point::new(2, 63), text_style)
                 .draw(display)
                 .ok();
@@ -1225,97 +1382,112 @@ pub fn render_sensor_detail(
 }
 
 /// Render the BLE-connected screen (transient — shows when a BLE client is connected).
-pub fn render_ble_connected(
-    display: &mut St7920,
-    addr: &str,
-) -> anyhow::Result<()> {
+pub fn render_ble_connected(display: &mut St7920, addr: &str) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
-    Text::with_alignment("BLE Connected", Point::new(64, 18), text_style, Alignment::Center)
-        .draw(display).ok();
+    Text::with_alignment(
+        "BLE Connected",
+        Point::new(64, 18),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
 
     Line::new(Point::new(0, 22), Point::new(127, 22))
         .into_styled(line_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Text::with_alignment(addr, Point::new(64, 42), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     display.flush()
 }
 
 /// Render the WiFi-provisioning screen (during connect attempt).
-pub fn render_ble_provisioning(
-    display: &mut St7920,
-    ssid: &str,
-) -> anyhow::Result<()> {
+pub fn render_ble_provisioning(display: &mut St7920, ssid: &str) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
-    Text::with_alignment("Connecting WiFi...", Point::new(64, 18), text_style, Alignment::Center)
-        .draw(display).ok();
+    Text::with_alignment(
+        "Connecting WiFi...",
+        Point::new(64, 18),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
 
     Line::new(Point::new(0, 22), Point::new(127, 22))
         .into_styled(line_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Text::with_alignment(ssid, Point::new(64, 42), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     display.flush()
 }
 
 /// Render the "WiFi OK" success screen.
-pub fn render_ble_wifi_ok(
-    display: &mut St7920,
-    ssid: &str,
-    ip: &str,
-) -> anyhow::Result<()> {
+pub fn render_ble_wifi_ok(display: &mut St7920, ssid: &str, ip: &str) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     Text::with_alignment("WiFi OK", Point::new(64, 18), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Line::new(Point::new(0, 22), Point::new(127, 22))
         .into_styled(line_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Text::with_alignment(ssid, Point::new(64, 38), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Text::with_alignment(ip, Point::new(64, 54), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     display.flush()
 }
 
 /// Render the "WiFi Failed" error screen.
-pub fn render_ble_wifi_fail(
-    display: &mut St7920,
-    error: &str,
-) -> anyhow::Result<()> {
+pub fn render_ble_wifi_fail(display: &mut St7920, error: &str) -> anyhow::Result<()> {
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
     let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
-    Text::with_alignment("WiFi Failed", Point::new(64, 18), text_style, Alignment::Center)
-        .draw(display).ok();
+    Text::with_alignment(
+        "WiFi Failed",
+        Point::new(64, 18),
+        text_style,
+        Alignment::Center,
+    )
+    .draw(display)
+    .ok();
 
     Line::new(Point::new(0, 22), Point::new(127, 22))
         .into_styled(line_style)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     Text::with_alignment(error, Point::new(64, 42), text_style, Alignment::Center)
-        .draw(display).ok();
+        .draw(display)
+        .ok();
 
     display.flush()
 }
@@ -1324,20 +1496,26 @@ pub fn render_ble_wifi_fail(
 mod ordering_tests {
     use super::*;
     use crate::libs::alarms::AlarmState;
+    use crate::libs::lorawan::state::{LoRaWANAlarmState, LoRaWANSensorState};
     use crate::libs::sensors::state::SensorReading;
-    use crate::libs::lorawan::state::{LoRaWANSensorState, LoRaWANAlarmState};
 
     fn ds(temp: f32, connected: bool) -> Option<SensorReading> {
         Some(SensorReading {
             temperature: temp,
             is_connected: connected,
-            alarm_state: if connected { AlarmState::Normal } else { AlarmState::Disconnected },
+            alarm_state: if connected {
+                AlarmState::Normal
+            } else {
+                AlarmState::Disconnected
+            },
         })
     }
 
     fn lora(name: &str, temp: Option<f32>, alarm: LoRaWANAlarmState) -> LoRaWANSensorState {
         let mut fields = std::collections::HashMap::new();
-        if let Some(t) = temp { fields.insert("temperature".to_string(), t as f64); }
+        if let Some(t) = temp {
+            fields.insert("temperature".to_string(), t as f64);
+        }
         LoRaWANSensorState {
             dev_eui: name.to_string(),
             name: name.to_string(),
@@ -1377,8 +1555,10 @@ mod ordering_tests {
     #[test]
     fn never_connected_sensors_are_hidden() {
         let ds_arr = empty_ds();
-        let lr = vec![lora("a", None, LoRaWANAlarmState::Disconnected),
-                      lora("b", None, LoRaWANAlarmState::Disconnected)];
+        let lr = vec![
+            lora("a", None, LoRaWANAlarmState::Disconnected),
+            lora("b", None, LoRaWANAlarmState::Disconnected),
+        ];
         let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
         assert!(entries.is_empty());
     }
@@ -1450,7 +1630,7 @@ mod ordering_tests {
         let mut ds_arr = empty_ds();
         ds_arr[5] = ds(20.0, true);
         let lr = vec![
-            lora("a", None, LoRaWANAlarmState::Normal),      // hidden
+            lora("a", None, LoRaWANAlarmState::Normal),       // hidden
             lora("b", Some(21.0), LoRaWANAlarmState::Normal), // visible, idx 9
         ];
         let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
@@ -1461,7 +1641,9 @@ mod ordering_tests {
     #[test]
     fn all_active_keeps_underlying_order() {
         let mut ds_arr = empty_ds();
-        for i in 0..8 { ds_arr[i] = ds(20.0, true); }
+        for i in 0..8 {
+            ds_arr[i] = ds(20.0, true);
+        }
         let lr = vec![lora("a", Some(21.0), LoRaWANAlarmState::Normal)];
         let entries = ordered_sensors(&ds_arr, &no_reports(), &lr);
         assert_eq!(entries.len(), 9);
@@ -1552,10 +1734,7 @@ mod wrap_tests {
 
     #[test]
     fn truncates_with_ellipsis_when_overflow() {
-        let lines = wrap_two_lines(
-            "AAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBCCCCCC",
-            21,
-        );
+        let lines = wrap_two_lines("AAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBCCCCCC", 21);
         assert_eq!(lines[0], "AAAAAAAAAAAAAAAAAAAAA");
         assert!(lines[1].ends_with('…'));
         assert_eq!(lines[1].chars().count(), 21);

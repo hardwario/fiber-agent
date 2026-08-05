@@ -127,13 +127,19 @@ pub fn read_config(
                 }
             };
             last_seq = dr.seq;
-            let ResponseKind::ConfigDump { page_index, page_count: pc, config } = dr.kind else {
+            let ResponseKind::ConfigDump {
+                page_index,
+                page_count: pc,
+                config,
+            } = dr.kind
+            else {
                 eprintln!(
                     "[sticker] {dev_eui}: expected ConfigDump for {chunk:?}, got {:?}",
                     dr.kind
                 );
                 if first_failure.is_none() {
-                    first_failure = Some("device answered something other than a ConfigDump".into());
+                    first_failure =
+                        Some("device answered something other than a ConfigDump".into());
                 }
                 failed_keys.extend(chunk.iter().map(|k| k.to_string()));
                 break;
@@ -192,9 +198,7 @@ pub fn read_info(
     let dr = handle.send_command(dev_eui, sc::build_get_info(), timeout)?;
     match dr.kind {
         ResponseKind::Info(info) => Ok((dr.seq, info)),
-        ResponseKind::Error { code, detail, .. } => {
-            Err(format!("device error {code}: {detail}"))
-        }
+        ResponseKind::Error { code, detail, .. } => Err(format!("device error {code}: {detail}")),
         other => Err(format!("expected Info, got {other:?}")),
     }
 }
@@ -208,9 +212,8 @@ pub const ACTION_SETTLE: Duration = Duration::from_secs(12);
 
 /// "Busy until" per dev_eui, for [`try_action_guard`].
 fn action_busy_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
-    static MAP: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
-    > = std::sync::OnceLock::new();
+    static MAP: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Instant>>> =
+        std::sync::OnceLock::new();
     MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -271,7 +274,9 @@ fn try_action_guard_at(
         ));
     }
     map.insert(dev_eui.to_string(), now + settle);
-    Ok(ActionGuard { dev_eui: dev_eui.to_string() })
+    Ok(ActionGuard {
+        dev_eui: dev_eui.to_string(),
+    })
 }
 
 /// Minimum spacing between unsigned `force_send` triggers for one device.
@@ -279,9 +284,8 @@ pub const FORCE_SEND_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// "Next allowed at" per dev_eui, for [`check_force_send_cooldown`].
 fn force_send_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, Instant>> {
-    static MAP: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Instant>>,
-    > = std::sync::OnceLock::new();
+    static MAP: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Instant>>> =
+        std::sync::OnceLock::new();
     MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -337,7 +341,10 @@ pub fn write_config(
         match try_action_guard(dev_eui) {
             Ok(g) => Some(g),
             Err(reason) => {
-                return Err(vec![ConfigError { key: "save".to_string(), reason }]);
+                return Err(vec![ConfigError {
+                    key: "save".to_string(),
+                    reason,
+                }]);
             }
         }
     } else {
@@ -368,7 +375,11 @@ pub fn write_config(
         }
     }
 
-    Ok(ConfigWrite { batches, all_ok, last_seq })
+    Ok(ConfigWrite {
+        batches,
+        all_ok,
+        last_seq,
+    })
 }
 
 /// Convenience: the result code for a single batch outcome — `"ok"` for an Ack
@@ -390,7 +401,10 @@ pub fn batch_result(outcome: &BatchOutcome) -> String {
 pub fn config_to_json(
     config: &BTreeMap<String, ConfigValue>,
 ) -> BTreeMap<String, serde_json::Value> {
-    config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect()
+    config
+        .iter()
+        .map(|(k, v)| (k.clone(), cv_to_json(v)))
+        .collect()
 }
 
 fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
@@ -525,7 +539,11 @@ impl std::fmt::Display for HistoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HistoryError::Transport(s) | HistoryError::Unexpected(s) => write!(f, "{s}"),
-            HistoryError::Device { code, fault_field, detail } => {
+            HistoryError::Device {
+                code,
+                fault_field,
+                detail,
+            } => {
                 write!(f, "{code}: {detail} (fault_field={fault_field})")
             }
         }
@@ -541,18 +559,28 @@ fn build_history_read(responses: Vec<DecodedResponse>) -> Result<HistoryRead, Hi
     let mut target: u32 = 0;
     for dr in responses {
         match dr.kind {
-            ResponseKind::HistoryFrame { frame_index, frame_count, records, .. } => {
+            ResponseKind::HistoryFrame {
+                frame_index,
+                frame_count,
+                records,
+                ..
+            } => {
                 // frame_count is a device estimate that can drift; keep the max.
                 target = target.max(frame_count.max(1));
-                by_index
-                    .entry(frame_index)
-                    .or_insert(HistoryPage { frame_index, frame_count, records });
+                by_index.entry(frame_index).or_insert(HistoryPage {
+                    frame_index,
+                    frame_count,
+                    records,
+                });
             }
             // The device may terminate the stream with an empty/no-body response.
             ResponseKind::Empty => {}
             // No history for the window is a typed error, not a failure: report it
             // as an empty-but-successful read so the caller stops waiting cleanly.
-            ResponseKind::Error { code: "history_unavailable", .. } => {
+            ResponseKind::Error {
+                code: "history_unavailable",
+                ..
+            } => {
                 return Ok(HistoryRead {
                     pages: Vec::new(),
                     missing_indices: Vec::new(),
@@ -560,8 +588,16 @@ fn build_history_read(responses: Vec<DecodedResponse>) -> Result<HistoryRead, Hi
                     unavailable: true,
                 });
             }
-            ResponseKind::Error { code, fault_field, detail } => {
-                return Err(HistoryError::Device { code, fault_field, detail });
+            ResponseKind::Error {
+                code,
+                fault_field,
+                detail,
+            } => {
+                return Err(HistoryError::Device {
+                    code,
+                    fault_field,
+                    detail,
+                });
             }
             other => {
                 return Err(HistoryError::Unexpected(format!(
@@ -573,7 +609,12 @@ fn build_history_read(responses: Vec<DecodedResponse>) -> Result<HistoryRead, Hi
     let missing_indices: Vec<u32> = (0..target).filter(|i| !by_index.contains_key(i)).collect();
     let complete = missing_indices.is_empty();
     let pages: Vec<HistoryPage> = by_index.into_values().collect();
-    Ok(HistoryRead { pages, missing_indices, complete, unavailable: false })
+    Ok(HistoryRead {
+        pages,
+        missing_indices,
+        complete,
+        unavailable: false,
+    })
 }
 
 /// Feature D: send ONE ReqHistory and collect the resulting HistoryFrame pages
@@ -623,7 +664,11 @@ mod tests {
             device_status: (1 << 0) | (1 << 11),
             lrw_state: None,
             dev_eui: None,
-            active_alarms: vec![ActiveAlarm { source: 0, quantity: 0, kind: 2 }],
+            active_alarms: vec![ActiveAlarm {
+                source: 0,
+                quantity: 0,
+                kind: 2,
+            }],
         }
     }
 
@@ -631,16 +676,34 @@ mod tests {
     fn info_to_json_never_leaks_the_claim_token() {
         // The claim token is a provisioning secret and this payload is published
         // RETAINED, so a single leak is replayed to every future subscriber.
-        let v = info_to_json(&device_info(), "70b3d57ed80051b2", "query", 12, "2026-07-28T19:00:00Z");
+        let v = info_to_json(
+            &device_info(),
+            "70b3d57ed80051b2",
+            "query",
+            12,
+            "2026-07-28T19:00:00Z",
+        );
         let text = v.to_string();
-        assert!(!text.contains("158a6a5d"), "claim token must never be published");
-        assert!(!text.contains("claim_token\":\""), "no claim_token value key");
+        assert!(
+            !text.contains("158a6a5d"),
+            "claim token must never be published"
+        );
+        assert!(
+            !text.contains("claim_token\":\""),
+            "no claim_token value key"
+        );
         assert_eq!(v["has_claim_token"], serde_json::json!(true));
     }
 
     #[test]
     fn info_to_json_shape_and_sentinels() {
-        let v = info_to_json(&device_info(), "70b3d57ed80051b2", "query", 12, "2026-07-28T19:00:00Z");
+        let v = info_to_json(
+            &device_info(),
+            "70b3d57ed80051b2",
+            "query",
+            12,
+            "2026-07-28T19:00:00Z",
+        );
         assert_eq!(v["dev_eui"], serde_json::json!("70b3d57ed80051b2"));
         assert_eq!(v["source"], serde_json::json!("query"));
         assert_eq!(v["fw_version"], serde_json::json!("1.4.0"));
@@ -704,11 +767,14 @@ mod tests {
         let eui = "guard00000000004";
         assert!(try_action_guard_at(eui, t0, Duration::from_secs(12)).is_ok());
         // Still inside the window: refused.
-        assert!(try_action_guard_at(eui, t0 + Duration::from_secs(11), Duration::from_secs(12))
-            .is_err());
+        assert!(
+            try_action_guard_at(eui, t0 + Duration::from_secs(11), Duration::from_secs(12))
+                .is_err()
+        );
         // Past the deferred action: allowed again.
-        assert!(try_action_guard_at(eui, t0 + Duration::from_secs(13), Duration::from_secs(12))
-            .is_ok());
+        assert!(
+            try_action_guard_at(eui, t0 + Duration::from_secs(13), Duration::from_secs(12)).is_ok()
+        );
     }
 
     #[test]
@@ -742,7 +808,11 @@ mod tests {
     fn err(code: &'static str) -> DecodedResponse {
         DecodedResponse {
             seq: 1,
-            kind: ResponseKind::Error { code, fault_field: 0, detail: "x".to_string() },
+            kind: ResponseKind::Error {
+                code,
+                fault_field: 0,
+                detail: "x".to_string(),
+            },
         }
     }
 
@@ -759,7 +829,13 @@ mod tests {
     fn device_error_preserves_stable_code() {
         let e = build_history_read(vec![err("not_ready")]).unwrap_err();
         assert_eq!(e.stable_code(), "not_ready");
-        assert!(matches!(e, HistoryError::Device { code: "not_ready", .. }));
+        assert!(matches!(
+            e,
+            HistoryError::Device {
+                code: "not_ready",
+                ..
+            }
+        ));
     }
 
     #[test]

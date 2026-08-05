@@ -67,7 +67,10 @@ impl MqttSubscriber {
 
         // Log command if audit enabled
         if self.audit_enabled {
-            eprintln!("[MQTT Subscriber] Received command on {}: {}", topic, json_str);
+            eprintln!(
+                "[MQTT Subscriber] Received command on {}: {}",
+                topic, json_str
+            );
         }
 
         // Extract command type from JSON
@@ -147,7 +150,8 @@ impl MqttSubscriber {
         if to_ts - from_ts > MAX_RANGE_SECS {
             return Err(format!(
                 "Range too large: {}s exceeds {}s",
-                to_ts - from_ts, MAX_RANGE_SECS,
+                to_ts - from_ts,
+                MAX_RANGE_SECS,
             ));
         }
 
@@ -160,7 +164,8 @@ impl MqttSubscriber {
                     .ok_or_else(|| "Invalid 'sensor_line' field".to_string())?;
                 if line > 7 {
                     return Err(format!(
-                        "Invalid sensor_line: {} (must be 0..=7 or null/omitted)", line
+                        "Invalid sensor_line: {} (must be 0..=7 or null/omitted)",
+                        line
                     ));
                 }
                 Some(line as u8)
@@ -183,7 +188,10 @@ impl MqttSubscriber {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing 'dev_eui' field".to_string())?;
         if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
         }
         Ok(dev_eui.to_lowercase())
     }
@@ -194,9 +202,9 @@ impl MqttSubscriber {
             None => Ok(None),
             Some(v) if v.is_null() => Ok(None),
             Some(v) => {
-                let n = v
-                    .as_u64()
-                    .ok_or_else(|| format!("Invalid '{}' field (expected unsigned integer)", field))?;
+                let n = v.as_u64().ok_or_else(|| {
+                    format!("Invalid '{}' field (expected unsigned integer)", field)
+                })?;
                 if n > u32::MAX as u64 {
                     return Err(format!("'{}' out of u32 range: {}", field, n));
                 }
@@ -213,7 +221,9 @@ impl MqttSubscriber {
             None => None,
             Some(v) if v.is_null() => None,
             Some(v) => {
-                let arr = v.as_array().ok_or_else(|| "'keys' must be an array".to_string())?;
+                let arr = v
+                    .as_array()
+                    .ok_or_else(|| "'keys' must be an array".to_string())?;
                 let mut out = Vec::with_capacity(arr.len());
                 for k in arr {
                     let s = k
@@ -254,7 +264,11 @@ impl MqttSubscriber {
                 return Err(format!("Invalid range: from ({}) must be <= to ({})", f, t));
             }
         }
-        Ok(MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix })
+        Ok(MqttCommand::GetStickerHistory {
+            dev_eui,
+            from_unix,
+            to_unix,
+        })
     }
 
     /// Parse set_threshold command
@@ -262,8 +276,7 @@ impl MqttSubscriber {
         let line = json
             .get("line")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| "Missing or invalid 'line' field".to_string())?
-            as u8;
+            .ok_or_else(|| "Missing or invalid 'line' field".to_string())? as u8;
 
         // Validate line number
         if line > 7 {
@@ -282,12 +295,7 @@ impl MqttSubscriber {
         let critical_high = Self::parse_temp(thresholds, "critical_high")?;
 
         // Validate threshold ordering (4-level: critical_low < warning_low < warning_high < critical_high)
-        self.validate_threshold_ordering(
-            critical_low,
-            warning_low,
-            warning_high,
-            critical_high,
-        )?;
+        self.validate_threshold_ordering(critical_low, warning_low, warning_high, critical_high)?;
 
         Ok(MqttCommand::SetSensorThreshold {
             line,
@@ -302,11 +310,10 @@ impl MqttSubscriber {
 
     /// Parse temperature value from JSON
     fn parse_temp(obj: &Value, field: &str) -> Result<f32, String> {
-        let temp = obj
-            .get(field)
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| format!("Missing or invalid '{}' field", field))?
-            as f32;
+        let temp =
+            obj.get(field)
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| format!("Missing or invalid '{}' field", field))? as f32;
 
         // Validate temperature range (-50°C to 100°C)
         if !(-50.0..=100.0).contains(&temp) {
@@ -353,8 +360,7 @@ impl MqttSubscriber {
         let line = json
             .get("line")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| "Missing or invalid 'line' field".to_string())?
-            as u8;
+            .ok_or_else(|| "Missing or invalid 'line' field".to_string())? as u8;
 
         if line > 7 {
             return Err(format!("Invalid line number: {} (must be 0-7)", line));
@@ -468,30 +474,36 @@ impl MqttSubscriber {
     /// { "command": "config_request", "command_type": "set_threshold", "params": {...} }
     #[cfg(feature = "dev-platform")]
     fn parse_config_request_dev(&self, json: &Value) -> Result<MqttCommand, String> {
-        let request_id = json.get("request_id")
+        let request_id = json
+            .get("request_id")
             .and_then(|v| v.as_str())
             .unwrap_or("dev-request")
             .to_string();
 
-        let command_type = json.get("command_type")
+        let command_type = json
+            .get("command_type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing 'command_type' field".to_string())?
             .to_string();
 
-        let params = json.get("params")
+        let params = json
+            .get("params")
             .ok_or_else(|| "Missing 'params' field".to_string())?
             .clone();
 
-        let reason = json.get("reason")
+        let reason = json
+            .get("reason")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let signer_id = json.get("signer_id")
+        let signer_id = json
+            .get("signer_id")
             .and_then(|v| v.as_str())
             .unwrap_or("dev-student")
             .to_string();
 
-        let timestamp = json.get("timestamp")
+        let timestamp = json
+            .get("timestamp")
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| {
                 std::time::SystemTime::now()
@@ -774,8 +786,7 @@ mod tests {
     #[test]
     fn test_parse_get_sticker_full_config() {
         let mut subscriber = MqttSubscriber::new(10, false);
-        let payload =
-            br#"{"command": "get_sticker_full_config", "dev_eui": "70B3D57ED80051B2"}"#;
+        let payload = br#"{"command": "get_sticker_full_config", "dev_eui": "70B3D57ED80051B2"}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
             MqttCommand::GetStickerFullConfig { dev_eui } => {
                 // Canonicalised to lowercase like every other sticker command,
@@ -821,7 +832,9 @@ mod tests {
     fn test_parse_get_sticker_info_rejects_bad_dev_eui() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_info", "dev_eui": "0102"}"#;
-        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        let err = subscriber
+            .parse_command("test/commands", payload)
+            .unwrap_err();
         assert!(err.contains("dev_eui"), "got {err:?}");
     }
 
@@ -829,7 +842,9 @@ mod tests {
     fn test_parse_get_sticker_config_rejects_bad_dev_eui() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_config", "dev_eui": "nothex"}"#;
-        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        let err = subscriber
+            .parse_command("test/commands", payload)
+            .unwrap_err();
         assert!(err.contains("dev_eui"));
     }
 
@@ -839,7 +854,11 @@ mod tests {
         let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
                            "from": 1000, "to": 2000}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix } => {
+            MqttCommand::GetStickerHistory {
+                dev_eui,
+                from_unix,
+                to_unix,
+            } => {
                 assert_eq!(dev_eui, "0102030405060708");
                 assert_eq!(from_unix, Some(1000));
                 assert_eq!(to_unix, Some(2000));
@@ -853,7 +872,9 @@ mod tests {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
                            "from": 2000, "to": 1000}"#;
-        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        let err = subscriber
+            .parse_command("test/commands", payload)
+            .unwrap_err();
         assert!(err.contains("Invalid range"));
     }
 
@@ -878,7 +899,9 @@ mod tests {
         assert!(result.is_ok());
 
         match result.unwrap() {
-            MqttCommand::SetSensorThreshold { line, critical_low, .. } => {
+            MqttCommand::SetSensorThreshold {
+                line, critical_low, ..
+            } => {
                 assert_eq!(line, 0);
                 assert_eq!(critical_low, 32.0);
             }
@@ -927,13 +950,21 @@ mod tests {
         assert!(result.is_ok());
 
         match result.unwrap() {
-            MqttCommand::SetSensorThreshold { line, critical_low, alarm_low, warning_low, warning_high, alarm_high, critical_high } => {
+            MqttCommand::SetSensorThreshold {
+                line,
+                critical_low,
+                alarm_low,
+                warning_low,
+                warning_high,
+                alarm_high,
+                critical_high,
+            } => {
                 assert_eq!(line, 2);
                 assert_eq!(critical_low, 18.0);
-                assert_eq!(alarm_low, 0.0);  // default
+                assert_eq!(alarm_low, 0.0); // default
                 assert_eq!(warning_low, 27.0);
                 assert_eq!(warning_high, 38.5);
-                assert_eq!(alarm_high, 100.0);  // default
+                assert_eq!(alarm_high, 100.0); // default
                 assert_eq!(critical_high, 41.0);
             }
             _ => panic!("Wrong command type"),
@@ -963,7 +994,12 @@ mod tests {
         }"#;
         let cmd = subscriber.parse_command("test/commands", payload).unwrap();
         match cmd {
-            MqttCommand::HistoryRequest { request_id, sensor_line, from_ts, to_ts } => {
+            MqttCommand::HistoryRequest {
+                request_id,
+                sensor_line,
+                from_ts,
+                to_ts,
+            } => {
                 assert_eq!(request_id, "abc-123");
                 assert_eq!(sensor_line, Some(3));
                 assert_eq!(from_ts, 1000);
@@ -1030,6 +1066,10 @@ mod tests {
             "to_ts": 60
         }"#;
         let err = subscriber.parse_command("t", payload).unwrap_err();
-        assert!(err.contains("Invalid sensor_line"), "unexpected error: {}", err);
+        assert!(
+            err.contains("Invalid sensor_line"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

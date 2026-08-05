@@ -29,13 +29,13 @@ use std::time::Duration;
 
 use crossbeam::channel::{self, Receiver, Sender};
 
+use crate::libs::display::SharedDisplayStateHandle;
 use ca_key::DeviceCaKey;
 use certificate::create_admin_certificate;
 use code::generate_pairing_code;
 use crypto::encrypt_private_key;
 use messages::EncryptedKeyResponse;
 use state::PairingStateMachine;
-use crate::libs::display::SharedDisplayStateHandle;
 
 /// Commands that can be sent to the pairing monitor
 #[derive(Debug)]
@@ -81,7 +81,9 @@ impl PairingHandle {
 
     /// Process an incoming pairing request
     pub fn process_request(&self, request: PairingRequest) {
-        let _ = self.command_tx.send(PairingCommand::ProcessRequest(request));
+        let _ = self
+            .command_tx
+            .send(PairingCommand::ProcessRequest(request));
     }
 
     /// Notify the pairing monitor that a BLE client is or is no longer connected.
@@ -125,10 +127,7 @@ impl PairingMonitor {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Load or generate CA key
         let ca_key = DeviceCaKey::load_or_generate(config_dir, &hostname)?;
-        eprintln!(
-            "[PairingMonitor] CA key loaded, ID: {}",
-            ca_key.ca_id()
-        );
+        eprintln!("[PairingMonitor] CA key loaded, ID: {}", ca_key.ca_id());
 
         // Create channels
         let (command_tx, command_rx) = channel::unbounded();
@@ -214,7 +213,13 @@ impl PairingMonitor {
                     Self::handle_cancel_pairing(&state, &display_state);
                 }
                 Ok(PairingCommand::ProcessRequest(request)) => {
-                    Self::handle_process_request(&state, &display_state, &ca_key, &result_tx, request);
+                    Self::handle_process_request(
+                        &state,
+                        &display_state,
+                        &ca_key,
+                        &result_tx,
+                        request,
+                    );
                 }
                 Ok(PairingCommand::SetBleActive(active)) => {
                     let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -317,11 +322,8 @@ impl PairingMonitor {
         let ca_private_key = ca_key.private_key_bytes();
 
         // Create certificate with CA's public key
-        let admin_certificate = create_admin_certificate(
-            &request.admin_username,
-            &ca_key.public_key_bytes(),
-            ca_key,
-        );
+        let admin_certificate =
+            create_admin_certificate(&request.admin_username, &ca_key.public_key_bytes(), ca_key);
 
         // Encrypt CA private key with pairing code
         let encrypted = match encrypt_private_key(&ca_private_key, &pairing_code) {
@@ -330,7 +332,8 @@ impl PairingMonitor {
                 eprintln!("[PairingMonitor] Encryption failed: {}", e);
                 let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
                 state_lock.complete();
-                let error = PairingError::new(request.request_id, "Internal error: encryption failed");
+                let error =
+                    PairingError::new(request.request_id, "Internal error: encryption failed");
                 let _ = result_tx.send(PairingResult::Error(error));
                 return;
             }
@@ -384,4 +387,4 @@ impl Drop for PairingMonitor {
 }
 
 // Re-exports for convenience
-pub use messages::{PairingRequest, PairingResponse, PairingError};
+pub use messages::{PairingError, PairingRequest, PairingResponse};

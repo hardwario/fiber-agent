@@ -33,7 +33,10 @@ pub struct Request {
 
 impl Request {
     pub fn new(cmd: Command) -> Self {
-        Request { v: PROTOCOL_VERSION, cmd }
+        Request {
+            v: PROTOCOL_VERSION,
+            cmd,
+        }
     }
 }
 
@@ -134,7 +137,11 @@ impl ConfigSetting {
             | ConfigSetting::BuzzerVolume { value }
                 if *value > 100 =>
             {
-                Some(format!("{} must be 0-100, got {}", self.audit_label(), value))
+                Some(format!(
+                    "{} must be 0-100, got {}",
+                    self.audit_label(),
+                    value
+                ))
             }
             ConfigSetting::SensorName { line, .. } | ConfigSetting::SensorLocation { line, .. }
                 if *line > 7 =>
@@ -209,14 +216,33 @@ pub struct Response {
 
 impl Response {
     pub fn ok(data: serde_json::Value) -> Self {
-        Response { ok: true, data, error: None, error_code: None }
+        Response {
+            ok: true,
+            data,
+            error: None,
+            error_code: None,
+        }
     }
     pub fn err(msg: impl Into<String>) -> Self {
-        Response { ok: false, data: serde_json::Value::Null, error: Some(msg.into()), error_code: None }
+        Response {
+            ok: false,
+            data: serde_json::Value::Null,
+            error: Some(msg.into()),
+            error_code: None,
+        }
     }
     /// Error with a stable code + optional structured detail (e.g. validation list).
-    pub fn err_coded(code: impl Into<String>, msg: impl Into<String>, data: serde_json::Value) -> Self {
-        Response { ok: false, data, error: Some(msg.into()), error_code: Some(code.into()) }
+    pub fn err_coded(
+        code: impl Into<String>,
+        msg: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Response {
+            ok: false,
+            data,
+            error: Some(msg.into()),
+            error_code: Some(code.into()),
+        }
     }
 }
 
@@ -239,7 +265,12 @@ mod tests {
         let back: Request = serde_json::from_str(&line).unwrap();
         assert_eq!(back.v, PROTOCOL_VERSION);
         match back.cmd {
-            Command::LorawanSetParam { dev_eui, save, force, fields } => {
+            Command::LorawanSetParam {
+                dev_eui,
+                save,
+                force,
+                fields,
+            } => {
                 assert_eq!(dev_eui, "5876070000000001");
                 assert!(save && force);
                 assert_eq!(fields["application.interval_report"], "600");

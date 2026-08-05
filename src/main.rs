@@ -1,16 +1,20 @@
 // FIBER Medical Thermometer main application
 
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::io;
-use std::fs;
-use rppal::gpio::Gpio;
-use fiber_app::{StmBridge, PowerMonitor, PowerStatus, AccelerometerMonitor, SensorMonitor, LedMonitor, Config, BuzzerController, DisplayMonitor, ButtonMonitor, MqttMonitor, PairingMonitor, LoRaWANMonitor, BleMonitor, spawn_ble_event_router, new_shared_provisioning_session};
-use fiber_app::libs::eye::EyeMonitor;
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
+use fiber_app::libs::config::LoRaWANConfig;
+use fiber_app::libs::eye::EyeMonitor;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
-use fiber_app::libs::config::LoRaWANConfig;
+use fiber_app::{
+    new_shared_provisioning_session, spawn_ble_event_router, AccelerometerMonitor, BleMonitor,
+    ButtonMonitor, BuzzerController, Config, DisplayMonitor, LedMonitor, LoRaWANMonitor,
+    MqttMonitor, PairingMonitor, PowerMonitor, PowerStatus, SensorMonitor, StmBridge,
+};
+use rppal::gpio::Gpio;
+use std::fs;
+use std::io;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Query the default BLE adapter for its MAC. Falls back to a placeholder if
 /// the adapter is unavailable (BLE disabled, bluetoothd down, etc.).
@@ -43,7 +47,10 @@ fn sync_app_version_to_yaml(path: &str, version: &str) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[main] sync_app_version_to_yaml: cannot read {}: {}", path, e);
+            eprintln!(
+                "[main] sync_app_version_to_yaml: cannot read {}: {}",
+                path, e
+            );
             return;
         }
     };
@@ -83,7 +90,10 @@ fn sync_app_version_to_yaml(path: &str, version: &str) {
     }
 
     if let Err(e) = fs::write(path, out) {
-        eprintln!("[main] sync_app_version_to_yaml: cannot write {}: {}", path, e);
+        eprintln!(
+            "[main] sync_app_version_to_yaml: cannot write {}: {}",
+            path, e
+        );
     } else {
         eprintln!("[main] Synced app_version={} to {}", version, path);
     }
@@ -113,7 +123,10 @@ fn main() -> io::Result<()> {
             cfg
         }
         Err(e) => {
-            eprintln!("[main] Warning: Failed to load /data/fiber/config/fiber.config.yaml: {}", e);
+            eprintln!(
+                "[main] Warning: Failed to load /data/fiber/config/fiber.config.yaml: {}",
+                e
+            );
             eprintln!("[main] Using default configuration");
             Config::default_config()
         }
@@ -167,7 +180,10 @@ fn main() -> io::Result<()> {
         }
         Err(e) => {
             eprintln!("[main] Failed to initialize GPIO: {}", e);
-            return Err(io::Error::new(io::ErrorKind::Other, format!("GPIO initialization failed: {}", e)));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("GPIO initialization failed: {}", e),
+            ));
         }
     };
 
@@ -242,7 +258,10 @@ fn main() -> io::Result<()> {
     // Shared screen idle-timeout (seconds; 0 = always on), seeded from config.
     // Held live so it can be changed at runtime (e.g. via MQTT) without a restart.
     let screen_timeout = Arc::new(AtomicU32::new(config.system.screen_timeout_secs));
-    eprintln!("[main] Screen timeout initialized at {}s", config.system.screen_timeout_secs);
+    eprintln!(
+        "[main] Screen timeout initialized at {}s",
+        config.system.screen_timeout_secs
+    );
 
     // Configured overview lines, seeded from the config we already parsed.
     // Empty means the built-in layout. Shared with the MQTT monitor so a pushed
@@ -252,13 +271,20 @@ fn main() -> io::Result<()> {
     if config.display.custom_lines.is_empty() {
         eprintln!("[main] Display: built-in overview layout (no custom lines configured)");
     } else {
-        eprintln!("[main] Display: {} custom overview lines configured", config.display.custom_lines.len());
+        eprintln!(
+            "[main] Display: {} custom overview lines configured",
+            config.display.custom_lines.len()
+        );
     }
 
     // Create and spawn display monitor thread
     eprintln!("[main] Starting display monitor...");
     // Get device label from config, defaulting to hostname
-    let device_label = config.system.device_label.clone().unwrap_or_else(|| hostname.clone());
+    let device_label = config
+        .system
+        .device_label
+        .clone()
+        .unwrap_or_else(|| hostname.clone());
     let _display_monitor = DisplayMonitor::new(
         led_state.clone(),
         gpio.clone(),
@@ -300,11 +326,17 @@ fn main() -> io::Result<()> {
     // Create shared buzzer volume (0 = muted, 1-100 = active)
     // Initialize from persisted config if available
     let buzzer_volume = Arc::new(AtomicU8::new(config.system.buzzer_volume));
-    eprintln!("[main] Buzzer volume initialized at {}%", config.system.buzzer_volume);
+    eprintln!(
+        "[main] Buzzer volume initialized at {}%",
+        config.system.buzzer_volume
+    );
 
     // Create buzzer controller for power monitoring alerts (with shared volume)
     eprintln!("[main] Initializing buzzer for power management...");
-    let power_buzzer = Arc::new(Mutex::new(BuzzerController::new_with_volume(gpio.clone(), buzzer_volume.clone())?));
+    let power_buzzer = Arc::new(Mutex::new(BuzzerController::new_with_volume(
+        gpio.clone(),
+        buzzer_volume.clone(),
+    )?));
 
     // Create buzzer priority manager for coordinating battery and sensor critical alarms
     eprintln!("[main] Initializing buzzer priority manager...");
@@ -333,7 +365,10 @@ fn main() -> io::Result<()> {
         Err(e) => {
             eprintln!("[main] Warning: Failed to initialize storage thread: {}", e);
             eprintln!("[main] Continuing without persistent storage");
-            return Err(io::Error::new(io::ErrorKind::Other, format!("Storage initialization failed: {}", e)));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Storage initialization failed: {}", e),
+            ));
         }
     };
 
@@ -350,7 +385,8 @@ fn main() -> io::Result<()> {
     let (export_handle_opt, _export_thread): (
         Option<fiber_app::libs::mqtt_export::ExportHandle>,
         Option<std::thread::JoinHandle<()>>,
-    ) = if config.mqtt
+    ) = if config
+        .mqtt
         .as_ref()
         .map(|m| m.export.enabled)
         .unwrap_or(false)
@@ -391,8 +427,7 @@ fn main() -> io::Result<()> {
                     // from here) — effectively for the lifetime of the process.
                     fut.await;
                 });
-            })
-        {
+            }) {
             Ok(h) => {
                 eprintln!("[main] mqtt_export thread spawned");
                 // Wait for the orchestrator to publish its handle. Short
@@ -423,10 +458,16 @@ fn main() -> io::Result<()> {
     // alarm evaluation, MQTT writes it on config changes, display reads it
     // for the thresholds / location pages.
     let lorawan_configs = fiber_app::libs::lorawan::create_shared_lorawan_sensor_configs(
-        config.lorawan.as_ref().map(|l| l.sensors.clone()).unwrap_or_default(),
+        config
+            .lorawan
+            .as_ref()
+            .map(|l| l.sensors.clone())
+            .unwrap_or_default(),
     );
-    eprintln!("[main] LoRa configs handle initialized with {} sensors",
-        lorawan_configs.read().map(|v| v.len()).unwrap_or(0));
+    eprintln!(
+        "[main] LoRa configs handle initialized with {} sensors",
+        lorawan_configs.read().map(|v| v.len()).unwrap_or(0)
+    );
 
     // Attach LoRa configs to display state
     {
@@ -483,7 +524,11 @@ fn main() -> io::Result<()> {
     let (_pairing_monitor, pairing_handle) = if mqtt_handle.is_some() {
         eprintln!("[main] Starting pairing monitor...");
         let config_dir = std::path::Path::new("/data/fiber/config");
-        match PairingMonitor::new(hostname.clone(), config_dir, _display_monitor.display_state.clone()) {
+        match PairingMonitor::new(
+            hostname.clone(),
+            config_dir,
+            _display_monitor.display_state.clone(),
+        ) {
             Ok(monitor) => {
                 eprintln!("[main] Pairing monitor started");
                 let handle = monitor.handle();
@@ -619,11 +664,23 @@ fn main() -> io::Result<()> {
         power_status.clone(),
         mqtt_sender,
     )?;
-    eprintln!("[main] Power monitor started (interval: {}ms)", config.power.update_interval_ms);
+    eprintln!(
+        "[main] Power monitor started (interval: {}ms)",
+        config.power.update_interval_ms
+    );
 
     // Create and spawn sensor monitoring thread (pass MQTT handle)
     eprintln!("[main] Starting sensor monitor...");
-    let _sensor_monitor = match SensorMonitor::new(config.sensors, stm_guard.clone(), led_state.clone(), power_buzzer.clone(), sensor_state.clone(), buzzer_priority_manager.clone(), mqtt_handle.clone(), Some(storage_handle.clone())) {
+    let _sensor_monitor = match SensorMonitor::new(
+        config.sensors,
+        stm_guard.clone(),
+        led_state.clone(),
+        power_buzzer.clone(),
+        sensor_state.clone(),
+        buzzer_priority_manager.clone(),
+        mqtt_handle.clone(),
+        Some(storage_handle.clone()),
+    ) {
         Ok(monitor) => {
             eprintln!("[main] Sensor monitor started");
             Some(monitor)
@@ -677,7 +734,11 @@ fn main() -> io::Result<()> {
         ) {
             Ok(monitor) => {
                 // Set LoRaWAN gateway flag and shared state in display state
-                let gateway_present = monitor.state.read().map(|s| s.gateway_present).unwrap_or(false);
+                let gateway_present = monitor
+                    .state
+                    .read()
+                    .map(|s| s.gateway_present)
+                    .unwrap_or(false);
                 if let Ok(mut state) = _display_monitor.display_state.lock() {
                     state.lorawan_state = Some(monitor.state.clone());
                     if gateway_present {
@@ -702,7 +763,9 @@ fn main() -> io::Result<()> {
     };
 
     // Wire LoRaWAN state into MQTT monitor now that both exist.
-    if let (Some(ref mqtt_mon), Some(ref lr_mon)) = (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref()) {
+    if let (Some(ref mqtt_mon), Some(ref lr_mon)) =
+        (_mqtt_monitor.as_ref(), _lorawan_monitor.as_ref())
+    {
         mqtt_mon.set_lorawan_state(lr_mon.state.clone());
         mqtt_mon.set_lorawan_handle(lr_mon.handle());
     }
@@ -791,7 +854,10 @@ fn main() -> io::Result<()> {
         eprintln!("[main] Shutdown signal received");
         shutdown_signal_handler.store(true, Ordering::SeqCst);
     }) {
-        eprintln!("[main] WARN: failed to install signal handler: {} — shutdown will be ungraceful", e);
+        eprintln!(
+            "[main] WARN: failed to install signal handler: {} — shutdown will be ungraceful",
+            e
+        );
     }
 
     // Wait for signal — background monitors do all the work.

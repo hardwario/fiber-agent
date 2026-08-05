@@ -106,7 +106,9 @@ fn sleep_interruptible(total: Duration, shutdown: &AtomicBool) {
 /// invariant that a partial write could turn into something unsafe, so resuming
 /// with it is both correct and strictly better than dropping the UI.
 pub fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Read-lock an `RwLock`, recovering the guard if it is poisoned.
@@ -125,7 +127,8 @@ pub fn read_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
 /// one stale frame, but a skipped *write* means the update never lands at all,
 /// silently and for the rest of the process's life.
 pub fn write_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock.write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -298,6 +301,10 @@ mod tests {
 
         assert!(lock.write().is_err(), "precondition: lock is poisoned");
         write_recover(&lock).push(4);
-        assert_eq!(*read_recover(&lock), vec![1, 2, 3, 4], "the write must land");
+        assert_eq!(
+            *read_recover(&lock),
+            vec![1, 2, 3, 4],
+            "the write must land"
+        );
     }
 }

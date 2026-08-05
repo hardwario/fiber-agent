@@ -21,7 +21,10 @@ pub enum CryptoError {
     SignerDisabled(String),
 
     /// Permission denied for this operation
-    PermissionDenied { signer_id: String, required_permission: String },
+    PermissionDenied {
+        signer_id: String,
+        required_permission: String,
+    },
 
     /// Timestamp is outside valid range
     TimestampOutOfRange { timestamp: i64, drift_sec: i64 },
@@ -36,7 +39,10 @@ pub enum CryptoError {
     NonceDatabaseError(String),
 
     /// Signer certificate has expired
-    SignerExpired { signer_id: String, expired_at: String },
+    SignerExpired {
+        signer_id: String,
+        expired_at: String,
+    },
 
     /// Invalid configuration
     InvalidConfiguration(String),
@@ -60,14 +66,20 @@ impl fmt::Display for CryptoError {
             CryptoError::SignerDisabled(signer_id) => {
                 write!(f, "Signer is disabled: {}", signer_id)
             }
-            CryptoError::PermissionDenied { signer_id, required_permission } => {
+            CryptoError::PermissionDenied {
+                signer_id,
+                required_permission,
+            } => {
                 write!(
                     f,
                     "Permission denied: signer '{}' lacks permission '{}'",
                     signer_id, required_permission
                 )
             }
-            CryptoError::TimestampOutOfRange { timestamp, drift_sec } => {
+            CryptoError::TimestampOutOfRange {
+                timestamp,
+                drift_sec,
+            } => {
                 write!(
                     f,
                     "Timestamp {} is outside valid range (±{}s)",
@@ -83,8 +95,15 @@ impl fmt::Display for CryptoError {
             CryptoError::NonceDatabaseError(msg) => {
                 write!(f, "Nonce database error: {}", msg)
             }
-            CryptoError::SignerExpired { signer_id, expired_at } => {
-                write!(f, "Signer '{}' certificate expired at {}", signer_id, expired_at)
+            CryptoError::SignerExpired {
+                signer_id,
+                expired_at,
+            } => {
+                write!(
+                    f,
+                    "Signer '{}' certificate expired at {}",
+                    signer_id, expired_at
+                )
             }
             CryptoError::InvalidConfiguration(msg) => {
                 write!(f, "Invalid configuration: {}", msg)

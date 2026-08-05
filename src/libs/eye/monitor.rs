@@ -156,7 +156,12 @@ async fn run_scan_recovery(rung: u8, adapter: &str) {
                 "rfkill block bluetooth; sleep 0.3; rfkill unblock bluetooth; \
                  sleep 0.3; hciconfig {adapter} reset"
             );
-            match tokio::process::Command::new("sh").arg("-c").arg(&script).status().await {
+            match tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .status()
+                .await
+            {
                 Ok(st) if st.success() => eprintln!("[EYE Monitor] rung 0 done"),
                 Ok(st) => eprintln!("[EYE Monitor] rung 0 exited {st}"),
                 Err(e) => eprintln!("[EYE Monitor] rung 0 failed to run: {e}"),
@@ -247,7 +252,15 @@ impl EyeMonitor {
         let config_clone = shared_config.clone();
 
         let thread_handle = thread::spawn(move || {
-            eye_loop(shutdown_clone, state_clone, config_clone, mqtt_tx, hostname, storage, db_path);
+            eye_loop(
+                shutdown_clone,
+                state_clone,
+                config_clone,
+                mqtt_tx,
+                hostname,
+                storage,
+                db_path,
+            );
         });
 
         eprintln!("[EYE Monitor] Started");
@@ -883,9 +896,10 @@ async fn run_recorder_job(
     match job {
         EyeJob::EnableRecording { interval_s } => {
             let m = mac.to_string();
-            let res =
-                tokio::task::spawn_blocking(move || en12830::enable_recording(&m, interval_s, now_u32))
-                    .await;
+            let res = tokio::task::spawn_blocking(move || {
+                en12830::enable_recording(&m, interval_s, now_u32)
+            })
+            .await;
             match res {
                 Ok(Ok(())) => {
                     eprintln!("[EYE Monitor] Recording enabled on {mac} ({interval_s}s interval)");
@@ -923,7 +937,10 @@ async fn run_recorder_job(
                 Err(e) => eprintln!("[EYE Monitor] stop_recording {mac} task error: {e}"),
             }
         }
-        EyeJob::Download { since_ts, interval_s } => {
+        EyeJob::Download {
+            since_ts,
+            interval_s,
+        } => {
             let m = mac.to_string();
             let res = tokio::task::spawn_blocking(move || {
                 en12830::download_since(&m, since_ts, interval_s, now_u32)
@@ -1272,8 +1289,14 @@ mod tests {
     fn recovery_respects_its_cooldown() {
         // A rung takes seconds to land and the controller needs time to resume,
         // so a second attempt inside the cooldown would stack resets.
-        assert_eq!(stall_action(STALL, Some(RECOVERY_COOLDOWN_SECS - 1), 0), None);
-        assert_eq!(stall_action(STALL, Some(RECOVERY_COOLDOWN_SECS), 0), Some(0));
+        assert_eq!(
+            stall_action(STALL, Some(RECOVERY_COOLDOWN_SECS - 1), 0),
+            None
+        );
+        assert_eq!(
+            stall_action(STALL, Some(RECOVERY_COOLDOWN_SECS), 0),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1289,17 +1312,33 @@ mod tests {
         // One D-Bus timeout is not evidence of a wedged controller.
         let limit = START_DISCOVERY_FAILURE_LIMIT;
         for n in 0..limit {
-            assert_eq!(start_discovery_recovery_rung(n, limit, true, 3, 0), None, "n={n}");
+            assert_eq!(
+                start_discovery_recovery_rung(n, limit, true, 3, 0),
+                None,
+                "n={n}"
+            );
         }
-        assert_eq!(start_discovery_recovery_rung(limit, limit, true, 3, 0), Some(0));
-        assert_eq!(start_discovery_recovery_rung(limit, limit, true, 3, 1), Some(1));
+        assert_eq!(
+            start_discovery_recovery_rung(limit, limit, true, 3, 0),
+            Some(0)
+        );
+        assert_eq!(
+            start_discovery_recovery_rung(limit, limit, true, 3, 1),
+            Some(1)
+        );
     }
 
     #[test]
     fn start_discovery_recovery_also_spares_a_gateway_with_nothing_to_hear() {
         let limit = START_DISCOVERY_FAILURE_LIMIT;
-        assert_eq!(start_discovery_recovery_rung(limit * 10, limit, true, 0, 0), None);
-        assert_eq!(start_discovery_recovery_rung(limit * 10, limit, false, 3, 0), None);
+        assert_eq!(
+            start_discovery_recovery_rung(limit * 10, limit, true, 0, 0),
+            None
+        );
+        assert_eq!(
+            start_discovery_recovery_rung(limit * 10, limit, false, 3, 0),
+            None
+        );
     }
 
     #[test]
@@ -1330,12 +1369,26 @@ mod tests {
         assert!(macs.contains("AA:BB:CC:DD:EE:02"));
 
         let owned = out.iter().find(|t| t.mac.ends_with(":01")).unwrap();
-        assert_eq!(owned.name.as_deref(), Some("mine"), "own tag keeps its profile");
-        assert_eq!(owned.recording, None, "own tag still inherits recording_enabled");
+        assert_eq!(
+            owned.name.as_deref(),
+            Some("mine"),
+            "own tag keeps its profile"
+        );
+        assert_eq!(
+            owned.recording, None,
+            "own tag still inherits recording_enabled"
+        );
 
         let borrowed = out.iter().find(|t| t.mac.ends_with(":02")).unwrap();
-        assert_eq!(borrowed.recording, Some(false), "a borrowed tag must not be recorded");
-        assert!(borrowed.field_thresholds.is_empty(), "a borrowed tag must not alarm");
+        assert_eq!(
+            borrowed.recording,
+            Some(false),
+            "a borrowed tag must not be recorded"
+        );
+        assert!(
+            borrowed.field_thresholds.is_empty(),
+            "a borrowed tag must not alarm"
+        );
     }
 
     #[test]
@@ -1354,12 +1407,22 @@ mod tests {
             provisioned: None,
         });
         let none: HashSet<String> = HashSet::new();
-        assert!(audible_tags(&config, &none).is_empty(), "disabled and unknown => silent");
+        assert!(
+            audible_tags(&config, &none).is_empty(),
+            "disabled and unknown => silent"
+        );
 
-        let known: HashSet<String> = ["AA:BB:CC:DD:EE:03"].iter().map(|s| s.to_string()).collect();
+        let known: HashSet<String> = ["AA:BB:CC:DD:EE:03"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let out = audible_tags(&config, &known);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].recording, Some(false), "re-added as borrowed, not as owned");
+        assert_eq!(
+            out[0].recording,
+            Some(false),
+            "re-added as borrowed, not as owned"
+        );
         assert!(out[0].name.is_none());
     }
 

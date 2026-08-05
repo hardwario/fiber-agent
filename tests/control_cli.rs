@@ -19,7 +19,11 @@ use std::sync::Mutex;
 
 fn start_server() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("control.sock").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("control.sock")
+        .to_string_lossy()
+        .to_string();
     let mut config = Config::default_config();
     if let Some(mqtt) = config.mqtt.as_mut() {
         mqtt.broker.password = Some("e2e-secret-password".to_string());
@@ -37,7 +41,11 @@ fn start_server() -> (tempfile::TempDir, String) {
     conn.lock().unwrap().set_state(ConnectionState::Connected);
     // Wire a real ConfigApplier on a config file in the same tempdir so e2e
     // `config set` actually applies (tests read it back via the returned dir).
-    std::fs::write(dir.path().join("fiber.config.yaml"), "system:\n  device_label: \"OLD\"\n").unwrap();
+    std::fs::write(
+        dir.path().join("fiber.config.yaml"),
+        "system:\n  device_label: \"OLD\"\n",
+    )
+    .unwrap();
     let ctx = ctx
         .with_mqtt_connection(conn)
         .with_config_applier(Arc::new(ConfigApplier::new(dir.path()).unwrap()));
@@ -67,7 +75,11 @@ fn fiberctl_status() {
     let (_d, sock) = start_server();
     let out = fiberctl(&sock, &["status"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(stdout.contains("1.2.3-test"), "stdout: {stdout}");
     assert!(stdout.contains("lorawan"), "stdout: {stdout}");
 }
@@ -97,7 +109,10 @@ fn fiberctl_config_show_does_not_leak_secret() {
     let out = fiberctl(&sock, &["config", "show"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(!stdout.contains("e2e-secret-password"), "secret leaked to CLI output");
+    assert!(
+        !stdout.contains("e2e-secret-password"),
+        "secret leaked to CLI output"
+    );
 }
 
 #[test]
@@ -114,7 +129,13 @@ fn fiberctl_set_param_save_requires_force() {
     let (_d, sock) = start_server();
     let out = fiberctl(
         &sock,
-        &["lorawan", "set-param", "5876070000000001", "application.interval_report=600", "--save"],
+        &[
+            "lorawan",
+            "set-param",
+            "5876070000000001",
+            "application.interval_report=600",
+            "--save",
+        ],
     );
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -127,14 +148,20 @@ fn fiberctl_send_without_device_reports_disabled() {
     let out = fiberctl(&sock, &["lorawan", "send", "5876070000000001", "get-info"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("LoRaWAN is not enabled"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("LoRaWAN is not enabled"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
 fn fiberctl_bad_field_syntax_fails_client_side() {
     let (_d, sock) = start_server();
     // missing '=' → client-side parse error, exit code 2, no socket round-trip
-    let out = fiberctl(&sock, &["lorawan", "set-param", "dev", "interval_report600"]);
+    let out = fiberctl(
+        &sock,
+        &["lorawan", "set-param", "dev", "interval_report600"],
+    );
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("key=value"), "stderr: {stderr}");
@@ -162,7 +189,11 @@ fn fiberctl_sensors_read() {
 fn fiberctl_mqtt_status() {
     let (_d, sock) = start_server();
     let out = fiberctl(&sock, &["--json", "mqtt", "status"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["data"]["connected"], true);
     assert_eq!(v["data"]["state"], "connected");
@@ -179,7 +210,10 @@ fn fiberctl_config_set_requires_force() {
 #[test]
 fn fiberctl_config_set_rejects_out_of_range() {
     let (_d, sock) = start_server();
-    let out = fiberctl(&sock, &["config", "set", "led-brightness", "250", "--force"]);
+    let out = fiberctl(
+        &sock,
+        &["config", "set", "led-brightness", "250", "--force"],
+    );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("0-100"));
 }
@@ -188,18 +222,35 @@ fn fiberctl_config_set_rejects_out_of_range() {
 fn fiberctl_config_set_applies_to_real_config() {
     // --force AFTER the setting; real applier wired -> the file is updated.
     let (d, sock) = start_server();
-    let out = fiberctl(&sock, &["config", "set", "device-label", "Ward 9", "--force"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = fiberctl(
+        &sock,
+        &["config", "set", "device-label", "Ward 9", "--force"],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let c = std::fs::read_to_string(d.path().join("fiber.config.yaml")).unwrap();
-    assert!(c.contains("Ward 9") && !c.contains("OLD"), "config not updated: {c}");
+    assert!(
+        c.contains("Ward 9") && !c.contains("OLD"),
+        "config not updated: {c}"
+    );
 }
 
 #[test]
 fn fiberctl_config_set_force_before_setting_also_works() {
     // --force BEFORE the setting (global flag) parses and applies too.
     let (d, sock) = start_server();
-    let out = fiberctl(&sock, &["config", "set", "--force", "device-label", "Bay 2"]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = fiberctl(
+        &sock,
+        &["config", "set", "--force", "device-label", "Bay 2"],
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let c = std::fs::read_to_string(d.path().join("fiber.config.yaml")).unwrap();
     assert!(c.contains("Bay 2"), "config not updated: {c}");
 }

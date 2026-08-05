@@ -52,14 +52,29 @@ impl UserCertificate {
         use std::collections::BTreeMap;
 
         let mut map: BTreeMap<&str, serde_json::Value> = BTreeMap::new();
-        map.insert("expires_at", serde_json::Value::String(self.expires_at.clone()));
-        map.insert("full_name", serde_json::Value::String(self.full_name.clone()));
-        map.insert("issued_at", serde_json::Value::String(self.issued_at.clone()));
+        map.insert(
+            "expires_at",
+            serde_json::Value::String(self.expires_at.clone()),
+        );
+        map.insert(
+            "full_name",
+            serde_json::Value::String(self.full_name.clone()),
+        );
+        map.insert(
+            "issued_at",
+            serde_json::Value::String(self.issued_at.clone()),
+        );
         map.insert("issuer", serde_json::Value::String(self.issuer.clone()));
         map.insert("permissions", serde_json::json!(self.permissions));
-        map.insert("public_key_ed25519", serde_json::Value::String(self.public_key_ed25519.clone()));
+        map.insert(
+            "public_key_ed25519",
+            serde_json::Value::String(self.public_key_ed25519.clone()),
+        );
         map.insert("role", serde_json::Value::String(self.role.clone()));
-        map.insert("signer_id", serde_json::Value::String(self.signer_id.clone()));
+        map.insert(
+            "signer_id",
+            serde_json::Value::String(self.signer_id.clone()),
+        );
 
         serde_json::to_string(&map).unwrap()
     }
@@ -98,7 +113,9 @@ impl UserCertificate {
                 .try_into()
                 .map_err(|_| CryptoError::InvalidPublicKey("Failed to convert to array".into()))?,
         )
-        .map_err(|e| CryptoError::InvalidPublicKey(format!("Invalid CA Ed25519 public key: {}", e)))?;
+        .map_err(|e| {
+            CryptoError::InvalidPublicKey(format!("Invalid CA Ed25519 public key: {}", e))
+        })?;
 
         // 2. Decode certificate signature from base64
         let signature_bytes = general_purpose::STANDARD
@@ -161,8 +178,9 @@ impl UserCertificate {
     /// Get the user's verifying key
     pub fn get_verifying_key(&self) -> Result<VerifyingKey, CryptoError> {
         let key_bytes = self.get_public_key_bytes()?;
-        VerifyingKey::from_bytes(&key_bytes)
-            .map_err(|e| CryptoError::InvalidPublicKey(format!("Invalid Ed25519 public key: {}", e)))
+        VerifyingKey::from_bytes(&key_bytes).map_err(|e| {
+            CryptoError::InvalidPublicKey(format!("Invalid Ed25519 public key: {}", e))
+        })
     }
 }
 

@@ -191,7 +191,11 @@ mod tests {
         signal.request();
         signal.mark_blanked();
         signal.cancel();
-        assert_eq!(signal.state(), LIVE, "a device that stays on must not stay dark");
+        assert_eq!(
+            signal.state(),
+            LIVE,
+            "a device that stays on must not stay dark"
+        );
     }
 
     #[test]

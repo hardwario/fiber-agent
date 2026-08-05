@@ -28,19 +28,19 @@ pub enum MqttMessage {
 
     /// Publish a system-level alarm event (power, wifi, ethernet)
     PublishSystemAlarmEvent {
-        alarm_type: String,     // "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT"
-        name: String,           // "Power Supply", "WiFi", "Ethernet"
-        from_state: String,     // "NORMAL" or "CRITICAL"
-        to_state: String,       // "CRITICAL" or "NORMAL"
-        message: String,        // Human-readable message
+        alarm_type: String, // "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT"
+        name: String,       // "Power Supply", "WiFi", "Ethernet"
+        from_state: String, // "NORMAL" or "CRITICAL"
+        to_state: String,   // "CRITICAL" or "NORMAL"
+        message: String,    // Human-readable message
     },
 
     /// Publish an accelerometer motion transition event
     PublishAccelerometerEvent {
-        x_g: f32,       // X-axis acceleration at transition (g)
-        y_g: f32,       // Y-axis acceleration at transition (g)
-        z_g: f32,       // Z-axis acceleration at transition (g)
-        position: u8,   // Box orientation 1..6 (see MotionDetector::position)
+        x_g: f32,     // X-axis acceleration at transition (g)
+        y_g: f32,     // Y-axis acceleration at transition (g)
+        z_g: f32,     // Z-axis acceleration at transition (g)
+        position: u8, // Box orientation 1..6 (see MotionDetector::position)
     },
 
     /// Publish combined system status (power, network, storage, uptime)
@@ -109,9 +109,7 @@ pub enum MqttMessage {
     },
 
     /// Publish sensor configuration data
-    PublishSensorConfig {
-        sensors: Vec<SensorConfigData>,
-    },
+    PublishSensorConfig { sensors: Vec<SensorConfigData> },
 
     /// Publish interval configuration data
     PublishIntervalConfig {
@@ -136,9 +134,7 @@ pub enum MqttMessage {
     },
 
     /// Publish LoRaWAN sensor data
-    PublishLoRaWANSensorData {
-        sensors: Vec<LoRaWANSensorPayload>,
-    },
+    PublishLoRaWANSensorData { sensors: Vec<LoRaWANSensorPayload> },
 
     /// Publish external LoRaWAN gateway status
     PublishLoRaWANGatewayData {
@@ -187,17 +183,12 @@ pub enum MqttMessage {
     /// `source` says which. `info` is already projected by
     /// `sticker_config::info_to_json` with `claim_token` redacted — never build
     /// this payload by hand.
-    PublishStickerInfo {
-        dev_eui: String,
-        info: Value,
-    },
+    PublishStickerInfo { dev_eui: String, info: Value },
 
     /// Clear the retained device-info of a decommissioned sticker (#65). Sent when
     /// a sticker is removed: without it the broker keeps replaying a deleted
     /// device's info to every new subscriber.
-    ClearStickerInfo {
-        dev_eui: String,
-    },
+    ClearStickerInfo { dev_eui: String },
 
     /// Publish the outcome of a STICKER control command (#71) to
     /// `lorawan/sensors/<dev_eui>/command`. Not retained — it is the result of one
@@ -229,9 +220,7 @@ pub enum MqttMessage {
     },
 
     /// Publish EYE BLE tag sensor data
-    PublishEyeSensorData {
-        tags: Vec<EyeTagPayload>,
-    },
+    PublishEyeSensorData { tags: Vec<EyeTagPayload> },
 
     /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
     /// `is_en12830` is `None` when the probe was inconclusive; `status` is
@@ -381,10 +370,14 @@ pub enum MqttCommand {
     },
 
     /// Get current sensor status
-    GetSensorStatus { line: u8 },
+    GetSensorStatus {
+        line: u8,
+    },
 
     /// Switch display screen
-    SetDisplayScreen { screen: String },
+    SetDisplayScreen {
+        screen: String,
+    },
 
     /// Flush storage to disk
     FlushStorage,
@@ -396,10 +389,16 @@ pub enum MqttCommand {
     GetSensorConfig,
 
     /// Set sensor name (signed via ConfigRequest)
-    SetSensorName { line: u8, name: String },
+    SetSensorName {
+        line: u8,
+        name: String,
+    },
 
     /// Set sensor probe location (signed via ConfigRequest)
-    SetSensorLocation { line: u8, location: String },
+    SetSensorLocation {
+        line: u8,
+        location: String,
+    },
 
     /// Reboot the device at OS level. Unlike `PowerOffDevice` the unit comes
     /// back on its own, but the interruption is a gap in monitoring either way,
@@ -482,8 +481,8 @@ pub enum MqttCommand {
 
     /// Set network configuration (signed via ConfigRequest)
     SetNetworkConfig {
-        interface: String,      // "ethernet" or "wifi"
-        config_type: String,    // "dhcp" or "static"
+        interface: String,   // "ethernet" or "wifi"
+        config_type: String, // "dhcp" or "static"
         ip_address: Option<String>,
         subnet_mask: Option<String>,
         gateway: Option<String>,
@@ -716,10 +715,14 @@ pub enum MqttCommand {
     },
 
     /// Add signer (signed via ConfigRequest)
-    AddSigner { signer_data: Value },
+    AddSigner {
+        signer_data: Value,
+    },
 
     /// Remove signer (signed via ConfigRequest)
-    RemoveSigner { signer_id: String },
+    RemoveSigner {
+        signer_id: String,
+    },
 
     /// Update signer (signed via ConfigRequest)
     UpdateSigner {
@@ -828,26 +831,38 @@ impl MqttCommand {
     /// stringified for the fPort-85 engine's typed parser.
     /// Validate a sticker `dev_eui` out of a signed command's `params`.
     fn params_dev_eui(params: &Value) -> Result<String, String> {
-        let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).ok_or("Missing dev_eui")?;
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
         if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
         }
         Ok(dev_eui.to_lowercase())
     }
 
     /// Parse `sticker_reboot` (#71).
     pub fn parse_sticker_reboot(params: &Value) -> Result<MqttCommand, String> {
-        Ok(MqttCommand::StickerReboot { dev_eui: Self::params_dev_eui(params)? })
+        Ok(MqttCommand::StickerReboot {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
     }
 
     /// Parse `sticker_device_reset` (#71).
     pub fn parse_sticker_device_reset(params: &Value) -> Result<MqttCommand, String> {
-        Ok(MqttCommand::StickerDeviceReset { dev_eui: Self::params_dev_eui(params)? })
+        Ok(MqttCommand::StickerDeviceReset {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
     }
 
     /// Parse `sticker_force_send` (#71).
     pub fn parse_sticker_force_send(params: &Value) -> Result<MqttCommand, String> {
-        Ok(MqttCommand::StickerForceSend { dev_eui: Self::params_dev_eui(params)? })
+        Ok(MqttCommand::StickerForceSend {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
     }
 
     /// Parse `sticker_reset_counters` (#71).
@@ -929,7 +944,9 @@ impl MqttCommand {
             None => None,
             Some(v) if v.is_null() => None,
             Some(v) => {
-                let n = v.as_u64().ok_or_else(|| "'unix_time' must be a number".to_string())?;
+                let n = v
+                    .as_u64()
+                    .ok_or_else(|| "'unix_time' must be a number".to_string())?;
                 if !(CLOCK_MIN..=CLOCK_MAX).contains(&n) {
                     return Err(format!(
                         "unix_time {n} outside the firmware's accepted range \
@@ -948,7 +965,10 @@ impl MqttCommand {
             .and_then(|v| v.as_str())
             .ok_or("Missing dev_eui")?;
         if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
         }
         let config_obj = params
             .get("config")
@@ -972,7 +992,10 @@ impl MqttCommand {
         if fields.is_empty() {
             return Err("config must contain at least one key".to_string());
         }
-        let save = params.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
+        let save = params
+            .get("save")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         Ok(MqttCommand::SetStickerConfig {
             dev_eui: dev_eui.to_lowercase(),
             fields,
@@ -989,7 +1012,10 @@ impl MqttCommand {
             .and_then(|v| v.as_str())
             .ok_or("Missing dev_eui")?;
         if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
         }
         let hex_str = params
             .get("hex")
@@ -1001,7 +1027,10 @@ impl MqttCommand {
             return Err("hex must contain at least one byte".to_string());
         }
         if bytes.len() > 51 {
-            return Err(format!("raw downlink too large: {} bytes (max 51)", bytes.len()));
+            return Err(format!(
+                "raw downlink too large: {} bytes (max 51)",
+                bytes.len()
+            ));
         }
         let fport = match params.get("fport") {
             None => 85u8,
@@ -1065,17 +1094,27 @@ mod tests {
     #[test]
     fn sticker_commands_have_names() {
         assert_eq!(
-            MqttCommand::GetStickerConfig { dev_eui: "0102030405060708".into(), keys: None }.name(),
+            MqttCommand::GetStickerConfig {
+                dev_eui: "0102030405060708".into(),
+                keys: None
+            }
+            .name(),
             "get_sticker_config"
         );
         // The viewer sends this literal string and subscribes to the matching
         // "/full-config" topic; a rename here silently dead-ends its read.
         assert_eq!(
-            MqttCommand::GetStickerFullConfig { dev_eui: "0102030405060708".into() }.name(),
+            MqttCommand::GetStickerFullConfig {
+                dev_eui: "0102030405060708".into()
+            }
+            .name(),
             "get_sticker_full_config"
         );
         let mut fields = BTreeMap::new();
-        fields.insert("application.interval_report".to_string(), "1200".to_string());
+        fields.insert(
+            "application.interval_report".to_string(),
+            "1200".to_string(),
+        );
         assert_eq!(
             MqttCommand::SetStickerConfig {
                 dev_eui: "0102030405060708".into(),
@@ -1129,7 +1168,10 @@ mod tests {
                 input_b,
             } => {
                 assert_eq!(dev_eui, "70b3d57ed80051b2");
-                assert_eq!((hall_left, hall_right, input_a, input_b), (true, false, false, true));
+                assert_eq!(
+                    (hall_left, hall_right, input_a, input_b),
+                    (true, false, false, true)
+                );
             }
             other => panic!("wrong command: {}", other.name()),
         }
@@ -1139,8 +1181,17 @@ mod tests {
         }))
         .unwrap()
         {
-            MqttCommand::StickerResetCounters { hall_left, hall_right, input_a, input_b, .. } => {
-                assert_eq!((hall_left, hall_right, input_a, input_b), (true, true, true, true));
+            MqttCommand::StickerResetCounters {
+                hall_left,
+                hall_right,
+                input_a,
+                input_b,
+                ..
+            } => {
+                assert_eq!(
+                    (hall_left, hall_right, input_a, input_b),
+                    (true, true, true, true)
+                );
             }
             other => panic!("wrong command: {}", other.name()),
         }
@@ -1155,7 +1206,10 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.contains("unknown counter"), "got {err:?}");
-        assert!(err.contains("RAM-only"), "the error should explain why: {err:?}");
+        assert!(
+            err.contains("RAM-only"),
+            "the error should explain why: {err:?}"
+        );
     }
 
     #[test]
@@ -1188,24 +1242,43 @@ mod tests {
             "dev_eui": "70b3d57ed80051b2", "unix_time": 1_600_000_000u64
         }))
         .unwrap_err();
-        assert!(err.contains("outside the firmware's accepted range"), "got {err:?}");
+        assert!(
+            err.contains("outside the firmware's accepted range"),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn control_command_names_are_stable() {
         // These strings are the MQTT wire contract with the viewer.
         let eui = "70b3d57ed80051b2".to_string();
-        assert_eq!(MqttCommand::StickerReboot { dev_eui: eui.clone() }.name(), "sticker_reboot");
         assert_eq!(
-            MqttCommand::StickerDeviceReset { dev_eui: eui.clone() }.name(),
+            MqttCommand::StickerReboot {
+                dev_eui: eui.clone()
+            }
+            .name(),
+            "sticker_reboot"
+        );
+        assert_eq!(
+            MqttCommand::StickerDeviceReset {
+                dev_eui: eui.clone()
+            }
+            .name(),
             "sticker_device_reset"
         );
         assert_eq!(
-            MqttCommand::StickerForceSend { dev_eui: eui.clone() }.name(),
+            MqttCommand::StickerForceSend {
+                dev_eui: eui.clone()
+            }
+            .name(),
             "sticker_force_send"
         );
         assert_eq!(
-            MqttCommand::StickerClockSync { dev_eui: eui.clone(), unix_time: None }.name(),
+            MqttCommand::StickerClockSync {
+                dev_eui: eui.clone(),
+                unix_time: None
+            }
+            .name(),
             "sticker_clock_sync"
         );
         assert_eq!(
@@ -1225,7 +1298,12 @@ mod tests {
     fn parse_send_sticker_raw_validates_and_defaults() {
         use serde_json::json;
         assert_eq!(
-            MqttCommand::SendStickerRaw { dev_eui: "0102030405060708".into(), bytes: vec![8], fport: 85 }.name(),
+            MqttCommand::SendStickerRaw {
+                dev_eui: "0102030405060708".into(),
+                bytes: vec![8],
+                fport: 85
+            }
+            .name(),
             "send_sticker_raw"
         );
         // The docs.hardwario.com generator example (SetParam interval_report=600, save).
@@ -1234,24 +1312,49 @@ mod tests {
         )
         .unwrap();
         match cmd {
-            MqttCommand::SendStickerRaw { dev_eui, bytes, fport } => {
+            MqttCommand::SendStickerRaw {
+                dev_eui,
+                bytes,
+                fport,
+            } => {
                 assert_eq!(dev_eui, "d7653371a0ef363f"); // lowercased
                 assert_eq!(fport, 85); // default
-                assert_eq!(bytes, vec![0x08, 0x01, 0x12, 0x07, 0x12, 0x03, 0x18, 0xd8, 0x04, 0x18, 0x01]);
+                assert_eq!(
+                    bytes,
+                    vec![0x08, 0x01, 0x12, 0x07, 0x12, 0x03, 0x18, 0xd8, 0x04, 0x18, 0x01]
+                );
             }
             _ => panic!("wrong variant"),
         }
         // fport override in range.
         assert!(matches!(
-            MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 10 })).unwrap(),
+            MqttCommand::parse_send_sticker_raw(
+                &json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 10 })
+            )
+            .unwrap(),
             MqttCommand::SendStickerRaw { fport: 10, .. }
         ));
         // Rejections: bad hex, bad dev_eui, empty, oversize (52 bytes), fport OOR.
-        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "zz" })).is_err());
-        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "short", "hex": "08" })).is_err());
-        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "" })).is_err());
-        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "aa".repeat(52) })).is_err());
-        assert!(MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 300 })).is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "zz" })
+        )
+        .is_err());
+        assert!(
+            MqttCommand::parse_send_sticker_raw(&json!({ "dev_eui": "short", "hex": "08" }))
+                .is_err()
+        );
+        assert!(MqttCommand::parse_send_sticker_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "" })
+        )
+        .is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "aa".repeat(52) })
+        )
+        .is_err());
+        assert!(MqttCommand::parse_send_sticker_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 300 })
+        )
+        .is_err());
     }
 
     #[test]
@@ -1295,12 +1398,15 @@ mod tests {
             appskey: appskey.clone(),
         };
         let s = serde_json::to_value(&v).unwrap();
-        assert_eq!(s, serde_json::json!({
-            "mode": "abp",
-            "devaddr": "01020304",
-            "nwkskey": nwkskey,
-            "appskey": appskey,
-        }));
+        assert_eq!(
+            s,
+            serde_json::json!({
+                "mode": "abp",
+                "devaddr": "01020304",
+                "nwkskey": nwkskey,
+                "appskey": appskey,
+            })
+        );
         let back: ActivationMode = serde_json::from_value(s).unwrap();
         assert_eq!(back, v);
     }

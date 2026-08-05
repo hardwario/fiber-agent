@@ -59,8 +59,8 @@ impl RetentionPolicy {
     /// Check if cleanup is needed based on current database size
     pub fn needs_cleanup(&self, db: &Database) -> StorageResult<bool> {
         let current_size = db.current_size_bytes()?;
-        let threshold = (self.max_size_bytes as f32 * (self.cleanup_threshold_percent / 100.0))
-            as i64;
+        let threshold =
+            (self.max_size_bytes as f32 * (self.cleanup_threshold_percent / 100.0)) as i64;
 
         Ok(current_size > threshold)
     }
@@ -84,11 +84,7 @@ impl RetentionPolicy {
     ///    `VACUUM` is forbidden inside a transaction; running it there made
     ///    the whole DELETE rollback, so retention literally never freed any
     ///    space before this fix.
-    pub fn enforce(
-        &self,
-        db: &Database,
-        conn: &mut Connection,
-    ) -> StorageResult<RetentionStats> {
+    pub fn enforce(&self, db: &Database, conn: &mut Connection) -> StorageResult<RetentionStats> {
         let start = std::time::Instant::now();
         let current_size = db.current_size_bytes()?;
 
@@ -118,8 +114,7 @@ impl RetentionPolicy {
         } else {
             128
         };
-        let target_rows_to_delete =
-            ((bytes_to_free / avg_bytes_per_row) + 1).min(100_000);
+        let target_rows_to_delete = ((bytes_to_free / avg_bytes_per_row) + 1).min(100_000);
 
         eprintln!(
             "RETENTION: DB size {}MB exceeds limit, freeing ~{}MB \
@@ -143,9 +138,9 @@ impl RetentionPolicy {
         // Wrap the deletes in a transaction so a mid-loop error rolls back
         // cleanly and the partition doesn't get a half-deleted window. VACUUM
         // is intentionally outside this transaction (see fn doc comment).
-        let tx = conn
-            .transaction()
-            .map_err(|e| StorageError::DeleteError(format!("Failed to start transaction: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| {
+            StorageError::DeleteError(format!("Failed to start transaction: {}", e))
+        })?;
 
         while deleted_count < target_rows_to_delete {
             // Oldest remaining row strictly newer than the previous batch's
@@ -158,11 +153,13 @@ impl RetentionPolicy {
                     rusqlite::params![cutoff_lower, max_age_ts],
                     |row| row.get(0),
                 )
-                .map_err(|e| StorageError::DeleteError(
-                    format!("Failed to query oldest timestamp: {}", e),
-                ))?;
+                .map_err(|e| {
+                    StorageError::DeleteError(format!("Failed to query oldest timestamp: {}", e))
+                })?;
 
-            let Some(oldest_ts) = oldest else { break; };
+            let Some(oldest_ts) = oldest else {
+                break;
+            };
             let batch_cutoff = (oldest_ts + 3600).min(max_age_ts);
 
             let rows_affected = tx
@@ -170,7 +167,9 @@ impl RetentionPolicy {
                     "DELETE FROM sensor_readings WHERE timestamp >= ?1 AND timestamp < ?2",
                     rusqlite::params![oldest_ts, batch_cutoff],
                 )
-                .map_err(|e| StorageError::DeleteError(format!("Failed to delete records: {}", e)))?;
+                .map_err(|e| {
+                    StorageError::DeleteError(format!("Failed to delete records: {}", e))
+                })?;
 
             deleted_count += rows_affected as i64;
             if oldest_deleted_timestamp.is_none() {
@@ -192,10 +191,9 @@ impl RetentionPolicy {
 
         let duration_ms = start.elapsed().as_millis() as i64;
 
-        tx.commit()
-            .map_err(|e| StorageError::DeleteError(
-                format!("Failed to commit retention cleanup: {}", e),
-            ))?;
+        tx.commit().map_err(|e| {
+            StorageError::DeleteError(format!("Failed to commit retention cleanup: {}", e))
+        })?;
 
         // VACUUM after the transaction commits so SQLite can actually reclaim
         // free pages. SQLite forbids VACUUM inside an open transaction —
@@ -270,9 +268,8 @@ impl RetentionPolicy {
                    )",
                 rusqlite::params![cutoff],
             )
-            .map_err(|e| StorageError::DeleteError(
-                format!("sweep_raw_sensor_readings: {}", e),
-            ))? as i64;
+            .map_err(|e| StorageError::DeleteError(format!("sweep_raw_sensor_readings: {}", e)))?
+            as i64;
 
         if purged > 0 {
             let _ = AuditLogger::log_operation(
@@ -477,7 +474,9 @@ mod tests {
         let db = Database::new("/tmp/test_retention.db", 5).expect("Failed to create test DB");
         let policy = RetentionPolicy::new(5);
 
-        let needs = policy.needs_cleanup(&db).expect("Failed to check cleanup need");
+        let needs = policy
+            .needs_cleanup(&db)
+            .expect("Failed to check cleanup need");
         assert!(!needs, "Empty database should not need cleanup");
 
         let _ = std::fs::remove_file("/tmp/test_retention.db");
@@ -492,7 +491,10 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let day = 86400i64;
 
         // Old row (35 days ago)
@@ -542,7 +544,10 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let day = 86400i64;
 
         // Old row (35 days ago)
@@ -597,7 +602,10 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         // Three rows spread over a 4-hour window, all well past min_age.
         for offset_h in [4, 3, 2] {
             let ts = now - offset_h * 3600 - 120;
@@ -624,7 +632,11 @@ mod tests {
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM sensor_readings", [], |r| r.get(0))
             .unwrap();
-        assert!(remaining < 3, "expected rows to be persisted-deleted, found {}", remaining);
+        assert!(
+            remaining < 3,
+            "expected rows to be persisted-deleted, found {}",
+            remaining
+        );
     }
 
     #[test]
@@ -639,18 +651,15 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let day = 86400i64;
 
         // Two readings 35 days ago: should be aggregatable + sweepable.
         for offset in [0, 30] {
-            let r = SensorReading::new(
-                now - 35 * day + offset,
-                0,
-                20.0,
-                true,
-                AlarmState::Normal,
-            );
+            let r = SensorReading::new(now - 35 * day + offset, 0, 20.0, true, AlarmState::Normal);
             StorageWriter::write_sensor_reading(&conn, &r, None).unwrap();
         }
         // One reading 35 days ago for a different sensor that we WON'T aggregate.
@@ -667,9 +676,11 @@ mod tests {
         )
         .unwrap();
 
-        let purged =
-            RetentionPolicy::sweep_raw_sensor_readings(&mut conn, 30 * day).unwrap();
-        assert_eq!(purged, 2, "only the aggregated sensor_line=0 rows should drop");
+        let purged = RetentionPolicy::sweep_raw_sensor_readings(&mut conn, 30 * day).unwrap();
+        assert_eq!(
+            purged, 2,
+            "only the aggregated sensor_line=0 rows should drop"
+        );
 
         let surviving_line_1: i64 = conn
             .query_row(

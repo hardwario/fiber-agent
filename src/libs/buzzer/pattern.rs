@@ -108,9 +108,9 @@ impl SharedBuzzerState {
         // If buzzer is off, wait indefinitely for next pattern change
         // Otherwise, use 50ms timeout to check pattern timing
         let timeout = if guard.pattern == BuzzerPattern::Off {
-            std::time::Duration::from_secs(u64::MAX)  // Wait indefinitely (effectively)
+            std::time::Duration::from_secs(u64::MAX) // Wait indefinitely (effectively)
         } else {
-            std::time::Duration::from_millis(50)  // Check timing every 50ms
+            std::time::Duration::from_millis(50) // Check timing every 50ms
         };
 
         let _ = self.notify.wait_timeout(guard, timeout);

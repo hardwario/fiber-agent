@@ -95,7 +95,8 @@ impl ReconnectionState {
     fn calculate_delay(&mut self) -> Duration {
         // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
         let delay = std::cmp::min(
-            self.base_delay_sec.saturating_mul(2_u64.pow(self.attempt_count)),
+            self.base_delay_sec
+                .saturating_mul(2_u64.pow(self.attempt_count)),
             self.max_delay_sec,
         );
 
@@ -153,7 +154,7 @@ fn wait_for_network(timeout_sec: u64) -> bool {
             eprintln!(
                 "[MQTT Monitor] Network available: WiFi={}, Ethernet={}",
                 network.wifi_connected, network.ethernet_connected
-            ); 
+            );
             return true;
         }
         thread::sleep(Duration::from_millis(500));
@@ -200,11 +201,8 @@ fn check_broker_reachable(host: &str, port: u16) -> bool {
 /// Create MQTT client options with all configured parameters
 fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> MqttOptions {
     // Start with configured port — may be overridden to 8883 if TLS succeeds
-    let mut mqttoptions = MqttOptions::new(
-        client_id,
-        config.broker.host.clone(),
-        config.broker.port,
-    );
+    let mut mqttoptions =
+        MqttOptions::new(client_id, config.broker.host.clone(), config.broker.port);
 
     // Set connection parameters
     mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
@@ -226,9 +224,12 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
                     if config.broker.port == 1883 {
                         // Recreate with TLS port (MqttOptions has no set_port)
                         mqttoptions = MqttOptions::new(client_id, config.broker.host.clone(), 8883);
-                        mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
+                        mqttoptions
+                            .set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
                         mqttoptions.set_clean_session(config.connection.clean_session);
-                        if let (Some(u), Some(p)) = (&config.broker.username, &config.broker.password) {
+                        if let (Some(u), Some(p)) =
+                            (&config.broker.username, &config.broker.password)
+                        {
                             mqttoptions.set_credentials(u, p);
                         }
                         eprintln!("[MQTT Monitor] TLS enabled — port overridden 1883 -> 8883");
@@ -244,7 +245,10 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
                     } else {
                         // Real TLS error — in production, set transport to a broken state
                         // so the connection fails at TLS handshake, not plaintext fallback
-                        eprintln!("[MQTT Monitor] FATAL: Failed to configure TLS transport: {}", e);
+                        eprintln!(
+                            "[MQTT Monitor] FATAL: Failed to configure TLS transport: {}",
+                            e
+                        );
                         #[cfg(not(feature = "dev-platform"))]
                         {
                             eprintln!("[MQTT Monitor] Production build: TLS failure is fatal, connection will fail");
@@ -301,9 +305,7 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
 ///
 /// Uses `TlsConfiguration::Simple` which accepts PEM-encoded CA cert bytes
 /// and optional PEM-encoded client cert + key for mutual TLS.
-fn configure_tls_transport(
-    tls: &crate::libs::config::TlsConfig,
-) -> Result<Transport, String> {
+fn configure_tls_transport(tls: &crate::libs::config::TlsConfig) -> Result<Transport, String> {
     // Load CA certificate (PEM-encoded)
     let ca = std::fs::read(&tls.ca_cert_path).map_err(|e| {
         format!(
@@ -329,11 +331,13 @@ fn configure_tls_transport(
     let client_auth = match (&tls.client_cert_path, &tls.client_key_path) {
         (Some(cert_path), Some(key_path)) => {
             let cert = std::fs::read(cert_path).map_err(|e| {
-                format!("Failed to read client certificate from '{}': {}", cert_path, e)
+                format!(
+                    "Failed to read client certificate from '{}': {}",
+                    cert_path, e
+                )
             })?;
-            let key = std::fs::read(key_path).map_err(|e| {
-                format!("Failed to read client key from '{}': {}", key_path, e)
-            })?;
+            let key = std::fs::read(key_path)
+                .map_err(|e| format!("Failed to read client key from '{}': {}", key_path, e))?;
 
             if cert.is_empty() {
                 return Err(format!("Client certificate file '{}' is empty", cert_path));
@@ -366,7 +370,9 @@ fn configure_tls_transport(
     };
 
     let transport = if tls.insecure_skip_verify {
-        eprintln!("[MQTT TLS] WARNING: insecure_skip_verify=true — skipping certificate validation");
+        eprintln!(
+            "[MQTT TLS] WARNING: insecure_skip_verify=true — skipping certificate validation"
+        );
         // Build a rustls ClientConfig that skips cert verification
         use rumqttc::tokio_rustls::rustls;
 
@@ -400,7 +406,10 @@ impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCer
         _server_name: &rumqttc::tokio_rustls::rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rumqttc::tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified, rumqttc::tokio_rustls::rustls::Error> {
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
         Ok(rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -409,7 +418,10 @@ impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCer
         _message: &[u8],
         _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
         _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid, rumqttc::tokio_rustls::rustls::Error> {
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
         Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
@@ -418,7 +430,10 @@ impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCer
         _message: &[u8],
         _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
         _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid, rumqttc::tokio_rustls::rustls::Error> {
+    ) -> Result<
+        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        rumqttc::tokio_rustls::rustls::Error,
+    > {
         Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
@@ -483,8 +498,17 @@ impl MqttHandle {
     }
 
     /// Send aggregated sensor data
-    pub fn send_aggregated_sensor_data(&self, period: crate::libs::sensors::aggregation::AggregationPeriod, names: [String; 8], locations: [Option<String>; 8]) {
-        self.send(MqttMessage::PublishAggregatedSensorData { period, names, locations });
+    pub fn send_aggregated_sensor_data(
+        &self,
+        period: crate::libs::sensors::aggregation::AggregationPeriod,
+        names: [String; 8],
+        locations: [Option<String>; 8],
+    ) {
+        self.send(MqttMessage::PublishAggregatedSensorData {
+            period,
+            names,
+            locations,
+        });
     }
 
     /// Send combined system status (power, network, storage, uptime, lorawan)
@@ -575,18 +599,39 @@ pub struct MqttMonitor {
     buzzer_volume: Option<SharedBuzzerVolumeHandle>,
     display_lines: Option<SharedDisplayLinesHandle>,
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
-    lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+    lorawan_state_slot:
+        std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     /// fPort-85 command handle, filled after the LoRaWAN monitor exists (see
     /// set_lorawan_handle); used by the sticker config/history MQTT commands.
-    lorawan_handle_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
+    lorawan_handle_slot:
+        std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
     lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
     export_handle_slot: SharedExportHandle,
 }
 
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
-    pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None, None, None)
+    pub fn new(
+        config: MqttConfig,
+        hostname: String,
+        app_version: String,
+        power_status: crate::libs::power::status::SharedPowerStatus,
+    ) -> io::Result<Self> {
+        Self::new_with_stm(
+            config,
+            hostname,
+            app_version,
+            power_status,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -605,8 +650,14 @@ impl MqttMonitor {
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: Option<crate::libs::storage::StorageHandle>,
     ) -> io::Result<Self> {
-        eprintln!("[MQTT Monitor] Initializing MQTT monitor for host: {}", hostname);
-        eprintln!("[MQTT Monitor] Broker: {}:{}", config.broker.host, config.broker.port);
+        eprintln!(
+            "[MQTT Monitor] Initializing MQTT monitor for host: {}",
+            hostname
+        );
+        eprintln!(
+            "[MQTT Monitor] Broker: {}:{}",
+            config.broker.host, config.broker.port
+        );
         if stm_bridge.is_some() {
             eprintln!("[MQTT Monitor] STM bridge available for hardware commands");
         }
@@ -638,7 +689,10 @@ impl MqttMonitor {
         let reconnected_flag = Arc::new(AtomicBool::new(false));
 
         // Create handle for sending messages
-        let handle = MqttHandle { sender, reconnected_flag: reconnected_flag.clone() };
+        let handle = MqttHandle {
+            sender,
+            reconnected_flag: reconnected_flag.clone(),
+        };
         let handle_clone = handle.clone();
 
         // Clone STM bridge for monitor thread
@@ -805,54 +859,59 @@ impl MqttMonitor {
             let name = cmd.name().to_string();
 
             // dev_eui + the proto command + what remains outstanding after the reply.
-            let (dev_eui, proto, expect, action_bearing): (String, ProtoCommand, Option<&str>, bool) =
-                match &cmd {
-                    MqttCommand::StickerReboot { dev_eui } => (
+            let (dev_eui, proto, expect, action_bearing): (
+                String,
+                ProtoCommand,
+                Option<&str>,
+                bool,
+            ) = match &cmd {
+                MqttCommand::StickerReboot { dev_eui } => (
+                    dev_eui.clone(),
+                    sc::build_reboot(),
+                    Some("unsolicited_info_on_rejoin"),
+                    true,
+                ),
+                MqttCommand::StickerDeviceReset { dev_eui } => (
+                    dev_eui.clone(),
+                    sc::build_device_reset(),
+                    Some("unsolicited_info_on_rejoin"),
+                    true,
+                ),
+                MqttCommand::StickerResetCounters {
+                    dev_eui,
+                    hall_left,
+                    hall_right,
+                    input_a,
+                    input_b,
+                } => (
+                    dev_eui.clone(),
+                    sc::build_reset_counters_selective(*hall_left, *hall_right, *input_a, *input_b),
+                    None,
+                    true,
+                ),
+                MqttCommand::StickerForceSend { dev_eui } => (
+                    dev_eui.clone(),
+                    sc::build_force_send(),
+                    Some("telemetry_uplink"),
+                    false,
+                ),
+                MqttCommand::StickerClockSync { dev_eui, unix_time } => match unix_time {
+                    Some(t) => (dev_eui.clone(), sc::build_clock_sync(*t), None, false),
+                    None => (
                         dev_eui.clone(),
-                        sc::build_reboot(),
-                        Some("unsolicited_info_on_rejoin"),
-                        true,
-                    ),
-                    MqttCommand::StickerDeviceReset { dev_eui } => (
-                        dev_eui.clone(),
-                        sc::build_device_reset(),
-                        Some("unsolicited_info_on_rejoin"),
-                        true,
-                    ),
-                    MqttCommand::StickerResetCounters {
-                        dev_eui,
-                        hall_left,
-                        hall_right,
-                        input_a,
-                        input_b,
-                    } => (
-                        dev_eui.clone(),
-                        sc::build_reset_counters_selective(
-                            *hall_left, *hall_right, *input_a, *input_b,
-                        ),
-                        None,
-                        true,
-                    ),
-                    MqttCommand::StickerForceSend { dev_eui } => (
-                        dev_eui.clone(),
-                        sc::build_force_send(),
-                        Some("telemetry_uplink"),
+                        sc::build_clock_sync_from_network(),
+                        Some("deferred_info"),
                         false,
                     ),
-                    MqttCommand::StickerClockSync { dev_eui, unix_time } => match unix_time {
-                        Some(t) => (dev_eui.clone(), sc::build_clock_sync(*t), None, false),
-                        None => (
-                            dev_eui.clone(),
-                            sc::build_clock_sync_from_network(),
-                            Some("deferred_info"),
-                            false,
-                        ),
-                    },
-                    other => {
-                        eprintln!("[MQTT Monitor] spawn_sticker_command: not a control command: {}", other.name());
-                        return;
-                    }
-                };
+                },
+                other => {
+                    eprintln!(
+                        "[MQTT Monitor] spawn_sticker_command: not a control command: {}",
+                        other.name()
+                    );
+                    return;
+                }
+            };
 
             // force_send is unsigned, so broker access alone can trigger uplinks.
             // A sticker's duty cycle is finite, so space them per device.
@@ -925,7 +984,11 @@ impl MqttMonitor {
                 Ok(Ok(Some(dr))) => match dr.kind {
                     ResponseKind::Ack => (dr.seq, "ok".to_string(), None, None),
                     ResponseKind::Info(_) => (dr.seq, "ok".to_string(), None, None),
-                    ResponseKind::Error { code, detail, fault_field } => (
+                    ResponseKind::Error {
+                        code,
+                        detail,
+                        fault_field,
+                    } => (
                         dr.seq,
                         code.to_string(),
                         Some(detail),
@@ -942,9 +1005,12 @@ impl MqttMonitor {
                         (0, "transport_error".to_string(), Some(e), None)
                     }
                 }
-                Err(join_err) => {
-                    (0, "transport_error".to_string(), Some(join_err.to_string()), None)
-                }
+                Err(join_err) => (
+                    0,
+                    "transport_error".to_string(),
+                    Some(join_err.to_string()),
+                    None,
+                ),
             };
 
             let msg = MqttMessage::PublishStickerCommandResult {
@@ -957,7 +1023,10 @@ impl MqttMonitor {
                 fault_key,
             };
             if let Err(e) = publisher.handle_message(msg).await {
-                eprintln!("[MQTT Monitor] Failed to publish sticker command result: {}", e);
+                eprintln!(
+                    "[MQTT Monitor] Failed to publish sticker command result: {}",
+                    e
+                );
             }
         });
     }
@@ -1003,14 +1072,21 @@ impl MqttMonitor {
                     // Includes the honest 64-byte-buffer overflow case: a sticker
                     // with several latched alarms answers "response too large".
                     // Reported as-is and never retried — the reply would not change.
-                    if let Err(pe) =
-                        publisher.publish_error("get_sticker_info", "transport", &e).await
+                    if let Err(pe) = publisher
+                        .publish_error("get_sticker_info", "transport", &e)
+                        .await
                     {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker info error: {}", pe);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker info error: {}",
+                            pe
+                        );
                     }
                 }
                 Err(join_err) => {
-                    eprintln!("[MQTT Monitor] get_sticker_info task panicked: {}", join_err);
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_info task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -1066,14 +1142,21 @@ impl MqttMonitor {
                     }
                 }
                 Ok(Err(e)) => {
-                    if let Err(pe) =
-                        publisher.publish_error("get_sticker_config", "transport", &e).await
+                    if let Err(pe) = publisher
+                        .publish_error("get_sticker_config", "transport", &e)
+                        .await
                     {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker config error: {}", pe);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker config error: {}",
+                            pe
+                        );
                     }
                 }
                 Err(join_err) => {
-                    eprintln!("[MQTT Monitor] get_sticker_config task panicked: {}", join_err);
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_config task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -1136,7 +1219,10 @@ impl MqttMonitor {
                         missing: cfg.failed_keys,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker full config: {}", e);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker full config: {}",
+                            e
+                        );
                     }
                 }
                 Ok(Err(e)) => {
@@ -1203,7 +1289,13 @@ impl MqttMonitor {
                 let read = if save {
                     None
                 } else {
-                    sticker_config::read_config(&handle, &dev_eui_blocking, &[], STICKER_COMMAND_TIMEOUT).ok()
+                    sticker_config::read_config(
+                        &handle,
+                        &dev_eui_blocking,
+                        &[],
+                        STICKER_COMMAND_TIMEOUT,
+                    )
+                    .ok()
                 };
                 Ok((write, read))
             })
@@ -1234,14 +1326,21 @@ impl MqttMonitor {
                     }
                 }
                 Ok(Err(e)) => {
-                    if let Err(pe) =
-                        publisher.publish_error("set_sticker_config", "transport", &e).await
+                    if let Err(pe) = publisher
+                        .publish_error("set_sticker_config", "transport", &e)
+                        .await
                     {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker config error: {}", pe);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker config error: {}",
+                            pe
+                        );
                     }
                 }
                 Err(join_err) => {
-                    eprintln!("[MQTT Monitor] set_sticker_config task panicked: {}", join_err);
+                    eprintln!(
+                        "[MQTT Monitor] set_sticker_config task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -1307,7 +1406,10 @@ impl MqttMonitor {
                                 records,
                             };
                             if let Err(e) = publisher.handle_message(msg).await {
-                                eprintln!("[MQTT Monitor] Failed to publish sticker history: {}", e);
+                                eprintln!(
+                                    "[MQTT Monitor] Failed to publish sticker history: {}",
+                                    e
+                                );
                             }
                         }
                     }
@@ -1317,11 +1419,17 @@ impl MqttMonitor {
                         .publish_error("get_sticker_history", e.stable_code(), &e.to_string())
                         .await
                     {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker history error: {}", pe);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker history error: {}",
+                            pe
+                        );
                     }
                 }
                 Err(join_err) => {
-                    eprintln!("[MQTT Monitor] get_sticker_history task panicked: {}", join_err);
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_history task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -1344,8 +1452,12 @@ impl MqttMonitor {
         display_lines: Option<SharedDisplayLinesHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         reconnected_flag: Arc<AtomicBool>,
-        lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
-        lorawan_handle_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
+        lorawan_state_slot: std::sync::Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
+        >,
+        lorawan_handle_slot: std::sync::Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>,
+        >,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: Option<crate::libs::storage::StorageHandle>,
         export_handle_slot: SharedExportHandle,
@@ -1367,11 +1479,26 @@ impl MqttMonitor {
         }
 
         eprintln!("[MQTT Monitor] Connection parameters:");
-        eprintln!("[MQTT Monitor]   Broker: {}:{}", config.broker.host, config.broker.port);
-        eprintln!("[MQTT Monitor]   Client ID: {}",
-            if config.broker.client_id.is_empty() { &hostname } else { &config.broker.client_id });
-        eprintln!("[MQTT Monitor]   Keep-alive: {}s", config.connection.keep_alive_sec);
-        eprintln!("[MQTT Monitor]   Clean session: {}", config.connection.clean_session);
+        eprintln!(
+            "[MQTT Monitor]   Broker: {}:{}",
+            config.broker.host, config.broker.port
+        );
+        eprintln!(
+            "[MQTT Monitor]   Client ID: {}",
+            if config.broker.client_id.is_empty() {
+                &hostname
+            } else {
+                &config.broker.client_id
+            }
+        );
+        eprintln!(
+            "[MQTT Monitor]   Keep-alive: {}s",
+            config.connection.keep_alive_sec
+        );
+        eprintln!(
+            "[MQTT Monitor]   Clean session: {}",
+            config.connection.clean_session
+        );
         if config.last_will.enabled {
             eprintln!("[MQTT Monitor]   Last Will: enabled");
         }
@@ -1379,7 +1506,10 @@ impl MqttMonitor {
         // Log TLS status and warn if disabled (EU MDR Annex I, 17.2)
         match &config.tls {
             Some(tls_config) if tls_config.enabled => {
-                eprintln!("[MQTT Monitor]   TLS: enabled (ca_cert: {})", tls_config.ca_cert_path);
+                eprintln!(
+                    "[MQTT Monitor]   TLS: enabled (ca_cert: {})",
+                    tls_config.ca_cert_path
+                );
             }
             Some(tls_config) if !tls_config.enabled => {
                 eprintln!("[MQTT Monitor] WARNING: MQTT TLS is disabled. Data transmitted in plaintext. Not recommended for EU MDR compliance.");
@@ -1397,7 +1527,10 @@ impl MqttMonitor {
             .enable_all()
             .build()
             .map_err(|e| {
-                eprintln!("[MQTT Monitor] ERROR: Failed to create tokio runtime: {}", e);
+                eprintln!(
+                    "[MQTT Monitor] ERROR: Failed to create tokio runtime: {}",
+                    e
+                );
                 format!("Failed to create tokio runtime: {}", e)
             })?;
         eprintln!("[MQTT Monitor] Tokio runtime created successfully");
@@ -1416,7 +1549,10 @@ impl MqttMonitor {
                     Some(Arc::new(manager))
                 }
                 Err(e) => {
-                    eprintln!("[MQTT Monitor] Warning: Failed to initialize authorization manager: {}", e);
+                    eprintln!(
+                        "[MQTT Monitor] Warning: Failed to initialize authorization manager: {}",
+                        e
+                    );
                     eprintln!("[MQTT Monitor] Signed configuration commands will not be available");
                     None
                 }
@@ -1434,7 +1570,10 @@ impl MqttMonitor {
                 Some(Arc::new(applier))
             }
             Err(e) => {
-                eprintln!("[MQTT Monitor] Warning: Failed to initialize config applier: {}", e);
+                eprintln!(
+                    "[MQTT Monitor] Warning: Failed to initialize config applier: {}",
+                    e
+                );
                 None
             }
         };
@@ -1444,7 +1583,8 @@ impl MqttMonitor {
         let initial_led_brightness = crate::libs::config::Config::load_default()
             .map(|c| c.system.led_brightness)
             .unwrap_or(50);
-        let led_brightness_tracker = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(initial_led_brightness));
+        let led_brightness_tracker =
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(initial_led_brightness));
 
         // Track connection attempts for logging
         let mut connection_attempt: u32 = 0;
@@ -2561,12 +2701,13 @@ impl MqttMonitor {
     }
 
     /// Parse pairing request from MQTT payload
-    fn parse_pairing_request(payload: &[u8]) -> Result<crate::libs::pairing::PairingRequest, String> {
-        let json_str = std::str::from_utf8(payload)
-            .map_err(|e| format!("Invalid UTF-8: {}", e))?;
+    fn parse_pairing_request(
+        payload: &[u8],
+    ) -> Result<crate::libs::pairing::PairingRequest, String> {
+        let json_str = std::str::from_utf8(payload).map_err(|e| format!("Invalid UTF-8: {}", e))?;
 
-        let request: crate::libs::pairing::PairingRequest = serde_json::from_str(json_str)
-            .map_err(|e| format!("Invalid JSON: {}", e))?;
+        let request: crate::libs::pairing::PairingRequest =
+            serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
 
         // Basic validation
         if request.request_id.is_empty() {
@@ -2582,8 +2723,8 @@ impl MqttMonitor {
     /// Initialize authorization manager with crypto components
     #[cfg_attr(feature = "dev-platform", allow(dead_code))]
     fn init_authorization_manager(_config: &MqttConfig) -> Result<AuthorizationManager, String> {
-        use std::path::Path;
         use crate::libs::crypto::CertificateAuthority;
+        use std::path::Path;
 
         // Initialize CA registry (trusted Certificate Authorities)
         let ca_file = Path::new("/data/fiber/config/authorized_signers.yaml");
@@ -2647,10 +2788,8 @@ impl MqttMonitor {
         // Create authorization manager
         let audit_db = Path::new("/tmp/fiber_audit.db");
         let manager = AuthorizationManager::new(
-            verifier,
-            audit_db,
-            300,  // 5 minute challenge timeout
-            10,   // max 10 concurrent challenges
+            verifier, audit_db, 300, // 5 minute challenge timeout
+            10,  // max 10 concurrent challenges
         );
 
         Ok(manager)
@@ -2665,74 +2804,136 @@ impl MqttMonitor {
     ) -> Result<MqttCommand, String> {
         match command_type {
             "set_threshold" => {
-                let line = params.get("line").and_then(|v| v.as_u64())
+                let line = params
+                    .get("line")
+                    .and_then(|v| v.as_u64())
                     .ok_or("Missing line")? as u8;
                 let thresholds = params.get("thresholds").ok_or("Missing thresholds")?;
                 Ok(MqttCommand::SetSensorThreshold {
                     line,
                     critical_low: thresholds["critical_low"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_low: thresholds.get("alarm_low").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    alarm_low: thresholds
+                        .get("alarm_low")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as f32,
                     warning_low: thresholds["warning_low"].as_f64().unwrap_or(0.0) as f32,
                     warning_high: thresholds["warning_high"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_high: thresholds.get("alarm_high").and_then(|v| v.as_f64()).unwrap_or(100.0) as f32,
+                    alarm_high: thresholds
+                        .get("alarm_high")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(100.0) as f32,
                     critical_high: thresholds["critical_high"].as_f64().unwrap_or(0.0) as f32,
                 })
             }
             "set_sensor_name" => {
-                let line = params.get("line").and_then(|v| v.as_u64()).ok_or("Missing line")? as u8;
-                let name = params.get("name").and_then(|v| v.as_str()).ok_or("Missing name")?.to_string();
+                let line = params
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing line")? as u8;
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing name")?
+                    .to_string();
                 Ok(MqttCommand::SetSensorName { line, name })
             }
             "set_sensor_location" => {
-                let line = params.get("line").and_then(|v| v.as_u64()).ok_or("Missing line")? as u8;
-                let location = params.get("location").and_then(|v| v.as_str()).ok_or("Missing location")?.to_string();
+                let line = params
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing line")? as u8;
+                let location = params
+                    .get("location")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing location")?
+                    .to_string();
                 Ok(MqttCommand::SetSensorLocation { line, location })
             }
             "restart_application" => {
-                let r = reason.clone().unwrap_or_else(|| "Dev platform command".to_string());
+                let r = reason
+                    .clone()
+                    .unwrap_or_else(|| "Dev platform command".to_string());
                 Ok(MqttCommand::RestartApplication {
                     reason: r,
                     requested_by: "dev-platform".to_string(),
                 })
             }
             "power_off" => {
-                let r = reason.clone().unwrap_or_else(|| "Dev platform command".to_string());
+                let r = reason
+                    .clone()
+                    .unwrap_or_else(|| "Dev platform command".to_string());
                 Ok(MqttCommand::PowerOffDevice {
                     reason: r,
                     requested_by: "dev-platform".to_string(),
                 })
             }
             "set_interval" => {
-                let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing sample_interval_ms")?;
-                let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing aggregation_interval_ms")?;
-                let report = params.get("report_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing report_interval_ms")?;
-                Ok(MqttCommand::SetInterval { sample_interval_ms: sample, aggregation_interval_ms: aggregation, report_interval_ms: report })
+                let sample = params
+                    .get("sample_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing sample_interval_ms")?;
+                let aggregation = params
+                    .get("aggregation_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing aggregation_interval_ms")?;
+                let report = params
+                    .get("report_interval_ms")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing report_interval_ms")?;
+                Ok(MqttCommand::SetInterval {
+                    sample_interval_ms: sample,
+                    aggregation_interval_ms: aggregation,
+                    report_interval_ms: report,
+                })
             }
             "set_system_info_interval" => {
-                let interval = params.get("interval_seconds").and_then(|v| v.as_u64()).ok_or("Missing interval_seconds")?;
-                Ok(MqttCommand::SetSystemInfoInterval { interval_seconds: interval })
+                let interval = params
+                    .get("interval_seconds")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing interval_seconds")?;
+                Ok(MqttCommand::SetSystemInfoInterval {
+                    interval_seconds: interval,
+                })
             }
             "set_device_label" => {
-                let label = params.get("label").and_then(|v| v.as_str()).ok_or("Missing label")?.to_string();
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing label")?
+                    .to_string();
                 Ok(MqttCommand::SetDeviceLabel { label })
             }
             "set_led_brightness" => {
-                let brightness = params.get("brightness").and_then(|v| v.as_u64()).ok_or("Missing brightness")? as u8;
+                let brightness = params
+                    .get("brightness")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing brightness")? as u8;
                 Ok(MqttCommand::SetLedBrightness { brightness })
             }
             "set_screen_brightness" => {
-                let brightness = params.get("brightness").and_then(|v| v.as_u64()).ok_or("Missing brightness")? as u8;
+                let brightness = params
+                    .get("brightness")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing brightness")? as u8;
                 Ok(MqttCommand::SetScreenBrightness { brightness })
             }
             "set_screen_timeout" => {
-                let raw = params.get("timeout_secs").and_then(|v| v.as_u64()).ok_or("Missing timeout_secs")?;
+                let raw = params
+                    .get("timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing timeout_secs")?;
                 if raw > u64::from(u32::MAX) {
                     return Err("timeout_secs out of range".to_string());
                 }
-                Ok(MqttCommand::SetScreenTimeout { timeout_secs: raw as u32 })
+                Ok(MqttCommand::SetScreenTimeout {
+                    timeout_secs: raw as u32,
+                })
             }
             "set_buzzer_volume" => {
-                let volume = params.get("volume").and_then(|v| v.as_u64()).ok_or("Missing volume")? as u8;
+                let volume = params
+                    .get("volume")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing volume")? as u8;
                 Ok(MqttCommand::SetBuzzerVolume { volume })
             }
             "set_display_lines" => {
@@ -2743,37 +2944,80 @@ impl MqttMonitor {
                 crate::libs::config_applier::validation::validate_display_custom_lines(&lines)?;
                 Ok(MqttCommand::SetDisplayLines { lines })
             }
-            "set_network_config" => {
-                Ok(MqttCommand::SetNetworkConfig {
-                    interface: params.get("interface").and_then(|v| v.as_str()).unwrap_or("ethernet").to_string(),
-                    config_type: params.get("type").and_then(|v| v.as_str()).unwrap_or("dhcp").to_string(),
-                    ip_address: params.get("ip_address").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    subnet_mask: params.get("subnet_mask").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    gateway: params.get("gateway").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    dns_primary: params.get("dns_primary").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    dns_secondary: params.get("dns_secondary").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                })
-            }
+            "set_network_config" => Ok(MqttCommand::SetNetworkConfig {
+                interface: params
+                    .get("interface")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ethernet")
+                    .to_string(),
+                config_type: params
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("dhcp")
+                    .to_string(),
+                ip_address: params
+                    .get("ip_address")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                subnet_mask: params
+                    .get("subnet_mask")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                gateway: params
+                    .get("gateway")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                dns_primary: params
+                    .get("dns_primary")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                dns_secondary: params
+                    .get("dns_secondary")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            }),
             "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
             "set_eye_recording" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
-                let interval_min = params.get("interval_min").and_then(|v| v.as_u64()).ok_or("Missing interval_min")?;
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
+                let interval_min = params
+                    .get("interval_min")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("Missing interval_min")?;
                 if !matches!(interval_min, 0 | 1 | 5 | 15) {
                     return Err("interval_min must be 0 (off), 1, 5 or 15".to_string());
                 }
-                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+                Ok(MqttCommand::SetEyeRecording {
+                    mac,
+                    interval_min: interval_min as u16,
+                })
             }
             "download_eye_history" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 Ok(MqttCommand::DownloadEyeHistory { mac })
             }
             "add_eye_tag" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                let name = params.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
                 Ok(MqttCommand::AddEyeTag { mac, name })
             }
             "set_eye_known_tags" => {
@@ -2794,25 +3038,41 @@ impl MqttMonitor {
                 Ok(MqttCommand::SetEyeKnownTags { macs })
             }
             "remove_eye_tag" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 Ok(MqttCommand::RemoveEyeTag { mac })
             }
             "detect_eye_tag" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 Ok(MqttCommand::DetectEyeTag { mac })
             }
             "set_eye_field_threshold" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                let field = params
+                    .get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing field")?
+                    .to_string();
                 Ok(MqttCommand::SetEyeFieldThreshold {
                     mac,
                     field,
@@ -2823,14 +3083,25 @@ impl MqttMonitor {
                 })
             }
             "delete_eye_field_threshold" => {
-                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let mac = params
+                    .get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing mac")?
+                    .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                let field = params
+                    .get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing field")?
+                    .to_string();
                 Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
             }
-            _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
+            _ => Err(format!(
+                "Unsupported dev-platform command: {}",
+                command_type
+            )),
         }
     }
 
@@ -2848,16 +3119,25 @@ impl MqttMonitor {
         display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
-        lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        lorawan_state_slot: &std::sync::Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
+        >,
         lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: &Option<crate::libs::storage::StorageHandle>,
-        lorawan_handle_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
+        lorawan_handle_slot: &std::sync::Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>,
+        >,
         client: &AsyncClient,
         topics: &TopicBuilder,
         publish_cfg: &crate::libs::config::PublishConfig,
         export_handle_slot: &SharedExportHandle,
     ) -> Result<(), String> {
-        if let MqttCommand::SendStickerRaw { dev_eui, bytes, fport } = cmd {
+        if let MqttCommand::SendStickerRaw {
+            dev_eui,
+            bytes,
+            fport,
+        } = cmd
+        {
             // Fire-and-forget raw downlink (expert). No response is correlated;
             // its effect is confirmed by a subsequent "read from device".
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
@@ -2890,7 +3170,12 @@ impl MqttMonitor {
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
-        if let MqttCommand::SetStickerConfig { dev_eui, fields, save } = cmd {
+        if let MqttCommand::SetStickerConfig {
+            dev_eui,
+            fields,
+            save,
+        } = cmd
+        {
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
                 Some(handle) => {
                     Self::spawn_sticker_config_write(
@@ -2931,13 +3216,16 @@ impl MqttMonitor {
         );
         if result.is_ok() {
             if let Some(dev_eui) = removed_sticker {
-                let publisher =
-                    MqttPublisher::new(client.clone(), topics.clone(), publish_cfg);
+                let publisher = MqttPublisher::new(client.clone(), topics.clone(), publish_cfg);
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        publisher.handle_message(MqttMessage::ClearStickerInfo { dev_eui }).await
+                    if let Err(e) = publisher
+                        .handle_message(MqttMessage::ClearStickerInfo { dev_eui })
+                        .await
                     {
-                        eprintln!("[MQTT Monitor] Failed to clear retained sticker info: {}", e);
+                        eprintln!(
+                            "[MQTT Monitor] Failed to clear retained sticker info: {}",
+                            e
+                        );
                     }
                 });
             }
@@ -3089,7 +3377,9 @@ impl MqttMonitor {
         display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
-        lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        lorawan_state_slot: &std::sync::Arc<
+            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
+        >,
         lorawan_configs: &Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         storage_handle: &Option<crate::libs::storage::StorageHandle>,
         export_handle_slot: &SharedExportHandle,
@@ -3874,8 +4164,7 @@ impl MqttMonitor {
             .map(|bv| bv.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(main_config.system.buzzer_volume);
 
-        let device_label = main_config.system.device_label
-            .unwrap_or_default();
+        let device_label = main_config.system.device_label.unwrap_or_default();
 
         let mqtt_config = main_config.mqtt.as_ref();
         let system_info_interval_s = mqtt_config
@@ -3926,7 +4215,10 @@ impl MqttMonitor {
         dns_primary: Option<String>,
         dns_secondary: Option<String>,
     ) -> Result<(), String> {
-        eprintln!("[MQTT Monitor] Configuring network: {} {}", interface, config_type);
+        eprintln!(
+            "[MQTT Monitor] Configuring network: {} {}",
+            interface, config_type
+        );
 
         // Find connection name for the interface type
         let conn_name = Self::get_nmcli_connection_name(interface)?;
@@ -3935,7 +4227,19 @@ impl MqttMonitor {
         if config_type == "dhcp" {
             // Set to DHCP (automatic)
             let output = std::process::Command::new("nmcli")
-                .args(["con", "mod", &conn_name, "ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", ""])
+                .args([
+                    "con",
+                    "mod",
+                    &conn_name,
+                    "ipv4.method",
+                    "auto",
+                    "ipv4.addresses",
+                    "",
+                    "ipv4.gateway",
+                    "",
+                    "ipv4.dns",
+                    "",
+                ])
                 .output()
                 .map_err(|e| format!("nmcli failed: {}", e))?;
 
@@ -3956,10 +4260,15 @@ impl MqttMonitor {
             // Set static IP
             let output = std::process::Command::new("nmcli")
                 .args([
-                    "con", "mod", &conn_name,
-                    "ipv4.method", "manual",
-                    "ipv4.addresses", &ip_with_cidr,
-                    "ipv4.gateway", &gw,
+                    "con",
+                    "mod",
+                    &conn_name,
+                    "ipv4.method",
+                    "manual",
+                    "ipv4.addresses",
+                    &ip_with_cidr,
+                    "ipv4.gateway",
+                    &gw,
                 ])
                 .output()
                 .map_err(|e| format!("nmcli failed: {}", e))?;
@@ -3968,7 +4277,10 @@ impl MqttMonitor {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(format!("nmcli mod failed: {}", stderr));
             }
-            eprintln!("[MQTT Monitor] Set {} to static IP: {}", conn_name, ip_with_cidr);
+            eprintln!(
+                "[MQTT Monitor] Set {} to static IP: {}",
+                conn_name, ip_with_cidr
+            );
 
             // Set DNS if provided
             if let Some(dns) = dns_primary {
@@ -4137,7 +4449,10 @@ mod tests {
         let opts = create_mqtt_options(&config, "testhost", "test-client");
         let (host, port) = opts.broker_address();
         assert_eq!(host, "mqtt.example.com");
-        assert_eq!(port, 1883, "Port should remain 1883 when TLS is not configured");
+        assert_eq!(
+            port, 1883,
+            "Port should remain 1883 when TLS is not configured"
+        );
     }
 
     #[test]
@@ -4156,14 +4471,20 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing failure: env-dependent (missing CA cert path forces plaintext fallback, so port not overridden). FOLLOW-UP: make the test provide a real cert or stub, then unignore."]
     fn test_create_mqtt_options_tls_enabled_default_port_override() {
-        // TLS enabled but CA cert won't exist -- that's fine for this test,
-        // we're only testing port override logic. The configure_tls_transport
-        // will log an error but the function still returns options.
+        // The port override only happens when configure_tls_transport()
+        // succeeds, and that requires a readable, non-empty cert file (no
+        // real PEM parsing happens at this layer -- see
+        // test_configure_tls_transport_valid_ca_file). Use the same
+        // throwaway-file pattern so this test exercises the success path
+        // instead of the missing-cert fallback-to-plaintext path.
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let ca_path = dir.path().join("ca.crt");
+        std::fs::write(&ca_path, b"placeholder").expect("Failed to write CA file");
+
         let tls = TlsConfig {
             enabled: true,
-            ca_cert_path: "/nonexistent/ca.crt".to_string(),
+            ca_cert_path: ca_path.to_string_lossy().to_string(),
             client_cert_path: None,
             client_key_path: None,
             insecure_skip_verify: false,
@@ -4171,7 +4492,10 @@ mod tests {
         let config = test_mqtt_config(Some(tls), 1883);
         let opts = create_mqtt_options(&config, "testhost", "test-client");
         let (_, port) = opts.broker_address();
-        assert_eq!(port, 8883, "Port should be overridden to 8883 when TLS is enabled and port was 1883");
+        assert_eq!(
+            port, 8883,
+            "Port should be overridden to 8883 when TLS is enabled and port was 1883"
+        );
     }
 
     #[test]
@@ -4186,7 +4510,10 @@ mod tests {
         let config = test_mqtt_config(Some(tls), 9883);
         let opts = create_mqtt_options(&config, "testhost", "test-client");
         let (_, port) = opts.broker_address();
-        assert_eq!(port, 9883, "Custom port should be preserved even when TLS is enabled");
+        assert_eq!(
+            port, 9883,
+            "Custom port should be preserved even when TLS is enabled"
+        );
     }
 
     #[test]
@@ -4199,9 +4526,16 @@ mod tests {
             insecure_skip_verify: false,
         };
         let result = configure_tls_transport(&tls);
-        assert!(result.is_err(), "Should fail when CA cert file does not exist");
+        assert!(
+            result.is_err(),
+            "Should fail when CA cert file does not exist"
+        );
         let err = result.err().unwrap();
-        assert!(err.contains("Failed to read CA certificate"), "Error should mention CA cert: {}", err);
+        assert!(
+            err.contains("Failed to read CA certificate"),
+            "Error should mention CA cert: {}",
+            err
+        );
     }
 
     #[test]
@@ -4230,7 +4564,11 @@ mod tests {
             insecure_skip_verify: false,
         };
         let result = configure_tls_transport(&tls);
-        assert!(result.is_ok(), "Should succeed with a readable CA cert file: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Should succeed with a readable CA cert file: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -4278,7 +4616,8 @@ mod tests {
         let err = result.err().unwrap();
         assert!(
             err.contains("client_key_path is missing"),
-            "Should detect missing key when cert is present, got: {}", err
+            "Should detect missing key when cert is present, got: {}",
+            err
         );
 
         // Only key_path set, no cert_path -> error
@@ -4294,7 +4633,8 @@ mod tests {
         let err2 = result2.err().unwrap();
         assert!(
             err2.contains("client_cert_path is missing"),
-            "Should detect missing cert when key is present, got: {}", err2
+            "Should detect missing cert when key is present, got: {}",
+            err2
         );
     }
 
@@ -4329,7 +4669,11 @@ mod tests {
             insecure_skip_verify: false,
         };
         let result = configure_tls_transport(&tls);
-        assert!(result.is_ok(), "Should succeed loading CA, client cert, and key files: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Should succeed loading CA, client cert, and key files: {:?}",
+            result.err()
+        );
     }
 
     #[cfg(feature = "dev-platform")]
@@ -4375,14 +4719,35 @@ mod tests {
 
         // set_eye_recording: valid interval accepted, 0 = off accepted, invalid rejected
         assert!(matches!(
-            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}), &None).unwrap(),
-            MqttCommand::SetEyeRecording { interval_min: 5, .. }
+            MqttMonitor::build_dev_command(
+                "set_eye_recording",
+                &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}),
+                &None
+            )
+            .unwrap(),
+            MqttCommand::SetEyeRecording {
+                interval_min: 5,
+                ..
+            }
         ));
         assert!(matches!(
-            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 0}), &None).unwrap(),
-            MqttCommand::SetEyeRecording { interval_min: 0, .. }
+            MqttMonitor::build_dev_command(
+                "set_eye_recording",
+                &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 0}),
+                &None
+            )
+            .unwrap(),
+            MqttCommand::SetEyeRecording {
+                interval_min: 0,
+                ..
+            }
         ));
-        assert!(MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}), &None).is_err());
+        assert!(MqttMonitor::build_dev_command(
+            "set_eye_recording",
+            &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}),
+            &None
+        )
+        .is_err());
 
         // download_eye_history uppercases the MAC
         assert!(matches!(
@@ -4412,7 +4777,10 @@ mod tests {
         ));
 
         // malformed MAC rejected
-        assert!(MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None).is_err());
+        assert!(
+            MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -4421,22 +4789,26 @@ mod tests {
         // BEFORE execution. Get this wrong for a power-off and the ack is queued
         // behind a halt that never lets the event loop run again — every
         // successful power-off would look like a failure to the operator.
-        assert!(MqttMonitor::is_teardown_command(&MqttCommand::PowerOffDevice {
-            reason: "decommissioned".to_string(),
-            requested_by: "dr.jane@hospital.eu".to_string(),
-        }));
+        assert!(MqttMonitor::is_teardown_command(
+            &MqttCommand::PowerOffDevice {
+                reason: "decommissioned".to_string(),
+                requested_by: "dr.jane@hospital.eu".to_string(),
+            }
+        ));
 
         // The pre-existing members must stay classified.
-        assert!(MqttMonitor::is_teardown_command(&MqttCommand::RestartApplication {
-            reason: "r".to_string(),
-            requested_by: "dr.jane@hospital.eu".to_string(),
-        }));
+        assert!(MqttMonitor::is_teardown_command(
+            &MqttCommand::RestartApplication {
+                reason: "r".to_string(),
+                requested_by: "dr.jane@hospital.eu".to_string(),
+            }
+        ));
 
         // And an ordinary config change must NOT be, or it would be acked
         // optimistically before anyone knows whether it applied.
-        assert!(!MqttMonitor::is_teardown_command(&MqttCommand::SetLedBrightness {
-            brightness: 50,
-        }));
+        assert!(!MqttMonitor::is_teardown_command(
+            &MqttCommand::SetLedBrightness { brightness: 50 }
+        ));
     }
 
     #[test]
@@ -4452,7 +4824,9 @@ mod tests {
 
         // Ok -> the pre-built SUCCESS response passes through unchanged.
         match MqttMonitor::confirm_response_message(Ok(()), make()) {
-            MqttMessage::PublishConfigResponse { status, applied_at, .. } => {
+            MqttMessage::PublishConfigResponse {
+                status, applied_at, ..
+            } => {
                 assert_eq!(status, "SUCCESS");
                 assert_eq!(applied_at, Some(123));
             }

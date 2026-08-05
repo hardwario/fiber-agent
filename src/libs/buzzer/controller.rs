@@ -28,7 +28,8 @@ impl BuzzerController {
         let buzzer_state_clone = buzzer_state.clone();
         let gpio_clone = gpio.clone();
 
-        let buzzer_thread_handle = spawn_buzzer_thread(shutdown_flag_clone, buzzer_state_clone, gpio_clone);
+        let buzzer_thread_handle =
+            spawn_buzzer_thread(shutdown_flag_clone, buzzer_state_clone, gpio_clone);
 
         Ok(Self {
             shutdown_flag,
@@ -48,7 +49,8 @@ impl BuzzerController {
         let buzzer_state_clone = buzzer_state.clone();
         let gpio_clone = gpio.clone();
 
-        let buzzer_thread_handle = spawn_buzzer_thread(shutdown_flag_clone, buzzer_state_clone, gpio_clone);
+        let buzzer_thread_handle =
+            spawn_buzzer_thread(shutdown_flag_clone, buzzer_state_clone, gpio_clone);
 
         Ok(Self {
             shutdown_flag,

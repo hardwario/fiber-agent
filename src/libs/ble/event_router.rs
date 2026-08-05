@@ -67,7 +67,7 @@ fn handle(ev: &BleEvent, display: &SharedDisplayStateHandle, pairing: Option<&Pa
     match ev {
         BleEvent::ClientConnected { addr } => {
             if let Some(p) = pairing {
-                p.cancel_pairing();      // ensure MQTT pairing screen exits if it was showing
+                p.cancel_pairing(); // ensure MQTT pairing screen exits if it was showing
                 p.set_ble_active(true);
             }
             if let Ok(mut d) = display.lock() {

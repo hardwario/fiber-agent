@@ -69,7 +69,12 @@ impl AlarmStateMachine {
     /// before a sensor exits `NeverConnected` state (prevents false alarms from
     /// lucky single reads during OneWire bus stabilization at boot).
     /// Returns true if state changed
-    pub fn update_from_read_result(&mut self, success: bool, failure_threshold: u8, warmup_threshold: u8) -> bool {
+    pub fn update_from_read_result(
+        &mut self,
+        success: bool,
+        failure_threshold: u8,
+        warmup_threshold: u8,
+    ) -> bool {
         let old_state = self.current;
         self.previous = self.current;
 
@@ -171,8 +176,7 @@ impl AlarmStateMachine {
 
     /// Check if we just entered an alarm/critical state
     pub fn just_alarmed(&self) -> bool {
-        self.state_changed()
-            && self.current == AlarmState::Critical
+        self.state_changed() && self.current == AlarmState::Critical
     }
 
     /// Check if we just entered a warning state
@@ -355,14 +359,23 @@ mod tests {
         sm.update_from_read_result(false, 3, 1);
         let changed = sm.update_from_read_result(false, 3, 1);
         assert_eq!(sm.current, AlarmState::Disconnected);
-        assert!(changed, "first transition into Disconnected must report changed");
-        assert!(sm.state_changed(), "first Disconnected entry must show state_changed");
+        assert!(
+            changed,
+            "first transition into Disconnected must report changed"
+        );
+        assert!(
+            sm.state_changed(),
+            "first Disconnected entry must show state_changed"
+        );
 
         // Subsequent failures while staying Disconnected: NO further state changes
         for _ in 0..10 {
             let changed = sm.update_from_read_result(false, 3, 1);
             assert!(!changed, "stuck in Disconnected must not report changed");
-            assert!(!sm.state_changed(), "stuck in Disconnected must not show state_changed");
+            assert!(
+                !sm.state_changed(),
+                "stuck in Disconnected must not show state_changed"
+            );
         }
     }
 

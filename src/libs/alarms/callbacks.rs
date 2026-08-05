@@ -166,10 +166,18 @@ impl AlarmCallback for BuzzerCallback {
     fn on_event(&self, event: AlarmEvent) {
         match &event {
             AlarmEvent::Disconnected => {
-                eprintln!("{} Disconnected - should start beep pattern {:?}", self.prefix, BeepPattern::DisconnectedBeep);
+                eprintln!(
+                    "{} Disconnected - should start beep pattern {:?}",
+                    self.prefix,
+                    BeepPattern::DisconnectedBeep
+                );
             }
             AlarmEvent::Critical { .. } => {
-                eprintln!("{} Critical alarm - should start beep pattern {:?}", self.prefix, BeepPattern::CriticalBeep);
+                eprintln!(
+                    "{} Critical alarm - should start beep pattern {:?}",
+                    self.prefix,
+                    BeepPattern::CriticalBeep
+                );
             }
             AlarmEvent::Reconnected => {
                 eprintln!("{} Reconnected - should stop buzzer", self.prefix);
@@ -200,13 +208,19 @@ impl AlarmCallback for BuzzerStateCallback {
         // The actual buzzer control happens in the monitor loop
         match &event {
             AlarmEvent::Disconnected => {
-                eprintln!("{} [STATE] Sensor disconnected - buzzer should beep (pattern: 100ms on/off)", self.prefix);
+                eprintln!(
+                    "{} [STATE] Sensor disconnected - buzzer should beep (pattern: 100ms on/off)",
+                    self.prefix
+                );
             }
             AlarmEvent::Critical { value } => {
                 eprintln!("{} [STATE] Critical alarm at {:.1}°C - buzzer should beep (pattern: 200ms on/100ms off)", self.prefix, value);
             }
             AlarmEvent::Reconnected => {
-                eprintln!("{} [STATE] Sensor reconnected - buzzer should stop", self.prefix);
+                eprintln!(
+                    "{} [STATE] Sensor reconnected - buzzer should stop",
+                    self.prefix
+                );
             }
             _ => {}
         }
@@ -258,7 +272,10 @@ mod tests {
 
     #[test]
     fn test_beep_pattern_display() {
-        assert_eq!(format!("{:?}", BeepPattern::DisconnectedBeep), "DisconnectedBeep");
+        assert_eq!(
+            format!("{:?}", BeepPattern::DisconnectedBeep),
+            "DisconnectedBeep"
+        );
         assert_eq!(format!("{:?}", BeepPattern::CriticalBeep), "CriticalBeep");
     }
 

@@ -1,11 +1,11 @@
 // Configuration management for FIBER Medical Thermometer
 // Loads and provides access to configuration from fiber.config.yaml
 
+use crate::libs::alarms::AlarmThreshold;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-use crate::libs::alarms::AlarmThreshold;
 
 /// LED color configuration for alarm patterns
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,8 +22,8 @@ pub enum AlarmLedColor {
 #[serde(rename_all = "lowercase")]
 pub enum AlarmLedBlink {
     Steady,
-    Slow,   // 4 cycles
-    Fast,   // 1 cycle
+    Slow, // 4 cycles
+    Fast, // 1 cycle
 }
 
 /// Buzzer timing configuration
@@ -70,9 +70,9 @@ impl BuzzerTiming {
 pub enum AlarmBuzzerPattern {
     None,
     #[serde(rename = "disconnected")]
-    Disconnected,  // Configurable timing
+    Disconnected, // Configurable timing
     #[serde(rename = "critical")]
-    Critical,      // Configurable timing
+    Critical, // Configurable timing
 }
 
 /// Alarm state behavior configuration
@@ -316,7 +316,7 @@ impl SensorFileConfig {
             alarm_patterns: Some(Self::default_alarm_patterns()),
             common_alarms: AlarmThreshold {
                 critical_low_celsius: 32.0,
-                low_alarm_celsius: 0.0,    // disabled - defaults
+                low_alarm_celsius: 0.0, // disabled - defaults
                 warning_low_celsius: 35.0,
                 warning_high_celsius: 38.0,
                 high_alarm_celsius: 100.0, // disabled - defaults
@@ -900,13 +900,23 @@ impl Default for LoRaWANConfig {
     }
 }
 
-fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
-fn default_chirpstack_mqtt_port() -> u16 { 1883 }
-fn default_lorawan_publish_interval() -> u64 { 30 }
-fn default_lorawan_sensor_timeout() -> u64 { 3600 }
+fn default_chirpstack_mqtt_host() -> String {
+    "localhost".to_string()
+}
+fn default_chirpstack_mqtt_port() -> u16 {
+    1883
+}
+fn default_lorawan_publish_interval() -> u64 {
+    30
+}
+fn default_lorawan_sensor_timeout() -> u64 {
+    3600
+}
 
 /// Keeps the shipped behaviour for anyone who has not opted the viewer in.
-fn default_history_backfill_enabled() -> bool { true }
+fn default_history_backfill_enabled() -> bool {
+    true
+}
 
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -914,7 +924,7 @@ pub struct BrokerConfig {
     pub host: String,
     pub port: u16,
     #[serde(default)]
-    pub client_id: String,  // Empty = use hostname
+    pub client_id: String, // Empty = use hostname
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1008,7 +1018,7 @@ pub struct ConnectionConfig {
     #[serde(default = "default_timeout")]
     pub connection_timeout_sec: u64,
     #[serde(default)]
-    pub max_reconnect_attempts: u32,  // 0 = infinite
+    pub max_reconnect_attempts: u32, // 0 = infinite
     #[serde(default = "default_reconnect_delay")]
     pub reconnect_delay_sec: u64,
     #[serde(default = "default_max_reconnect_delay")]
@@ -1080,30 +1090,70 @@ fn default_hmac_secret_path() -> String {
 }
 
 // Default value functions for sensor configuration
-fn default_warmup_threshold() -> u8 { 3 }
+fn default_warmup_threshold() -> u8 {
+    3
+}
 
 // Default value functions for system configuration
-fn default_led_brightness() -> u8 { 50 }
-fn default_screen_brightness() -> u8 { 100 }
-fn default_buzzer_volume() -> u8 { 100 }
-fn default_screen_timeout_secs() -> u32 { 3600 }
+fn default_led_brightness() -> u8 {
+    50
+}
+fn default_screen_brightness() -> u8 {
+    100
+}
+fn default_buzzer_volume() -> u8 {
+    100
+}
+fn default_screen_timeout_secs() -> u32 {
+    3600
+}
 
 // Default value functions for MQTT configuration
-fn default_true() -> bool { true }
-fn default_qos_1() -> u8 { 1 }
-fn default_qos_2() -> u8 { 2 }
-fn default_queue_size() -> usize { 10000 }
-fn default_sensor_interval() -> u64 { 5 }
-fn default_power_interval() -> u64 { 10 }
-fn default_network_interval() -> u64 { 30 }
-fn default_system_interval() -> u64 { 60 }
-fn default_rate_limit() -> u32 { 10 }
-fn default_keepalive() -> u64 { 60 }
-fn default_timeout() -> u64 { 30 }
-fn default_reconnect_delay() -> u64 { 1 }
-fn default_max_reconnect_delay() -> u64 { 30 }
-fn default_lwt_topic() -> String { "status".to_string() }
-fn default_lwt_payload() -> String { r#"{"status":"offline"}"#.to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_qos_1() -> u8 {
+    1
+}
+fn default_qos_2() -> u8 {
+    2
+}
+fn default_queue_size() -> usize {
+    10000
+}
+fn default_sensor_interval() -> u64 {
+    5
+}
+fn default_power_interval() -> u64 {
+    10
+}
+fn default_network_interval() -> u64 {
+    30
+}
+fn default_system_interval() -> u64 {
+    60
+}
+fn default_rate_limit() -> u32 {
+    10
+}
+fn default_keepalive() -> u64 {
+    60
+}
+fn default_timeout() -> u64 {
+    30
+}
+fn default_reconnect_delay() -> u64 {
+    1
+}
+fn default_max_reconnect_delay() -> u64 {
+    30
+}
+fn default_lwt_topic() -> String {
+    "status".to_string()
+}
+fn default_lwt_payload() -> String {
+    r#"{"status":"offline"}"#.to_string()
+}
 
 /// Complete application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1177,7 +1227,10 @@ impl Config {
                     std::sync::Mutex::new(None);
                 if let Ok(mut last) = LAST_MIGRATION_WARNING.lock() {
                     if last.as_deref() != Some(msg.as_str()) {
-                        eprintln!("[config] migration failed: {} — falling back to direct read", msg);
+                        eprintln!(
+                            "[config] migration failed: {} — falling back to direct read",
+                            msg
+                        );
                         *last = Some(msg);
                     }
                 }
@@ -1239,9 +1292,7 @@ impl Config {
                     detection_threshold_mv: 12000,
                     battery_mode_threshold_mv: 11000,
                 },
-                led_blink: LedBlinkConfig {
-                    toggle_count: 8,
-                },
+                led_blink: LedBlinkConfig { toggle_count: 8 },
             },
             sensors: SensorConfig {
                 num_lines: 8,
@@ -1286,11 +1337,11 @@ impl Config {
                 buzzer_volume: 100,
                 screen_timeout_secs: 3600,
             },
-            display: DisplayConfig::default(),  // built-in overview layout
-            mqtt: None,  // MQTT disabled by default
-            lorawan: None,  // LoRaWAN disabled by default
+            display: DisplayConfig::default(), // built-in overview layout
+            mqtt: None,                        // MQTT disabled by default
+            lorawan: None,                     // LoRaWAN disabled by default
             ble: crate::libs::ble::BleConfig::default(),
-            eye: None,  // EYE BLE tags disabled by default
+            eye: None, // EYE BLE tags disabled by default
         }
     }
 }
@@ -1324,10 +1375,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing failure: shipped yaml has 2.4, test expects 2.2 (data drift). FOLLOW-UP: reconcile test vs shipped config and unignore."]
     fn shipped_sensors_yaml_has_voltage_low_only_defaults() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fiber.sensors.config.yaml");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
         let cfg = SensorFileConfig::from_file(&path)
             .expect("shipped fiber.sensors.config.yaml must parse");
         let v = cfg
@@ -1335,28 +1385,40 @@ mod tests {
             .get("voltage")
             .expect("voltage default present");
         assert_eq!(v.warning_low, Some(2.5));
-        assert_eq!(v.critical_low, Some(2.2));
-        assert!(v.warning_high.is_none(), "low_only field should not have warning_high");
-        assert!(v.critical_high.is_none(), "low_only field should not have critical_high");
+        // Raised from 2.2 to 2.4 (commit 1d7bd47): more runway on 2xAA
+        // stickers before the critical alarm fires.
+        assert_eq!(v.critical_low, Some(2.4));
+        assert!(
+            v.warning_high.is_none(),
+            "low_only field should not have warning_high"
+        );
+        assert!(
+            v.critical_high.is_none(),
+            "low_only field should not have critical_high"
+        );
     }
 
     #[test]
     fn shipped_sensors_yaml_mirrors_temperature_for_external_probes() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fiber.sensors.config.yaml");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
         let cfg = SensorFileConfig::from_file(&path).unwrap();
         let temp = cfg
             .common_lorawan_field_thresholds
             .get("temperature")
             .expect("temperature default present");
-        for name in ["ext_temperature_1", "ext_temperature_2",
-                     "machine_probe_temperature_1", "machine_probe_temperature_2"] {
+        for name in [
+            "ext_temperature_1",
+            "ext_temperature_2",
+            "machine_probe_temperature_1",
+            "machine_probe_temperature_2",
+        ] {
             let other = cfg
                 .common_lorawan_field_thresholds
                 .get(name)
                 .unwrap_or_else(|| panic!("{} default missing", name));
             assert_eq!(other.critical_low, temp.critical_low, "{}", name);
-            assert_eq!(other.warning_low,  temp.warning_low, "{}", name);
+            assert_eq!(other.warning_low, temp.warning_low, "{}", name);
             assert_eq!(other.warning_high, temp.warning_high, "{}", name);
             assert_eq!(other.critical_high, temp.critical_high, "{}", name);
         }
@@ -1364,13 +1426,14 @@ mod tests {
 
     #[test]
     fn shipped_sensors_yaml_omits_defaults_for_unbounded_fields() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fiber.sensors.config.yaml");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
         let cfg = SensorFileConfig::from_file(&path).unwrap();
         for name in ["illuminance", "pressure", "altitude"] {
             assert!(
                 cfg.common_lorawan_field_thresholds.get(name).is_none(),
-                "{} should NOT have a global default", name
+                "{} should NOT have a global default",
+                name
             );
         }
     }
@@ -1516,7 +1579,10 @@ custom_lines:
         assert_eq!(probe.dev_eui, None);
 
         assert_eq!(cfg.custom_lines[2].format.decimals, Some(0));
-        assert!(cfg.custom_lines[2].format.status_char, "unset options keep their default");
+        assert!(
+            cfg.custom_lines[2].format.status_char,
+            "unset options keep their default"
+        );
 
         assert_eq!(cfg.custom_lines[3].format.decimals, Some(2));
         assert!(!cfg.custom_lines[3].format.status_char);
@@ -1524,9 +1590,10 @@ custom_lines:
 
     #[test]
     fn display_line_format_defaults_when_format_omitted() {
-        let cfg: DisplayConfig =
-            serde_yaml::from_str("custom_lines:\n  - {source: ds18b20, line: 3, field: temperature}\n")
-                .unwrap();
+        let cfg: DisplayConfig = serde_yaml::from_str(
+            "custom_lines:\n  - {source: ds18b20, line: 3, field: temperature}\n",
+        )
+        .unwrap();
         let fmt = &cfg.custom_lines[0].format;
         assert!(fmt.units);
         assert_eq!(fmt.decimals, None);

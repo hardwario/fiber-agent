@@ -106,7 +106,6 @@ impl AlarmEvent {
             details: None,
         }
     }
-
 }
 
 /// Audit trail entry for system operations
@@ -267,7 +266,11 @@ impl fmt::Display for StorageStats {
         write!(
             f,
             "StorageStats {{ readings: {}, alarms: {}, audit: {}, size: {:.2}MB, path: {} }}",
-            self.total_readings, self.total_alarm_events, self.total_audit_entries, size_mb, self.db_path
+            self.total_readings,
+            self.total_alarm_events,
+            self.total_audit_entries,
+            size_mb,
+            self.db_path
         )
     }
 }
@@ -287,13 +290,7 @@ mod tests {
 
     #[test]
     fn test_alarm_event_creation() {
-        let event = AlarmEvent::new(
-            1000,
-            1,
-            AlarmState::Normal,
-            AlarmState::Warning,
-            Some(37.0),
-        );
+        let event = AlarmEvent::new(1000, 1, AlarmState::Normal, AlarmState::Warning, Some(37.0));
         assert_eq!(event.sensor_line, 1);
         assert_eq!(event.from_state, "NORMAL");
         assert_eq!(event.to_state, "WARNING");
@@ -314,7 +311,10 @@ mod tests {
 
     #[test]
     fn test_schema_version() {
-        let schema = SchemaVersion::new(1, "Initial schema with sensor_readings and alarm_events tables");
+        let schema = SchemaVersion::new(
+            1,
+            "Initial schema with sensor_readings and alarm_events tables",
+        );
         assert_eq!(schema.version, 1);
         assert!(schema.description.contains("Initial"));
     }

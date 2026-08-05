@@ -86,7 +86,9 @@ pub fn verify_certificate_signature(
         Err(_) => return false,
     };
 
-    ca_public_key.verify(canonical.as_bytes(), &signature).is_ok()
+    ca_public_key
+        .verify(canonical.as_bytes(), &signature)
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -133,7 +135,10 @@ mod tests {
         cert.signer_id = "hacker@evil.com".to_string();
 
         // Signature should no longer be valid
-        assert!(!verify_certificate_signature(&cert, &ca_key.verifying_key()));
+        assert!(!verify_certificate_signature(
+            &cert,
+            &ca_key.verifying_key()
+        ));
     }
 
     #[test]

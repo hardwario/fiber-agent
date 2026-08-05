@@ -28,7 +28,9 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuthError::SignatureVerificationFailed(msg) => write!(f, "Signature verification failed: {}", msg),
+            AuthError::SignatureVerificationFailed(msg) => {
+                write!(f, "Signature verification failed: {}", msg)
+            }
             AuthError::ChallengeNotFound(id) => write!(f, "Challenge not found: {}", id),
             AuthError::ChallengeExpired(id) => write!(f, "Challenge expired: {}", id),
             AuthError::InvalidState(msg) => write!(f, "Invalid state: {}", msg),
@@ -68,12 +70,17 @@ impl AuthorizationManager {
 
         // Initialize audit database with config_changes table
         if let Err(e) = Self::init_audit_db(&db_path_str) {
-            eprintln!("[AuthManager] Warning: Failed to initialize audit database: {}", e);
+            eprintln!(
+                "[AuthManager] Warning: Failed to initialize audit database: {}",
+                e
+            );
         }
 
         Self {
             verifier,
-            challenges: Arc::new(Mutex::new(ChallengeRegistry::new(max_concurrent_challenges))),
+            challenges: Arc::new(Mutex::new(ChallengeRegistry::new(
+                max_concurrent_challenges,
+            ))),
             db_path: db_path_str,
             challenge_timeout_sec,
         }
@@ -101,7 +108,8 @@ impl AuthorizationManager {
                 error_msg TEXT
             )",
             [],
-        ).map_err(|e| format!("Failed to create config_changes table: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create config_changes table: {}", e))?;
 
         // Create indexes for efficient querying
         conn.execute_batch(
@@ -360,7 +368,10 @@ impl AuthorizationManager {
 
     /// Get active challenge count
     pub fn active_challenge_count(&self) -> usize {
-        self.challenges.lock().unwrap_or_else(|e| e.into_inner()).active_count()
+        self.challenges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_count()
     }
 
     /// Reload CA registry from disk
@@ -406,10 +417,13 @@ impl AuthorizationManager {
         msg.insert("command_type", Value::String(command_type.to_string()));
         msg.insert("nonce", Value::String(nonce.to_string()));
         msg.insert("params", Self::sort_json_keys(params));
-        msg.insert("reason", match reason {
-            Some(r) => Value::String(r.clone()),
-            None => Value::Null,
-        });
+        msg.insert(
+            "reason",
+            match reason {
+                Some(r) => Value::String(r.clone()),
+                None => Value::Null,
+            },
+        );
         msg.insert("request_id", Value::String(request_id.to_string()));
         msg.insert("signer_id", Value::String(signer_id.to_string()));
         msg.insert("timestamp", json!(timestamp));
@@ -462,7 +476,7 @@ impl AuthorizationManager {
             "set_device_label" => "set_device_label",
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
-            "set_screen_timeout" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
+            "set_screen_timeout" => "set_screen_brightness", // reuse: screen-control permission (works with existing certs)
             // Deliberately NOT the screen-control permission. That one covers how
             // brightly and how long the panel is lit; this one decides which
             // measurements the panel lists at all, which is a different capability
@@ -472,25 +486,25 @@ impl AuthorizationManager {
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
-            "add_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
-            "remove_lorawan_sticker" => "set_lorawan_sensor_config",  // reuse same permission
-            "add_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
-            "remove_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
-            "set_eye_recording" => "set_lorawan_sensor_config",  // reuse: sensor config change
-            "download_eye_history" => "set_lorawan_sensor_config",  // reuse: sensor data op
-            "add_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
-            "remove_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
-            "detect_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor data op
+            "add_lorawan_sticker" => "set_lorawan_sensor_config", // reuse same permission
+            "remove_lorawan_sticker" => "set_lorawan_sensor_config", // reuse same permission
+            "add_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
+            "remove_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
+            "set_eye_recording" => "set_lorawan_sensor_config",   // reuse: sensor config change
+            "download_eye_history" => "set_lorawan_sensor_config", // reuse: sensor data op
+            "add_eye_tag" => "set_lorawan_sensor_config",         // reuse: sensor config change
+            "remove_eye_tag" => "set_lorawan_sensor_config",      // reuse: sensor config change
+            "detect_eye_tag" => "set_lorawan_sensor_config",      // reuse: sensor data op
             // system#6. Not a registration — it only widens what this gateway
             // listens for — but it is still a fleet-scoped write, so it takes the
             // same permission as adding a tag rather than a read permission.
             "set_eye_known_tags" => "set_lorawan_sensor_config",
-            "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
+            "reset_export_cursor" => "set_lorawan_sensor_config", // admin op: align with sticker management
 
             "set_lorawan_field_threshold" => "set_threshold",
             "delete_lorawan_field_threshold" => "set_threshold",
-            "set_sticker_config" => "set_lorawan_sensor_config",  // reuse sticker-management permission
-            "send_sticker_raw" => "set_lorawan_sensor_config",  // reuse sticker-management permission
+            "set_sticker_config" => "set_lorawan_sensor_config", // reuse sticker-management permission
+            "send_sticker_raw" => "set_lorawan_sensor_config", // reuse sticker-management permission
             "set_eye_field_threshold" => "set_lorawan_sensor_config",
             "delete_eye_field_threshold" => "set_lorawan_sensor_config",
             // #71 control commands. They reuse the sticker-management permission
@@ -739,32 +753,51 @@ impl AuthorizationManager {
     }
 
     /// Build executable command from challenge
-    fn build_command_from_challenge(&self, challenge: &PendingChallenge) -> AuthResult<MqttCommand> {
+    fn build_command_from_challenge(
+        &self,
+        challenge: &PendingChallenge,
+    ) -> AuthResult<MqttCommand> {
         match challenge.command_type.as_str() {
             "set_threshold" => {
-                let line = challenge.params.get("line")
+                let line = challenge
+                    .params
+                    .get("line")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))? as u8;
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))?
+                    as u8;
 
-                let thresholds = challenge.params.get("thresholds")
+                let thresholds = challenge
+                    .params
+                    .get("thresholds")
                     .ok_or_else(|| AuthError::InvalidCommand("Missing thresholds".to_string()))?;
 
                 Ok(MqttCommand::SetSensorThreshold {
                     line,
                     critical_low: thresholds["critical_low"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_low: thresholds.get("alarm_low").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    alarm_low: thresholds
+                        .get("alarm_low")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as f32,
                     warning_low: thresholds["warning_low"].as_f64().unwrap_or(0.0) as f32,
                     warning_high: thresholds["warning_high"].as_f64().unwrap_or(0.0) as f32,
-                    alarm_high: thresholds.get("alarm_high").and_then(|v| v.as_f64()).unwrap_or(100.0) as f32,
+                    alarm_high: thresholds
+                        .get("alarm_high")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(100.0) as f32,
                     critical_high: thresholds["critical_high"].as_f64().unwrap_or(0.0) as f32,
                 })
             }
             "set_sensor_name" => {
-                let line = challenge.params.get("line")
+                let line = challenge
+                    .params
+                    .get("line")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))? as u8;
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))?
+                    as u8;
 
-                let name = challenge.params.get("name")
+                let name = challenge
+                    .params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
                     .to_string();
@@ -772,11 +805,16 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetSensorName { line, name })
             }
             "set_sensor_location" => {
-                let line = challenge.params.get("line")
+                let line = challenge
+                    .params
+                    .get("line")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))? as u8;
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing line".to_string()))?
+                    as u8;
 
-                let location = challenge.params.get("location")
+                let location = challenge
+                    .params
+                    .get("location")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing location".to_string()))?
                     .to_string();
@@ -784,31 +822,49 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetSensorLocation { line, location })
             }
             "restart_application" => {
-                let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());
+                let reason = challenge
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "Remote configuration".to_string());
                 Ok(MqttCommand::RestartApplication {
                     reason,
                     requested_by: challenge.signer_id.clone(),
                 })
             }
             "power_off" => {
-                let reason = challenge.reason.clone().unwrap_or_else(|| "Remote power-off".to_string());
+                let reason = challenge
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "Remote power-off".to_string());
                 Ok(MqttCommand::PowerOffDevice {
                     reason,
                     requested_by: challenge.signer_id.clone(),
                 })
             }
             "set_interval" => {
-                let sample_interval_ms = challenge.params.get("sample_interval_ms")
+                let sample_interval_ms = challenge
+                    .params
+                    .get("sample_interval_ms")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing sample_interval_ms".to_string()))?;
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing sample_interval_ms".to_string())
+                    })?;
 
-                let aggregation_interval_ms = challenge.params.get("aggregation_interval_ms")
+                let aggregation_interval_ms = challenge
+                    .params
+                    .get("aggregation_interval_ms")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing aggregation_interval_ms".to_string()))?;
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing aggregation_interval_ms".to_string())
+                    })?;
 
-                let report_interval_ms = challenge.params.get("report_interval_ms")
+                let report_interval_ms = challenge
+                    .params
+                    .get("report_interval_ms")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing report_interval_ms".to_string()))?;
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing report_interval_ms".to_string())
+                    })?;
 
                 Ok(MqttCommand::SetInterval {
                     sample_interval_ms,
@@ -817,19 +873,23 @@ impl AuthorizationManager {
                 })
             }
             "set_system_info_interval" => {
-                let interval_seconds = challenge.params.get("interval_seconds")
+                let interval_seconds = challenge
+                    .params
+                    .get("interval_seconds")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| AuthError::InvalidCommand("Missing interval_seconds".to_string()))?;
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing interval_seconds".to_string())
+                    })?;
 
                 Ok(MqttCommand::SetSystemInfoInterval { interval_seconds })
             }
-            "add_signer" => {
-                Ok(MqttCommand::AddSigner {
-                    signer_data: challenge.params.clone(),
-                })
-            }
+            "add_signer" => Ok(MqttCommand::AddSigner {
+                signer_data: challenge.params.clone(),
+            }),
             "remove_signer" => {
-                let signer_id = challenge.params.get("signer_id")
+                let signer_id = challenge
+                    .params
+                    .get("signer_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing signer_id".to_string()))?
                     .to_string();
@@ -837,22 +897,25 @@ impl AuthorizationManager {
                 Ok(MqttCommand::RemoveSigner { signer_id })
             }
             "update_signer" => {
-                let signer_id = challenge.params.get("signer_id")
+                let signer_id = challenge
+                    .params
+                    .get("signer_id")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing signer_id".to_string()))?
                     .to_string();
 
-                let changes = challenge.params.get("changes")
+                let changes = challenge
+                    .params
+                    .get("changes")
                     .ok_or_else(|| AuthError::InvalidCommand("Missing changes".to_string()))?
                     .clone();
 
-                Ok(MqttCommand::UpdateSigner {
-                    signer_id,
-                    changes,
-                })
+                Ok(MqttCommand::UpdateSigner { signer_id, changes })
             }
             "set_device_label" => {
-                let label = challenge.params.get("label")
+                let label = challenge
+                    .params
+                    .get("label")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing label".to_string()))?
                     .to_string();
@@ -860,33 +923,43 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetDeviceLabel { label })
             }
             "set_led_brightness" => {
-                let brightness = challenge.params.get("brightness")
+                let brightness = challenge
+                    .params
+                    .get("brightness")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing brightness".to_string()))?
                     as u8;
 
                 // Validate range
                 if brightness > 100 {
-                    return Err(AuthError::InvalidCommand("Brightness must be 0-100".to_string()));
+                    return Err(AuthError::InvalidCommand(
+                        "Brightness must be 0-100".to_string(),
+                    ));
                 }
 
                 Ok(MqttCommand::SetLedBrightness { brightness })
             }
             "set_screen_brightness" => {
-                let brightness = challenge.params.get("brightness")
+                let brightness = challenge
+                    .params
+                    .get("brightness")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing brightness".to_string()))?
                     as u8;
 
                 // Validate range
                 if brightness > 100 {
-                    return Err(AuthError::InvalidCommand("Brightness must be 0-100".to_string()));
+                    return Err(AuthError::InvalidCommand(
+                        "Brightness must be 0-100".to_string(),
+                    ));
                 }
 
                 Ok(MqttCommand::SetScreenBrightness { brightness })
             }
             "set_screen_timeout" => {
-                let timeout_secs = challenge.params.get("timeout_secs")
+                let timeout_secs = challenge
+                    .params
+                    .get("timeout_secs")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing timeout_secs".to_string()))?;
 
@@ -894,13 +967,19 @@ impl AuthorizationManager {
                 // practical upper bound beyond what the u32 field can hold, so
                 // only guard the u64 -> u32 cast.
                 if timeout_secs > u64::from(u32::MAX) {
-                    return Err(AuthError::InvalidCommand("Screen timeout out of range".to_string()));
+                    return Err(AuthError::InvalidCommand(
+                        "Screen timeout out of range".to_string(),
+                    ));
                 }
 
-                Ok(MqttCommand::SetScreenTimeout { timeout_secs: timeout_secs as u32 })
+                Ok(MqttCommand::SetScreenTimeout {
+                    timeout_secs: timeout_secs as u32,
+                })
             }
             "set_display_lines" => {
-                let raw = challenge.params.get("lines")
+                let raw = challenge
+                    .params
+                    .get("lines")
                     .ok_or_else(|| AuthError::InvalidCommand("Missing lines".to_string()))?;
 
                 // Same `Deserialize` derive as the YAML path — one schema, two
@@ -921,46 +1000,64 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetDisplayLines { lines })
             }
             "set_buzzer_volume" => {
-                let volume = challenge.params.get("volume")
+                let volume = challenge
+                    .params
+                    .get("volume")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing volume".to_string()))?
                     as u8;
 
                 // Validate range
                 if volume > 100 {
-                    return Err(AuthError::InvalidCommand("Volume must be 0-100".to_string()));
+                    return Err(AuthError::InvalidCommand(
+                        "Volume must be 0-100".to_string(),
+                    ));
                 }
 
                 Ok(MqttCommand::SetBuzzerVolume { volume })
             }
             "set_network_config" => {
-                let interface = challenge.params.get("interface")
+                let interface = challenge
+                    .params
+                    .get("interface")
                     .and_then(|v| v.as_str())
                     .unwrap_or("ethernet")
                     .to_string();
 
-                let config_type = challenge.params.get("type")
+                let config_type = challenge
+                    .params
+                    .get("type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("dhcp")
                     .to_string();
 
-                let ip_address = challenge.params.get("ip_address")
+                let ip_address = challenge
+                    .params
+                    .get("ip_address")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let subnet_mask = challenge.params.get("subnet_mask")
+                let subnet_mask = challenge
+                    .params
+                    .get("subnet_mask")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let gateway = challenge.params.get("gateway")
+                let gateway = challenge
+                    .params
+                    .get("gateway")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let dns_primary = challenge.params.get("dns_primary")
+                let dns_primary = challenge
+                    .params
+                    .get("dns_primary")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let dns_secondary = challenge.params.get("dns_secondary")
+                let dns_secondary = challenge
+                    .params
+                    .get("dns_secondary")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
@@ -975,20 +1072,28 @@ impl AuthorizationManager {
                 })
             }
             "set_lorawan_sensor_config" => {
-                let dev_eui = challenge.params.get("dev_eui")
+                let dev_eui = challenge
+                    .params
+                    .get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
 
-                let name = challenge.params.get("name")
+                let name = challenge
+                    .params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let serial_number = challenge.params.get("serial_number")
+                let serial_number = challenge
+                    .params
+                    .get("serial_number")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let location = challenge.params.get("location")
+                let location = challenge
+                    .params
+                    .get("location")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
@@ -1000,149 +1105,212 @@ impl AuthorizationManager {
                 })
             }
             "set_lorawan_field_threshold" => {
-                let dev_eui = challenge.params.get("dev_eui")
+                let dev_eui = challenge
+                    .params
+                    .get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
-                let field = challenge.params.get("field")
+                let field = challenge
+                    .params
+                    .get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
-                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let critical_low = challenge
+                    .params
+                    .get("critical_low")
+                    .and_then(|v| v.as_f64());
                 let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
-                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
-                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                let warning_high = challenge
+                    .params
+                    .get("warning_high")
+                    .and_then(|v| v.as_f64());
+                let critical_high = challenge
+                    .params
+                    .get("critical_high")
+                    .and_then(|v| v.as_f64());
                 Ok(MqttCommand::SetLoRaWANFieldThreshold {
-                    dev_eui, field,
-                    critical_low, warning_low, warning_high, critical_high,
+                    dev_eui,
+                    field,
+                    critical_low,
+                    warning_low,
+                    warning_high,
+                    critical_high,
                 })
             }
             "delete_lorawan_field_threshold" => {
-                let dev_eui = challenge.params.get("dev_eui")
+                let dev_eui = challenge
+                    .params
+                    .get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
-                let field = challenge.params.get("field")
+                let field = challenge
+                    .params
+                    .get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
                 Ok(MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field })
             }
-            "set_sticker_config" => {
-                MqttCommand::parse_set_sticker_config(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
-            }
-            "send_sticker_raw" => {
-                MqttCommand::parse_send_sticker_raw(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
-            }
+            "set_sticker_config" => MqttCommand::parse_set_sticker_config(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
+            "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
             "set_eye_field_threshold" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
-                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
                 }
-                let field = challenge.params.get("field")
+                let field = challenge
+                    .params
+                    .get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
-                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let critical_low = challenge
+                    .params
+                    .get("critical_low")
+                    .and_then(|v| v.as_f64());
                 let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
-                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
-                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                let warning_high = challenge
+                    .params
+                    .get("warning_high")
+                    .and_then(|v| v.as_f64());
+                let critical_high = challenge
+                    .params
+                    .get("critical_high")
+                    .and_then(|v| v.as_f64());
                 Ok(MqttCommand::SetEyeFieldThreshold {
-                    mac, field,
-                    critical_low, warning_low, warning_high, critical_high,
+                    mac,
+                    field,
+                    critical_low,
+                    warning_low,
+                    warning_high,
+                    critical_high,
                 })
             }
             "delete_eye_field_threshold" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
-                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
                 }
-                let field = challenge.params.get("field")
+                let field = challenge
+                    .params
+                    .get("field")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
                 Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
             }
-            "sticker_reboot" => {
-                MqttCommand::parse_sticker_reboot(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
-            }
-            "sticker_device_reset" => {
-                MqttCommand::parse_sticker_device_reset(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
-            }
+            "sticker_reboot" => MqttCommand::parse_sticker_reboot(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
+            "sticker_device_reset" => MqttCommand::parse_sticker_device_reset(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
             "sticker_reset_counters" => {
                 MqttCommand::parse_sticker_reset_counters(&challenge.params)
                     .map_err(AuthError::InvalidCommand)
             }
-            "sticker_clock_sync" => {
-                MqttCommand::parse_sticker_clock_sync(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
-            }
+            "sticker_clock_sync" => MqttCommand::parse_sticker_clock_sync(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
             "add_lorawan_sticker" => {
-                let dev_eui = challenge.params.get("dev_eui")
+                let dev_eui = challenge
+                    .params
+                    .get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
 
-                let name = challenge.params.get("name")
+                let name = challenge
+                    .params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
                     .to_string();
 
-                let serial_number = challenge.params.get("serial_number")
+                let serial_number = challenge
+                    .params
+                    .get("serial_number")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing serial_number".to_string()))?
                     .to_string();
 
-                let mode = challenge.params.get("mode")
+                let mode = challenge
+                    .params
+                    .get("mode")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mode".to_string()))?;
 
                 let activation = match mode {
                     "otaa" => {
-                        let app_key = challenge.params.get("app_key")
+                        let app_key = challenge
+                            .params
+                            .get("app_key")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| AuthError::InvalidCommand("Missing app_key for OTAA".to_string()))?
+                            .ok_or_else(|| {
+                                AuthError::InvalidCommand("Missing app_key for OTAA".to_string())
+                            })?
                             .to_string();
                         if app_key.len() != 32 || !app_key.chars().all(|c| c.is_ascii_hexdigit()) {
                             return Err(AuthError::InvalidCommand(
-                                "app_key must be exactly 32 hex characters".to_string()
+                                "app_key must be exactly 32 hex characters".to_string(),
                             ));
                         }
                         // join_eui: required from new viewers; absent payloads
                         // (legacy viewer) fall back to all-zeros for compatibility.
-                        let join_eui = challenge.params.get("join_eui")
+                        let join_eui = challenge
+                            .params
+                            .get("join_eui")
                             .and_then(|v| v.as_str())
                             .unwrap_or("0000000000000000")
                             .to_string();
-                        if join_eui.len() != 16 || !join_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+                        if join_eui.len() != 16 || !join_eui.chars().all(|c| c.is_ascii_hexdigit())
+                        {
                             return Err(AuthError::InvalidCommand(
-                                "join_eui must be exactly 16 hex characters".to_string()
+                                "join_eui must be exactly 16 hex characters".to_string(),
                             ));
                         }
                         crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui }
                     }
                     "abp" => {
-                        let devaddr = challenge.params.get("devaddr")
+                        let devaddr = challenge
+                            .params
+                            .get("devaddr")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| AuthError::InvalidCommand("Missing devaddr for ABP".to_string()))?
+                            .ok_or_else(|| {
+                                AuthError::InvalidCommand("Missing devaddr for ABP".to_string())
+                            })?
                             .to_string();
-                        let nwkskey = challenge.params.get("nwkskey")
+                        let nwkskey = challenge
+                            .params
+                            .get("nwkskey")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| AuthError::InvalidCommand("Missing nwkskey for ABP".to_string()))?
+                            .ok_or_else(|| {
+                                AuthError::InvalidCommand("Missing nwkskey for ABP".to_string())
+                            })?
                             .to_string();
-                        let appskey = challenge.params.get("appskey")
+                        let appskey = challenge
+                            .params
+                            .get("appskey")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| AuthError::InvalidCommand("Missing appskey for ABP".to_string()))?
+                            .ok_or_else(|| {
+                                AuthError::InvalidCommand("Missing appskey for ABP".to_string())
+                            })?
                             .to_string();
                         if devaddr.len() != 8 || !devaddr.chars().all(|c| c.is_ascii_hexdigit()) {
                             return Err(AuthError::InvalidCommand("devaddr must be 8 hex".into()));
@@ -1153,12 +1321,17 @@ impl AuthorizationManager {
                         if appskey.len() != 32 || !appskey.chars().all(|c| c.is_ascii_hexdigit()) {
                             return Err(AuthError::InvalidCommand("appskey must be 32 hex".into()));
                         }
-                        crate::libs::mqtt::messages::ActivationMode::Abp { devaddr, nwkskey, appskey }
+                        crate::libs::mqtt::messages::ActivationMode::Abp {
+                            devaddr,
+                            nwkskey,
+                            appskey,
+                        }
                     }
                     other => {
-                        return Err(AuthError::InvalidCommand(
-                            format!("Unknown activation mode: {}", other)
-                        ));
+                        return Err(AuthError::InvalidCommand(format!(
+                            "Unknown activation mode: {}",
+                            other
+                        )));
                     }
                 };
 
@@ -1170,7 +1343,9 @@ impl AuthorizationManager {
                 })
             }
             "remove_lorawan_sticker" => {
-                let dev_eui = challenge.params.get("dev_eui")
+                let dev_eui = challenge
+                    .params
+                    .get("dev_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
@@ -1178,14 +1353,18 @@ impl AuthorizationManager {
                 Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
             }
             "add_external_gateway" => {
-                let gateway_eui = challenge.params.get("gateway_eui")
+                let gateway_eui = challenge
+                    .params
+                    .get("gateway_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing gateway_eui".to_string()))?;
                 // normalize_eui validates 16 hex + lowercases; reject a bad EUI early.
                 let gateway_eui = crate::libs::lorawan::provisioning::normalize_eui(gateway_eui)
                     .map_err(AuthError::InvalidCommand)?;
 
-                let name = challenge.params.get("name")
+                let name = challenge
+                    .params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing name".to_string()))?
                     .to_string();
@@ -1193,7 +1372,9 @@ impl AuthorizationManager {
                 Ok(MqttCommand::AddExternalGateway { gateway_eui, name })
             }
             "remove_external_gateway" => {
-                let gateway_eui = challenge.params.get("gateway_eui")
+                let gateway_eui = challenge
+                    .params
+                    .get("gateway_eui")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing gateway_eui".to_string()))?;
                 let gateway_eui = crate::libs::lorawan::provisioning::normalize_eui(gateway_eui)
@@ -1202,11 +1383,15 @@ impl AuthorizationManager {
                 Ok(MqttCommand::RemoveExternalGateway { gateway_eui })
             }
             "set_eye_recording" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                let interval_min = challenge.params.get("interval_min")
+                let interval_min = challenge
+                    .params
+                    .get("interval_min")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing interval_min".to_string()))?;
                 if !matches!(interval_min, 0 | 1 | 5 | 15) {
@@ -1214,17 +1399,24 @@ impl AuthorizationManager {
                         "interval_min must be 0 (off), 1, 5 or 15".to_string(),
                     ));
                 }
-                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+                Ok(MqttCommand::SetEyeRecording {
+                    mac,
+                    interval_min: interval_min as u16,
+                })
             }
             "download_eye_history" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
                 Ok(MqttCommand::DownloadEyeHistory { mac })
             }
             "add_eye_tag" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
@@ -1233,14 +1425,18 @@ impl AuthorizationManager {
                         "Invalid MAC address: {mac}"
                     )));
                 }
-                let name = challenge.params.get("name")
+                let name = challenge
+                    .params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
                 Ok(MqttCommand::AddEyeTag { mac, name })
             }
             "set_eye_known_tags" => {
-                let arr = challenge.params.get("macs")
+                let arr = challenge
+                    .params
+                    .get("macs")
                     .and_then(|v| v.as_array())
                     .ok_or_else(|| {
                         AuthError::InvalidCommand("Missing or non-array 'macs'".to_string())
@@ -1268,7 +1464,9 @@ impl AuthorizationManager {
                 Ok(MqttCommand::SetEyeKnownTags { macs })
             }
             "remove_eye_tag" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
@@ -1280,7 +1478,9 @@ impl AuthorizationManager {
                 Ok(MqttCommand::RemoveEyeTag { mac })
             }
             "detect_eye_tag" => {
-                let mac = challenge.params.get("mac")
+                let mac = challenge
+                    .params
+                    .get("mac")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
@@ -1345,7 +1545,12 @@ impl AuthorizationManager {
     }
 
     /// Log config response to database
-    fn log_config_response(&self, challenge_id: &str, confirmation: &str, _timestamp: i64) -> AuthResult<()> {
+    fn log_config_response(
+        &self,
+        challenge_id: &str,
+        confirmation: &str,
+        _timestamp: i64,
+    ) -> AuthResult<()> {
         let conn = Connection::open(&self.db_path)
             .map_err(|e| AuthError::DatabaseError(format!("Failed to open database: {}", e)))?;
 
@@ -1401,20 +1606,26 @@ mod tests {
         // failure by loosening this to accept the old name; reissue the
         // certificate instead.
         assert_eq!(
-            manager.command_type_to_permission("restart_application").unwrap(),
+            manager
+                .command_type_to_permission("restart_application")
+                .unwrap(),
             "restart_application"
         );
         // A reboot self-recovers, a power-off does not: holding one must never
         // imply the other. The Viewer asserts the same inequality.
         assert_ne!(
-            manager.command_type_to_permission("restart_application").unwrap(),
+            manager
+                .command_type_to_permission("restart_application")
+                .unwrap(),
             manager.command_type_to_permission("power_off").unwrap()
         );
 
         // Screen timeout reuses the screen-brightness permission so it works
         // with certificates issued before the timeout command existed.
         assert_eq!(
-            manager.command_type_to_permission("set_screen_timeout").unwrap(),
+            manager
+                .command_type_to_permission("set_screen_timeout")
+                .unwrap(),
             "set_screen_brightness"
         );
 
@@ -1459,8 +1670,10 @@ mod tests {
     #[test]
     fn build_detect_eye_tag_ok() {
         let manager = create_test_manager();
-        let challenge =
-            test_challenge("detect_eye_tag", serde_json::json!({"mac": "AA:BB:CC:DD:EE:FF"}));
+        let challenge = test_challenge(
+            "detect_eye_tag",
+            serde_json::json!({"mac": "AA:BB:CC:DD:EE:FF"}),
+        );
         match manager.build_command_from_challenge(&challenge).unwrap() {
             MqttCommand::DetectEyeTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
             other => panic!("expected DetectEyeTag, got {other:?}"),
@@ -1478,7 +1691,13 @@ mod tests {
             }),
         );
         match manager.build_command_from_challenge(&challenge).unwrap() {
-            MqttCommand::SetEyeFieldThreshold { mac, field, warning_high, critical_high, .. } => {
+            MqttCommand::SetEyeFieldThreshold {
+                mac,
+                field,
+                warning_high,
+                critical_high,
+                ..
+            } => {
                 assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
                 assert_eq!(field, "temperature");
                 assert_eq!(warning_high, Some(8.0));
@@ -1487,12 +1706,17 @@ mod tests {
             other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
         }
         assert_eq!(
-            manager.command_type_to_permission("set_eye_field_threshold").unwrap(),
+            manager
+                .command_type_to_permission("set_eye_field_threshold")
+                .unwrap(),
             "set_lorawan_sensor_config",
         );
     }
 
-    fn test_challenge(command_type: &str, params: Value) -> crate::libs::authorization::state::PendingChallenge {
+    fn test_challenge(
+        command_type: &str,
+        params: Value,
+    ) -> crate::libs::authorization::state::PendingChallenge {
         use crate::libs::authorization::state::{ChallengeState, PendingChallenge};
         PendingChallenge {
             challenge_id: "c".to_string(),
@@ -1514,7 +1738,9 @@ mod tests {
     #[test]
     fn set_display_lines_has_its_own_permission() {
         let manager = create_test_manager();
-        let permission = manager.command_type_to_permission("set_display_lines").unwrap();
+        let permission = manager
+            .command_type_to_permission("set_display_lines")
+            .unwrap();
         assert_eq!(permission, "set_display_lines");
 
         // Hard cutover, asserted explicitly: choosing which sensors the local
@@ -1604,11 +1830,17 @@ mod tests {
         // say that monitoring stops and that the device will not come back by
         // itself. A generic "Execute command: power_off" fallback would let
         // someone approve an irreversible action blind.
-        assert!(!description.starts_with("Execute command"), "got: {description}");
+        assert!(
+            !description.starts_with("Execute command"),
+            "got: {description}"
+        );
         let lower = description.to_lowercase();
         assert!(lower.contains("power"), "got: {description}");
         assert!(lower.contains("monitoring"), "got: {description}");
-        assert!(lower.contains("by hand") || lower.contains("physically"), "got: {description}");
+        assert!(
+            lower.contains("by hand") || lower.contains("physically"),
+            "got: {description}"
+        );
     }
 
     #[test]
@@ -1625,7 +1857,11 @@ mod tests {
         );
         match manager.build_command_from_challenge(&challenge) {
             Ok(MqttCommand::SetDisplayLines { lines }) => {
-                assert_eq!(lines.len(), 2, "array order is semantic and must be preserved");
+                assert_eq!(
+                    lines.len(),
+                    2,
+                    "array order is semantic and must be preserved"
+                );
                 assert_eq!(lines[0].field, "ext_temperature_1");
                 assert_eq!(lines[0].dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
                 assert_eq!(lines[1].line, Some(0));
@@ -1658,7 +1894,9 @@ mod tests {
                 { "source": "sticker", "dev_eui": "70b3d57ed0051f2a", "field": "battery_percent" },
             ]}),
         );
-        let err = manager.build_command_from_challenge(&challenge).unwrap_err();
+        let err = manager
+            .build_command_from_challenge(&challenge)
+            .unwrap_err();
         assert!(
             format!("{:?}", err).contains("unknown sticker field"),
             "got: {:?}",
@@ -1676,7 +1914,10 @@ mod tests {
     #[test]
     fn build_command_from_challenge_screen_timeout_ok() {
         let manager = create_test_manager();
-        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 3600 }));
+        let challenge = test_challenge(
+            "set_screen_timeout",
+            serde_json::json!({ "timeout_secs": 3600 }),
+        );
         match manager.build_command_from_challenge(&challenge) {
             Ok(MqttCommand::SetScreenTimeout { timeout_secs }) => assert_eq!(timeout_secs, 3600),
             other => panic!("expected SetScreenTimeout, got {:?}", other),
@@ -1726,8 +1967,7 @@ mod tests {
         );
         assert!(manager.build_command_from_challenge(&bad_mac).is_err());
 
-        let not_strings =
-            test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [42] }));
+        let not_strings = test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [42] }));
         assert!(manager.build_command_from_challenge(&not_strings).is_err());
 
         let missing = test_challenge("set_eye_known_tags", serde_json::json!({}));
@@ -1738,7 +1978,9 @@ mod tests {
     fn set_eye_known_tags_takes_the_sticker_management_permission() {
         let manager = create_test_manager();
         assert_eq!(
-            manager.command_type_to_permission("set_eye_known_tags").unwrap(),
+            manager
+                .command_type_to_permission("set_eye_known_tags")
+                .unwrap(),
             "set_lorawan_sensor_config",
         );
     }
@@ -1746,7 +1988,10 @@ mod tests {
     #[test]
     fn build_command_from_challenge_screen_timeout_zero_allowed() {
         let manager = create_test_manager();
-        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 0 }));
+        let challenge = test_challenge(
+            "set_screen_timeout",
+            serde_json::json!({ "timeout_secs": 0 }),
+        );
         // 0 is the documented "always on" sentinel and must be accepted.
         assert!(matches!(
             manager.build_command_from_challenge(&challenge),
@@ -1759,12 +2004,20 @@ mod tests {
         let manager = create_test_manager();
         // No practical upper bound: any value that fits u32 is accepted
         // (e.g. beyond the old 24h/86400 guardrail).
-        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 86_401 }));
+        let challenge = test_challenge(
+            "set_screen_timeout",
+            serde_json::json!({ "timeout_secs": 86_401 }),
+        );
         assert!(matches!(
             manager.build_command_from_challenge(&challenge),
-            Ok(MqttCommand::SetScreenTimeout { timeout_secs: 86_401 })
+            Ok(MqttCommand::SetScreenTimeout {
+                timeout_secs: 86_401
+            })
         ));
-        let max = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": u32::MAX as u64 }));
+        let max = test_challenge(
+            "set_screen_timeout",
+            serde_json::json!({ "timeout_secs": u32::MAX as u64 }),
+        );
         assert!(matches!(
             manager.build_command_from_challenge(&max),
             Ok(MqttCommand::SetScreenTimeout { timeout_secs }) if timeout_secs == u32::MAX
@@ -1775,7 +2028,10 @@ mod tests {
     fn build_command_from_challenge_screen_timeout_out_of_range_rejected() {
         let manager = create_test_manager();
         // Only values that overflow u32 are rejected.
-        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": (u32::MAX as u64) + 1 }));
+        let challenge = test_challenge(
+            "set_screen_timeout",
+            serde_json::json!({ "timeout_secs": (u32::MAX as u64) + 1 }),
+        );
         assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 

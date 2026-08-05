@@ -168,7 +168,9 @@ impl ConfigApplier {
 
         // 5. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 6. Modify configuration
         if let Err(e) = self.update_line_thresholds(
@@ -313,7 +315,9 @@ impl ConfigApplier {
 
         // 6. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 7. Modify configuration
         if let Err(e) = self.update_line_name(&mut config, line, &name) {
@@ -440,7 +444,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         if let Err(e) = self.update_line_location(&mut config, line, &location) {
             return ApplyResult {
@@ -566,7 +572,9 @@ impl ConfigApplier {
 
         // 5. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 6. Update intervals in config
         if let Err(e) = self.update_sensor_intervals(
@@ -658,7 +666,9 @@ impl ConfigApplier {
                 success: false,
                 file_path: String::new(),
                 backup_path: None,
-                error_message: Some("System info interval must be at most 86400 seconds (24 hours)".to_string()),
+                error_message: Some(
+                    "System info interval must be at most 86400 seconds (24 hours)".to_string(),
+                ),
                 applied_at,
             };
         }
@@ -705,7 +715,9 @@ impl ConfigApplier {
 
         // 5. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 6. Update system info interval in mqtt section
         if let Err(e) = self.update_system_info_interval(&mut config, interval_seconds) {
@@ -830,7 +842,9 @@ impl ConfigApplier {
 
         // 5. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 6. Update device_label in system section
         if let Err(e) = self.update_device_label(&mut config, &label) {
@@ -873,10 +887,7 @@ impl ConfigApplier {
             };
         }
 
-        eprintln!(
-            "[ConfigApplier] ✓ Device label updated: \"{}\"",
-            label
-        );
+        eprintln!("[ConfigApplier] ✓ Device label updated: \"{}\"", label);
 
         // 9. Audit. Fire-and-forget — if the storage thread isn't wired up
         //    (tests, early boot) the failure is logged but doesn't roll
@@ -972,7 +983,9 @@ impl ConfigApplier {
 
         // 5. Create backup
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // 6. Update display.custom_lines
         if let Err(e) = self.update_display_custom_lines(&mut config, &lines) {
@@ -1018,7 +1031,10 @@ impl ConfigApplier {
         if lines.is_empty() {
             eprintln!("[ConfigApplier] ✓ Display lines cleared (built-in layout restored)");
         } else {
-            eprintln!("[ConfigApplier] ✓ Display lines updated ({} lines)", lines.len());
+            eprintln!(
+                "[ConfigApplier] ✓ Display lines updated ({} lines)",
+                lines.len()
+            );
         }
 
         // 9. Audit. Count only — labels and DevEUIs would put sensor identity
@@ -1109,7 +1125,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // Get or create lorawan.sensors array
         if let Err(e) = self.update_lorawan_sensor_config(
@@ -1232,7 +1250,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // Remove sensor from lorawan.sensors array
         let removed = (|| -> Result<bool, String> {
@@ -1394,7 +1414,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         if let Err(e) = self.update_external_gateway(&mut config, &gateway_eui, name.as_deref()) {
             return ApplyResult {
@@ -1508,7 +1530,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         let removed = (|| -> Result<bool, String> {
             let lorawan = config
@@ -1539,7 +1563,10 @@ impl ConfigApplier {
                     success: false,
                     file_path: config_file.to_string_lossy().to_string(),
                     backup_path: backup_path_str,
-                    error_message: Some(format!("Gateway with gateway_eui '{}' not found", gateway_eui)),
+                    error_message: Some(format!(
+                        "Gateway with gateway_eui '{}' not found",
+                        gateway_eui
+                    )),
                     applied_at,
                 };
             }
@@ -1658,7 +1685,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         let created = match self.update_eye_tag_config(&mut config, &mac, name.as_deref()) {
             Ok(created) => created,
@@ -1767,7 +1796,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         if let Err(e) = self.update_eye_recording_config(&mut config, &mac, interval_min) {
             return ApplyResult {
@@ -1807,7 +1838,11 @@ impl ConfigApplier {
 
         eprintln!(
             "[ConfigApplier] ✓ EYE recording {} for {}",
-            if interval_min == 0 { "off".to_string() } else { format!("{interval_min}min") },
+            if interval_min == 0 {
+                "off".to_string()
+            } else {
+                format!("{interval_min}min")
+            },
             mac
         );
         self.log_audit(
@@ -1880,7 +1915,9 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // Remove tag from eye.tags array (MAC compared case-insensitively).
         let removed = (|| -> Result<bool, String> {
@@ -2068,7 +2105,12 @@ impl ConfigApplier {
     }
 
     /// Update location for a specific sensor line in the YAML structure
-    fn update_line_location(&self, config: &mut Value, line: u8, location: &str) -> Result<(), String> {
+    fn update_line_location(
+        &self,
+        config: &mut Value,
+        line: u8,
+        location: &str,
+    ) -> Result<(), String> {
         let lines = config
             .get_mut("lines")
             .and_then(|v| v.as_sequence_mut())
@@ -2175,20 +2217,36 @@ impl ConfigApplier {
     }
 
     /// Update a `u8` field in the `system` section (brightness/volume; logged with `%`).
-    fn apply_system_field_u8_change(&self, field_name: &str, value: u8, display_name: &str) -> ApplyResult {
+    fn apply_system_field_u8_change(
+        &self,
+        field_name: &str,
+        value: u8,
+        display_name: &str,
+    ) -> ApplyResult {
         self.apply_system_field_num_change(field_name, u64::from(value), display_name, "%")
     }
 
     /// Update a `u32` field in the `system` section (e.g. `screen_timeout_secs`,
     /// which exceeds a `u8`; logged without a `%` suffix).
-    fn apply_system_field_u32_change(&self, field_name: &str, value: u32, display_name: &str) -> ApplyResult {
+    fn apply_system_field_u32_change(
+        &self,
+        field_name: &str,
+        value: u32,
+        display_name: &str,
+    ) -> ApplyResult {
         self.apply_system_field_num_change(field_name, u64::from(value), display_name, "")
     }
 
     /// Shared implementation for numeric `system` fields: atomic YAML rewrite with
     /// timestamped backup, rollback on failure, and an audit log entry. `unit` is
     /// appended to the success log line (e.g. `"%"` for percentages, `""` otherwise).
-    fn apply_system_field_num_change(&self, field_name: &str, value: u64, display_name: &str, unit: &str) -> ApplyResult {
+    fn apply_system_field_num_change(
+        &self,
+        field_name: &str,
+        value: u64,
+        display_name: &str,
+        unit: &str,
+    ) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2232,13 +2290,12 @@ impl ConfigApplier {
         };
 
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_path_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // Update field in system section
-        if let Some(system) = config
-            .get_mut("system")
-            .and_then(|v| v.as_mapping_mut())
-        {
+        if let Some(system) = config.get_mut("system").and_then(|v| v.as_mapping_mut()) {
             system.insert(
                 Value::String(field_name.to_string()),
                 Value::Number(serde_yaml::Number::from(value)),
@@ -2279,7 +2336,10 @@ impl ConfigApplier {
             };
         }
 
-        eprintln!("[ConfigApplier] ✓ {} updated: {}{}", display_name, value, unit);
+        eprintln!(
+            "[ConfigApplier] ✓ {} updated: {}{}",
+            display_name, value, unit
+        );
 
         self.log_audit(
             "SET_SYSTEM_FIELD",
@@ -2377,7 +2437,10 @@ impl ConfigApplier {
         if !config_map.contains_key(&lorawan_key) {
             let mut lorawan = Mapping::new();
             lorawan.insert(Value::String("enabled".to_string()), Value::Bool(true));
-            lorawan.insert(Value::String("sensors".to_string()), Value::Sequence(Vec::new()));
+            lorawan.insert(
+                Value::String("sensors".to_string()),
+                Value::Sequence(Vec::new()),
+            );
             config_map.insert(lorawan_key.clone(), Value::Mapping(lorawan));
         }
 
@@ -2427,13 +2490,22 @@ impl ConfigApplier {
 
         // Update fields
         if let Some(n) = name {
-            sensor_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
+            sensor_map.insert(
+                Value::String("name".to_string()),
+                Value::String(n.to_string()),
+            );
         }
         if let Some(sn) = serial_number {
-            sensor_map.insert(Value::String("serial_number".to_string()), Value::String(sn.to_string()));
+            sensor_map.insert(
+                Value::String("serial_number".to_string()),
+                Value::String(sn.to_string()),
+            );
         }
         if let Some(loc) = location {
-            sensor_map.insert(Value::String("location".to_string()), Value::String(loc.to_string()));
+            sensor_map.insert(
+                Value::String("location".to_string()),
+                Value::String(loc.to_string()),
+            );
         }
 
         Ok(())
@@ -2455,7 +2527,10 @@ impl ConfigApplier {
         if !config_map.contains_key(&lorawan_key) {
             let mut lorawan = Mapping::new();
             lorawan.insert(Value::String("enabled".to_string()), Value::Bool(true));
-            lorawan.insert(Value::String("gateways".to_string()), Value::Sequence(Vec::new()));
+            lorawan.insert(
+                Value::String("gateways".to_string()),
+                Value::Sequence(Vec::new()),
+            );
             config_map.insert(lorawan_key.clone(), Value::Mapping(lorawan));
         }
 
@@ -2504,7 +2579,10 @@ impl ConfigApplier {
 
         // Update fields
         if let Some(n) = name {
-            gateway_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
+            gateway_map.insert(
+                Value::String("name".to_string()),
+                Value::String(n.to_string()),
+            );
         }
 
         Ok(())
@@ -2573,7 +2651,10 @@ impl ConfigApplier {
         if !config_map.contains_key(&eye_key) {
             let mut eye = Mapping::new();
             eye.insert(Value::String("enabled".to_string()), Value::Bool(true));
-            eye.insert(Value::String("tags".to_string()), Value::Sequence(Vec::new()));
+            eye.insert(
+                Value::String("tags".to_string()),
+                Value::Sequence(Vec::new()),
+            );
             config_map.insert(eye_key.clone(), Value::Mapping(eye));
         }
 
@@ -2621,7 +2702,10 @@ impl ConfigApplier {
         };
 
         if let Some(n) = name {
-            tag_map.insert(Value::String("name".to_string()), Value::String(n.to_string()));
+            tag_map.insert(
+                Value::String("name".to_string()),
+                Value::String(n.to_string()),
+            );
         }
 
         Ok(created)
@@ -2638,36 +2722,78 @@ impl ConfigApplier {
         warning_high: Option<f64>,
         critical_high: Option<f64>,
     ) -> ApplyResult {
-        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         if dev_eui.is_empty() {
-            return ApplyResult { success: false, file_path: String::new(), backup_path: None,
-                error_message: Some("dev_eui cannot be empty".into()), applied_at };
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("dev_eui cannot be empty".into()),
+                applied_at,
+            };
         }
         let config_file = self.config_dir.join("fiber.config.yaml");
         let content = match fs::read_to_string(&config_file) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let mut cfg: Value = match serde_yaml::from_str(&content) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
-        if let Err(e) = self.upsert_field_threshold(&mut cfg, &dev_eui, &field,
-            critical_low, warning_low, warning_high, critical_high)
-        {
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+        if let Err(e) = self.upsert_field_threshold(
+            &mut cfg,
+            &dev_eui,
+            &field,
+            critical_low,
+            warning_low,
+            warning_high,
+            critical_high,
+        ) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
 
         let new_content = match serde_yaml::to_string(&cfg) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: backup_str,
+                    error_message: Some(e.to_string()),
+                    applied_at,
+                }
+            }
         };
         // Atomic write + rollback on failure, matching every other apply_*
         // method. fs::write directly would truncate the YAML mid-write on
@@ -2677,8 +2803,13 @@ impl ConfigApplier {
             if let Some(b) = backup_path.as_ref() {
                 let _ = self.rollback(&config_file, b);
             }
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
         self.log_audit(
             "SET_LORAWAN_FIELD_THRESHOLD",
@@ -2687,42 +2818,80 @@ impl ConfigApplier {
                 dev_eui, field, critical_low, warning_low, warning_high, critical_high,
             ),
         );
-        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-            backup_path: backup_str, error_message: None, applied_at }
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str,
+            error_message: None,
+            applied_at,
+        }
     }
 
     /// Remove a per-field threshold from lorawan.sensors[*].field_thresholds.
     pub fn delete_lorawan_field_threshold(&self, dev_eui: String, field: String) -> ApplyResult {
-        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let config_file = self.config_dir.join("fiber.config.yaml");
         let content = match fs::read_to_string(&config_file) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let mut cfg: Value = match serde_yaml::from_str(&content) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let backup_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
 
         // Surface whether anything was actually removed so callers can tell
         // a real delete from a misspelled-dev_eui/no-op. The YAML rewrite
         // still happens either way because re-serialising is harmless.
-        let removed = self.remove_field_threshold(&mut cfg, &dev_eui, &field).unwrap_or(false);
+        let removed = self
+            .remove_field_threshold(&mut cfg, &dev_eui, &field)
+            .unwrap_or(false);
         let new_content = match serde_yaml::to_string(&cfg) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: backup_str,
+                    error_message: Some(e.to_string()),
+                    applied_at,
+                }
+            }
         };
         if let Err(e) = self.write_atomic(&config_file, &new_content) {
             if let Some(b) = backup_path.as_ref() {
                 let _ = self.rollback(&config_file, b);
             }
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
         if !removed {
             eprintln!(
@@ -2732,22 +2901,36 @@ impl ConfigApplier {
         }
         self.log_audit(
             "DELETE_LORAWAN_FIELD_THRESHOLD",
-            format!(r#"{{"dev_eui":{:?},"field":{:?},"removed":{}}}"#, dev_eui, field, removed),
+            format!(
+                r#"{{"dev_eui":{:?},"field":{:?},"removed":{}}}"#,
+                dev_eui, field, removed
+            ),
         );
-        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-            backup_path: backup_str, error_message: None, applied_at }
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str,
+            error_message: None,
+            applied_at,
+        }
     }
 
     fn upsert_field_threshold(
-        &self, config: &mut Value, dev_eui: &str, field: &str,
-        critical_low: Option<f64>, warning_low: Option<f64>,
-        warning_high: Option<f64>, critical_high: Option<f64>,
+        &self,
+        config: &mut Value,
+        dev_eui: &str,
+        field: &str,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
     ) -> Result<(), String> {
         let lorawan_key = Value::String("lorawan".to_string());
         let sensors_key = Value::String("sensors".to_string());
         let ft_key = Value::String("field_thresholds".to_string());
 
-        let lorawan = config.as_mapping_mut()
+        let lorawan = config
+            .as_mapping_mut()
             .ok_or_else(|| "Config root is not a mapping".to_string())?
             .entry(lorawan_key.clone())
             .or_insert_with(|| {
@@ -2756,41 +2939,64 @@ impl ConfigApplier {
                 m.insert(sensors_key.clone(), Value::Sequence(Vec::new()));
                 Value::Mapping(m)
             });
-        let lorawan_map = lorawan.as_mapping_mut().ok_or_else(|| "lorawan is not a mapping".to_string())?;
-        let sensors = lorawan_map.entry(sensors_key.clone())
+        let lorawan_map = lorawan
+            .as_mapping_mut()
+            .ok_or_else(|| "lorawan is not a mapping".to_string())?;
+        let sensors = lorawan_map
+            .entry(sensors_key.clone())
             .or_insert_with(|| Value::Sequence(Vec::new()))
-            .as_sequence_mut().ok_or_else(|| "sensors is not a sequence".to_string())?;
+            .as_sequence_mut()
+            .ok_or_else(|| "sensors is not a sequence".to_string())?;
 
         // Find or create sensor entry
-        let idx = sensors.iter().position(|s| s.get("dev_eui").and_then(|v| v.as_str()) == Some(dev_eui));
+        let idx = sensors
+            .iter()
+            .position(|s| s.get("dev_eui").and_then(|v| v.as_str()) == Some(dev_eui));
         let sensor_map = if let Some(i) = idx {
-            sensors[i].as_mapping_mut().ok_or_else(|| "sensor entry is not a mapping".to_string())?
+            sensors[i]
+                .as_mapping_mut()
+                .ok_or_else(|| "sensor entry is not a mapping".to_string())?
         } else {
             let mut m = Mapping::new();
-            m.insert(Value::String("dev_eui".to_string()), Value::String(dev_eui.to_string()));
+            m.insert(
+                Value::String("dev_eui".to_string()),
+                Value::String(dev_eui.to_string()),
+            );
             m.insert(Value::String("enabled".to_string()), Value::Bool(true));
             sensors.push(Value::Mapping(m));
             sensors.last_mut().unwrap().as_mapping_mut().unwrap()
         };
 
-        let thresholds = sensor_map.entry(ft_key.clone())
+        let thresholds = sensor_map
+            .entry(ft_key.clone())
             .or_insert_with(|| Value::Sequence(Vec::new()))
-            .as_sequence_mut().ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
+            .as_sequence_mut()
+            .ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
 
         let make_entry = || -> Value {
             let mut m = Mapping::new();
-            m.insert(Value::String("field".to_string()), Value::String(field.to_string()));
-            for (k, v) in [("critical_low", critical_low), ("warning_low", warning_low),
-                           ("warning_high", warning_high), ("critical_high", critical_high)] {
+            m.insert(
+                Value::String("field".to_string()),
+                Value::String(field.to_string()),
+            );
+            for (k, v) in [
+                ("critical_low", critical_low),
+                ("warning_low", warning_low),
+                ("warning_high", warning_high),
+                ("critical_high", critical_high),
+            ] {
                 if let Some(v) = v {
-                    m.insert(Value::String(k.to_string()),
-                        Value::Number(serde_yaml::Number::from(v)));
+                    m.insert(
+                        Value::String(k.to_string()),
+                        Value::Number(serde_yaml::Number::from(v)),
+                    );
                 }
             }
             Value::Mapping(m)
         };
 
-        if let Some(existing) = thresholds.iter_mut()
+        if let Some(existing) = thresholds
+            .iter_mut()
             .find(|t| t.get("field").and_then(|v| v.as_str()) == Some(field))
         {
             *existing = make_entry();
@@ -2802,18 +3008,36 @@ impl ConfigApplier {
 
     /// Returns Ok(true) if a threshold was actually removed, Ok(false) if
     /// the dev_eui/field pair didn't match anything (no-op).
-    fn remove_field_threshold(&self, config: &mut Value, dev_eui: &str, field: &str) -> Result<bool, String> {
-        let lorawan = config.as_mapping_mut()
+    fn remove_field_threshold(
+        &self,
+        config: &mut Value,
+        dev_eui: &str,
+        field: &str,
+    ) -> Result<bool, String> {
+        let lorawan = config
+            .as_mapping_mut()
             .and_then(|m| m.get_mut(&Value::String("lorawan".into())))
             .and_then(|v| v.as_mapping_mut());
-        let Some(lorawan_map) = lorawan else { return Ok(false); };
-        let Some(sensors) = lorawan_map.get_mut(&Value::String("sensors".into()))
-            .and_then(|v| v.as_sequence_mut()) else { return Ok(false); };
+        let Some(lorawan_map) = lorawan else {
+            return Ok(false);
+        };
+        let Some(sensors) = lorawan_map
+            .get_mut(&Value::String("sensors".into()))
+            .and_then(|v| v.as_sequence_mut())
+        else {
+            return Ok(false);
+        };
         let mut removed = false;
         for s in sensors.iter_mut() {
-            if s.get("dev_eui").and_then(|v| v.as_str()) != Some(dev_eui) { continue; }
-            let sm = match s.as_mapping_mut() { Some(m) => m, None => continue };
-            if let Some(thresholds) = sm.get_mut(&Value::String("field_thresholds".into()))
+            if s.get("dev_eui").and_then(|v| v.as_str()) != Some(dev_eui) {
+                continue;
+            }
+            let sm = match s.as_mapping_mut() {
+                Some(m) => m,
+                None => continue,
+            };
+            if let Some(thresholds) = sm
+                .get_mut(&Value::String("field_thresholds".into()))
                 .and_then(|v| v.as_sequence_mut())
             {
                 let before = thresholds.len();
@@ -2836,91 +3060,196 @@ impl ConfigApplier {
         warning_high: Option<f64>,
         critical_high: Option<f64>,
     ) -> ApplyResult {
-        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let mac = mac.to_uppercase();
         if mac.is_empty() {
-            return ApplyResult { success: false, file_path: String::new(), backup_path: None,
-                error_message: Some("mac cannot be empty".into()), applied_at };
+            return ApplyResult {
+                success: false,
+                file_path: String::new(),
+                backup_path: None,
+                error_message: Some("mac cannot be empty".into()),
+                applied_at,
+            };
         }
         let config_file = self.config_dir.join("fiber.config.yaml");
         let content = match fs::read_to_string(&config_file) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let mut cfg: Value = match serde_yaml::from_str(&content) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
-        if let Err(e) = self.upsert_eye_field_threshold(&mut cfg, &mac, &field,
-            critical_low, warning_low, warning_high, critical_high)
-        {
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+        let backup_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        if let Err(e) = self.upsert_eye_field_threshold(
+            &mut cfg,
+            &mac,
+            &field,
+            critical_low,
+            warning_low,
+            warning_high,
+            critical_high,
+        ) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
         let new_content = match serde_yaml::to_string(&cfg) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: backup_str,
+                    error_message: Some(e.to_string()),
+                    applied_at,
+                }
+            }
         };
         if let Err(e) = self.write_atomic(&config_file, &new_content) {
-            if let Some(b) = backup_path.as_ref() { let _ = self.rollback(&config_file, b); }
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
         self.log_audit("SET_EYE_FIELD_THRESHOLD",
             format!(r#"{{"mac":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?}}}"#,
                 mac, field, critical_low, warning_low, warning_high, critical_high));
-        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-            backup_path: backup_str, error_message: None, applied_at }
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str,
+            error_message: None,
+            applied_at,
+        }
     }
 
     /// Remove a per-field EYE alarm threshold. Returns success even on no-op.
     pub fn delete_eye_field_threshold(&self, mac: String, field: String) -> ApplyResult {
-        let applied_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let mac = mac.to_uppercase();
         let config_file = self.config_dir.join("fiber.config.yaml");
         let content = match fs::read_to_string(&config_file) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to read config: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let mut cfg: Value = match serde_yaml::from_str(&content) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: None, error_message: Some(format!("Failed to parse YAML: {}", e)), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
         };
         let backup_path = self.create_backup(&config_file, &content);
-        let backup_str = backup_path.as_ref().map(|p| p.to_string_lossy().to_string());
-        let removed = self.remove_eye_field_threshold(&mut cfg, &mac, &field).unwrap_or(false);
+        let backup_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let removed = self
+            .remove_eye_field_threshold(&mut cfg, &mac, &field)
+            .unwrap_or(false);
         let new_content = match serde_yaml::to_string(&cfg) {
             Ok(c) => c,
-            Err(e) => return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e.to_string()), applied_at },
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().into(),
+                    backup_path: backup_str,
+                    error_message: Some(e.to_string()),
+                    applied_at,
+                }
+            }
         };
         if let Err(e) = self.write_atomic(&config_file, &new_content) {
-            if let Some(b) = backup_path.as_ref() { let _ = self.rollback(&config_file, b); }
-            return ApplyResult { success: false, file_path: config_file.to_string_lossy().into(),
-                backup_path: backup_str, error_message: Some(e), applied_at };
+            if let Some(b) = backup_path.as_ref() {
+                let _ = self.rollback(&config_file, b);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().into(),
+                backup_path: backup_str,
+                error_message: Some(e),
+                applied_at,
+            };
         }
-        self.log_audit("DELETE_EYE_FIELD_THRESHOLD",
-            format!(r#"{{"mac":{:?},"field":{:?},"removed":{}}}"#, mac, field, removed));
-        ApplyResult { success: true, file_path: config_file.to_string_lossy().into(),
-            backup_path: backup_str, error_message: None, applied_at }
+        self.log_audit(
+            "DELETE_EYE_FIELD_THRESHOLD",
+            format!(
+                r#"{{"mac":{:?},"field":{:?},"removed":{}}}"#,
+                mac, field, removed
+            ),
+        );
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().into(),
+            backup_path: backup_str,
+            error_message: None,
+            applied_at,
+        }
     }
 
     fn upsert_eye_field_threshold(
-        &self, config: &mut Value, mac: &str, field: &str,
-        critical_low: Option<f64>, warning_low: Option<f64>,
-        warning_high: Option<f64>, critical_high: Option<f64>,
+        &self,
+        config: &mut Value,
+        mac: &str,
+        field: &str,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
     ) -> Result<(), String> {
         let eye_key = Value::String("eye".to_string());
         let tags_key = Value::String("tags".to_string());
         let ft_key = Value::String("field_thresholds".to_string());
-        let eye = config.as_mapping_mut()
+        let eye = config
+            .as_mapping_mut()
             .ok_or_else(|| "Config root is not a mapping".to_string())?
             .entry(eye_key.clone())
             .or_insert_with(|| {
@@ -2929,37 +3258,62 @@ impl ConfigApplier {
                 m.insert(tags_key.clone(), Value::Sequence(Vec::new()));
                 Value::Mapping(m)
             });
-        let eye_map = eye.as_mapping_mut().ok_or_else(|| "eye is not a mapping".to_string())?;
-        let tags = eye_map.entry(tags_key.clone())
+        let eye_map = eye
+            .as_mapping_mut()
+            .ok_or_else(|| "eye is not a mapping".to_string())?;
+        let tags = eye_map
+            .entry(tags_key.clone())
             .or_insert_with(|| Value::Sequence(Vec::new()))
-            .as_sequence_mut().ok_or_else(|| "tags is not a sequence".to_string())?;
+            .as_sequence_mut()
+            .ok_or_else(|| "tags is not a sequence".to_string())?;
         let idx = tags.iter().position(|t| {
-            t.get("mac").and_then(|v| v.as_str()).map(|m| m.to_uppercase() == mac).unwrap_or(false)
+            t.get("mac")
+                .and_then(|v| v.as_str())
+                .map(|m| m.to_uppercase() == mac)
+                .unwrap_or(false)
         });
         let tag_map = if let Some(i) = idx {
-            tags[i].as_mapping_mut().ok_or_else(|| "tag entry is not a mapping".to_string())?
+            tags[i]
+                .as_mapping_mut()
+                .ok_or_else(|| "tag entry is not a mapping".to_string())?
         } else {
             let mut m = Mapping::new();
-            m.insert(Value::String("mac".to_string()), Value::String(mac.to_string()));
+            m.insert(
+                Value::String("mac".to_string()),
+                Value::String(mac.to_string()),
+            );
             m.insert(Value::String("enabled".to_string()), Value::Bool(true));
             tags.push(Value::Mapping(m));
             tags.last_mut().unwrap().as_mapping_mut().unwrap()
         };
-        let thresholds = tag_map.entry(ft_key.clone())
+        let thresholds = tag_map
+            .entry(ft_key.clone())
             .or_insert_with(|| Value::Sequence(Vec::new()))
-            .as_sequence_mut().ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
+            .as_sequence_mut()
+            .ok_or_else(|| "field_thresholds is not a sequence".to_string())?;
         let make_entry = || -> Value {
             let mut m = Mapping::new();
-            m.insert(Value::String("field".to_string()), Value::String(field.to_string()));
-            for (k, v) in [("critical_low", critical_low), ("warning_low", warning_low),
-                           ("warning_high", warning_high), ("critical_high", critical_high)] {
+            m.insert(
+                Value::String("field".to_string()),
+                Value::String(field.to_string()),
+            );
+            for (k, v) in [
+                ("critical_low", critical_low),
+                ("warning_low", warning_low),
+                ("warning_high", warning_high),
+                ("critical_high", critical_high),
+            ] {
                 if let Some(v) = v {
-                    m.insert(Value::String(k.to_string()), Value::Number(serde_yaml::Number::from(v)));
+                    m.insert(
+                        Value::String(k.to_string()),
+                        Value::Number(serde_yaml::Number::from(v)),
+                    );
                 }
             }
             Value::Mapping(m)
         };
-        if let Some(existing) = thresholds.iter_mut()
+        if let Some(existing) = thresholds
+            .iter_mut()
             .find(|t| t.get("field").and_then(|v| v.as_str()) == Some(field))
         {
             *existing = make_entry();
@@ -2969,25 +3323,48 @@ impl ConfigApplier {
         Ok(())
     }
 
-    fn remove_eye_field_threshold(&self, config: &mut Value, mac: &str, field: &str) -> Result<bool, String> {
-        let eye = config.as_mapping_mut()
+    fn remove_eye_field_threshold(
+        &self,
+        config: &mut Value,
+        mac: &str,
+        field: &str,
+    ) -> Result<bool, String> {
+        let eye = config
+            .as_mapping_mut()
             .and_then(|m| m.get_mut(&Value::String("eye".into())))
             .and_then(|v| v.as_mapping_mut());
-        let Some(eye_map) = eye else { return Ok(false); };
-        let Some(tags) = eye_map.get_mut(&Value::String("tags".into()))
-            .and_then(|v| v.as_sequence_mut()) else { return Ok(false); };
+        let Some(eye_map) = eye else {
+            return Ok(false);
+        };
+        let Some(tags) = eye_map
+            .get_mut(&Value::String("tags".into()))
+            .and_then(|v| v.as_sequence_mut())
+        else {
+            return Ok(false);
+        };
         let mut removed = false;
         for t in tags.iter_mut() {
-            let is_match = t.get("mac").and_then(|v| v.as_str())
-                .map(|m| m.to_uppercase() == mac).unwrap_or(false);
-            if !is_match { continue; }
-            let tm = match t.as_mapping_mut() { Some(m) => m, None => continue };
-            if let Some(thresholds) = tm.get_mut(&Value::String("field_thresholds".into()))
+            let is_match = t
+                .get("mac")
+                .and_then(|v| v.as_str())
+                .map(|m| m.to_uppercase() == mac)
+                .unwrap_or(false);
+            if !is_match {
+                continue;
+            }
+            let tm = match t.as_mapping_mut() {
+                Some(m) => m,
+                None => continue,
+            };
+            if let Some(thresholds) = tm
+                .get_mut(&Value::String("field_thresholds".into()))
                 .and_then(|v| v.as_sequence_mut())
             {
                 let before = thresholds.len();
                 thresholds.retain(|x| x.get("field").and_then(|v| v.as_str()) != Some(field));
-                if thresholds.len() != before { removed = true; }
+                if thresholds.len() != before {
+                    removed = true;
+                }
             }
         }
         Ok(removed)
@@ -3005,7 +3382,9 @@ impl ConfigApplier {
             .and_then(|n| n.to_str())
             .unwrap_or("config.yaml");
 
-        let backup_file = self.backup_dir.join(format!("{}.{}.bak", filename, timestamp));
+        let backup_file = self
+            .backup_dir
+            .join(format!("{}.{}.bak", filename, timestamp));
 
         match fs::write(&backup_file, content) {
             Ok(_) => {
@@ -3052,8 +3431,7 @@ impl ConfigApplier {
             backup_file.to_string_lossy()
         );
 
-        fs::copy(backup_file, config_file)
-            .map_err(|e| format!("Failed to rollback: {}", e))?;
+        fs::copy(backup_file, config_file).map_err(|e| format!("Failed to rollback: {}", e))?;
 
         Ok(())
     }
@@ -3096,9 +3474,14 @@ mod tests {
         )
         .unwrap();
 
-        let applier = ConfigApplier::new_with_storage(tmp_config_dir.path(), Some(storage.clone())).unwrap();
+        let applier =
+            ConfigApplier::new_with_storage(tmp_config_dir.path(), Some(storage.clone())).unwrap();
         let result = applier.remove_lorawan_sensor_config("70b3d5".to_string());
-        assert!(result.success, "removal should succeed: {:?}", result.error_message);
+        assert!(
+            result.success,
+            "removal should succeed: {:?}",
+            result.error_message
+        );
 
         storage.flush().unwrap();
         storage.shutdown().unwrap();
@@ -3155,8 +3538,8 @@ mod tests {
 
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
         // Same MAC in lowercase must match the existing (uppercase) entry.
-        let result = applier
-            .apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("New".to_string()));
+        let result =
+            applier.apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("New".to_string()));
         assert!(result.success, "{:?}", result.error_message);
 
         let contents =
@@ -3212,7 +3595,11 @@ mod tests {
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
 
         // interval 5 -> recording on + interval persisted
-        assert!(applier.apply_eye_recording("aa:bb:cc:dd:ee:ff".to_string(), 5).success);
+        assert!(
+            applier
+                .apply_eye_recording("aa:bb:cc:dd:ee:ff".to_string(), 5)
+                .success
+        );
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3222,7 +3609,11 @@ mod tests {
         assert_eq!(tag["logging_interval_min"].as_u64(), Some(5));
 
         // interval 0 -> recording off persisted (H1: must survive restart)
-        assert!(applier.apply_eye_recording("AA:BB:CC:DD:EE:FF".to_string(), 0).success);
+        assert!(
+            applier
+                .apply_eye_recording("AA:BB:CC:DD:EE:FF".to_string(), 0)
+                .success
+        );
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3246,12 +3637,18 @@ mod tests {
         let applier = ConfigApplier::new(tmp.path()).unwrap();
 
         // upsert (lowercase MAC must match the uppercase entry)
-        assert!(applier
-            .apply_eye_field_threshold(
-                "aa:bb:cc:dd:ee:ff".into(), "temperature".into(),
-                Some(-20.0), Some(0.0), Some(8.0), Some(12.0),
-            )
-            .success);
+        assert!(
+            applier
+                .apply_eye_field_threshold(
+                    "aa:bb:cc:dd:ee:ff".into(),
+                    "temperature".into(),
+                    Some(-20.0),
+                    Some(0.0),
+                    Some(8.0),
+                    Some(12.0),
+                )
+                .success
+        );
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3261,15 +3658,20 @@ mod tests {
         assert_eq!(ft["critical_high"].as_f64(), Some(12.0));
 
         // delete
-        assert!(applier
-            .delete_eye_field_threshold("AA:BB:CC:DD:EE:FF".into(), "temperature".into())
-            .success);
+        assert!(
+            applier
+                .delete_eye_field_threshold("AA:BB:CC:DD:EE:FF".into(), "temperature".into())
+                .success
+        );
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap(),
         )
         .unwrap();
         assert_eq!(
-            parsed["eye"]["tags"][0]["field_thresholds"].as_sequence().unwrap().len(),
+            parsed["eye"]["tags"][0]["field_thresholds"]
+                .as_sequence()
+                .unwrap()
+                .len(),
             0
         );
     }
@@ -3290,9 +3692,13 @@ mod tests {
         let result = applier.apply_device_label_change("Ward 3 Freezer".to_string());
         assert!(result.success, "{:?}", result.error_message);
 
-        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
         assert!(contents.contains("Ward 3 Freezer"), "got: {contents}");
-        assert!(!contents.contains("OLD-LABEL"), "old value should be gone: {contents}");
+        assert!(
+            !contents.contains("OLD-LABEL"),
+            "old value should be gone: {contents}"
+        );
     }
 
     #[test]
@@ -3310,7 +3716,8 @@ mod tests {
         assert!(result.success, "{:?}", result.error_message);
 
         // Reload the YAML and confirm the persisted value round-trips.
-        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
         assert_eq!(parsed["system"]["screen_timeout_secs"].as_u64(), Some(3600));
     }
@@ -3323,9 +3730,11 @@ mod tests {
 
         let result = applier.apply_device_label_change(String::new());
         assert!(!result.success);
-        assert!(
-            result.error_message.unwrap().to_lowercase().contains("empty"),
-        );
+        assert!(result
+            .error_message
+            .unwrap()
+            .to_lowercase()
+            .contains("empty"),);
     }
 
     #[test]
@@ -3336,10 +3745,15 @@ mod tests {
 
         let result = applier.apply_device_label_change("bad/label".to_string());
         assert!(!result.success);
-        assert!(result.error_message.unwrap().to_lowercase().contains("mqtt"));
+        assert!(result
+            .error_message
+            .unwrap()
+            .to_lowercase()
+            .contains("mqtt"));
 
         // And the on-disk file is untouched.
-        let contents = std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
+        let contents =
+            std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap();
         assert!(contents.contains("OLD-LABEL"));
     }
 
@@ -3364,11 +3778,8 @@ mod tests {
 
         let tmp_config_dir = tempfile::tempdir().unwrap();
         write_minimal_main_config(tmp_config_dir.path());
-        let applier = ConfigApplier::new_with_storage(
-            tmp_config_dir.path(),
-            Some(storage.clone()),
-        )
-        .unwrap();
+        let applier =
+            ConfigApplier::new_with_storage(tmp_config_dir.path(), Some(storage.clone())).unwrap();
 
         let result = applier.apply_device_label_change("New Label".to_string());
         assert!(result.success, "{:?}", result.error_message);
@@ -3386,7 +3797,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(n >= 1, "expected an SET_DEVICE_LABEL audit row to be written");
+        assert!(
+            n >= 1,
+            "expected an SET_DEVICE_LABEL audit row to be written"
+        );
 
         let details: Option<String> = conn
             .query_row(
@@ -3396,7 +3810,10 @@ mod tests {
             )
             .unwrap();
         let details = details.expect("details should be Some");
-        assert!(details.contains("New Label"), "details should carry new label: {details}");
+        assert!(
+            details.contains("New Label"),
+            "details should carry new label: {details}"
+        );
     }
 }
 
@@ -3515,7 +3932,10 @@ mqtt:
         let parsed = read_yaml(&path);
         assert_eq!(parsed["system"]["device_label"].as_str(), Some("KEEP-ME"));
         assert_eq!(parsed["system"]["screen_brightness"].as_u64(), Some(50));
-        assert_eq!(parsed["mqtt"]["broker"]["host"].as_str(), Some("example.invalid"));
+        assert_eq!(
+            parsed["mqtt"]["broker"]["host"].as_str(),
+            Some("example.invalid")
+        );
         assert_eq!(parsed["mqtt"]["broker"]["port"].as_u64(), Some(8883));
     }
 
@@ -3529,7 +3949,10 @@ mqtt:
         let result = applier.apply_display_custom_lines(vec![ds_line(0), ds_line(9)]);
         assert!(!result.success);
         let err = result.error_message.unwrap();
-        assert!(err.contains("display line 1"), "should name the index: {err}");
+        assert!(
+            err.contains("display line 1"),
+            "should name the index: {err}"
+        );
 
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -3565,18 +3988,27 @@ mqtt:
         let mut line = sticker_line("ext_temperature_1");
         line.format.decimals = Some(2);
         line.format.status_char = false;
-        assert!(applier.apply_display_custom_lines(vec![line, ds_line(5)]).success);
+        assert!(
+            applier
+                .apply_display_custom_lines(vec![line, ds_line(5)])
+                .success
+        );
 
         // `Config::from_file` needs every non-defaulted section, so merge the
         // written display section onto a full default config and re-read it.
         let written = read_yaml(&path);
-        let mut base = match serde_yaml::to_value(crate::libs::config::Config::default_config()).unwrap() {
-            Value::Mapping(m) => m,
-            other => panic!("expected mapping, got {other:?}"),
-        };
+        let mut base =
+            match serde_yaml::to_value(crate::libs::config::Config::default_config()).unwrap() {
+                Value::Mapping(m) => m,
+                other => panic!("expected mapping, got {other:?}"),
+            };
         base.insert(Value::String("display".into()), written["display"].clone());
         let merged = dir.path().join("merged.yaml");
-        std::fs::write(&merged, serde_yaml::to_string(&Value::Mapping(base)).unwrap()).unwrap();
+        std::fs::write(
+            &merged,
+            serde_yaml::to_string(&Value::Mapping(base)).unwrap(),
+        )
+        .unwrap();
 
         let cfg = crate::libs::config::Config::from_file(&merged).expect("must parse");
         assert_eq!(cfg.display.custom_lines.len(), 2);

@@ -1,7 +1,7 @@
 // Sensor status tracking and LED control logic
 
-use crate::libs::config::SensorAlarmConfig;
 use super::reader::SensorStatus;
+use crate::libs::config::SensorAlarmConfig;
 
 /// Threshold state for a sensor based on temperature
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,12 @@ impl SensorLineState {
     }
 
     /// Update sensor state with new reading
-    pub fn update(&mut self, status: SensorStatus, failure_threshold: u8, thresholds: &SensorAlarmConfig) {
+    pub fn update(
+        &mut self,
+        status: SensorStatus,
+        failure_threshold: u8,
+        thresholds: &SensorAlarmConfig,
+    ) {
         match status {
             SensorStatus::Connected(temp) => {
                 // Successful read - reset failure count
@@ -85,7 +90,10 @@ impl SensorLineState {
     }
 
     /// Calculate temperature threshold based on provided config
-    fn calculate_threshold_from_config(temp: f32, thresholds: &SensorAlarmConfig) -> SensorThreshold {
+    fn calculate_threshold_from_config(
+        temp: f32,
+        thresholds: &SensorAlarmConfig,
+    ) -> SensorThreshold {
         if temp >= thresholds.critical_high_celsius {
             SensorThreshold::CriticalHigh
         } else if temp >= thresholds.high_alarm_celsius {
@@ -152,10 +160,10 @@ mod tests {
     fn default_thresholds() -> SensorAlarmConfig {
         SensorAlarmConfig {
             critical_low_celsius: 32.0,
-            low_alarm_celsius: 0.0,     // disabled - defaults
+            low_alarm_celsius: 0.0, // disabled - defaults
             warning_low_celsius: 34.0,
             warning_high_celsius: 39.0,
-            high_alarm_celsius: 100.0,  // disabled - defaults
+            high_alarm_celsius: 100.0, // disabled - defaults
             critical_high_celsius: 40.0,
         }
     }
@@ -246,8 +254,15 @@ mod tests {
         let thresholds = default_thresholds();
 
         state.update(SensorStatus::Connected(37.0), 3, &thresholds);
-        assert_eq!(state.failure_count, 0, "Successful read should reset failure count");
-        assert_eq!(state.threshold, SensorThreshold::Normal, "Should be Normal after successful read");
+        assert_eq!(
+            state.failure_count, 0,
+            "Successful read should reset failure count"
+        );
+        assert_eq!(
+            state.threshold,
+            SensorThreshold::Normal,
+            "Should be Normal after successful read"
+        );
     }
 
     #[test]

@@ -47,6 +47,9 @@ mod tests {
         let r = build_response("FIBER-TEST", "AA:BB:CC:DD:EE:FF");
         assert_eq!(r.hostname, "FIBER-TEST");
         assert_eq!(r.mac_address, "AA:BB:CC:DD:EE:FF");
-        assert!(!r.version.is_empty(), "version pulled from FIBER_VERSION or CARGO_PKG_VERSION");
+        assert!(
+            !r.version.is_empty(),
+            "version pulled from FIBER_VERSION or CARGO_PKG_VERSION"
+        );
     }
 }

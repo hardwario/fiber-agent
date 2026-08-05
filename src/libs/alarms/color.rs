@@ -44,7 +44,7 @@ impl BlinkPattern {
         let cycle = blink_cycle % 8;
         match self {
             BlinkPattern::Steady => true,
-            BlinkPattern::BlinkSlow => cycle < 4,      // 4 on, 4 off
+            BlinkPattern::BlinkSlow => cycle < 4, // 4 on, 4 off
             BlinkPattern::BlinkFast => cycle % 2 == 0, // 1 on, 1 off (alternating)
         }
     }
@@ -70,9 +70,9 @@ impl LedState {
         match (self.color, is_on) {
             (LedColor::Green, true) => (true, false),
             (LedColor::Red, true) => (false, true),
-            (LedColor::Yellow, true) => (true, true),   // Both on for orange
-            (LedColor::Off, true) => (false, false),    // Off color stays off even if pattern says on
-            (_, false) => (false, false),               // Off regardless of color when pattern says off
+            (LedColor::Yellow, true) => (true, true), // Both on for orange
+            (LedColor::Off, true) => (false, false),  // Off color stays off even if pattern says on
+            (_, false) => (false, false), // Off regardless of color when pattern says off
         }
     }
 }
@@ -92,7 +92,10 @@ mod tests {
     #[test]
     fn test_blink_pattern_steady() {
         for cycle in 0..8 {
-            assert!(BlinkPattern::Steady.is_on(cycle), "Steady should always be on");
+            assert!(
+                BlinkPattern::Steady.is_on(cycle),
+                "Steady should always be on"
+            );
         }
     }
 
@@ -129,8 +132,8 @@ mod tests {
         let state = LedState::new(LedColor::Yellow, BlinkPattern::BlinkSlow);
         let (green1, red1) = state.get_led_pins(0); // On cycle
         let (green2, red2) = state.get_led_pins(4); // Off cycle
-        assert!(green1 && red1);                     // Both on
-        assert!(!green2 && !red2);                   // Both off
+        assert!(green1 && red1); // Both on
+        assert!(!green2 && !red2); // Both off
     }
 
     #[test]
