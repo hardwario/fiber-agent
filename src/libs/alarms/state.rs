@@ -138,7 +138,19 @@ impl AlarmStateMachine {
     /// Update state based on threshold evaluation
     /// Should be called after a successful read to classify the temperature
     /// Note: is_alarm range is absorbed into Warning (Alarm state was removed)
+    ///
+    /// A sensor still in `NeverConnected` is not classified at all. Warm-up is
+    /// counted by `update_from_read_result`, and until it completes the readings
+    /// cannot be trusted to describe the probe — at boot or on a standby resume
+    /// the rails have only just come up and a not-yet-answering line reads as a
+    /// bus artefact, which would otherwise be classified `Critical` on sample
+    /// one and sound the buzzer. Leaving `current`/`previous` untouched keeps
+    /// `state_changed()` false, so no event reaches the callbacks either.
     pub fn update_from_threshold(&mut self, is_critical: bool, is_alarm: bool, is_warning: bool) {
+        if self.current == AlarmState::NeverConnected {
+            return;
+        }
+
         // Priority: critical > alarm/warning > normal
         // The old "Alarm" state was removed; alarm range now maps to Warning
         let new_state = if is_critical {
@@ -149,7 +161,18 @@ impl AlarmStateMachine {
             AlarmState::Normal
         };
 
-        self.previous = self.current;
+        // Warm-up completes and the first classification happen in the same
+        // cycle: `update_from_read_result` has just moved us NeverConnected ->
+        // Reconnecting. Keep NeverConnected as `previous` so consumers still see
+        // one first-connection edge — MQTT suppresses transitions touching
+        // NeverConnected (mqtt_callback.rs), and overwriting it here would
+        // publish a spurious Reconnecting -> Normal alarm event on every boot
+        // and every standby resume.
+        let completing_warmup =
+            self.previous == AlarmState::NeverConnected && self.current == AlarmState::Reconnecting;
+        if !completing_warmup {
+            self.previous = self.current;
+        }
         self.current = new_state;
     }
 
@@ -333,6 +356,13 @@ mod tests {
     fn test_threshold_updates() {
         let mut sm = AlarmStateMachine::new();
         sm.failure_count = 0; // Force out of disconnected state
+
+        // A sensor still warming up is not classified at all
+        sm.update_from_threshold(true, false, false);
+        assert_eq!(sm.current, AlarmState::NeverConnected);
+
+        // One good read with warmup_threshold 1 completes warm-up
+        sm.update_from_read_result(true, 3, 1);
 
         sm.update_from_threshold(false, false, false);
         assert_eq!(sm.current, AlarmState::Normal);

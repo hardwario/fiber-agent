@@ -98,6 +98,23 @@ impl MqttPublisher {
                     .await
             }
 
+            MqttMessage::PublishStandbyState {
+                standby,
+                reason,
+                requested_by,
+                entered_at,
+                vin_mv,
+            } => {
+                self.publish_standby_state(
+                    standby,
+                    &reason,
+                    &requested_by,
+                    entered_at.as_deref(),
+                    vin_mv,
+                )
+                .await
+            }
+
             MqttMessage::PublishSystemStatus {
                 hostname,
                 device_label,
@@ -450,6 +467,40 @@ impl MqttPublisher {
         let qos = Self::qos_from_u8(self.qos_overrides.alarm_events);
 
         self.publish(topic, payload.to_string(), qos, false).await
+    }
+
+    /// Publish the device's standby state, plus a one-off event for the edge.
+    ///
+    /// The state topic is **retained**: a device in standby is off for as long as
+    /// nobody reconnects PoE, which can be days, and a Viewer that subscribes in
+    /// the meantime must still be able to tell "switched off by Dr Jane at 14:02"
+    /// from "stopped answering". The non-retained event topic is what a
+    /// subscriber already listening sees as it happens.
+    async fn publish_standby_state(
+        &self,
+        standby: bool,
+        reason: &str,
+        requested_by: &str,
+        entered_at: Option<&str>,
+        vin_mv: u16,
+    ) -> Result<(), String> {
+        let payload = json!({
+            "timestamp": Self::timestamp(),
+            "standby": standby,
+            "reason": reason,
+            "requested_by": requested_by,
+            "entered_at": entered_at,
+            "vin_mv": vin_mv,
+        });
+        let body = payload.to_string();
+        let qos = Self::qos_from_u8(self.qos_overrides.alarm_events);
+
+        // State first: if only one of the two makes it out, the durable one is
+        // the one worth having.
+        self.publish(self.topics.power_standby(), body.clone(), qos, true)
+            .await?;
+        self.publish(self.topics.power_events_standby(), body, qos, false)
+            .await
     }
 
     /// Publish accelerometer motion transition event

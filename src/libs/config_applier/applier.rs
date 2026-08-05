@@ -2197,8 +2197,15 @@ impl ConfigApplier {
         mqtt.remove(Value::String("system_info_interval_seconds".to_string()));
 
         let publish_key = Value::String("publish".to_string());
-        if !mqtt.get(&publish_key).map(|v| v.is_mapping()).unwrap_or(false) {
-            mqtt.insert(publish_key.clone(), Value::Mapping(serde_yaml::Mapping::new()));
+        if !mqtt
+            .get(&publish_key)
+            .map(|v| v.is_mapping())
+            .unwrap_or(false)
+        {
+            mqtt.insert(
+                publish_key.clone(),
+                Value::Mapping(serde_yaml::Mapping::new()),
+            );
         }
         let publish = mqtt
             .get_mut(&publish_key)
@@ -3882,7 +3889,9 @@ mqtt:
         )
         .unwrap();
 
-        applier.update_system_info_interval(&mut config, 15).unwrap();
+        applier
+            .update_system_info_interval(&mut config, 15)
+            .unwrap();
 
         // Round-trip through the real config type that owns the field, so the
         // assertion is against serde's actual contract rather than a string we
@@ -3904,7 +3913,9 @@ mqtt:
         let applier = applier();
         let mut config: Value = serde_yaml::from_str("mqtt:\n  enabled: true\n").unwrap();
 
-        applier.update_system_info_interval(&mut config, 45).unwrap();
+        applier
+            .update_system_info_interval(&mut config, 45)
+            .unwrap();
 
         let value = config
             .get("mqtt")
@@ -3918,12 +3929,13 @@ mqtt:
     #[test]
     fn drops_the_stale_flat_key() {
         let applier = applier();
-        let mut config: Value = serde_yaml::from_str(
-            "mqtt:\n  enabled: true\n  system_info_interval_seconds: 999\n",
-        )
-        .unwrap();
+        let mut config: Value =
+            serde_yaml::from_str("mqtt:\n  enabled: true\n  system_info_interval_seconds: 999\n")
+                .unwrap();
 
-        applier.update_system_info_interval(&mut config, 30).unwrap();
+        applier
+            .update_system_info_interval(&mut config, 30)
+            .unwrap();
 
         let mqtt = config.get("mqtt").unwrap();
         assert!(
@@ -3943,7 +3955,9 @@ mqtt:
     fn errors_without_an_mqtt_section() {
         let applier = applier();
         let mut config: Value = serde_yaml::from_str("system:\n  led_brightness: 50\n").unwrap();
-        assert!(applier.update_system_info_interval(&mut config, 30).is_err());
+        assert!(applier
+            .update_system_info_interval(&mut config, 30)
+            .is_err());
     }
 }
 

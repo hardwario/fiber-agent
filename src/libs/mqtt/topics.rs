@@ -86,6 +86,17 @@ impl TopicBuilder {
         self.build(&["power", "events", "dc_loss"])
     }
 
+    /// Retained standby state — see
+    /// [`super::publisher::MqttPublisher::publish_standby_state`].
+    pub fn power_standby(&self) -> String {
+        self.build(&["power", "standby"])
+    }
+
+    /// One-off standby/resume transition.
+    pub fn power_events_standby(&self) -> String {
+        self.build(&["power", "events", "standby"])
+    }
+
     // Network topics
     pub fn network_status(&self) -> String {
         self.build(&["network", "status"])

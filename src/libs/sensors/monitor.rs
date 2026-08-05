@@ -172,6 +172,9 @@ impl SensorMonitor {
         }
 
         let mut current_alarm_type = AlarmType::None;
+        // Whether the previous cycle was skipped for standby, so the entry
+        // clean-up runs once per standby rather than every 500 ms.
+        let mut was_standby = false;
         let mut happy_beep_played = false; // Track if we've already played happy beep for this reconnection
         let mut happy_beep_start_time: Option<Instant> = None; // Track when happy beep started to auto-clear it
         let mut last_sensor_states: [Option<AlarmState>; 8] = [None; 8]; // Track previous states to detect reconnection
@@ -291,6 +294,42 @@ impl SensorMonitor {
                 eprintln!("[SensorMonitor] Exiting monitor thread");
                 break;
             }
+
+            // In standby the sensor rails (P0..P7) are switched off, so every
+            // line would read as disconnected — raising eight DISCONNECTED
+            // alarms, beeping, and lighting eight red LEDs on a device the
+            // operator has just switched off. Skip the whole cycle: no reads, no
+            // alarm evaluation, no storage writes, no publishing.
+            if crate::libs::power::standby::is_standby() {
+                // On the way in, hand back everything this loop was asserting.
+                // Skipping the cycle alone is not enough: this loop is the only
+                // writer of line LED state and the only thing that clears the
+                // buzzer's sensor-critical flag, so without this the LEDs freeze
+                // showing the sensor status of a device that has stopped
+                // measuring, and a unit switched off mid-alarm keeps beeping.
+                //
+                // `was_standby` starts false, so a boot straight into standby
+                // takes this path too rather than needing its own.
+                if !was_standby {
+                    was_standby = true;
+                    eprintln!("[SensorMonitor] Standby: clearing line LEDs and alarm state");
+
+                    quiesce_for_standby(&led_state, &mut alarm_controllers);
+
+                    // Clear the flag *and* the tracker. The tracker is what gates
+                    // the update at :499, so resetting it is what lets the edge
+                    // re-fire on resume — clearing the flag alone would leave a
+                    // device that wakes genuinely in alarm, and silent.
+                    //
+                    // Not part of quiesce_for_standby because BuzzerPriorityManager
+                    // needs a GPIO-backed BuzzerController, which no test can build.
+                    priority_manager.set_sensor_critical(false);
+                    current_alarm_type = AlarmType::None;
+                }
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            was_standby = false;
 
             // Hot reload sensor configuration
             if last_config_check.elapsed() >= config_check_interval {
@@ -863,6 +902,144 @@ impl SensorMonitor {
         // when self is dropped at the end of this function
 
         Ok(())
+    }
+}
+
+/// Hand back what the sensor loop was asserting, on the way into standby.
+///
+/// Extracted from the loop so the user-visible half is testable — the loop itself
+/// needs a 1-Wire bus, an STM bridge and a GPIO-backed buzzer.
+///
+/// Both halves matter:
+///
+/// * The line LEDs go to an explicit `Off`. This loop is the only writer of line
+///   LED state, so a skipped cycle leaves them frozen showing the sensor status of
+///   a device that has stopped measuring. It has to be `Off` and not `None` —
+///   [`crate::libs::leds::monitor`] skips `None` lines, so clearing to `None` would
+///   leave them lit — and it has to go through the shared state rather than the STM
+///   bridge, or the monitor's cache would still match the pre-standby values and
+///   the LEDs would never come back on resume.
+/// * The controllers forget what they saw. The rails are switched off in standby,
+///   so a latched `Critical` or `Disconnected` is an assertion nothing can justify.
+fn quiesce_for_standby(
+    led_state: &SharedLedStateHandle,
+    alarm_controllers: &mut [AlarmController],
+) {
+    led_state.set_all_lines_off();
+    for controller in alarm_controllers.iter_mut() {
+        controller.reset();
+    }
+}
+
+#[cfg(test)]
+mod standby_tests {
+    use super::*;
+    use crate::libs::alarms::color::{BlinkPattern, LedColor};
+    use crate::libs::alarms::threshold::AlarmThreshold;
+    use crate::libs::leds::state::SharedLedStateWithNotify;
+
+    fn controllers(n: usize) -> Vec<AlarmController> {
+        (0..n)
+            .map(|_| AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1))
+            .collect()
+    }
+
+    #[test]
+    fn standby_darkens_every_line_led() {
+        // The reported problem: the LEDs kept showing sensor status on a device
+        // that had been switched off.
+        let led_state: SharedLedStateHandle = Arc::new(SharedLedStateWithNotify::new());
+        let mut cs = controllers(8);
+        for c in cs.iter_mut() {
+            c.update(37.0); // green, steady
+        }
+        for (i, c) in cs.iter().enumerate() {
+            led_state.set_line_led(i as u8, c.get_led_state());
+        }
+        assert!(led_state
+            .read()
+            .lines
+            .iter()
+            .all(|l| l.unwrap().led_state.color == LedColor::Green));
+
+        quiesce_for_standby(&led_state, &mut cs);
+
+        for line in led_state.read().lines.iter() {
+            let s = line.expect("must be an explicit Off, not None");
+            assert_eq!(s.led_state.color, LedColor::Off);
+            assert_eq!(s.led_state.pattern, BlinkPattern::Steady);
+        }
+    }
+
+    #[test]
+    fn standby_drops_a_latched_critical_alarm() {
+        // A device switched off mid-alarm must not carry the alarm through standby:
+        // the rails are down, so nothing can confirm it, and it would keep the
+        // buzzer going on a unit that looks off.
+        let led_state: SharedLedStateHandle = Arc::new(SharedLedStateWithNotify::new());
+        let mut cs = controllers(1);
+        cs[0].update(45.0);
+        assert_eq!(cs[0].state(), AlarmState::Critical);
+
+        quiesce_for_standby(&led_state, &mut cs);
+
+        assert_eq!(cs[0].state(), AlarmState::NeverConnected);
+        assert_eq!(cs[0].get_led_state().color, LedColor::Off);
+    }
+
+    #[test]
+    fn a_resume_re_alarms_if_the_reading_is_still_critical() {
+        // Forgetting must not mean forgiving. Thresholds survive, so the next live
+        // reading raises the alarm again.
+        let led_state: SharedLedStateHandle = Arc::new(SharedLedStateWithNotify::new());
+        let mut cs = controllers(1);
+        cs[0].update(45.0);
+        quiesce_for_standby(&led_state, &mut cs);
+
+        cs[0].update(45.0);
+        assert_eq!(cs[0].state(), AlarmState::Critical);
+        assert_eq!(cs[0].get_led_state().color, LedColor::Red);
+    }
+
+    #[test]
+    fn a_resume_repaints_the_leds_because_the_value_changed() {
+        // Why no cache invalidation is needed in LedMonitor: the shared value goes
+        // Green -> Off -> Green, and the monitor diffs against what it last sent,
+        // so both transitions are visible to it.
+        let led_state: SharedLedStateHandle = Arc::new(SharedLedStateWithNotify::new());
+        let mut cs = controllers(1);
+        cs[0].update(37.0);
+        led_state.set_line_led(0, cs[0].get_led_state());
+
+        quiesce_for_standby(&led_state, &mut cs);
+        assert_eq!(
+            led_state.read().lines[0].unwrap().led_state.color,
+            LedColor::Off
+        );
+
+        // Resume: the loop writes all lines every cycle, and a warmed-up line is
+        // green again.
+        for _ in 0..2 {
+            cs[0].update(37.0);
+        }
+        led_state.set_line_led(0, cs[0].get_led_state());
+        assert_eq!(
+            led_state.read().lines[0].unwrap().led_state.color,
+            LedColor::Green
+        );
+    }
+
+    #[test]
+    fn quiescing_a_device_with_no_sensors_is_harmless() {
+        // Lines that were never written are None; standby still gives them an
+        // explicit Off so the monitor's cache agrees with the hardware.
+        let led_state: SharedLedStateHandle = Arc::new(SharedLedStateWithNotify::new());
+        let mut cs = controllers(8);
+
+        quiesce_for_standby(&led_state, &mut cs);
+
+        assert!(led_state.read().lines.iter().all(|l| l.is_some()));
+        assert!(cs.iter().all(|c| c.state() == AlarmState::NeverConnected));
     }
 }
 

@@ -237,9 +237,23 @@ impl StmBridge {
 
     /// Activate sensor power pins (P0-P7) at startup
     pub fn init_sensor_power(&mut self) -> io::Result<()> {
-        eprintln!("[stm] Activating sensor power pins (P0-P7)...");
+        self.set_sensor_power(true)
+    }
+
+    /// Switch the sensor power pins (P0-P7) on or off together.
+    ///
+    /// Turning them off is how standby stops drawing through the eight DS18B20
+    /// lines: they boot HIGH in firmware and nothing else ever lowers them, so
+    /// without this a "powered down" device keeps every sensor energised.
+    ///
+    /// Per-pin failures are logged and the remaining pins still get their
+    /// command — a half-powered sensor bus is recoverable, and giving up early
+    /// on the way into standby would leave more lines live than continuing does.
+    pub fn set_sensor_power(&mut self, on: bool) -> io::Result<()> {
+        let state = if on { "ON" } else { "OFF" };
+        eprintln!("[stm] Switching sensor power pins (P0-P7) {}...", state);
         for i in 0..8 {
-            let cmd = format!("P{} ON", i);
+            let cmd = format!("P{} {}", i, state);
             match self.send_cmd(&cmd) {
                 Ok(Some(response)) => {
                     if !response.contains("OK") {
@@ -253,12 +267,12 @@ impl StmBridge {
                     eprintln!("[stm] Warning: no response from STM for P{}", i);
                 }
                 Err(e) => {
-                    eprintln!("[stm] Warning: failed to activate P{}: {}", i, e);
+                    eprintln!("[stm] Warning: failed to switch P{} {}: {}", i, state, e);
                     // Continue trying remaining pins even if one fails
                 }
             }
         }
-        eprintln!("[stm] Sensor power initialization complete");
+        eprintln!("[stm] Sensor power pins now {}", state);
         Ok(())
     }
 

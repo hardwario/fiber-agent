@@ -554,7 +554,7 @@ impl AuthorizationManager {
                 format!("Change sensor line {} location to \"{}\"", line, location)
             }
             "restart_application" => "Reboot the device".to_string(),
-            "power_off" => "Power the device off. It will stop monitoring and must be powered on by hand — it cannot be woken remotely".to_string(),
+            "power_off" => "Power the device down. It will stop monitoring, go dark and stay silent, and it will start monitoring again on its own once PoE power is reconnected".to_string(),
             "set_interval" => {
                 let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1827,9 +1827,15 @@ mod tests {
         let description = manager.describe_change("power_off", &json!({}));
 
         // This string is the preview the signer confirms against, so it has to
-        // say that monitoring stops and that the device will not come back by
-        // itself. A generic "Execute command: power_off" fallback would let
-        // someone approve an irreversible action blind.
+        // say both that monitoring stops and how the device comes back. A
+        // generic "Execute command: power_off" fallback would let someone
+        // approve a gap in patient monitoring blind.
+        //
+        // It also has to stay in step with what power_off physically does. It
+        // used to promise the device "must be powered on by hand — it cannot be
+        // woken remotely", which was true while the command halted the SoC; now
+        // that it enters a PoE-wakeable standby, saying so is the whole point of
+        // the preview.
         assert!(
             !description.starts_with("Execute command"),
             "got: {description}"
@@ -1838,8 +1844,8 @@ mod tests {
         assert!(lower.contains("power"), "got: {description}");
         assert!(lower.contains("monitoring"), "got: {description}");
         assert!(
-            lower.contains("by hand") || lower.contains("physically"),
-            "got: {description}"
+            lower.contains("poe"),
+            "the preview must name what brings the device back, got: {description}"
         );
     }
 

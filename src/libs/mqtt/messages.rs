@@ -35,6 +35,22 @@ pub enum MqttMessage {
         message: String,    // Human-readable message
     },
 
+    /// Publish the device's standby state.
+    ///
+    /// Retained, because "this device is off because someone turned it off" is
+    /// only useful if a Viewer that subscribes later still learns it. Without a
+    /// retained state a standby device is indistinguishable from a crashed one.
+    PublishStandbyState {
+        standby: bool,
+        /// Reason from the signed power-off command, or how it woke.
+        reason: String,
+        /// Signer of the power-off. Empty when the device woke by itself.
+        requested_by: String,
+        /// RFC 3339, when standby began. `None` once awake.
+        entered_at: Option<String>,
+        vin_mv: u16,
+    },
+
     /// Publish an accelerometer motion transition event
     PublishAccelerometerEvent {
         x_g: f32,     // X-axis acceleration at transition (g)

@@ -110,6 +110,22 @@ impl AlarmController {
         self.thresholds = new_thresholds;
     }
 
+    /// Forget everything observed so far, back to `NeverConnected`.
+    ///
+    /// Thresholds, callbacks and the failure/warmup/reconnect configuration are
+    /// kept — only what the controller has *seen* is dropped.
+    ///
+    /// Used when the device enters standby. The sensor rails are switched off
+    /// there and no readings are taken, so a latched `Critical` or `Disconnected`
+    /// is an assertion the device can no longer justify: it would keep the buzzer
+    /// going and, on resume, either report a transition out of a state nothing
+    /// observed or stay silently latched. `NeverConnected` is the state the
+    /// machine boots in precisely because it raises no alarm, so a resume warms up
+    /// from live readings exactly like a fresh start.
+    pub fn reset(&mut self) {
+        self.state_machine = AlarmStateMachine::new();
+    }
+
     /// Check if we just entered the Reconnecting state
     pub fn just_reconnecting(&self) -> bool {
         self.state_machine.just_reconnecting()
@@ -218,11 +234,71 @@ impl AlarmController {
 mod tests {
     use super::*;
     use crate::libs::alarms::callbacks::LoggingCallback;
+    use crate::libs::alarms::state::AlarmState;
 
     #[test]
     fn test_controller_creation() {
         let thresholds = AlarmThreshold::default_medical();
         let controller = AlarmController::new(thresholds, 3, 5, 1);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::NeverConnected
+        );
+    }
+
+    #[test]
+    fn reset_returns_a_critical_controller_to_never_connected() {
+        // What entering standby does. A latched Critical would keep the buzzer
+        // going on a device the operator has switched off, and the rails are down
+        // so nothing can justify it any more.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        controller.update(45.0);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Critical
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::NeverConnected
+        );
+        let led = controller.get_led_state();
+        assert_eq!(led.color, LedColor::Off, "a reset line raises no alarm");
+        assert_eq!(led.pattern, BlinkPattern::Steady);
+    }
+
+    #[test]
+    fn reset_keeps_thresholds_so_a_resume_still_alarms() {
+        // Only what the controller has *seen* is dropped. If the temperature is
+        // still critical when the device wakes, it must say so again.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 1);
+        controller.update(45.0);
+        controller.reset();
+
+        let led = controller.update(45.0);
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Critical,
+            "the thresholds survived the reset"
+        );
+        assert_eq!(led.color, LedColor::Red);
+    }
+
+    #[test]
+    fn reset_clears_a_disconnected_line_too() {
+        // The rails are switched off in standby, so every line would otherwise be
+        // latched Disconnected — eight red LEDs and a beeping device.
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 1, 1, 1);
+        controller.update(37.0);
+        controller.mark_read_failure();
+        assert_eq!(
+            controller.state(),
+            crate::libs::alarms::state::AlarmState::Disconnected
+        );
+
+        controller.reset();
         assert_eq!(
             controller.state(),
             crate::libs::alarms::state::AlarmState::NeverConnected
@@ -338,6 +414,166 @@ mod tests {
         );
         assert_eq!(led_state.color, LedColor::Red);
         assert_eq!(led_state.pattern, BlinkPattern::BlinkFast);
+    }
+
+    /// Records every event a controller fires, so a test can assert on what
+    /// reached the LED/buzzer/MQTT callbacks rather than only on final state.
+    #[derive(Default)]
+    struct RecordingCallback {
+        events: std::sync::Mutex<Vec<AlarmEvent>>,
+    }
+
+    impl RecordingCallback {
+        fn events(&self) -> Vec<AlarmEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl AlarmCallback for RecordingCallback {
+        fn on_event(&self, event: AlarmEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    /// Build a controller with the real deployed warm-up of 3 consecutive reads.
+    fn warming_up_controller() -> (AlarmController, Arc<RecordingCallback>) {
+        let mut controller = AlarmController::new(AlarmThreshold::default_medical(), 3, 5, 3);
+        let recorder = Arc::new(RecordingCallback::default());
+        controller.register_callback(recorder.clone());
+        (controller, recorder)
+    }
+
+    #[test]
+    fn a_warming_up_line_does_not_alarm_on_a_bus_artefact() {
+        // The bug this guards: 127.9375°C (raw 0x07FF) read from a line whose
+        // rails have only just come up used to be classified CRITICAL on sample
+        // one, sounding the buzzer, because update_from_threshold ignored the
+        // NeverConnected warm-up gate.
+        let (mut controller, recorder) = warming_up_controller();
+
+        for _ in 0..2 {
+            let led = controller.update(127.9375);
+            assert_eq!(controller.state(), AlarmState::NeverConnected);
+            assert_eq!(led.color, LedColor::Off);
+        }
+
+        assert!(
+            recorder.events().is_empty(),
+            "a line still warming up must fire no events, got {:?}",
+            recorder.events()
+        );
+    }
+
+    #[test]
+    fn warmup_defers_classification_until_enough_consecutive_reads() {
+        let (mut controller, _recorder) = warming_up_controller();
+
+        controller.update(37.0);
+        assert_eq!(controller.state(), AlarmState::NeverConnected);
+        controller.update(37.0);
+        assert_eq!(controller.state(), AlarmState::NeverConnected);
+
+        // Third consecutive good read completes warm-up and classifies
+        controller.update(37.0);
+        assert_eq!(controller.state(), AlarmState::Normal);
+    }
+
+    #[test]
+    fn a_failure_restarts_the_warmup_run() {
+        let (mut controller, _recorder) = warming_up_controller();
+
+        controller.update(37.0);
+        controller.update(37.0);
+        controller.mark_read_failure();
+        controller.update(37.0);
+        controller.update(37.0);
+
+        // Two good reads since the failure is not yet three
+        assert_eq!(controller.state(), AlarmState::NeverConnected);
+        controller.update(37.0);
+        assert_eq!(controller.state(), AlarmState::Normal);
+    }
+
+    #[test]
+    fn a_genuine_alarm_after_warmup_still_fires() {
+        // Guard against over-suppression: the gate must delay alarms, not mute them.
+        let (mut controller, recorder) = warming_up_controller();
+
+        for _ in 0..3 {
+            controller.update(37.0);
+        }
+        assert_eq!(controller.state(), AlarmState::Normal);
+
+        let led = controller.update(45.0);
+        assert_eq!(controller.state(), AlarmState::Critical);
+        assert_eq!(led.color, LedColor::Red);
+        assert_eq!(led.pattern, BlinkPattern::BlinkFast);
+        assert!(
+            recorder
+                .events()
+                .iter()
+                .any(|e| matches!(e, AlarmEvent::Critical { .. })),
+            "a real over-temperature must still raise Critical"
+        );
+    }
+
+    #[test]
+    fn completing_warmup_reports_a_first_connection_edge_not_a_reconnect() {
+        // MQTT suppresses transitions touching NeverConnected. If warm-up
+        // completion published Reconnecting -> Normal instead, every boot and
+        // every standby resume would emit a spurious alarm event.
+        let (mut controller, recorder) = warming_up_controller();
+
+        for _ in 0..3 {
+            controller.update(37.0);
+        }
+
+        let transitions: Vec<_> = recorder
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AlarmEvent::StateChanged { from, to } => Some((from, to)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            transitions,
+            vec![(AlarmState::NeverConnected, AlarmState::Normal)],
+            "warm-up completion must look like a first connection"
+        );
+    }
+
+    #[test]
+    fn a_line_that_only_ever_reads_garbage_stays_dark_and_silent() {
+        // The reader rejects 127.9375, so the monitor debounces it as a read
+        // failure. A line that never produced a good reading must not alarm —
+        // that is what keeps the unpopulated lines quiet on an 8-line device.
+        let (mut controller, recorder) = warming_up_controller();
+
+        for _ in 0..10 {
+            let led = controller.mark_read_failure();
+            assert_eq!(controller.state(), AlarmState::NeverConnected);
+            assert_eq!(led.color, LedColor::Off);
+        }
+        assert!(recorder.events().is_empty());
+    }
+
+    #[test]
+    fn a_working_line_that_starts_reading_garbage_becomes_disconnected() {
+        // Once a probe has proven itself, rejected readings must escalate — a
+        // failing sensor is a fault the operator has to see.
+        let (mut controller, _recorder) = warming_up_controller();
+
+        for _ in 0..3 {
+            controller.update(37.0);
+        }
+        assert_eq!(controller.state(), AlarmState::Normal);
+
+        for _ in 0..3 {
+            controller.mark_read_failure();
+        }
+        assert_eq!(controller.state(), AlarmState::Disconnected);
     }
 
     #[test]
