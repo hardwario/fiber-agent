@@ -35,6 +35,22 @@ pub enum MqttMessage {
         message: String,        // Human-readable message
     },
 
+    /// Publish the device's standby state.
+    ///
+    /// Retained, because "this device is off because someone turned it off" is
+    /// only useful if a Viewer that subscribes later still learns it. Without a
+    /// retained state a standby device is indistinguishable from a crashed one.
+    PublishStandbyState {
+        standby: bool,
+        /// Reason from the signed power-off command, or how it woke.
+        reason: String,
+        /// Signer of the power-off. Empty when the device woke by itself.
+        requested_by: String,
+        /// RFC 3339, when standby began. `None` once awake.
+        entered_at: Option<String>,
+        vin_mv: u16,
+    },
+
     /// Publish an accelerometer motion transition event
     PublishAccelerometerEvent {
         x_g: f32,       // X-axis acceleration at transition (g)
@@ -159,6 +175,65 @@ pub enum MqttMessage {
         last_result: String,
     },
 
+    /// Publish a STICKER's full non-secret config read-back to
+    /// `lorawan/sensors/<dev_eui>/full-config`.
+    ///
+    /// A wide read is many Class-A round trips, so a chunk failing is normal
+    /// rather than exceptional: `read_status` and `missing` say which keys never
+    /// came back, so the panel can show "not read" instead of implying the device
+    /// does not have them. Secret keys are absent because the firmware never
+    /// requests them, not because they are filtered here.
+    PublishStickerFullConfig {
+        dev_eui: String,
+        /// Flattened `group.field` → JSON value (projected from ConfigValue).
+        config: BTreeMap<String, Value>,
+        page_count: u32,
+        last_seq: u32,
+        /// `complete` when every requested key came back, else `partial`.
+        read_status: String,
+        /// Keys whose chunk failed — the gap, named.
+        missing: Vec<String>,
+    },
+
+    /// Publish a STICKER's fPort-85 device info (#65) to
+    /// `lorawan/sensors/<dev_eui>/info`, **retained**.
+    ///
+    /// Emitted both for an explicit `get_sticker_info` query and for the
+    /// unsolicited `Response{seq=0, Info}` the sticker sends on every join, so
+    /// `source` says which. `info` is already projected by
+    /// `sticker_config::info_to_json` with `claim_token` redacted — never build
+    /// this payload by hand.
+    PublishStickerInfo {
+        dev_eui: String,
+        info: Value,
+    },
+
+    /// Clear the retained device-info of a decommissioned sticker (#65). Sent when
+    /// a sticker is removed: without it the broker keeps replaying a deleted
+    /// device's info to every new subscriber.
+    ClearStickerInfo {
+        dev_eui: String,
+    },
+
+    /// Publish the outcome of a STICKER control command (#71) to
+    /// `lorawan/sensors/<dev_eui>/command`. Not retained — it is the result of one
+    /// operator action, and replaying it to a new subscriber would look like a
+    /// fresh command.
+    PublishStickerCommandResult {
+        dev_eui: String,
+        command: String,
+        seq: u32,
+        /// `ok` | `requested` | a device error code | `transport_error` |
+        /// `device_busy` | `rate_limited`.
+        result: String,
+        /// What still has to happen for the command to be observably complete, or
+        /// `None` when the reply was final. Lets the viewer say "requested" instead
+        /// of claiming success for a command that has no acknowledgement.
+        expect: Option<String>,
+        detail: Option<String>,
+        fault_key: Option<String>,
+    },
+
     /// Publish one page of a STICKER's on-device history (Feature D) to
     /// `lorawan/sensors/<dev_eui>/history`.
     PublishStickerHistory {
@@ -172,6 +247,15 @@ pub enum MqttMessage {
     /// Publish EYE BLE tag sensor data
     PublishEyeSensorData {
         tags: Vec<EyeTagPayload>,
+    },
+
+    /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
+    /// `is_en12830` is `None` when the probe was inconclusive; `status` is
+    /// "ok" | "unreachable" | "error".
+    PublishEyeDetectResult {
+        mac: String,
+        is_en12830: Option<bool>,
+        status: String,
     },
 
     /// Publish successful pairing response
@@ -199,6 +283,13 @@ pub struct LoRaWANGatewayPayload {
 /// EYE BLE tag data payload for MQTT publishing.
 #[derive(Debug, Clone)]
 pub struct EyeTagPayload {
+    /// Hostname of the gateway that heard this tag (system#6).
+    ///
+    /// A tag can be in range of several FIBERs, so a reading is only meaningful
+    /// together with who captured it. The topic carries the hostname too, but only
+    /// when `mqtt.include_hostname` is enabled — an operator setting — so the
+    /// payload states it unconditionally.
+    pub gateway: String,
     pub mac: String,
     pub name: Option<String>,
     pub temperature_c: Option<f32>,
@@ -216,6 +307,15 @@ pub struct EyeTagPayload {
     /// Whether the tag has not been seen within the configured `tag_timeout_s`.
     pub stale: bool,
     pub provisioning: String,
+    /// `Some(true)` = EN12830 recorder (white) variant, `Some(false)` = standard
+    /// (black), `None` = not yet determined. Surfaced so the viewer can label
+    /// the tag type and expose recorder controls.
+    pub is_en12830: Option<bool>,
+    /// Per-field alarm state (field → NORMAL/WARNING/CRITICAL), evaluated on
+    /// device from the tag's configured thresholds. Empty when none are set.
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    /// Aggregate (worst-of-fields) alarm state string.
+    pub alarm_state: String,
 }
 
 /// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
@@ -317,8 +417,32 @@ pub enum MqttCommand {
     /// Set sensor probe location (signed via ConfigRequest)
     SetSensorLocation { line: u8, location: String },
 
-    /// Restart application
-    RestartApplication { reason: String },
+    /// Reboot the device at OS level. Unlike `PowerOffDevice` the unit comes
+    /// back on its own, but the interruption is a gap in monitoring either way,
+    /// so the executor flushes and audits before it goes down.
+    ///
+    /// `requested_by` is carried for the same reason as on `PowerOffDevice`: the
+    /// executor never sees the signer, and the authorization audit lives on
+    /// tmpfs (`/tmp/fiber_audit.db`, and the unit sets `PrivateTmp=true`), which
+    /// a reboot wipes just as thoroughly as a power-off.
+    RestartApplication {
+        reason: String,
+        requested_by: String,
+    },
+
+    /// Power the device off at OS level. Unlike `RestartApplication` the unit
+    /// does not come back on its own — it has to be powered on by hand — so the
+    /// executor flushes the audit trail before the rails drop.
+    ///
+    /// `requested_by` is carried in the command rather than read at the call
+    /// site because the executor never sees the signer, and the authorization
+    /// audit for this command lives on tmpfs (`/tmp/fiber_audit.db`) — the
+    /// power-off destroys it. The durable row in the encrypted DB is the only
+    /// surviving evidence of who took the monitoring function offline.
+    PowerOffDevice {
+        reason: String,
+        requested_by: String,
+    },
 
     /// Set sensor intervals (sample, aggregation, report)
     SetInterval {
@@ -362,6 +486,12 @@ pub enum MqttCommand {
         volume: u8,
     },
 
+    /// Replace the configured physical-display lines (signed via ConfigRequest).
+    /// An empty list restores the built-in overview layout.
+    SetDisplayLines {
+        lines: Vec<crate::libs::config::DisplayLine>,
+    },
+
     /// Silence buzzer (from alarm acknowledgment)
     /// Stops current pattern but re-arms for new alarms
     SilenceBuzzer,
@@ -402,6 +532,22 @@ pub enum MqttCommand {
         field: String,
     },
 
+    /// Set a single per-field alarm threshold for an EYE tag.
+    SetEyeFieldThreshold {
+        mac: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+    },
+
+    /// Remove a per-field alarm threshold for an EYE tag.
+    DeleteEyeFieldThreshold {
+        mac: String,
+        field: String,
+    },
+
     /// Add LoRaWAN sticker: provision in ChirpStack + save sensor config (signed via ConfigRequest)
     AddLoRaWANSticker {
         dev_eui: String,
@@ -420,6 +566,69 @@ pub enum MqttCommand {
     GetStickerConfig {
         dev_eui: String,
         keys: Option<Vec<String>>,
+    },
+
+    /// Read every readable STICKER parameter, not just the settable ones
+    /// (unsigned query). `GetStickerConfig` covers what the panel can write;
+    /// this covers what it can only display — the `lorawan.*` identity group,
+    /// the 1-Wire ROMs, `application.calibration` and `vendor_reset_allow`.
+    ///
+    /// Its own command and its own topic rather than `GetStickerConfig { keys }`
+    /// with a wide list, because the two reads have different lifetimes: a
+    /// Feature-C write republishes `config`, and the read-only snapshot must
+    /// survive that.
+    GetStickerFullConfig {
+        dev_eui: String,
+    },
+
+    /// Read a STICKER's device info over MQTT (unsigned query, #65). One
+    /// `GetInfo` downlink and one `Info` uplink — the cheapest sticker round trip
+    /// there is, which is why it is a query rather than a signed command.
+    GetStickerInfo {
+        dev_eui: String,
+    },
+
+    /// Cold-reboot a STICKER (#71, signed). Acks, then restarts 8 s later,
+    /// discarding any staged-but-unsaved config.
+    StickerReboot {
+        dev_eui: String,
+    },
+
+    /// Reset a STICKER to defaults, keeping identity and the LoRaWAN keys (#71,
+    /// signed). Proto id 8 `device_reset` — the sticker stays joined, but every
+    /// parameter and alarm rule is lost.
+    ///
+    /// Deliberately NOT called "factory reset": the real `factory_reset` (id 23) is
+    /// NFC/shell-only and the device rejects it over the radio.
+    StickerDeviceReset {
+        dev_eui: String,
+    },
+
+    /// Clear a STICKER's pulse counters (#71, signed). Selective per channel —
+    /// each flag is sent explicitly because the firmware treats an absent flag as
+    /// "leave this counter alone".
+    StickerResetCounters {
+        dev_eui: String,
+        hall_left: bool,
+        hall_right: bool,
+        input_a: bool,
+        input_b: bool,
+    },
+
+    /// Ask a STICKER to report immediately (#71, unsigned). Changes no device
+    /// state, so it is the same risk class as a read — it only costs airtime.
+    /// Produces **no** fPort-85 reply: the telemetry uplink is the answer.
+    StickerForceSend {
+        dev_eui: String,
+    },
+
+    /// Set a STICKER's RTC (#71, signed). `unix_time = Some(..)` sets the clock
+    /// directly and the device answers with an `Info` carrying the new time;
+    /// `None` asks it to re-sync from the network instead, which produces no
+    /// immediate reply and a deferred `Info` later.
+    StickerClockSync {
+        dev_eui: String,
+        unix_time: Option<u32>,
     },
 
     /// Write a STICKER's fPort-85 parameters over MQTT (signed via ConfigRequest).
@@ -458,6 +667,34 @@ pub enum MqttCommand {
 
     /// Manually back-fill the EN12830 temperature archive for an EYE tag.
     DownloadEyeHistory {
+        mac: String,
+    },
+
+    /// Register an EYE tag in the device config (`eye.tags[]`) so it is
+    /// tracked/named explicitly. Auto-provisioning still discovers unknown
+    /// tags; this pins a name/override. Signed via ConfigRequest.
+    /// Replace the fleet allowlist of EYE MACs this gateway may listen for
+    /// (system#6). Not a registration: ownership stays with whichever gateway has
+    /// the tag in its own `eye.tags[]`.
+    SetEyeKnownTags {
+        macs: Vec<String>,
+    },
+    AddEyeTag {
+        mac: String,
+        name: Option<String>,
+    },
+
+    /// Remove an EYE tag from the device config (`eye.tags[]`). Signed via
+    /// ConfigRequest.
+    RemoveEyeTag {
+        mac: String,
+    },
+
+    /// Connect to an EYE tag over BLE and determine whether it is an EN12830
+    /// recorder (white) or a standard tag (black). Result surfaces
+    /// asynchronously via `is_en12830` in the `eye/sensors` snapshot. Signed
+    /// via ConfigRequest.
+    DetectEyeTag {
         mac: String,
     },
 
@@ -551,6 +788,7 @@ impl MqttCommand {
             MqttCommand::SetSensorName { .. } => "set_sensor_name",
             MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
             MqttCommand::RestartApplication { .. } => "restart_application",
+            MqttCommand::PowerOffDevice { .. } => "power_off",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",
             MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
@@ -559,16 +797,30 @@ impl MqttCommand {
             MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
             MqttCommand::SetScreenTimeout { .. } => "set_screen_timeout",
             MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
+            MqttCommand::SetDisplayLines { .. } => "set_display_lines",
             MqttCommand::SilenceBuzzer => "silence_buzzer",
             MqttCommand::SetNetworkConfig { .. } => "set_network_config",
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
+            MqttCommand::SetEyeFieldThreshold { .. } => "set_eye_field_threshold",
+            MqttCommand::DeleteEyeFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
+            MqttCommand::SetEyeKnownTags { .. } => "set_eye_known_tags",
+            MqttCommand::AddEyeTag { .. } => "add_eye_tag",
+            MqttCommand::RemoveEyeTag { .. } => "remove_eye_tag",
+            MqttCommand::DetectEyeTag { .. } => "detect_eye_tag",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
+            MqttCommand::GetStickerFullConfig { .. } => "get_sticker_full_config",
+            MqttCommand::GetStickerInfo { .. } => "get_sticker_info",
+            MqttCommand::StickerReboot { .. } => "sticker_reboot",
+            MqttCommand::StickerDeviceReset { .. } => "sticker_device_reset",
+            MqttCommand::StickerResetCounters { .. } => "sticker_reset_counters",
+            MqttCommand::StickerForceSend { .. } => "sticker_force_send",
+            MqttCommand::StickerClockSync { .. } => "sticker_clock_sync",
             MqttCommand::SetStickerConfig { .. } => "set_sticker_config",
             MqttCommand::SendStickerRaw { .. } => "send_sticker_raw",
             MqttCommand::GetStickerHistory { .. } => "get_sticker_history",
@@ -590,6 +842,122 @@ impl MqttCommand {
     /// (challenge) and dev-platform signed-command builders so both paths parse
     /// identically. Config values may be JSON string/number/bool and are
     /// stringified for the fPort-85 engine's typed parser.
+    /// Validate a sticker `dev_eui` out of a signed command's `params`.
+    fn params_dev_eui(params: &Value) -> Result<String, String> {
+        let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("Invalid dev_eui {:?} (expected 16 hex chars)", dev_eui));
+        }
+        Ok(dev_eui.to_lowercase())
+    }
+
+    /// Parse `sticker_reboot` (#71).
+    pub fn parse_sticker_reboot(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::StickerReboot { dev_eui: Self::params_dev_eui(params)? })
+    }
+
+    /// Parse `sticker_device_reset` (#71).
+    pub fn parse_sticker_device_reset(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::StickerDeviceReset { dev_eui: Self::params_dev_eui(params)? })
+    }
+
+    /// Parse `sticker_force_send` (#71).
+    pub fn parse_sticker_force_send(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::StickerForceSend { dev_eui: Self::params_dev_eui(params)? })
+    }
+
+    /// Parse `sticker_reset_counters` (#71).
+    ///
+    /// Accepts either `{"counters": ["hall_left", ...]}` or `{"all": true}`.
+    ///
+    /// **An empty selection is rejected.** The firmware Acks a ResetCounters with
+    /// no channels set while clearing nothing, so accepting one would report
+    /// success for a guaranteed no-op. Requiring an explicit selection also makes
+    /// the signed-command confirmation preview name the channels an operator is
+    /// about to clear.
+    pub fn parse_sticker_reset_counters(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::params_dev_eui(params)?;
+        const CHANNELS: [&str; 4] = ["hall_left", "hall_right", "input_a", "input_b"];
+
+        if params.get("all").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(MqttCommand::StickerResetCounters {
+                dev_eui,
+                hall_left: true,
+                hall_right: true,
+                input_a: true,
+                input_b: true,
+            });
+        }
+
+        let mut selected = [false; 4];
+        if let Some(arr) = params.get("counters").and_then(|v| v.as_array()) {
+            for entry in arr {
+                let name = entry
+                    .as_str()
+                    .ok_or_else(|| "'counters' entries must be strings".to_string())?;
+                match CHANNELS.iter().position(|c| *c == name) {
+                    Some(i) => selected[i] = true,
+                    None => {
+                        return Err(format!(
+                            "unknown counter {name:?} (expected one of {CHANNELS:?}); \
+                             motion_count and accel_motion_count are RAM-only on the device \
+                             and cannot be reset"
+                        ))
+                    }
+                }
+            }
+        } else {
+            // Accept per-channel booleans too, matching the proto field names.
+            for (i, name) in CHANNELS.iter().enumerate() {
+                if params.get(*name).and_then(|v| v.as_bool()) == Some(true) {
+                    selected[i] = true;
+                }
+            }
+        }
+
+        if !selected.iter().any(|s| *s) {
+            return Err(format!(
+                "no counters selected; pass \"all\": true or a non-empty \"counters\" list \
+                 from {CHANNELS:?} (an empty reset would be acknowledged but clear nothing)"
+            ));
+        }
+        Ok(MqttCommand::StickerResetCounters {
+            dev_eui,
+            hall_left: selected[0],
+            hall_right: selected[1],
+            input_a: selected[2],
+            input_b: selected[3],
+        })
+    }
+
+    /// Parse `sticker_clock_sync` (#71).
+    ///
+    /// `unix_time` absent/null means "re-sync from the network" (no immediate
+    /// reply, deferred `Info` later). A supplied value is range-checked against the
+    /// firmware's own accepted window (2024-01-01 .. 2100-01-01,
+    /// `APP_CMD_CLOCK_UNIX_MIN/MAX`) so a bad value fails here instead of burning a
+    /// downlink to be told `BAD_REQUEST` "bad epoch".
+    pub fn parse_sticker_clock_sync(params: &Value) -> Result<MqttCommand, String> {
+        const CLOCK_MIN: u64 = 1_704_067_200; // 2024-01-01T00:00:00Z
+        const CLOCK_MAX: u64 = 4_102_444_800; // 2100-01-01T00:00:00Z
+        let dev_eui = Self::params_dev_eui(params)?;
+        let unix_time = match params.get("unix_time") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let n = v.as_u64().ok_or_else(|| "'unix_time' must be a number".to_string())?;
+                if !(CLOCK_MIN..=CLOCK_MAX).contains(&n) {
+                    return Err(format!(
+                        "unix_time {n} outside the firmware's accepted range \
+                         {CLOCK_MIN}..={CLOCK_MAX} (2024-01-01 .. 2100-01-01)"
+                    ));
+                }
+                Some(n as u32)
+            }
+        };
+        Ok(MqttCommand::StickerClockSync { dev_eui, unix_time })
+    }
+
     pub fn parse_set_sticker_config(params: &Value) -> Result<MqttCommand, String> {
         let dev_eui = params
             .get("dev_eui")
@@ -716,6 +1084,12 @@ mod tests {
             MqttCommand::GetStickerConfig { dev_eui: "0102030405060708".into(), keys: None }.name(),
             "get_sticker_config"
         );
+        // The viewer sends this literal string and subscribes to the matching
+        // "/full-config" topic; a rename here silently dead-ends its read.
+        assert_eq!(
+            MqttCommand::GetStickerFullConfig { dev_eui: "0102030405060708".into() }.name(),
+            "get_sticker_full_config"
+        );
         let mut fields = BTreeMap::new();
         fields.insert("application.interval_report".to_string(), "1200".to_string());
         assert_eq!(
@@ -735,6 +1109,131 @@ mod tests {
             }
             .name(),
             "get_sticker_history"
+        );
+    }
+
+    #[test]
+    fn parse_sticker_reset_counters_rejects_an_empty_selection() {
+        // The firmware Acks a ResetCounters with no channels set while clearing
+        // NOTHING, so accepting an empty selection would report success for a
+        // guaranteed no-op. This is the host-side guard for that firmware quirk.
+        let err = MqttCommand::parse_sticker_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2"
+        }))
+        .unwrap_err();
+        assert!(err.contains("no counters selected"), "got {err:?}");
+
+        let err = MqttCommand::parse_sticker_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "counters": []
+        }))
+        .unwrap_err();
+        assert!(err.contains("no counters selected"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_sticker_reset_counters_selects_channels() {
+        match MqttCommand::parse_sticker_reset_counters(&serde_json::json!({
+            "dev_eui": "70B3D57ED80051B2", "counters": ["hall_left", "input_b"]
+        }))
+        .unwrap()
+        {
+            MqttCommand::StickerResetCounters {
+                dev_eui,
+                hall_left,
+                hall_right,
+                input_a,
+                input_b,
+            } => {
+                assert_eq!(dev_eui, "70b3d57ed80051b2");
+                assert_eq!((hall_left, hall_right, input_a, input_b), (true, false, false, true));
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        match MqttCommand::parse_sticker_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "all": true
+        }))
+        .unwrap()
+        {
+            MqttCommand::StickerResetCounters { hall_left, hall_right, input_a, input_b, .. } => {
+                assert_eq!((hall_left, hall_right, input_a, input_b), (true, true, true, true));
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn parse_sticker_reset_counters_names_the_unresettable_counters() {
+        // motion_count / accel_motion_count are RAM-only on the device, so asking
+        // for them must fail with an explanation rather than silently doing nothing.
+        let err = MqttCommand::parse_sticker_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "counters": ["motion_count"]
+        }))
+        .unwrap_err();
+        assert!(err.contains("unknown counter"), "got {err:?}");
+        assert!(err.contains("RAM-only"), "the error should explain why: {err:?}");
+    }
+
+    #[test]
+    fn parse_sticker_clock_sync_modes_and_range() {
+        // Absent unix_time = "re-sync from the network": no immediate reply.
+        match MqttCommand::parse_sticker_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2"
+        }))
+        .unwrap()
+        {
+            MqttCommand::StickerClockSync { unix_time, .. } => assert_eq!(unix_time, None),
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        // A supplied time is accepted inside the firmware's own window.
+        match MqttCommand::parse_sticker_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "unix_time": 1_782_198_249u64
+        }))
+        .unwrap()
+        {
+            MqttCommand::StickerClockSync { unix_time, .. } => {
+                assert_eq!(unix_time, Some(1_782_198_249))
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        // Out of range fails here rather than burning a downlink to be told
+        // BAD_REQUEST "bad epoch". 1600000000 is 2020, below APP_CMD_CLOCK_UNIX_MIN.
+        let err = MqttCommand::parse_sticker_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "unix_time": 1_600_000_000u64
+        }))
+        .unwrap_err();
+        assert!(err.contains("outside the firmware's accepted range"), "got {err:?}");
+    }
+
+    #[test]
+    fn control_command_names_are_stable() {
+        // These strings are the MQTT wire contract with the viewer.
+        let eui = "70b3d57ed80051b2".to_string();
+        assert_eq!(MqttCommand::StickerReboot { dev_eui: eui.clone() }.name(), "sticker_reboot");
+        assert_eq!(
+            MqttCommand::StickerDeviceReset { dev_eui: eui.clone() }.name(),
+            "sticker_device_reset"
+        );
+        assert_eq!(
+            MqttCommand::StickerForceSend { dev_eui: eui.clone() }.name(),
+            "sticker_force_send"
+        );
+        assert_eq!(
+            MqttCommand::StickerClockSync { dev_eui: eui.clone(), unix_time: None }.name(),
+            "sticker_clock_sync"
+        );
+        assert_eq!(
+            MqttCommand::StickerResetCounters {
+                dev_eui: eui,
+                hall_left: true,
+                hall_right: true,
+                input_a: true,
+                input_b: true,
+            }
+            .name(),
+            "sticker_reset_counters"
         );
     }
 

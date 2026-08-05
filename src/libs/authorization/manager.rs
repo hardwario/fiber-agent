@@ -451,6 +451,7 @@ impl AuthorizationManager {
             "set_screen" => "set_screen",
             "flush_storage" => "flush_storage",
             "restart_application" => "restart_application",
+            "power_off" => "power_off_device",
             "set_interval" => "set_interval",
             "set_system_info_interval" => "set_system_info_interval",
             "get_info" => "get_info",
@@ -462,6 +463,12 @@ impl AuthorizationManager {
             "set_led_brightness" => "set_led_brightness",
             "set_screen_brightness" => "set_screen_brightness",
             "set_screen_timeout" => "set_screen_brightness",  // reuse: screen-control permission (works with existing certs)
+            // Deliberately NOT the screen-control permission. That one covers how
+            // brightly and how long the panel is lit; this one decides which
+            // measurements the panel lists at all, which is a different capability
+            // on a Class IIa device. The cost is accepted: certificates issued
+            // before this permission existed do not carry it and must be reissued.
+            "set_display_lines" => "set_display_lines",
             "set_buzzer_volume" => "set_buzzer_volume",
             "set_network_config" => "set_network_config",
             "set_lorawan_sensor_config" => "set_lorawan_sensor_config",
@@ -471,12 +478,31 @@ impl AuthorizationManager {
             "remove_external_gateway" => "set_lorawan_sensor_config",  // reuse same permission
             "set_eye_recording" => "set_lorawan_sensor_config",  // reuse: sensor config change
             "download_eye_history" => "set_lorawan_sensor_config",  // reuse: sensor data op
+            "add_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
+            "remove_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor config change
+            "detect_eye_tag" => "set_lorawan_sensor_config",  // reuse: sensor data op
+            // system#6. Not a registration — it only widens what this gateway
+            // listens for — but it is still a fleet-scoped write, so it takes the
+            // same permission as adding a tag rather than a read permission.
+            "set_eye_known_tags" => "set_lorawan_sensor_config",
             "reset_export_cursor" => "set_lorawan_sensor_config",  // admin op: align with sticker management
 
             "set_lorawan_field_threshold" => "set_threshold",
             "delete_lorawan_field_threshold" => "set_threshold",
             "set_sticker_config" => "set_lorawan_sensor_config",  // reuse sticker-management permission
             "send_sticker_raw" => "set_lorawan_sensor_config",  // reuse sticker-management permission
+            "set_eye_field_threshold" => "set_lorawan_sensor_config",
+            "delete_eye_field_threshold" => "set_lorawan_sensor_config",
+            // #71 control commands. They reuse the sticker-management permission
+            // rather than introducing a new one, because anyone who can already
+            // write sticker config can already reboot the device via
+            // SetParam{save:true} — a dedicated permission would raise no real bar
+            // while forcing every provisioned signer certificate to be re-issued.
+            // Tightening this is a follow-up, not a prerequisite.
+            "sticker_reboot" => "set_lorawan_sensor_config",
+            "sticker_device_reset" => "set_lorawan_sensor_config",
+            "sticker_reset_counters" => "set_lorawan_sensor_config",
+            "sticker_clock_sync" => "set_lorawan_sensor_config",
             _ => {
                 return Err(AuthError::InvalidCommand(format!(
                     "Unknown command type: {}",
@@ -514,6 +540,7 @@ impl AuthorizationManager {
                 format!("Change sensor line {} location to \"{}\"", line, location)
             }
             "restart_application" => "Reboot the device".to_string(),
+            "power_off" => "Power the device down. It will stop monitoring, go dark and stay silent, and it will start monitoring again on its own once PoE power is reconnected".to_string(),
             "set_interval" => {
                 let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -556,6 +583,18 @@ impl AuthorizationManager {
             "set_buzzer_volume" => {
                 let volume = params.get("volume").and_then(|v| v.as_u64()).unwrap_or(100);
                 format!("Set buzzer volume to {}%", volume)
+            }
+            "set_display_lines" => {
+                let count = params
+                    .get("lines")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if count == 0 {
+                    "Restore the built-in display layout".to_string()
+                } else {
+                    format!("Set {} custom display lines", count)
+                }
             }
             "set_network_config" => {
                 let iface = params.get("interface").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -600,6 +639,59 @@ impl AuthorizationManager {
                 let hex = params.get("hex").and_then(|v| v.as_str()).unwrap_or("");
                 format!("Send raw downlink to STICKER {} ({} hex chars)", dev_eui, hex.len())
             }
+            // These strings are what an operator actually reads before confirming a
+            // signed command, so they state the real consequence rather than the
+            // command name.
+            "sticker_reboot" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!(
+                    "Reboot STICKER {} — cold restart about 8 s after the acknowledgement. \
+                     Any staged but unsaved configuration is discarded; saved settings, \
+                     alarm rules and counters are unaffected.",
+                    dev_eui
+                )
+            }
+            "sticker_device_reset" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!(
+                    "Reset STICKER {} to defaults. Identity and the full LoRaWAN \
+                     configuration are KEPT, so the device stays joined and needs no \
+                     re-provisioning — but ALL sensor capabilities, alarm rules, intervals \
+                     and history settings are lost. This is not the same as an NFC factory \
+                     reset, which cannot be performed over the radio.",
+                    dev_eui
+                )
+            }
+            "sticker_reset_counters" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let mut chans: Vec<&str> = Vec::new();
+                if params.get("all").and_then(|v| v.as_bool()) == Some(true) {
+                    chans = vec!["hall_left", "hall_right", "input_a", "input_b"];
+                } else if let Some(arr) = params.get("counters").and_then(|v| v.as_array()) {
+                    chans = arr.iter().filter_map(|v| v.as_str()).collect();
+                }
+                format!(
+                    "Reset STICKER {} pulse counters: {:?}. Irreversible — the totals are \
+                     zeroed and persisted. Does NOT reset motion_count or \
+                     accel_motion_count, which are RAM-only on the device.",
+                    dev_eui, chans
+                )
+            }
+            "sticker_clock_sync" => {
+                let dev_eui = params.get("dev_eui").and_then(|v| v.as_str()).unwrap_or("unknown");
+                match params.get("unix_time").and_then(|v| v.as_u64()) {
+                    Some(t) => format!(
+                        "Set STICKER {} clock to Unix time {}. Absolute history timestamps \
+                         depend on this.",
+                        dev_eui, t
+                    ),
+                    None => format!(
+                        "Ask STICKER {} to re-sync its clock from the network. No immediate \
+                         reply — the device reports the result in a later device-info uplink.",
+                        dev_eui
+                    ),
+                }
+            }
             "set_eye_recording" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let interval = params.get("interval_min").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -608,6 +700,39 @@ impl AuthorizationManager {
             "download_eye_history" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
                 format!("Download EYE {} temperature history", mac)
+            }
+            "add_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Add EYE tag {} (name: \"{}\")", mac, name)
+            }
+            "remove_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Remove EYE tag {}", mac)
+            }
+            "detect_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Detect EYE tag type for {}", mac)
+            }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Set EYE {} {} alarm thresholds", mac, field)
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let field = params.get("field").and_then(|v| v.as_str()).unwrap_or("unknown");
+                format!("Clear EYE {} {} alarm thresholds", mac, field)
+            }
+            "set_eye_known_tags" => {
+                let n = params
+                    .get("macs")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                // The count, not the list: a fleet allowlist is long enough that
+                // spelling it out would bury the rest of the confirmation prompt.
+                format!("Listen for {} fleet-known EYE tag(s)", n)
             }
             _ => format!("Execute command: {}", command_type),
         }
@@ -660,7 +785,17 @@ impl AuthorizationManager {
             }
             "restart_application" => {
                 let reason = challenge.reason.clone().unwrap_or_else(|| "Remote configuration".to_string());
-                Ok(MqttCommand::RestartApplication { reason })
+                Ok(MqttCommand::RestartApplication {
+                    reason,
+                    requested_by: challenge.signer_id.clone(),
+                })
+            }
+            "power_off" => {
+                let reason = challenge.reason.clone().unwrap_or_else(|| "Remote power-off".to_string());
+                Ok(MqttCommand::PowerOffDevice {
+                    reason,
+                    requested_by: challenge.signer_id.clone(),
+                })
             }
             "set_interval" => {
                 let sample_interval_ms = challenge.params.get("sample_interval_ms")
@@ -763,6 +898,27 @@ impl AuthorizationManager {
                 }
 
                 Ok(MqttCommand::SetScreenTimeout { timeout_secs: timeout_secs as u32 })
+            }
+            "set_display_lines" => {
+                let raw = challenge.params.get("lines")
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing lines".to_string()))?;
+
+                // Same `Deserialize` derive as the YAML path — one schema, two
+                // encodings, no second parser to keep in sync. Deliberately NOT
+                // the lenient on-disk deserializer: dropping a malformed line
+                // silently is right when the alternative is failing to boot, but
+                // on a command a malformed line must be a loud rejection.
+                let lines: Vec<crate::libs::config::DisplayLine> =
+                    serde_json::from_value(raw.clone()).map_err(|e| {
+                        AuthError::InvalidCommand(format!("Invalid display lines: {}", e))
+                    })?;
+
+                // Validate here rather than only in the applier so the operator
+                // learns it's wrong before the confirm round-trip.
+                crate::libs::config_applier::validation::validate_display_custom_lines(&lines)
+                    .map_err(AuthError::InvalidCommand)?;
+
+                Ok(MqttCommand::SetDisplayLines { lines })
             }
             "set_buzzer_volume" => {
                 let volume = challenge.params.get("volume")
@@ -878,6 +1034,57 @@ impl AuthorizationManager {
             }
             "send_sticker_raw" => {
                 MqttCommand::parse_send_sticker_raw(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "set_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                let critical_low = challenge.params.get("critical_low").and_then(|v| v.as_f64());
+                let warning_low = challenge.params.get("warning_low").and_then(|v| v.as_f64());
+                let warning_high = challenge.params.get("warning_high").and_then(|v| v.as_f64());
+                let critical_high = challenge.params.get("critical_high").and_then(|v| v.as_f64());
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac, field,
+                    critical_low, warning_low, warning_high, critical_high,
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!("Invalid MAC address: {mac}")));
+                }
+                let field = challenge.params.get("field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
+                    .to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
+            "sticker_reboot" => {
+                MqttCommand::parse_sticker_reboot(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_device_reset" => {
+                MqttCommand::parse_sticker_device_reset(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_reset_counters" => {
+                MqttCommand::parse_sticker_reset_counters(&challenge.params)
+                    .map_err(AuthError::InvalidCommand)
+            }
+            "sticker_clock_sync" => {
+                MqttCommand::parse_sticker_clock_sync(&challenge.params)
                     .map_err(AuthError::InvalidCommand)
             }
             "add_lorawan_sticker" => {
@@ -1002,9 +1209,9 @@ impl AuthorizationManager {
                 let interval_min = challenge.params.get("interval_min")
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing interval_min".to_string()))?;
-                if !matches!(interval_min, 1 | 5 | 15) {
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
                     return Err(AuthError::InvalidCommand(
-                        "interval_min must be 1, 5 or 15".to_string(),
+                        "interval_min must be 0 (off), 1, 5 or 15".to_string(),
                     ));
                 }
                 Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
@@ -1015,6 +1222,74 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
                 Ok(MqttCommand::DownloadEyeHistory { mac })
+            }
+            "add_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                let name = challenge.params.get("name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                Ok(MqttCommand::AddEyeTag { mac, name })
+            }
+            "set_eye_known_tags" => {
+                let arr = challenge.params.get("macs")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        AuthError::InvalidCommand("Missing or non-array 'macs'".to_string())
+                    })?;
+                // Validated and normalised here rather than left to the monitor, so
+                // a malformed push is rejected at the door with a reason the caller
+                // can act on. An empty list is legal and means "stop listening for
+                // borrowed tags" — refusing it would leave no way to clear the
+                // allowlist.
+                let mut macs = Vec::with_capacity(arr.len());
+                for v in arr {
+                    let mac = v
+                        .as_str()
+                        .ok_or_else(|| {
+                            AuthError::InvalidCommand("'macs' entries must be strings".to_string())
+                        })?
+                        .to_uppercase();
+                    if !crate::libs::eye::state::is_valid_mac(&mac) {
+                        return Err(AuthError::InvalidCommand(format!(
+                            "Invalid MAC address: {mac}"
+                        )));
+                    }
+                    macs.push(mac);
+                }
+                Ok(MqttCommand::SetEyeKnownTags { macs })
+            }
+            "remove_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                Ok(MqttCommand::RemoveEyeTag { mac })
+            }
+            "detect_eye_tag" => {
+                let mac = challenge.params.get("mac")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
+                    .to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(AuthError::InvalidCommand(format!(
+                        "Invalid MAC address: {mac}"
+                    )));
+                }
+                Ok(MqttCommand::DetectEyeTag { mac })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",
@@ -1119,9 +1394,21 @@ mod tests {
             "set_threshold"
         );
 
+        // The Viewer must issue certificates carrying this literal. It used to
+        // issue "restart_device" — a name that exists nowhere in this table — so
+        // every remote reboot was rejected here with PermissionDenied while the
+        // Viewer's API reported success. Do not "fix" a future authorization
+        // failure by loosening this to accept the old name; reissue the
+        // certificate instead.
         assert_eq!(
             manager.command_type_to_permission("restart_application").unwrap(),
             "restart_application"
+        );
+        // A reboot self-recovers, a power-off does not: holding one must never
+        // imply the other. The Viewer asserts the same inequality.
+        assert_ne!(
+            manager.command_type_to_permission("restart_application").unwrap(),
+            manager.command_type_to_permission("power_off").unwrap()
         );
 
         // Screen timeout reuses the screen-brightness permission so it works
@@ -1134,18 +1421,89 @@ mod tests {
         assert!(manager.command_type_to_permission("unknown").is_err());
     }
 
-    fn make_challenge(command_type: &str, params: Value) -> crate::libs::authorization::state::PendingChallenge {
+    #[test]
+    fn eye_tag_commands_map_to_lorawan_sensor_config_permission() {
+        let manager = create_test_manager();
+        for cmd in ["add_eye_tag", "remove_eye_tag", "detect_eye_tag"] {
+            assert_eq!(
+                manager.command_type_to_permission(cmd).unwrap(),
+                "set_lorawan_sensor_config",
+                "unexpected permission for {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_add_eye_tag_uppercases_mac_and_keeps_name() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "add_eye_tag",
+            serde_json::json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::AddEyeTag { mac, name } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(name.as_deref(), Some("Freezer"));
+            }
+            other => panic!("expected AddEyeTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_add_eye_tag_rejects_malformed_mac() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("add_eye_tag", serde_json::json!({"mac": "not-a-mac"}));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
+    }
+
+    #[test]
+    fn build_detect_eye_tag_ok() {
+        let manager = create_test_manager();
+        let challenge =
+            test_challenge("detect_eye_tag", serde_json::json!({"mac": "AA:BB:CC:DD:EE:FF"}));
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::DetectEyeTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
+            other => panic!("expected DetectEyeTag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_set_eye_field_threshold_uppercases_mac_and_maps_permission() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_eye_field_threshold",
+            serde_json::json!({
+                "mac": "aa:bb:cc:dd:ee:ff", "field": "temperature",
+                "warning_high": 8.0, "critical_high": 12.0
+            }),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_high, critical_high, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "temperature");
+                assert_eq!(warning_high, Some(8.0));
+                assert_eq!(critical_high, Some(12.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert_eq!(
+            manager.command_type_to_permission("set_eye_field_threshold").unwrap(),
+            "set_lorawan_sensor_config",
+        );
+    }
+
+    fn test_challenge(command_type: &str, params: Value) -> crate::libs::authorization::state::PendingChallenge {
         use crate::libs::authorization::state::{ChallengeState, PendingChallenge};
         PendingChallenge {
-            challenge_id: "cid".to_string(),
-            request_id: "rid".to_string(),
-            signer_id: "signer".to_string(),
-            signer_name: "Signer".to_string(),
+            challenge_id: "c".to_string(),
+            request_id: "r".to_string(),
+            signer_id: "s".to_string(),
+            signer_name: "S".to_string(),
             command_type: command_type.to_string(),
             params,
             reason: None,
-            signature: "sig".to_string(),
-            nonce: "nonce".to_string(),
+            signature: String::new(),
+            nonce: String::new(),
             timestamp: 0,
             expires_at: 0,
             state: ChallengeState::AwaitingConfirmation,
@@ -1154,9 +1512,180 @@ mod tests {
     }
 
     #[test]
+    fn set_display_lines_has_its_own_permission() {
+        let manager = create_test_manager();
+        let permission = manager.command_type_to_permission("set_display_lines").unwrap();
+        assert_eq!(permission, "set_display_lines");
+
+        // Hard cutover, asserted explicitly: choosing which sensors the local
+        // panel lists is not the same capability as dimming it. A certificate
+        // issued before this permission existed is *supposed* to be rejected, so
+        // the tempting field fix — reinstating the reuse to make an
+        // authorization failure go away — has to fail here first.
+        assert_ne!(permission, "set_screen_brightness");
+    }
+
+    #[test]
+    fn power_off_has_its_own_permission() {
+        let manager = create_test_manager();
+        let permission = manager.command_type_to_permission("power_off").unwrap();
+        assert_eq!(permission, "power_off_device");
+
+        // Same hard cutover as above, for a sharper reason: a reboot comes back
+        // on its own, a power-off leaves the unit dark until someone walks to it.
+        // Reusing the reboot permission would silently hand every already-issued
+        // certificate the power to take a Class IIa monitor offline indefinitely,
+        // so that shortcut has to fail here first.
+        assert_ne!(permission, "restart_application");
+    }
+
+    #[test]
+    fn build_command_from_challenge_power_off_carries_signer_and_reason() {
+        let manager = create_test_manager();
+
+        let mut challenge = test_challenge("power_off", json!({}));
+        challenge.reason = Some("Fridge decommissioned".to_string());
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::PowerOffDevice {
+                reason,
+                requested_by,
+            } => {
+                assert_eq!(reason, "Fridge decommissioned");
+                // Not cosmetic: /tmp/fiber_audit.db does not survive the
+                // power-off, so this is the only record of who authorized it.
+                assert_eq!(requested_by, "s");
+            }
+            other => panic!("expected PowerOffDevice, got {other:?}"),
+        }
+
+        // No reason given still yields a command — the device must not refuse a
+        // validly signed power-off over missing prose — but it must not end up
+        // with an empty reason in the audit row either.
+        let bare = test_challenge("power_off", json!({}));
+        match manager.build_command_from_challenge(&bare).unwrap() {
+            MqttCommand::PowerOffDevice { reason, .. } => assert!(!reason.is_empty()),
+            other => panic!("expected PowerOffDevice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_reboot_carries_signer_and_reason() {
+        let manager = create_test_manager();
+
+        let mut challenge = test_challenge("restart_application", json!({}));
+        challenge.reason = Some("Applying new config".to_string());
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::RestartApplication {
+                reason,
+                requested_by,
+            } => {
+                assert_eq!(reason, "Applying new config");
+                // /tmp/fiber_audit.db is on tmpfs and the unit runs with
+                // PrivateTmp=true, so a reboot wipes the authorization record
+                // just as a power-off does. This is what the durable row keeps.
+                assert_eq!(requested_by, "s");
+            }
+            other => panic!("expected RestartApplication, got {other:?}"),
+        }
+
+        let bare = test_challenge("restart_application", json!({}));
+        match manager.build_command_from_challenge(&bare).unwrap() {
+            MqttCommand::RestartApplication { reason, .. } => assert!(!reason.is_empty()),
+            other => panic!("expected RestartApplication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_change_power_off_spells_out_the_consequence() {
+        let manager = create_test_manager();
+        let description = manager.describe_change("power_off", &json!({}));
+
+        // This string is the preview the signer confirms against, so it has to
+        // say both that monitoring stops and how the device comes back. A
+        // generic "Execute command: power_off" fallback would let someone
+        // approve a gap in patient monitoring blind.
+        //
+        // It also has to stay in step with what power_off physically does. It
+        // used to promise the device "must be powered on by hand — it cannot be
+        // woken remotely", which was true while the command halted the SoC; now
+        // that it enters a PoE-wakeable standby, saying so is the whole point of
+        // the preview.
+        assert!(!description.starts_with("Execute command"), "got: {description}");
+        let lower = description.to_lowercase();
+        assert!(lower.contains("power"), "got: {description}");
+        assert!(lower.contains("monitoring"), "got: {description}");
+        assert!(
+            lower.contains("poe"),
+            "the preview must name what brings the device back, got: {description}"
+        );
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_parses_array() {
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_display_lines",
+            serde_json::json!({ "lines": [
+                { "source": "sticker", "dev_eui": "70b3d57ed0051f2a", "field": "ext_temperature_1",
+                  "label": "Stkr1 ext" },
+                { "source": "ds18b20", "line": 0, "field": "temperature",
+                  "format": { "decimals": 2, "status_char": false } },
+            ]}),
+        );
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetDisplayLines { lines }) => {
+                assert_eq!(lines.len(), 2, "array order is semantic and must be preserved");
+                assert_eq!(lines[0].field, "ext_temperature_1");
+                assert_eq!(lines[0].dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
+                assert_eq!(lines[1].line, Some(0));
+                assert_eq!(lines[1].format.decimals, Some(2));
+                assert!(!lines[1].format.status_char);
+            }
+            other => panic!("expected SetDisplayLines, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_accepts_empty_list() {
+        // Empty list is the documented way to restore the built-in layout.
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_display_lines", serde_json::json!({ "lines": [] }));
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetDisplayLines { lines }) => assert!(lines.is_empty()),
+            other => panic!("expected SetDisplayLines, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_rejects_invalid_field() {
+        // Unlike the on-disk path (which drops bad entries so a device can still
+        // boot), a command carrying a bad line must be rejected outright.
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_display_lines",
+            serde_json::json!({ "lines": [
+                { "source": "sticker", "dev_eui": "70b3d57ed0051f2a", "field": "battery_percent" },
+            ]}),
+        );
+        let err = manager.build_command_from_challenge(&challenge).unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("unknown sticker field"),
+            "got: {:?}",
+            err,
+        );
+    }
+
+    #[test]
+    fn build_command_from_challenge_set_display_lines_rejects_missing_lines() {
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_display_lines", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&challenge).is_err());
+    }
+
+    #[test]
     fn build_command_from_challenge_screen_timeout_ok() {
         let manager = create_test_manager();
-        let challenge = make_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 3600 }));
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 3600 }));
         match manager.build_command_from_challenge(&challenge) {
             Ok(MqttCommand::SetScreenTimeout { timeout_secs }) => assert_eq!(timeout_secs, 3600),
             other => panic!("expected SetScreenTimeout, got {:?}", other),
@@ -1164,9 +1693,69 @@ mod tests {
     }
 
     #[test]
+    fn set_eye_known_tags_is_reachable_in_a_production_build() {
+        // The whole point of routing this through the signed path: the only other
+        // way to construct the command lives in `build_dev_command`, which is
+        // `#[cfg(feature = "dev-platform")]`. Without an arm here, system#6 could
+        // never be enabled on a real gateway — and a dev-platform build must not be
+        // deployed to one, since it disables command verification.
+        let manager = create_test_manager();
+        let challenge = test_challenge(
+            "set_eye_known_tags",
+            serde_json::json!({ "macs": ["7c:d9:f4:13:10:de", "7C:D9:F4:13:10:DF"] }),
+        );
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetEyeKnownTags { macs }) => {
+                // Normalised to uppercase, because the scan compares against
+                // uppercased MACs.
+                assert_eq!(macs, vec!["7C:D9:F4:13:10:DE", "7C:D9:F4:13:10:DF"]);
+            }
+            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_eye_known_tags_accepts_an_empty_list() {
+        // Empty is the only way to stop listening for borrowed tags, so rejecting
+        // it would make the allowlist one-way.
+        let manager = create_test_manager();
+        let challenge = test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [] }));
+        match manager.build_command_from_challenge(&challenge) {
+            Ok(MqttCommand::SetEyeKnownTags { macs }) => assert!(macs.is_empty()),
+            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_eye_known_tags_rejects_a_malformed_mac_and_a_missing_list() {
+        let manager = create_test_manager();
+        let bad_mac = test_challenge(
+            "set_eye_known_tags",
+            serde_json::json!({ "macs": ["7C:D9:F4:13:10:DE", "not-a-mac"] }),
+        );
+        assert!(manager.build_command_from_challenge(&bad_mac).is_err());
+
+        let not_strings =
+            test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [42] }));
+        assert!(manager.build_command_from_challenge(&not_strings).is_err());
+
+        let missing = test_challenge("set_eye_known_tags", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&missing).is_err());
+    }
+
+    #[test]
+    fn set_eye_known_tags_takes_the_sticker_management_permission() {
+        let manager = create_test_manager();
+        assert_eq!(
+            manager.command_type_to_permission("set_eye_known_tags").unwrap(),
+            "set_lorawan_sensor_config",
+        );
+    }
+
+    #[test]
     fn build_command_from_challenge_screen_timeout_zero_allowed() {
         let manager = create_test_manager();
-        let challenge = make_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 0 }));
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 0 }));
         // 0 is the documented "always on" sentinel and must be accepted.
         assert!(matches!(
             manager.build_command_from_challenge(&challenge),
@@ -1179,12 +1768,12 @@ mod tests {
         let manager = create_test_manager();
         // No practical upper bound: any value that fits u32 is accepted
         // (e.g. beyond the old 24h/86400 guardrail).
-        let challenge = make_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 86_401 }));
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": 86_401 }));
         assert!(matches!(
             manager.build_command_from_challenge(&challenge),
             Ok(MqttCommand::SetScreenTimeout { timeout_secs: 86_401 })
         ));
-        let max = make_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": u32::MAX as u64 }));
+        let max = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": u32::MAX as u64 }));
         assert!(matches!(
             manager.build_command_from_challenge(&max),
             Ok(MqttCommand::SetScreenTimeout { timeout_secs }) if timeout_secs == u32::MAX
@@ -1195,14 +1784,14 @@ mod tests {
     fn build_command_from_challenge_screen_timeout_out_of_range_rejected() {
         let manager = create_test_manager();
         // Only values that overflow u32 are rejected.
-        let challenge = make_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": (u32::MAX as u64) + 1 }));
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({ "timeout_secs": (u32::MAX as u64) + 1 }));
         assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 
     #[test]
     fn build_command_from_challenge_screen_timeout_missing_rejected() {
         let manager = create_test_manager();
-        let challenge = make_challenge("set_screen_timeout", serde_json::json!({}));
+        let challenge = test_challenge("set_screen_timeout", serde_json::json!({}));
         assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 
@@ -1211,6 +1800,9 @@ mod tests {
         // For now, just create a manager with minimal setup
         use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
         use std::path::Path;
+        use std::sync::atomic::AtomicUsize;
+
+        static AUDIT_DB_SEQ: AtomicUsize = AtomicUsize::new(0);
 
         let ca_registry = Arc::new(Mutex::new(
             CARegistry::load_from_file(Path::new("/tmp/test_ca_registry.yaml")).unwrap(),
@@ -1220,6 +1812,17 @@ mod tests {
         ));
         let verifier = Arc::new(SignatureVerifier::new(ca_registry, nonce_tracker, 300));
 
-        AuthorizationManager::new(verifier, Path::new("/tmp/test_audit.db"), 300, 10)
+        // Private path per call. This used to be /tmp/test_audit.db, which
+        // init_audit_db creates unencrypted (bare Connection::open, no PRAGMA
+        // key) — the storage::audit tests then could not reopen that file once
+        // a SQLCipher key existed. Leaked on purpose: the manager owns the path
+        // for its whole life, so there is no TempDir to hold here.
+        let audit_db = std::env::temp_dir().join(format!(
+            "fiber_test_auth_audit_{}_{}.db",
+            std::process::id(),
+            AUDIT_DB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+
+        AuthorizationManager::new(verifier, &audit_db, 300, 10)
     }
 }

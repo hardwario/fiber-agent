@@ -65,11 +65,15 @@ pub mod sensors {
     pub const MOVEMENT: u8 = 0b0000_1000;
 }
 
-/// Active sensors are **fixed to Temperature + Humidity** for Proximos — this is
-/// not a per-tag configurable option. White EN12830 tags don't expose the
-/// `e61c0021` characteristic at all (their sensor set is fixed by the model);
-/// on standard tags this value is written so they match.
-pub const ACTIVE_SENSORS: u8 = sensors::TEMPERATURE | sensors::HUMIDITY;
+/// Active sensors enabled on standard (black) tags during provisioning. Proximos
+/// enables the full set the dashboard surfaces — **Temperature + Humidity +
+/// Magnet + Movement** — because issue #4 requires displaying the magnet and
+/// accelerometer (movement) values, and the Movement sensor also backs the
+/// optional movement alarm. This is a fixed profile, not a per-tag option. White
+/// EN12830 tags don't expose the `e61c0021` characteristic at all (their sensor
+/// set is fixed by the model); on standard tags this value is written so they match.
+pub const ACTIVE_SENSORS: u8 =
+    sensors::TEMPERATURE | sensors::HUMIDITY | sensors::MAGNET | sensors::MOVEMENT;
 
 /// The configuration profile written to a tag during provisioning.
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +110,8 @@ pub enum ProvisionError {
     MissingCharacteristic(&'static str),
     /// A GATT write/read failed (commonly `NotPermitted` = wrong PIN / lockout).
     Gatt(bluer::Error),
+    /// Connect/service-resolution exceeded `SERVICE_RESOLVE_TIMEOUT`.
+    Timeout,
 }
 
 impl std::fmt::Display for ProvisionError {
@@ -120,6 +126,7 @@ impl std::fmt::Display for ProvisionError {
                 f,
                 "GATT write/read failed: {e} (wrong PIN or anti-bruteforce lockout?)"
             ),
+            ProvisionError::Timeout => write!(f, "provisioning timed out"),
         }
     }
 }
@@ -153,10 +160,10 @@ pub async fn provision(device: &Device, profile: &EyeProfile) -> Result<(), Prov
     )
     .await?;
     write(get(UUID_PROTOCOL_TYPE)?, &[profile.protocol_type]).await?;
-    // Active Sensors is fixed to Temperature + Humidity ([`ACTIVE_SENSORS`]).
-    // The write is conditional only because white EN12830 tags don't expose
-    // `e61c0021` (their sensor set is already fixed to Temp+Hum by the model) —
-    // skip it when absent rather than failing the whole provisioning.
+    // Active Sensors is the fixed Proximos set ([`ACTIVE_SENSORS`] =
+    // Temp+Hum+Magnet+Movement). The write is conditional only because white
+    // EN12830 tags don't expose `e61c0021` (their sensor set is fixed by the
+    // model) — skip it when absent rather than failing the whole provisioning.
     if let Some(ch) = chars.get(&Uuid::parse_str(UUID_ACTIVE_SENSORS).expect("static UUID")) {
         write(ch, &[ACTIVE_SENSORS]).await?;
     }
@@ -206,8 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn active_sensors_fixed_to_temp_hum() {
-        assert_eq!(ACTIVE_SENSORS, 0b0000_0011); // temperature + humidity, fixed
+    fn active_sensors_enables_full_proximos_set() {
+        // Temp + Hum + Magnet + Movement (issue #4 surfaces magnet + accelerometer).
+        assert_eq!(ACTIVE_SENSORS, 0b0000_1111);
+        assert_eq!(
+            ACTIVE_SENSORS,
+            sensors::TEMPERATURE | sensors::HUMIDITY | sensors::MAGNET | sensors::MOVEMENT
+        );
     }
 
     #[test]

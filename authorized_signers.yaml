@@ -53,8 +53,14 @@ authorized_signers: []
 # - set_threshold: Change alarm temperature thresholds
 # - set_alarm_pattern: Change LED/buzzer alarm patterns
 # - set_display_screen: Change display screen
+# - set_display_lines: Change which values the overview screen lists
 # - flush_storage: Trigger database flush
 # - restart_application: Restart the application
+# - power_off_device: Power the device off. Deliberately separate from
+#     restart_application: a reboot comes back by itself, a power-off leaves the
+#     device dark until someone re-applies power by hand, so monitoring stops for
+#     an unbounded time. Grant it only to signers who are expected to take a unit
+#     out of service.
 # - get_device_info: Query device information
 # - get_sensor_status: Query sensor status
 

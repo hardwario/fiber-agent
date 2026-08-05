@@ -142,7 +142,8 @@ enum LorawanCmd {
     Send {
         dev_eui: String,
         command: SendCmd,
-        /// Required for destructive commands (reboot, reset-counters).
+        /// Required for destructive commands (reboot, reset-counters,
+        /// device-reset, factory-reset).
         #[arg(long)]
         force: bool,
     },
@@ -155,6 +156,13 @@ enum SendCmd {
     ForceSend,
     ResetCounters,
     ClockSync,
+    /// Restore defaults, keeping identity and the LoRaWAN keys (proto id 8). The
+    /// sticker stays joined; parameters and alarm rules are lost.
+    DeviceReset,
+    /// The NFC/shell-only factory reset (proto id 23). Always rejected over
+    /// LoRaWAN with NOT_READY "transport not allowed" — present so that limit can
+    /// be demonstrated on hardware rather than taken on trust.
+    FactoryReset,
 }
 
 impl From<SendCmd> for LorawanSimpleCommand {
@@ -165,6 +173,8 @@ impl From<SendCmd> for LorawanSimpleCommand {
             SendCmd::ForceSend => LorawanSimpleCommand::ForceSend,
             SendCmd::ResetCounters => LorawanSimpleCommand::ResetCounters,
             SendCmd::ClockSync => LorawanSimpleCommand::ClockSync,
+            SendCmd::DeviceReset => LorawanSimpleCommand::DeviceReset,
+            SendCmd::FactoryReset => LorawanSimpleCommand::FactoryReset,
         }
     }
 }

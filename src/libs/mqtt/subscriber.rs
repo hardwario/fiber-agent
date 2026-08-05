@@ -101,7 +101,16 @@ impl MqttSubscriber {
             "config_confirm" => self.parse_config_confirm(&json),
             "history_request" => self.parse_history_request(&json),
             "get_sticker_config" => self.parse_get_sticker_config(&json),
+            "get_sticker_full_config" => self.parse_get_sticker_full_config(&json),
+            "get_sticker_info" => self.parse_get_sticker_info(&json),
             "get_sticker_history" => self.parse_get_sticker_history(&json),
+            // Unsigned (#71): force_send changes no device state, so it is the same
+            // risk class as the reads above — it only costs airtime. The other four
+            // control commands mutate the device and arrive signed, via
+            // config_request/config_confirm.
+            "sticker_force_send" => {
+                MqttCommand::parse_sticker_force_send(&json).map_err(|e| e.to_string())
+            }
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
     }
@@ -216,6 +225,22 @@ impl MqttSubscriber {
             }
         };
         Ok(MqttCommand::GetStickerConfig { dev_eui, keys })
+    }
+
+    /// Parse `get_sticker_full_config`: read every readable key. No `keys` field —
+    /// the point of this command is that the caller does not have to know the
+    /// registry, so accepting a subset here would just duplicate
+    /// `get_sticker_config`.
+    fn parse_get_sticker_full_config(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+        Ok(MqttCommand::GetStickerFullConfig { dev_eui })
+    }
+
+    /// Parse `get_sticker_info` (#65): read a STICKER's device info. `dev_eui` is
+    /// the only field — `GetInfo` has an empty body.
+    fn parse_get_sticker_info(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+        Ok(MqttCommand::GetStickerInfo { dev_eui })
     }
 
     /// Parse `get_sticker_history`: request a STICKER's on-device history buffer.
@@ -372,7 +397,14 @@ impl MqttSubscriber {
             return Err("Reason too long (max 256 characters)".to_string());
         }
 
-        Ok(MqttCommand::RestartApplication { reason })
+        // The unsigned path carries no signer, and the dispatch loop drops
+        // RestartApplication anyway — an unauthenticated remote reboot is exactly
+        // what the signing scheme exists to prevent. Named so an audit row that
+        // somehow reaches the DB is not mistaken for an authorized one.
+        Ok(MqttCommand::RestartApplication {
+            reason,
+            requested_by: "unsigned".to_string(),
+        })
     }
 
     /// Parse set_interval command
@@ -737,6 +769,60 @@ mod tests {
             }
             _ => panic!("Wrong command type"),
         }
+    }
+
+    #[test]
+    fn test_parse_get_sticker_full_config() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload =
+            br#"{"command": "get_sticker_full_config", "dev_eui": "70B3D57ED80051B2"}"#;
+        match subscriber.parse_command("test/commands", payload).unwrap() {
+            MqttCommand::GetStickerFullConfig { dev_eui } => {
+                // Canonicalised to lowercase like every other sticker command,
+                // because ChirpStack lowercases the dev_eui in uplinks.
+                assert_eq!(dev_eui, "70b3d57ed80051b2");
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_get_sticker_full_config_ignores_a_keys_field() {
+        // The command reads the whole registry by definition. A caller that sends
+        // `keys` anyway must not get a narrowed read silently — it gets the full
+        // one, which is what the command name promises.
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_full_config",
+                           "dev_eui": "0102030405060708",
+                           "keys": ["application.interval_report"]}"#;
+        match subscriber.parse_command("test/commands", payload).unwrap() {
+            MqttCommand::GetStickerFullConfig { dev_eui } => {
+                assert_eq!(dev_eui, "0102030405060708");
+            }
+            _ => panic!("Wrong command type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_get_sticker_info() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_info", "dev_eui": "70B3D57ED80051B2"}"#;
+        match subscriber.parse_command("test/commands", payload).unwrap() {
+            MqttCommand::GetStickerInfo { dev_eui } => {
+                // Normalised to lowercase, like every other sticker command, so the
+                // publish topic matches the one telemetry uses.
+                assert_eq!(dev_eui, "70b3d57ed80051b2");
+            }
+            other => panic!("Wrong command type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_get_sticker_info_rejects_bad_dev_eui() {
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "get_sticker_info", "dev_eui": "0102"}"#;
+        let err = subscriber.parse_command("test/commands", payload).unwrap_err();
+        assert!(err.contains("dev_eui"), "got {err:?}");
     }
 
     #[test]

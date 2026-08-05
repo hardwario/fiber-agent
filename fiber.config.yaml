@@ -6,10 +6,37 @@ power:
     low_threshold_percent: 20
     critical_threshold_percent: 5
   ac_power:
+    # DC-present hysteresis. One signal drives the LED, the LCD, MQTT, fiberctl,
+    # the POWER_DISCONNECT alarm and the standby resume, so they cannot disagree.
+    #
+    # Not 12000: the southbridge reports VIN through two integer truncations, so a
+    # perfect 12.000 V input reports 11998 mV and 12000 is not even reachable.
+    # VIN is either the ~12 V rail or near zero on battery, so 11000/10000
+    # separates the two states with room to spare.
+    dc_connect_mv: 11000
+    dc_disconnect_mv: 10000
+    # Superseded by the two above; kept so older configs keep parsing.
     detection_threshold_mv: 12000
     battery_mode_threshold_mv: 11000
   led_blink:
     toggle_count: 10
+  standby:
+    # Deep standby is what a Viewer power-off puts the device into. The agent
+    # stays alive reading VIN so that reconnecting PoE brings it back — nothing
+    # on this board can wake a halted CM4.
+    #
+    # Polled far more often than update_interval_ms above. This interval is both
+    # the wake latency and the window in which a PoE interruption can be sampled
+    # directly — at 5000 a quick unplug/replug fell between two polls and the
+    # device never woke. Costs almost nothing: the SoC is awake regardless and
+    # each read is one UART round trip.
+    poll_interval_ms: 1000
+    resume_on_dc: true
+    # Consecutive above-threshold reads before resuming, so a cable being
+    # wiggled cannot thrash the device in and out of standby.
+    confirm_polls: 2
+    # Empty string leaves the governor alone.
+    cpu_governor: powersave
   buzzer:
     enabled: true
     battery_mode_beep_interval_ms: 10000
@@ -51,6 +78,37 @@ system:
   # Backlight off after this many seconds of no button activity (an active alarm
   # keeps it lit). 0 = never.
   screen_timeout_secs: 3600
+# Physical display (ST7920 LCD) overview screen.
+#
+# Without `custom_lines` the overview shows the built-in layout: the 8 DS18B20
+# probes then any LoRaWAN stickers, active ones first. Set `custom_lines` to
+# compose the screen from individually chosen values instead — 4 rows per page,
+# max 16 lines. Normally written from the FIBER Viewer, not by hand.
+#
+# display:
+#   custom_lines:
+#     # source: sticker  -> addressed by dev_eui (16 hex chars)
+#     #   field: any LoRaWAN registry field (temperature, humidity, voltage,
+#     #          ext_temperature_1/2, machine_probe_*, pressure, altitude,
+#     #          illuminance, *_count) or rssi / snr / status
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: ext_temperature_1
+#       label: "Stkr1 ext"
+#     # source: ds18b20  -> addressed by line index 0-7
+#     #   field: temperature | status
+#     - source: ds18b20
+#       line: 0
+#       field: temperature
+#       label: "Probe 1"
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: voltage
+#       label: "Stkr1 bat"
+#       format:
+#         units: true         # append °C / % / V / hPa / m / lx / dBm / dB
+#         decimals: 2         # 0-3; omit for the per-field default
+#         status_char: false  # hide the N/W/C/E status character
 mqtt:
   enabled: true
   broker:
@@ -109,7 +167,6 @@ ble:
 # once (default PIN 123456) on first sight to apply the profile below.
 eye:
   enabled: false               # set true to enable the EYE tag monitor
-  scan_window_s: 60
   publish_interval_s: 30
   tag_timeout_s: 600           # mark a tag stale if unseen for this long
   auto_provision: true         # apply the PROXIMOS profile on first sight

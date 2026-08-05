@@ -49,6 +49,18 @@ pub enum StorageMessage {
     /// Flush pending writes to disk
     Flush,
 
+    /// Flush pending writes and *answer when it is actually done*.
+    ///
+    /// Every other write message here is fire-and-forget, which is fine while
+    /// the process keeps running — the worker drains the channel eventually.
+    /// It is not fine when the caller is about to cut power: `Flush` returning
+    /// only means "queued". Because the worker is a single thread draining one
+    /// FIFO channel, a reply to this also proves every message queued *before*
+    /// it (e.g. the `WriteAuditEvent` for a power-off) has been committed.
+    FlushSync {
+        reply: Sender<StorageResult<()>>,
+    },
+
     /// Graceful shutdown
     Shutdown,
 
@@ -187,6 +199,31 @@ impl StorageHandle {
                     e
                 ))
             })
+    }
+
+    /// Flush pending writes and block until the storage thread confirms it.
+    ///
+    /// Use this instead of [`Self::flush`] when the process is about to stop
+    /// existing — a power-off or reboot — and the caller needs the rows it just
+    /// queued to be on disk rather than merely in the channel. The wait is
+    /// bounded so a wedged storage thread degrades to "we tried" instead of
+    /// hanging the caller forever.
+    pub fn flush_sync(&self, timeout: Duration) -> StorageResult<()> {
+        let (tx, rx) = bounded(1);
+        self.sender
+            .send(StorageMessage::FlushSync { reply: tx })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send flush_sync: {}",
+                    e
+                ))
+            })?;
+        rx.recv_timeout(timeout).map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Timed out waiting for flush_sync reply: {}",
+                e
+            ))
+        })?
     }
 
     /// Signal shutdown
@@ -834,6 +871,32 @@ impl StorageThread {
                         last_flush = std::time::Instant::now();
                     }
 
+                    StorageMessage::FlushSync { reply } => {
+                        // RESTART, not PASSIVE: the caller is about to lose
+                        // power, so we want the WAL fully folded back into the
+                        // main database rather than a best-effort partial
+                        // checkpoint. Same choice the Shutdown handler makes.
+                        // query_row, not execute: `PRAGMA wal_checkpoint` returns
+                        // a (busy, log, checkpointed) row, and rusqlite's
+                        // `execute` rejects any statement that yields rows. The
+                        // `let _ = conn.execute(...)` checkpoints elsewhere in
+                        // this file swallow that error and therefore never
+                        // actually checkpoint — do not copy them.
+                        let result = conn
+                            .query_row("PRAGMA wal_checkpoint(RESTART)", [], |_| Ok(()))
+                            .map_err(|e| {
+                                crate::libs::storage::error::StorageError::QueryError(format!(
+                                    "wal_checkpoint(RESTART) failed: {}",
+                                    e
+                                ))
+                            });
+                        pending_writes = 0;
+                        last_flush = std::time::Instant::now();
+                        // The receiver may have timed out and gone away; that is
+                        // its problem, not ours — the checkpoint still happened.
+                        let _ = reply.send(result);
+                    }
+
                     StorageMessage::EnforceRetention => {
                         match retention_policy.enforce(&db, &mut conn) {
                             Ok(stats) => {
@@ -1124,6 +1187,51 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn flush_sync_makes_a_queued_audit_row_readable_without_shutting_down() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
+
+        handle
+            .log_audit_event(
+                "POWER_OFF".to_string(),
+                Some("audit_log".to_string()),
+                Some(r#"{"reason":"decommissioned","requested_by":"dr.jane"}"#.to_string()),
+            )
+            .unwrap();
+
+        // The point of the whole primitive: this returns only once the worker has
+        // committed and checkpointed. Deliberately NO shutdown()/join() before
+        // the read below — that is what a power-off does not get to do, and it is
+        // exactly the property plain flush() cannot provide.
+        handle.flush_sync(Duration::from_secs(5)).unwrap();
+
+        let db = Database::new(&path, 1).unwrap();
+        let conn = db.connect().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE operation = 'POWER_OFF'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "audit row was not durable after flush_sync");
+
+        let details: String = conn
+            .query_row(
+                "SELECT details FROM audit_log WHERE operation = 'POWER_OFF'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(details.contains("dr.jane"), "signer missing from audit row: {details}");
+
+        handle.shutdown().unwrap();
+        join.join().unwrap();
     }
 
     #[test]

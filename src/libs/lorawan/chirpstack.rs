@@ -66,6 +66,11 @@ pub struct StickerReading {
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
     pub received_at: String,
+    /// The uplink's LoRaWAN fPort, so downstream can tell a telemetry snapshot
+    /// (2) from an alarm report (3) or the legacy `object` path (1/none).
+    /// Multi-frame reassembly must only ever merge fPort-2 readings — merging an
+    /// alarm into a telemetry report would shift its timestamp and message_id.
+    pub fport: Option<u64>,
 }
 
 /// Parse a ChirpStack v4 uplink event into a `StickerReading`.
@@ -144,7 +149,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
     }
 
     Ok(Some(StickerReading {
-        dev_eui, device_name, fields, counters, events, rssi, snr, received_at,
+        dev_eui, device_name, fields, counters, events, rssi, snr, received_at, fport,
     }))
 }
 
@@ -382,6 +387,50 @@ mod tests {
     }
 
     #[test]
+    fn real_e2e_fport2_accel_pir_frame_decodes() {
+        // END-TO-END GOLDEN VECTOR: a live fPort-2 frame captured 2026-07-28 from
+        // STICKER "Motion QA" (DevEUI 70b3d57ed80051b2) running fw v1.4.0, via the
+        // external Milesight gateway 24e124fffefd3bda -> ChirpStack -> application
+        // event `data`. Hex: 01088901100018b226206b40024809d00125.
+        //
+        // Pins two things a synthetic vector would miss:
+        //   * `accel_motion_count` (proto field 26, tag bytes d0 01) — the newest
+        //     Telemetry field, added after the retired flat 1-Wire fields 10-17.
+        //   * `system_flags` present-and-ZERO, which must emit no `boot` event.
+        //     Firmware always sends the system group, so absence of the boot bit
+        //     is information, not a missing field.
+        //
+        // Groups present: G_INTERNAL + G_SYSTEM + G_ACCEL + G_PIR.
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "70b3d57ed80051b2", "deviceName": "Motion QA" },
+            "fPort": 2, "fCnt": 8, "data": "AQiJARAAGLImIGtAAkgJ0AEl",
+            "rxInfo": [{ "gatewayId": "24e124fffefd3bda", "rssi": -41, "snr": 13.5 }],
+            "time": "2026-07-28T19:01:02Z",
+        }).to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert_eq!(r.dev_eui, "70b3d57ed80051b2");
+        assert!(approx(r.fields["voltage"], 2.74)); // 137/50
+        assert!(approx(r.fields["temperature"], 24.57)); // zigzag 4914->2457 /100
+        assert!(approx(r.fields["humidity"], 53.5)); // 107/2
+        assert_eq!(r.counters.get("motion_count").copied(), Some(9));
+        assert_eq!(r.counters.get("accel_motion_count").copied(), Some(37));
+        assert_eq!(r.counters.get("fCnt").copied(), Some(8));
+        assert!(
+            r.events.iter().any(|e| e.event_type == "orientation" && e.extra["value"] == 2),
+            "orientation 2 should surface as an event"
+        );
+        assert!(
+            !r.events.iter().any(|e| e.event_type == "boot"),
+            "system_flags == 0 must NOT produce a boot event"
+        );
+        // This frame carries no barometer/light/hall/input/1-Wire group.
+        assert!(!r.fields.contains_key("pressure"));
+        assert!(!r.fields.contains_key("illuminance"));
+        assert_eq!(r.rssi, Some(-41));
+    }
+
+    #[test]
     fn real_e2e_fport3_alarm_decodes() {
         // Live fPort-3 AlarmReport captured from the STICKER (onboard-temperature
         // out-of-band alarm). Carries the same 0x01 proto-version prefix as fPort 2
@@ -470,6 +519,7 @@ mod tests {
             rssi: None,
             snr: None,
             received_at: "2026-05-19T12:00:00Z".into(),
+            fport: Some(2),
         };
         r.counters.insert("fCnt".into(), 42);
         assert_eq!(message_id_for(&r, 1716120000), "70b3d5-1716120000-42");

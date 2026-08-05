@@ -116,6 +116,76 @@ pub struct PowerConfig {
 
     /// LED blinking configuration
     pub led_blink: LedBlinkConfig,
+
+    /// Deep-standby behaviour: how the device waits for PoE while powered down.
+    #[serde(default)]
+    pub standby: StandbyConfig,
+}
+
+/// Deep standby — the state a powered-down device waits for PoE in.
+///
+/// `#[serde(default)]` throughout so an existing on-device
+/// `/data/fiber/config/fiber.config.yaml` keeps parsing without a migration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandbyConfig {
+    /// How often to read VIN while in standby.
+    ///
+    /// Deliberately separate from `update_interval_ms`, which ships as 60000:
+    /// reusing it would make a device take up to a minute to notice PoE. The
+    /// shorter interval is close to free — the SoC is awake either way and each
+    /// read is one UART round trip — so this is a wake-latency knob, not a
+    /// power one.
+    #[serde(default = "default_standby_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+
+    /// Whether PoE arriving should bring the device back up by itself.
+    ///
+    /// Turning this off leaves a device that must be woken by power-cycling it,
+    /// which is the pre-standby behaviour.
+    #[serde(default = "default_resume_on_dc")]
+    pub resume_on_dc: bool,
+
+    /// Consecutive above-threshold VIN readings required before resuming, so a
+    /// cable being wiggled cannot thrash the device in and out of standby.
+    #[serde(default = "default_standby_confirm_polls")]
+    pub confirm_polls: u32,
+
+    /// CPU governor to select on the way into standby, restored on resume.
+    /// Empty leaves the governor alone.
+    #[serde(default = "default_standby_cpu_governor")]
+    pub cpu_governor: String,
+}
+
+fn default_standby_poll_interval_ms() -> u64 {
+    // 1 s, not 5 s. This interval is the window in which a PoE interruption can
+    // be sampled directly, and at 5 s a quick unplug/replug fell entirely between
+    // two polls — the device never saw the absence and so never woke. The carrier
+    // counter is the backstop for anything shorter, but sampling the dip itself is
+    // the stronger evidence, so make it the common case.
+    1000
+}
+
+fn default_resume_on_dc() -> bool {
+    true
+}
+
+fn default_standby_confirm_polls() -> u32 {
+    2
+}
+
+fn default_standby_cpu_governor() -> String {
+    "powersave".to_string()
+}
+
+impl Default for StandbyConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_ms: default_standby_poll_interval_ms(),
+            resume_on_dc: default_resume_on_dc(),
+            confirm_polls: default_standby_confirm_polls(),
+            cpu_governor: default_standby_cpu_governor(),
+        }
+    }
 }
 
 /// Battery voltage and state configuration
@@ -137,11 +207,45 @@ pub struct BatteryConfig {
 /// AC power detection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcPowerConfig {
-    /// Voltage above which system considers AC power connected (mV)
+    /// Superseded by `dc_connect_mv`. Kept so existing on-device configs keep
+    /// parsing; no longer read.
+    ///
+    /// It shipped as 12000, which the southbridge's VIN maths makes unusable: two
+    /// integer truncations mean a perfect 12.000 V input reports 11998 mV and
+    /// 12000 is not reachable at all. Devices whose supply reported just under it
+    /// were classified as running on battery while on mains.
     pub detection_threshold_mv: u16,
 
-    /// Voltage below which system is in battery mode (mV)
+    /// Superseded by `dc_disconnect_mv`. Was never read even before that.
     pub battery_mode_threshold_mv: u16,
+
+    /// VIN at or above which DC power counts as present (mV).
+    ///
+    /// Defaulted rather than required, so deployed
+    /// `/data/fiber/config/fiber.config.yaml` files — which carry the old 12000
+    /// under the legacy key — pick up the corrected value with no migration.
+    #[serde(default = "default_dc_connect_mv")]
+    pub dc_connect_mv: u16,
+
+    /// VIN below which DC power counts as gone (mV). Below `dc_connect_mv`, so a
+    /// supply resting near the boundary cannot chatter.
+    #[serde(default = "default_dc_disconnect_mv")]
+    pub dc_disconnect_mv: u16,
+}
+
+fn default_dc_connect_mv() -> u16 {
+    crate::libs::power::status::DEFAULT_DC_CONNECT_MV
+}
+
+fn default_dc_disconnect_mv() -> u16 {
+    crate::libs::power::status::DEFAULT_DC_DISCONNECT_MV
+}
+
+impl AcPowerConfig {
+    /// The hysteresis pair this config describes, validated.
+    pub fn dc_thresholds(&self) -> crate::libs::power::status::DcThresholds {
+        crate::libs::power::status::DcThresholds::new(self.dc_connect_mv, self.dc_disconnect_mv)
+    }
 }
 
 /// LED blinking configuration
@@ -527,6 +631,130 @@ pub struct SystemConfig {
     pub screen_timeout_secs: u32,
 }
 
+/// Physical display (ST7920 LCD) configuration.
+///
+/// When `custom_lines` is empty the overview screen renders the built-in
+/// layout (active-first list of the 8 DS18B20 probes then the LoRaWAN
+/// stickers) — i.e. an absent `display:` section means "behave as before".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DisplayConfig {
+    /// User-authored overview lines, rendered top-to-bottom in this order,
+    /// four per page.
+    ///
+    /// Deserialized leniently: an entry that fails to parse is dropped with a
+    /// warning rather than failing the whole `Config`. This section shares the
+    /// file that `Config::load_default()` parses during boot, so a newer
+    /// Viewer emitting an unknown `source` must not be able to stop the device
+    /// from starting over a display-cosmetics field.
+    #[serde(
+        default,
+        deserialize_with = "de_display_lines",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub custom_lines: Vec<DisplayLine>,
+}
+
+/// Where a configured display line reads its value from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayLineSource {
+    /// A DS18B20 1-Wire probe, addressed by its line index.
+    Ds18b20,
+    /// A STICKER / LoRaWAN sensor, addressed by DevEUI.
+    Sticker,
+}
+
+/// One configured row of the sensor overview screen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DisplayLine {
+    /// Which subsystem provides the value.
+    pub source: DisplayLineSource,
+
+    /// DS18B20 line index 0..=7. Required when `source` is `ds18b20`, and
+    /// must be absent otherwise. Named `line` to match the existing
+    /// `SetSensorName { line }` / `SensorLineConfig::line` vocabulary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u8>,
+
+    /// STICKER DevEUI (16 hex chars, lowercased on load). Required when
+    /// `source` is `sticker`, and must be absent otherwise.
+    ///
+    /// Deliberately not an ordinal ("Sticker 2"): sticker ordering is derived
+    /// from a sort over the live sensor map, so adding or removing one sticker
+    /// renumbers every later one — an ordinal line would silently re-point at
+    /// a different physical probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_eui: Option<String>,
+    /// Field selector. For `ds18b20`: `temperature` or `status`. For
+    /// `sticker`: any name in [`crate::libs::lorawan::registry::REGISTRY`],
+    /// plus the pseudo-fields `rssi`, `snr` and `status` which live on the
+    /// sensor state rather than in its field map.
+    pub field: String,
+
+    /// Row label. When absent, derived from the source sensor's configured
+    /// name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// Value formatting. May be omitted entirely for the defaults.
+    #[serde(default, skip_serializing_if = "DisplayLineFormat::is_default")]
+    pub format: DisplayLineFormat,
+}
+
+/// Per-line value formatting options.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DisplayLineFormat {
+    /// Append the field's unit (`°C`, `%`, `V`, `hPa`, `m`, `lx`, `dBm`, `dB`).
+    #[serde(default = "default_true")]
+    pub units: bool,
+
+    /// Decimal places, 0..=3. `None` uses the per-field default (1 for
+    /// temperatures, 0 for humidity/pressure/counters, 2 for battery voltage).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+
+    /// Draw the alarm status character (`N`/`W`/`C`/`E`/`-`/`?`) at the right
+    /// edge of the row.
+    #[serde(default = "default_true")]
+    pub status_char: bool,
+}
+
+impl Default for DisplayLineFormat {
+    fn default() -> Self {
+        Self {
+            units: true,
+            decimals: None,
+            status_char: true,
+        }
+    }
+}
+
+impl DisplayLineFormat {
+    /// True when every option is at its default, so `format:` can be omitted
+    /// from the serialized YAML instead of written out in full.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Deserialize `display.custom_lines`, skipping entries that fail to parse.
+///
+/// See [`DisplayConfig::custom_lines`] for why this must not be strict.
+fn de_display_lines<'de, D>(deserializer: D) -> Result<Vec<DisplayLine>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_yaml::Value>::deserialize(deserializer)?;
+    let mut lines = Vec::with_capacity(raw.len());
+    for (idx, value) in raw.into_iter().enumerate() {
+        match serde_yaml::from_value::<DisplayLine>(value) {
+            Ok(line) => lines.push(line),
+            Err(e) => eprintln!("[config] display.custom_lines[{}] ignored: {}", idx, e),
+        }
+    }
+    Ok(lines)
+}
+
 /// Medical data storage configuration (EU MDR 2017/745 compliance)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -739,6 +967,17 @@ pub struct LoRaWANConfig {
     #[serde(default = "default_lorawan_sensor_timeout")]
     pub sensor_timeout_s: u64,
 
+    /// Pull a STICKER's buffered history automatically when it reappears after
+    /// an outage.
+    ///
+    /// Defaults to `true`, which is the behaviour that shipped. Set it to
+    /// `false` on deployments where the viewer owns backfill (PROXIMOS
+    /// application#43): both sides trigger on the same reconnect, so leaving
+    /// both enabled spends two replays of the same window — precisely the
+    /// airtime waste the viewer's job queue exists to prevent.
+    #[serde(default = "default_history_backfill_enabled")]
+    pub history_backfill_enabled: bool,
+
     /// Per-sensor configurations
     #[serde(default)]
     pub sensors: Vec<LoRaWANSensorConfig>,
@@ -758,6 +997,7 @@ impl Default for LoRaWANConfig {
             chirpstack_mqtt_password: None,
             publish_interval_s: 30,
             sensor_timeout_s: 3600, // 1 hour
+            history_backfill_enabled: default_history_backfill_enabled(),
             sensors: Vec::new(),
             gateways: Vec::new(),
         }
@@ -768,6 +1008,9 @@ fn default_chirpstack_mqtt_host() -> String { "localhost".to_string() }
 fn default_chirpstack_mqtt_port() -> u16 { 1883 }
 fn default_lorawan_publish_interval() -> u64 { 30 }
 fn default_lorawan_sensor_timeout() -> u64 { 3600 }
+
+/// Keeps the shipped behaviour for anyone who has not opted the viewer in.
+fn default_history_backfill_enabled() -> bool { true }
 
 /// MQTT broker configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -987,6 +1230,10 @@ pub struct Config {
     /// System-wide settings
     pub system: SystemConfig,
 
+    /// Physical display (LCD overview screen) settings
+    #[serde(default)]
+    pub display: DisplayConfig,
+
     /// MQTT client settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mqtt: Option<MqttConfig>,
@@ -1019,7 +1266,25 @@ impl Config {
                 // firmware). Fall back to raw read so the typed parser can
                 // produce a more user-friendly error if the file is just
                 // malformed, or surface the migration error if it's fatal.
-                eprintln!("[config] migration failed: {} — falling back to direct read", e);
+                //
+                // Logged only when the message changes. `from_file` is on a
+                // periodic path — the display loop reconciles every
+                // `CONFIG_RECONCILE_MS` and the sensor monitor hot-reloads
+                // intervals — so a *stable* failure (a yaml newer than the
+                // firmware, which is the normal state on a device that ran a
+                // later build) otherwise repeats forever: measured at 32 lines
+                // in 4 minutes on FIBER-CE3D59F8, ~11k/day, burying everything
+                // else in the journal. De-duplicating on the message keeps the
+                // first occurrence and any genuinely new failure.
+                let msg = e.to_string();
+                static LAST_MIGRATION_WARNING: std::sync::Mutex<Option<String>> =
+                    std::sync::Mutex::new(None);
+                if let Ok(mut last) = LAST_MIGRATION_WARNING.lock() {
+                    if last.as_deref() != Some(msg.as_str()) {
+                        eprintln!("[config] migration failed: {} — falling back to direct read", msg);
+                        *last = Some(msg);
+                    }
+                }
                 fs::read_to_string(path.as_ref())?
             }
         };
@@ -1046,6 +1311,15 @@ impl Config {
             }
         }
 
+        // Same canonicalization for display lines: an uppercase DevEUI here
+        // would never match the lowercased dev_eui in LoRaWANSensorState, so
+        // the row would render as "unknown sensor" forever with no hint why.
+        for line in config.display.custom_lines.iter_mut() {
+            if let Some(dev_eui) = line.dev_eui.as_mut() {
+                *dev_eui = dev_eui.to_lowercase();
+            }
+        }
+
         Ok(config)
     }
 
@@ -1068,10 +1342,13 @@ impl Config {
                 ac_power: AcPowerConfig {
                     detection_threshold_mv: 12000,
                     battery_mode_threshold_mv: 11000,
+                    dc_connect_mv: default_dc_connect_mv(),
+                    dc_disconnect_mv: default_dc_disconnect_mv(),
                 },
                 led_blink: LedBlinkConfig {
                     toggle_count: 8,
                 },
+                standby: StandbyConfig::default(),
             },
             sensors: SensorConfig {
                 num_lines: 8,
@@ -1116,6 +1393,7 @@ impl Config {
                 buzzer_volume: 100,
                 screen_timeout_secs: 3600,
             },
+            display: DisplayConfig::default(),  // built-in overview layout
             mqtt: None,  // MQTT disabled by default
             lorawan: None,  // LoRaWAN disabled by default
             ble: crate::libs::ble::BleConfig::default(),
@@ -1262,5 +1540,170 @@ field_thresholds:
         assert_eq!(cfg.field_thresholds.len(), 2);
         assert_eq!(cfg.field_thresholds[0].field, "temperature");
         assert_eq!(cfg.field_thresholds[1].critical_high, Some(80.0));
+    }
+}
+
+#[cfg(test)]
+mod display_config_tests {
+    use super::*;
+
+    /// The four lines from the feature request, as a Viewer would author them.
+    const EXAMPLE_YAML: &str = r#"
+custom_lines:
+  - source: sticker
+    dev_eui: "70b3d57ed0051f2a"
+    field: ext_temperature_1
+    label: "Stkr1 ext"
+  - source: ds18b20
+    line: 0
+    field: temperature
+    label: "Probe 1"
+  - source: sticker
+    dev_eui: "70b3d57ed0051f31"
+    field: humidity
+    label: "Stkr2 RH"
+    format:
+      decimals: 0
+  - source: sticker
+    dev_eui: "70b3d57ed0051f2a"
+    field: voltage
+    label: "Stkr1 bat"
+    format:
+      decimals: 2
+      status_char: false
+"#;
+
+    /// Build a loadable config file from `default_config()` plus an injected
+    /// `display:` section, so the tests exercise the real `Config::from_file`
+    /// path (migrations included) without hand-writing every required section.
+    fn config_file_with_display(dir: &std::path::Path, display_yaml: &str) -> std::path::PathBuf {
+        let base = serde_yaml::to_value(Config::default_config()).unwrap();
+        let mut map = match base {
+            serde_yaml::Value::Mapping(m) => m,
+            other => panic!("expected mapping, got {:?}", other),
+        };
+        let display: serde_yaml::Value = serde_yaml::from_str(display_yaml).unwrap();
+        map.insert(serde_yaml::Value::String("display".to_string()), display);
+        let path = dir.join("fiber.config.yaml");
+        fs::write(
+            &path,
+            serde_yaml::to_string(&serde_yaml::Value::Mapping(map)).unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn display_config_defaults_to_empty_when_section_absent() {
+        // No `display:` key at all — the built-in layout must be selected.
+        let cfg: DisplayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(cfg.custom_lines.is_empty());
+    }
+
+    #[test]
+    fn default_config_has_empty_display_section() {
+        assert!(Config::default_config().display.custom_lines.is_empty());
+    }
+
+    #[test]
+    fn parse_display_custom_lines_from_yaml() {
+        let cfg: DisplayConfig = serde_yaml::from_str(EXAMPLE_YAML).unwrap();
+        assert_eq!(cfg.custom_lines.len(), 4);
+
+        let sticker_ext = &cfg.custom_lines[0];
+        assert_eq!(sticker_ext.source, DisplayLineSource::Sticker);
+        assert_eq!(sticker_ext.dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
+        assert_eq!(sticker_ext.field, "ext_temperature_1");
+        assert_eq!(sticker_ext.label.as_deref(), Some("Stkr1 ext"));
+        assert_eq!(sticker_ext.line, None);
+
+        let probe = &cfg.custom_lines[1];
+        assert_eq!(probe.source, DisplayLineSource::Ds18b20);
+        assert_eq!(probe.line, Some(0));
+        assert_eq!(probe.dev_eui, None);
+
+        assert_eq!(cfg.custom_lines[2].format.decimals, Some(0));
+        assert!(cfg.custom_lines[2].format.status_char, "unset options keep their default");
+
+        assert_eq!(cfg.custom_lines[3].format.decimals, Some(2));
+        assert!(!cfg.custom_lines[3].format.status_char);
+    }
+
+    #[test]
+    fn display_line_format_defaults_when_format_omitted() {
+        let cfg: DisplayConfig =
+            serde_yaml::from_str("custom_lines:\n  - {source: ds18b20, line: 3, field: temperature}\n")
+                .unwrap();
+        let fmt = &cfg.custom_lines[0].format;
+        assert!(fmt.units);
+        assert_eq!(fmt.decimals, None);
+        assert!(fmt.status_char);
+        assert!(fmt.is_default());
+    }
+
+    #[test]
+    fn default_format_is_omitted_from_serialized_yaml() {
+        // Keeps the applier's rewrite of the file free of noise.
+        let cfg = DisplayConfig {
+            custom_lines: vec![DisplayLine {
+                source: DisplayLineSource::Ds18b20,
+                line: Some(1),
+                dev_eui: None,
+                field: "temperature".to_string(),
+                label: None,
+                format: DisplayLineFormat::default(),
+            }],
+        };
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(!out.contains("format"), "got: {}", out);
+        assert!(!out.contains("dev_eui"), "got: {}", out);
+        assert!(!out.contains("label"), "got: {}", out);
+    }
+
+    #[test]
+    fn unknown_source_line_is_dropped_not_fatal() {
+        // A newer Viewer emitting `source: eye` must cost us one row, not boot.
+        let yaml = r#"
+custom_lines:
+  - {source: ds18b20, line: 0, field: temperature}
+  - {source: eye, mac: "aa:bb", field: temperature}
+  - {source: sticker, dev_eui: "aabb", field: humidity}
+"#;
+        let cfg: DisplayConfig = serde_yaml::from_str(yaml).expect("must not fail the whole parse");
+        assert_eq!(cfg.custom_lines.len(), 2);
+        assert_eq!(cfg.custom_lines[0].field, "temperature");
+        assert_eq!(cfg.custom_lines[1].field, "humidity");
+    }
+
+    #[test]
+    fn malformed_line_is_dropped_not_fatal() {
+        // Missing the required `field` key.
+        let yaml = "custom_lines:\n  - {source: ds18b20, line: 0}\n";
+        let cfg: DisplayConfig = serde_yaml::from_str(yaml).expect("must not fail the whole parse");
+        assert!(cfg.custom_lines.is_empty());
+    }
+
+    #[test]
+    fn display_line_dev_eui_lowercased_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file_with_display(
+            dir.path(),
+            "custom_lines:\n  - {source: sticker, dev_eui: \"70B3D57ED0051F2A\", field: temperature}\n",
+        );
+        let cfg = Config::from_file(&path).expect("config must load");
+        assert_eq!(
+            cfg.display.custom_lines[0].dev_eui.as_deref(),
+            Some("70b3d57ed0051f2a")
+        );
+    }
+
+    #[test]
+    fn display_section_round_trips_through_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file_with_display(dir.path(), EXAMPLE_YAML);
+        let cfg = Config::from_file(&path).expect("config must load");
+        assert_eq!(cfg.display.custom_lines.len(), 4);
+        assert_eq!(cfg.display.custom_lines[3].field, "voltage");
+        assert_eq!(cfg.display.custom_lines[3].format.decimals, Some(2));
     }
 }

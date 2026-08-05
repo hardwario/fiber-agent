@@ -28,7 +28,7 @@ use serde_yaml::Value;
 
 /// Current target version for `fiber.config.yaml`. Increment when adding a
 /// new `migrate_vN_to_vN+1` function below.
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Read `path`, migrate forward in place if needed, write back with a
 /// versioned backup of the original. Returns the migrated YAML as a string
@@ -86,12 +86,48 @@ fn migrate_chain(mut value: Value, from: u32, to: u32) -> Result<Value, Migratio
     for step in from..to {
         value = match step {
             0 => migrate_v0_to_v1(value)?,
+            1 => migrate_v1_to_v2(value)?,
             // Future:
-            //   1 => migrate_v1_to_v2(value)?,
             //   2 => migrate_v2_to_v3(value)?,
             other => return Err(MigrationError::UnknownStep(other)),
         };
     }
+    Ok(value)
+}
+
+/// v1 → v2: add `eye` to `mqtt.export.streams`.
+///
+/// `MqttExportConfig::default_streams()` already lists `eye`, but that serde
+/// default only applies when the key is *absent* — and `migrate_v0_to_v1` writes
+/// the streams list out explicitly. So every device that went through the v0→v1
+/// migration has a list frozen without `eye`: the drain never runs for eye
+/// readings, nothing lands on `export/eye/<mac>`, and the viewer's `eye_readings`
+/// table stays empty. The BLE history charts then render nothing, with no error
+/// anywhere to explain it.
+///
+/// Appended rather than replacing the list, so a deployment that deliberately
+/// pruned a stream keeps its choice.
+fn migrate_v1_to_v2(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    root.insert(Value::String("config_version".into()), Value::Number(2u32.into()));
+
+    let eye = Value::String("eye".into());
+    if let Some(streams) = root
+        .get_mut(&Value::String("mqtt".into()))
+        .and_then(|v| v.as_mapping_mut())
+        .and_then(|m| m.get_mut(&Value::String("export".into())))
+        .and_then(|v| v.as_mapping_mut())
+        .and_then(|m| m.get_mut(&Value::String("streams".into())))
+        .and_then(|v| v.as_sequence_mut())
+    {
+        if !streams.contains(&eye) {
+            streams.push(eye);
+        }
+    }
+
     Ok(value)
 }
 
@@ -255,6 +291,74 @@ ble:
     }
 
     #[test]
+    fn v1_yaml_gets_eye_appended_to_export_streams() {
+        // The shape a device that already ran v0→v1 has on disk: streams written
+        // out explicitly, which suppresses the serde default that does list eye.
+        let v1 = r#"
+config_version: 1
+mqtt:
+  enabled: true
+  export:
+    enabled: true
+    streams:
+      - sticker
+      - probe
+      - probe_1m
+      - alarm
+"#;
+        let raw: Value = serde_yaml::from_str(v1).unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+
+        let root = migrated.as_mapping().unwrap();
+        assert_eq!(
+            root.get(&Value::String("config_version".into())).and_then(|v| v.as_u64()),
+            Some(2),
+        );
+        let streams: Vec<&str> = root
+            .get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap()
+            .get(&Value::String("export".into())).unwrap().as_mapping().unwrap()
+            .get(&Value::String("streams".into())).unwrap().as_sequence().unwrap()
+            .iter().map(|v| v.as_str().unwrap()).collect();
+        // Appended, not replaced: the existing four keep their order so a
+        // deployment that pruned one does not silently get it back.
+        assert_eq!(streams, vec!["sticker", "probe", "probe_1m", "alarm", "eye"]);
+    }
+
+    #[test]
+    fn v1_to_v2_does_not_duplicate_an_existing_eye_stream() {
+        let v1 = r#"
+config_version: 1
+mqtt:
+  export:
+    streams:
+      - eye
+      - sticker
+"#;
+        let raw: Value = serde_yaml::from_str(v1).unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+        let streams: Vec<&str> = migrated.as_mapping().unwrap()
+            .get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap()
+            .get(&Value::String("export".into())).unwrap().as_mapping().unwrap()
+            .get(&Value::String("streams".into())).unwrap().as_sequence().unwrap()
+            .iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(streams, vec!["eye", "sticker"]);
+    }
+
+    #[test]
+    fn v1_to_v2_stamps_the_version_even_without_an_export_block() {
+        // `mqtt.export` absent means the serde default applies at load time, and
+        // that default already lists eye — so there is nothing to append, but the
+        // version must still advance or the file migrates forever.
+        let raw: Value = serde_yaml::from_str("config_version: 1\nble:\n  enabled: false\n").unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+        assert_eq!(
+            migrated.as_mapping().unwrap()
+                .get(&Value::String("config_version".into())).and_then(|v| v.as_u64()),
+            Some(2),
+        );
+    }
+
+    #[test]
     fn migrate_and_persist_writes_backup_and_updates_version() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
@@ -265,8 +369,13 @@ ble:
         .unwrap();
 
         let migrated_str = migrate_and_persist(&path).unwrap();
-        assert!(migrated_str.contains("config_version: 1"));
+        // A v0 file runs the whole chain in one pass, so it lands on the current
+        // version, not on 1.
+        assert!(migrated_str.contains(&format!("config_version: {}", CURRENT_CONFIG_VERSION)));
         assert!(migrated_str.contains("export"));
+        // And the chain, not just the last step, must have produced the eye
+        // stream — a v0 device is the case that was silently missing it.
+        assert!(migrated_str.contains("eye"));
 
         // Backup exists with the prior version stamp.
         let backup = backup_path(&path, 0);

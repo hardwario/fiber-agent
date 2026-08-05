@@ -2,16 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::libs::config::FieldThreshold;
+
 /// Top-level EYE subsystem configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EyeConfig {
     /// Enable the EYE BLE tag monitor.
     #[serde(default)]
     pub enabled: bool,
-
-    /// Active-scan window length per cycle, seconds.
-    #[serde(default = "default_scan_window_s")]
-    pub scan_window_s: u64,
 
     /// How often to publish the tag snapshot to MQTT, seconds.
     #[serde(default = "default_publish_interval_s")]
@@ -41,6 +39,41 @@ pub struct EyeConfig {
     #[serde(default = "default_sync_fallback_hours")]
     pub sync_fallback_hours: u64,
 
+    /// Self-heal a wedged BLE scan. On a combo Wi-Fi/BT controller the LE scan
+    /// can stop delivering advertisements while BlueZ still reports
+    /// `Discovering: yes`, and `StartDiscovery` can start timing out on D-Bus;
+    /// neither surfaces as an error the monitor would otherwise see, so every tag
+    /// simply goes stale forever. Off leaves the old behaviour: log and wait.
+    #[serde(default = "default_true")]
+    pub scan_stall_recovery: bool,
+
+    /// Treat the scan as wedged after this many seconds with no advertisement
+    /// from any audible tag. Must comfortably exceed the slowest tag's
+    /// advertising interval — the PROXIMOS profile is 10 s, so the default is a
+    /// wide margin over that rather than a tight bound.
+    #[serde(default = "default_scan_stall_secs")]
+    pub scan_stall_secs: u64,
+
+    /// Auto-register unregistered tags seen advertising, and the cap on how many.
+    ///
+    /// **Not implemented on this branch** — carried so the applier's YAML rewrite
+    /// round-trips them instead of deleting them. A field absent from this struct
+    /// is silently dropped when `EyeConfig` is serialised back to
+    /// `fiber.config.yaml`, which would strip an operator's setting irreversibly:
+    /// rolling the binary back would not bring the key back, because the file was
+    /// already overwritten. FIBER-OFFICE-5 has `auto_discover: true` on disk today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover_max: Option<u32>,
+
+    /// Bluetooth adapter for the EYE scan (e.g. "hci1"). `None` uses the default
+    /// adapter. Lets the monitor bind a second controller so a co-located tag or
+    /// simulator on another adapter is scannable (a controller can't scan its own
+    /// advertisements) — used for on-device testing without a physical tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+
     /// Configured tags.
     #[serde(default)]
     pub tags: Vec<EyeTagConfig>,
@@ -64,6 +97,91 @@ impl EyeConfig {
     /// the subsystem master switch).
     pub fn recording_on_for(&self, tag: &EyeTagConfig) -> bool {
         self.recording_enabled && tag.recording.unwrap_or(true)
+    }
+
+    /// Insert or update a tag by MAC (case-insensitive; stored uppercased).
+    /// Overwrites the name only when `name` is `Some`. Mirrors the YAML upsert in
+    /// `ConfigApplier::update_eye_tag_config` so the monitor's live view stays in
+    /// sync with disk after an `add_eye_tag` command.
+    pub fn upsert_tag(&mut self, mac: &str, name: Option<&str>) {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            if let Some(n) = name {
+                t.name = Some(n.to_string());
+            }
+        } else {
+            self.tags.push(EyeTagConfig {
+                mac: up,
+                name: name.map(|s| s.to_string()),
+                enabled: true,
+                logging_interval_min: None,
+                recording: None,
+                field_thresholds: Vec::new(),
+                provisioned: None,
+            });
+        }
+    }
+
+    /// Remove a tag by MAC (case-insensitive). Returns whether one was removed.
+    pub fn remove_tag(&mut self, mac: &str) -> bool {
+        let up = mac.to_uppercase();
+        let before = self.tags.len();
+        self.tags.retain(|t| t.mac.to_uppercase() != up);
+        self.tags.len() != before
+    }
+
+    /// Persist a tag's recording on/off + interval (from `set_eye_recording`).
+    /// `interval_min == 0` means OFF: it sets `recording = Some(false)` so that
+    /// `recording_on_for` returns false and the gap/fallback sync stops queueing
+    /// downloads (which would otherwise re-`START_RECORD` the tag). Returns
+    /// whether a matching tag was updated.
+    pub fn set_recording(&mut self, mac: &str, interval_min: u16) -> bool {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            t.recording = Some(interval_min != 0);
+            if interval_min != 0 {
+                t.logging_interval_min = Some(interval_min);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record that a tag's flash now has the PROXIMOS profile. Updates the live
+    /// config so the next applier-driven YAML rewrite carries it, and so a
+    /// re-read of the shared config inside the scan loop does not undo the
+    /// in-memory `ProvisioningStatus`. Returns whether a matching tag was found.
+    pub fn set_provisioned(&mut self, mac: &str, provisioned: bool) -> bool {
+        let up = mac.to_uppercase();
+        if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
+            t.provisioned = Some(provisioned);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Upsert a per-field alarm threshold on a tag in the live config (so the
+    /// scan loop's `evaluate_alarms` uses it without a restart). No-op if the
+    /// tag isn't present (the applier persists to YAML either way).
+    pub fn set_field_threshold(&mut self, mac: &str, t: FieldThreshold) {
+        let up = mac.to_uppercase();
+        if let Some(tag) = self.tags.iter_mut().find(|x| x.mac.to_uppercase() == up) {
+            if let Some(existing) = tag.field_thresholds.iter_mut().find(|ft| ft.field == t.field) {
+                *existing = t;
+            } else {
+                tag.field_thresholds.push(t);
+            }
+        }
+    }
+
+    /// Remove a per-field alarm threshold from a tag in the live config.
+    pub fn remove_field_threshold(&mut self, mac: &str, field: &str) {
+        let up = mac.to_uppercase();
+        if let Some(tag) = self.tags.iter_mut().find(|x| x.mac.to_uppercase() == up) {
+            tag.field_thresholds.retain(|ft| ft.field != field);
+        }
     }
 }
 
@@ -90,11 +208,28 @@ pub struct EyeTagConfig {
     /// [`EyeConfig::recording_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<bool>,
+
+    /// Per-field alarm thresholds (fields: `temperature`, `humidity`), reusing
+    /// the LoRaWAN sticker field-threshold model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+
+    /// Has this tag already had the PROXIMOS profile written to its flash?
+    ///
+    /// `ProvisioningStatus` is in-memory only, so without this every restart
+    /// resets all tags to `PendingProvisioning` and — with `auto_provision` on —
+    /// re-provisions the whole set at once. On a 16-tag gateway that burst
+    /// contends with the scan for the adapter, which is exactly the failure this
+    /// avoids. Writing to the tag's flash is idempotent but not free.
+    ///
+    /// Also the reason this field exists rather than being inferred: the applier
+    /// serialises `EyeConfig` back to `fiber.config.yaml` on every tag change, so
+    /// a key the struct does not know about is silently dropped from the file.
+    /// `None` means "never provisioned, or written by a build that predates this".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioned: Option<bool>,
 }
 
-fn default_scan_window_s() -> u64 {
-    60
-}
 fn default_publish_interval_s() -> u64 {
     30
 }
@@ -109,4 +244,64 @@ fn default_sync_fallback_hours() -> u64 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_scan_stall_secs() -> u64 {
+    180
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_tag_inserts_uppercased_with_defaults() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Freezer"));
+        assert_eq!(cfg.tags.len(), 1);
+        assert_eq!(cfg.tags[0].mac, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Freezer"));
+        assert!(cfg.tags[0].enabled);
+    }
+
+    #[test]
+    fn upsert_tag_updates_in_place_and_keeps_name_when_none() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
+        // same MAC (lowercased) with a new name updates in place, no duplicate
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Fridge"));
+        assert_eq!(cfg.tags.len(), 1, "must upsert, not duplicate");
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Fridge"));
+        // name None keeps the existing name
+        cfg.upsert_tag("aa:bb:cc:dd:ee:ff", None);
+        assert_eq!(cfg.tags[0].name.as_deref(), Some("Fridge"));
+    }
+
+    #[test]
+    fn remove_tag_is_case_insensitive_and_reports() {
+        let mut cfg = EyeConfig::default();
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", None);
+        assert!(cfg.remove_tag("aa:bb:cc:dd:ee:ff"));
+        assert!(cfg.tags.is_empty());
+        assert!(!cfg.remove_tag("AA:BB:CC:DD:EE:FF"), "absent -> false");
+    }
+
+    #[test]
+    fn set_recording_off_makes_recording_on_for_false() {
+        let mut cfg = EyeConfig::default();
+        cfg.recording_enabled = true;
+        cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
+        // interval 5 -> on
+        assert!(cfg.set_recording("aa:bb:cc:dd:ee:ff", 5));
+        let tag = cfg.tags[0].clone();
+        assert_eq!(tag.recording, Some(true));
+        assert_eq!(tag.logging_interval_min, Some(5));
+        assert!(cfg.recording_on_for(&tag));
+        // interval 0 -> off, and recording_on_for must be false (H1)
+        assert!(cfg.set_recording("AA:BB:CC:DD:EE:FF", 0));
+        let tag = cfg.tags[0].clone();
+        assert_eq!(tag.recording, Some(false));
+        assert!(!cfg.recording_on_for(&tag), "interval 0 must turn recording off");
+        // unknown MAC -> false
+        assert!(!cfg.set_recording("11:22:33:44:55:66", 1));
+    }
 }

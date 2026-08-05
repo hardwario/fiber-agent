@@ -153,16 +153,42 @@ pub enum LorawanSimpleCommand {
     GetInfo,
     Reboot,
     ForceSend,
-    /// Reset all pulse counters (empty `ResetCounters` = all channels).
+    /// Reset all four resettable pulse counters. Each flag is sent explicitly:
+    /// the firmware treats an absent flag as "leave this counter alone", so an
+    /// empty message would Ack without resetting anything.
     ResetCounters,
     /// Push the daemon's current wall-clock to the device.
     ClockSync,
+    /// Restore defaults, keeping identity and the LoRaWAN keys (proto id 8). The
+    /// sticker stays joined; all parameters and alarm rules are lost.
+    DeviceReset,
+    /// The NFC/shell-only factory reset (proto id 23). **Always rejected over
+    /// LoRaWAN** with `Error{NOT_READY, "transport not allowed"}` — exposed so the
+    /// rejection can be demonstrated on the bench, not to be used operationally.
+    FactoryReset,
 }
 
 impl LorawanSimpleCommand {
     /// Commands that change device state / reboot it, so they require `--force`.
     pub fn is_destructive(self) -> bool {
-        matches!(self, LorawanSimpleCommand::Reboot | LorawanSimpleCommand::ResetCounters)
+        matches!(
+            self,
+            LorawanSimpleCommand::Reboot
+                | LorawanSimpleCommand::ResetCounters
+                | LorawanSimpleCommand::DeviceReset
+                | LorawanSimpleCommand::FactoryReset
+        )
+    }
+
+    /// Commands that leave a deferred action pending on the device's single
+    /// `m_post_cmd_action` slot, so they must not overlap on one sticker.
+    pub fn is_action_bearing(self) -> bool {
+        matches!(
+            self,
+            LorawanSimpleCommand::Reboot
+                | LorawanSimpleCommand::ResetCounters
+                | LorawanSimpleCommand::DeviceReset
+        )
     }
 }
 

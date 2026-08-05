@@ -2,15 +2,11 @@ syntax = "proto3";
 
 // BEGIN GENERATED CONFIG
 message AppConfigMessage {
-    optional bool factory = 1;
-    optional string secret_key = 2;
-    optional uint32 serial_number = 3;
-    optional uint32 nonce_counter = 4;
+    reserved 1, 2, 3, 4, 9, 10;
     optional Lorawan lorawan = 5;
     optional Application application = 6;
     optional Sensors sensors = 7;
     optional Alarms alarms = 8;
-    optional string claim_token = 9;
 
     message Lorawan {
         enum Region {
@@ -29,6 +25,12 @@ message AppConfigMessage {
             ABP = 1;
         }
 
+        enum Mode {
+            OFF = 0;
+            LORAWAN = 1;
+            P2P = 2;
+        }
+
         optional Region region = 1;
         optional uint32 sub_band = 2;
         optional Network network = 3;
@@ -43,6 +45,7 @@ message AppConfigMessage {
         optional bytes appskey = 12;
         optional uint32 link_check_interval = 13;
         optional uint32 link_check_fail_rejoin = 14;
+        optional Mode mode = 15;
     }
 
     message Application {
@@ -51,6 +54,8 @@ message AppConfigMessage {
         optional uint32 interval_report = 3;
         optional bool history_enable = 4;
         optional uint32 history_sensors = 5;
+        optional uint32 battery_level = 6;
+        optional bool vendor_reset_allow = 7;
     }
 
     message Sensors {
@@ -100,6 +105,10 @@ message AppConfigMessage {
         optional bytes alarm_13 = 16;
         optional bytes alarm_14 = 17;
         optional bytes alarm_15 = 18;
+        // #319: how long a light-increase alarm waits for confirmation before it
+        // fires, seconds. Added by sticker v1.4.0 after this file was last
+        // refreshed.
+        optional uint32 alarm_light_confirm_delay = 19;
     }
 }
 // END GENERATED CONFIG
@@ -115,19 +124,27 @@ message Command {
         GetConfig        get_config        = 5;
         SettingsSave     settings_save     = 6;
         Reboot           reboot            = 7;
-        FactoryReset     factory_reset     = 8;
+        DeviceReset      device_reset      = 8;
         ForceSend        force_send        = 9;
         ResetCounters    reset_counters    = 10;
         ReqHistory       req_history       = 11;
         ClockSync        clock_sync        = 12;
+        ReqHistoryPage   req_history_page  = 13;
         W1Scan           w1_scan           = 14;
         LrwReset         lrw_reset         = 16;
         LrwJoin          lrw_join          = 17;
         EnterCalibration enter_calibration = 18;
-        EnterMailbox     enter_mailbox     = 19;
-        ExitMailbox      exit_mailbox      = 20;
+        Sample           sample            = 21;
+        FactoryReset     factory_reset     = 23;
+        SetSecretKey     set_secret_key    = 24;
     }
 // END GENERATED COMMANDS
+
+    // L-54: field numbers of removed commands (enter_mailbox / exit_mailbox /
+    // enter_dfu, dropped in #239). Reserved so they are never silently re-used for
+    // a different command — an old app still sending 19/20/22 would otherwise be
+    // mis-decoded once the number is reassigned.
+    reserved 19, 20, 22;
 
     message SetParam {
         optional AppConfigMessage.Lorawan     lorawan     = 1;
@@ -157,7 +174,10 @@ message Command {
     message GetConfig    { optional uint32 page = 1; }
     message SettingsSave { }
     message Reboot       { }
-    message FactoryReset { }
+    // #299 reset ladder: keeps identity + full LoRaWAN (renamed from the old
+    // factory_reset, same wire id 8 — the new, narrower FactoryReset below is a
+    // separate message/id).
+    message DeviceReset  { }
     message ForceSend    { }
     // Persist calibration=true + cold reboot, so the next boot enters
     // calibration mode (same end state as set_param calibration=true +
@@ -177,6 +197,17 @@ message Command {
         optional bool input_b    = 4;
     }
     message ReqHistory   { optional uint32 from_unix = 1; optional uint32 to_unix = 2; }
+    // NFC paged history read (#260). Client-driven, stateless: the phone taps
+    // repeatedly, passing start_ord = the previous response's next_ord each time,
+    // until the response reports has_more=false. Unlike req_history (LRW,
+    // device-driven streaming) the device keeps no replay session. from_unix/to_unix
+    // bound the window (omitted => whole buffer); start_ord (omitted => 0) is the
+    // record cursor.
+    message ReqHistoryPage {
+        optional uint32 from_unix = 1;
+        optional uint32 to_unix   = 2;
+        optional uint32 start_ord = 3;
+    }
     // Empty (LRW): re-sync the RTC from the network (DeviceTimeReq). With
     // unix_time set (NFC): the phone supplies the wall-clock time (UTC seconds)
     // and the RTC is set from it directly — a one-shot bootstrap before/without
@@ -187,18 +218,22 @@ message Command {
     // discovered ROMs so the host can teach a slot via SetParam sensorN_rom.
     message W1Scan { }
 
-    // Switch the device into mailbox (ST25DV Fast-Transfer-Mode) serving mode
-    // for a bounded window, used for fast config streaming and firmware update.
-    // The device acks over the normal NDEF channel, then powers the tag up and
-    // services the mailbox (the phone keeps its RF field on the whole time).
-    // `timeout_s` bounds the window (0 = firmware default); the device returns to
-    // the low-power NDEF poll when it elapses with no mailbox traffic.
-    message EnterMailbox { optional uint32 timeout_s = 1; }
+    // Take a fresh sensor sample, send it as telemetry over LoRaWAN (fPort 2),
+    // and — over NFC — return the same readings synchronously in Response.sample
+    // so the phone can display them on the spot. Over LoRaWAN the fPort-2 uplink
+    // is the answer (no fPort-85 body, like ForceSend).
+    message Sample { }
 
-    // End mailbox (Fast-Transfer-Mode) serving — sent as the last mailbox message
-    // when the phone has finished streaming, so the device drops straight back to
-    // the low-power NDEF poll instead of waiting out the idle timeout.
-    message ExitMailbox { }
+    // #299 reset ladder, new middle tier: keeps identity only (serial_number/
+    // vendor_token/secret_key/nonce_counter/claim_token/DevEUI/JoinEUI), drops the
+    // LoRaWAN session/keys — the device must re-join after this. Narrower than
+    // DeviceReset above.
+    message FactoryReset { }
+
+    // Change secret_key over the already-encrypted channel (authenticated by the
+    // CURRENT key). The new key is never readable back via GetParam/GetConfig
+    // (secret_key stays proto_field:false — see AppConfigMessage.reserved).
+    message SetSecretKey { optional bytes key = 1; }
 }
 
 message Response {
@@ -211,13 +246,17 @@ message Response {
         HistoryFrame   history_frame    = 5;
         Error          error            = 6;
         W1Scan         w1_scan          = 7;
+        Telemetry      sample           = 8;   // Sample command: fresh readings (NFC)
     }
 
     message Ack { }
 
     message Info {
-        // Firmware version (semver components). board and dev_eui are omitted
-        // on purpose — the LNS already knows them from the device context.
+        // Firmware version (semver components). board is omitted on purpose —
+        // the LNS already knows it from the device context. lrw_state and dev_eui
+        // are emitted over NFC only (see below) — a LoRaWAN uplink omits them: the
+        // LNS already knows the DevEUI, and the link state is redundant on a frame
+        // it just received.
         uint32 fw_major = 1;
         uint32 fw_minor = 2;
         uint32 fw_patch = 3;
@@ -230,11 +269,45 @@ message Response {
         }
         BuildType build_type = 4;
 
+        // LoRaWAN network state (mirrors app_lrw_state). Emitted over NFC only
+        // (see lrw_state below).
+        enum LrwState {
+            IDLE      = 0;   // not joined / init
+            JOINING   = 1;   // join/rejoin in progress
+            HEALTHY   = 2;   // joined, link OK
+            WARNING   = 3;   // joined, link check failing
+            RECONNECT = 4;   // reconnecting with backoff
+            DISABLED  = 5;   // DevEUI all-zero: radio-silent, no join/TX (#98)
+        }
+
         uint32 serial_number = 5;
         uint32 uptime_s      = 6;   // seconds since boot
         uint32 unix_time     = 7;   // wall-clock (UTC); 0/absent until RTC synced
         bool   debug         = 8;   // true = debug build, false = release
         optional bytes claim_token = 9;   // 128-bit device claim token (#170); omitted until commissioned
+        uint32 battery       = 10;  // supply voltage in mV (0 = unavailable)
+        uint32 reset_cause   = 11;  // hwinfo reset-cause bitmask of the last boot (#88); 0 = unknown
+        optional LrwState lrw_state = 12;  // current LoRaWAN network state; emitted over NFC only
+        optional bytes dev_eui = 13;  // 8-byte DevEUI; emitted over NFC only, omitted if unset
+        uint32 device_status = 14;  // aggregated device status (APP_DEVICE_STATUS_* bitmask); 0 = all OK
+
+        // Currently-active alarms, one entry per latched alarm at the moment the
+        // Info was built (rule slots + no-data / low-battery watchdogs). Only the
+        // active ones are emitted, so the list is empty when all is well and its
+        // length varies. Each entry names its source/quantity/type using the same
+        // enums as the alarm rules and the fPort 3 AlarmReport (app_alarm_source,
+        // app_alarm_quantity, AlarmEvent.Type) — see AlarmStatus.
+        repeated AlarmStatus active_alarms = 15;
+    }
+
+    // A single active alarm as reported in Info.active_alarms. Same taxonomy as a
+    // configured alarm rule / fPort 3 AlarmEvent, trimmed to just what a status
+    // read needs: no slot/value/edge/time (this is a live snapshot, not an edge
+    // report). Encoded as a nanopb callback so only the active alarms are sent.
+    message AlarmStatus {
+        uint32 source   = 1;  // enum app_alarm_source: onboard/s1..s4/hall-l/r/input-a/b/pir/accel/battery
+        uint32 quantity = 2;  // enum app_alarm_quantity: temperature/humidity/.../state/count/voltage
+        uint32 type     = 3;  // AlarmEvent.Type: low(1)/high(2)/trigger(3)/no_data(4)
     }
 
     message ConfigDump {
@@ -253,12 +326,18 @@ message Response {
         bytes  samples     = 4;   // records, values only (no per-record time/mask)
         uint32 present     = 5;   // sensor mask shared by every record in the frame
         uint32 interval_s  = 6;   // seconds between records; time(j) = t0_unix + j*interval_s
-        // v1.4.0: true when t0_unix is absolute UTC; false when the RTC was unsynced
-        // at capture (t0_unix is uptime-relative). Absent = old FW = treat as synced.
-        optional bool   time_synced = 7;
-        // NFC req_history_page paging only; the LoRaWAN req_history replay leaves unset.
-        optional uint32 next_ord    = 8;
-        optional bool   has_more    = 9;
+        // True when t0_unix is absolute UTC; false when the RTC had not synced at
+        // capture, so t0_unix is only uptime-relative (L-1/L-3). Absent = old FW =
+        // treat as synced. The decoder emits time=null for the whole frame when
+        // this is present and false, instead of bogus ~1970 timestamps.
+        optional bool time_synced = 7;
+        // NFC paged read (#260, req_history_page) only. The device-driven LoRaWAN
+        // replay (req_history) leaves both unset. next_ord is the record cursor the
+        // phone passes back as ReqHistoryPage.start_ord on the next tap; export_page
+        // may skip records outside [from,to], so the phone cannot derive it locally.
+        // has_more=false means the window is exhausted — stop tapping (no wedge).
+        optional uint32 next_ord = 8;
+        optional bool   has_more = 9;
     }
 
     message Error {
@@ -270,9 +349,16 @@ message Response {
             HISTORY_UNAVAILABLE = 4;
             UNSUPPORTED_FIELD   = 5;
             PERSIST_FAILED      = 6;
+            NOT_SUPPORTED       = 7;   // command tag unknown / removed (L-54)
+            NOT_WRITABLE        = 8;   // field not writable over this transport (M-3); fault_field = group*100+tag
         }
 
         Code   code         = 1;
+        // Offending field, encoded as group*100 + tag (#196). SetParam applies
+        // groups in a fixed order and stops at the first failing one; the tag
+        // alone is ambiguous across groups, so the group is folded in:
+        // group 1=lorawan, 2=application, 3=sensors, 4=alarms; 0 = not group-scoped
+        // (tags stay < 100). Host decodes: group = fault_field / 100, tag = % 100.
         uint32 fault_field  = 2;
         string detail       = 3;
     }
@@ -296,19 +382,20 @@ message AlarmReport {
     uint32 base_time = 1;
     uint32 total     = 2;
     repeated AlarmEvent events = 3;
-    // v1.4.0: true when base_time is absolute UTC; false when the window opened
-    // before the RTC synced (base_time is uptime-relative). Absent = old FW =
-    // synced. When false, the decoder emits time=null for every event.
+    // True when base_time is absolute UTC; false when the window opened before the
+    // RTC synced and could not be re-anchored at send time, so base_time is only
+    // uptime-relative (L-3/L-4). Absent = old FW = treat as synced. The decoder
+    // emits time=null for every event when this is present and false.
     optional bool time_synced = 4;
 }
 
 message AlarmEvent {
     // One alarm edge from a dynamic alarm rule. The rule's target is (source,
     // quantity); the event reports what fired (type) and the transition (edge),
-    // plus the current value. type and edge are orthogonal: type says WHAT fired,
-    // edge says rising/falling, so a recovery still names the condition that
-    // cleared (e.g. type=HIGH, edge=DEACTIVATE). The rule config (from/to, lo/hi,
-    // rate N) is NOT on the wire — only the resulting edge.
+    // plus the current value. The rule config (from/to, lo/hi, rate N) is NOT on
+    // the wire — only the resulting edge. type and edge are orthogonal: type says
+    // WHAT fired, edge says rising/falling, so a recovery still names the
+    // condition that cleared (e.g. type=HIGH, edge=DEACTIVATE).
 
     // Transition direction. ACTIVATE = 0 so the common case omits the field.
     enum Edge {
@@ -406,4 +493,15 @@ message SensorReading {
     optional sint32 accel_x        = 8;  // m/s^2 x100    (LIS2DH12)
     optional sint32 accel_y        = 9;  // m/s^2 x100
     optional sint32 accel_z        = 10; // m/s^2 x100
+}
+
+// Provisioning claim record (#247). Carried plaintext in the NFC `hio.stck:clm`
+// NDEF record during the factory -> first-claim window so the provisioning app
+// can claim the device (first-claim-wins). The phone deletes the record from the
+// ST25DV over RF once the server confirms the claim; the firmware never rewrites
+// it afterwards. Not carried over LoRaWAN (the owner reads claim_token via the
+// encrypted get_info Info instead).
+message ClaimInfo {
+    uint32 serial_number = 1;
+    bytes  claim_token   = 2;  // 128-bit device claim token (#170)
 }

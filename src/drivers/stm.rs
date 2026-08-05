@@ -229,9 +229,23 @@ impl StmBridge {
 
     /// Activate sensor power pins (P0-P7) at startup
     pub fn init_sensor_power(&mut self) -> io::Result<()> {
-        eprintln!("[stm] Activating sensor power pins (P0-P7)...");
+        self.set_sensor_power(true)
+    }
+
+    /// Switch the sensor power pins (P0-P7) on or off together.
+    ///
+    /// Turning them off is how standby stops drawing through the eight DS18B20
+    /// lines: they boot HIGH in firmware and nothing else ever lowers them, so
+    /// without this a "powered down" device keeps every sensor energised.
+    ///
+    /// Per-pin failures are logged and the remaining pins still get their
+    /// command — a half-powered sensor bus is recoverable, and giving up early
+    /// on the way into standby would leave more lines live than continuing does.
+    pub fn set_sensor_power(&mut self, on: bool) -> io::Result<()> {
+        let state = if on { "ON" } else { "OFF" };
+        eprintln!("[stm] Switching sensor power pins (P0-P7) {}...", state);
         for i in 0..8 {
-            let cmd = format!("P{} ON", i);
+            let cmd = format!("P{} {}", i, state);
             match self.send_cmd(&cmd) {
                 Ok(Some(response)) => {
                     if !response.contains("OK") {
@@ -242,12 +256,12 @@ impl StmBridge {
                     eprintln!("[stm] Warning: no response from STM for P{}", i);
                 }
                 Err(e) => {
-                    eprintln!("[stm] Warning: failed to activate P{}: {}", i, e);
+                    eprintln!("[stm] Warning: failed to switch P{} {}: {}", i, state, e);
                     // Continue trying remaining pins even if one fails
                 }
             }
         }
-        eprintln!("[stm] Sensor power initialization complete");
+        eprintln!("[stm] Sensor power pins now {}", state);
         Ok(())
     }
 
@@ -325,5 +339,76 @@ impl StmBridge {
         let cmd = format!("BRIGHT {}", val);
         let _ = self.send_cmd(&cmd)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StmBridge;
+
+    // The firmware emits (fiber-southbridge app/src/adc_read.c):
+    //   "%s_raw=%u  %s_pin=%ldmV  %s=%ldmV\r\n"
+    // Note the double spaces; read_line() strips the CR/LF before parsing.
+
+    #[test]
+    fn parses_firmware_vin_line() {
+        let r = StmBridge::parse_adc_line("VIN_raw=1234  VIN_pin=994mV  VIN=5817mV", "VIN")
+            .expect("real firmware line must parse");
+        assert_eq!(r.raw, 1234);
+        assert_eq!(r.pin_mv, 994);
+        assert_eq!(r.voltage_mv, 5817);
+    }
+
+    #[test]
+    fn parses_firmware_vbat_line() {
+        let r = StmBridge::parse_adc_line("VBAT_raw=2048  VBAT_pin=1650mV  VBAT=3300mV", "VBAT")
+            .expect("real firmware line must parse");
+        assert_eq!(r.raw, 2048);
+        assert_eq!(r.pin_mv, 1650);
+        assert_eq!(r.voltage_mv, 3300);
+    }
+
+    #[test]
+    fn wrong_target_name_returns_none() {
+        let line = "VIN_raw=1234  VIN_pin=994mV  VIN=5817mV";
+        assert!(StmBridge::parse_adc_line(line, "VBAT").is_none());
+    }
+
+    #[test]
+    fn missing_field_returns_none() {
+        assert!(StmBridge::parse_adc_line("VIN_raw=1234  VIN=5817mV", "VIN").is_none());
+    }
+
+    #[test]
+    fn garbage_and_error_lines_return_none() {
+        assert!(StmBridge::parse_adc_line("", "VIN").is_none());
+        assert!(StmBridge::parse_adc_line("ERR: adc read failed", "VIN").is_none());
+        assert!(StmBridge::parse_adc_line("OK", "VIN").is_none());
+    }
+
+    #[test]
+    fn mv_suffix_is_optional_per_field() {
+        let r = StmBridge::parse_adc_line("VIN_raw=1234  VIN_pin=994  VIN=5817", "VIN")
+            .expect("suffix-less values still parse");
+        assert_eq!(r.pin_mv, 994);
+        assert_eq!(r.voltage_mv, 5817);
+    }
+
+    #[test]
+    fn raw_above_u16_truncates() {
+        // Documents current behavior: the value parses as u32 and is cast
+        // with `as u16`, so out-of-range raw counts wrap instead of failing
+        // (70000 & 0xFFFF == 4464). The ADC is 12-bit, so real firmware
+        // never produces this.
+        let r = StmBridge::parse_adc_line("VIN_raw=70000  VIN_pin=1mV  VIN=1mV", "VIN")
+            .expect("oversized raw still parses");
+        assert_eq!(r.raw, 4464);
+    }
+
+    #[test]
+    fn negative_value_returns_none() {
+        // u32 parse fails on the minus sign, so the field counts as missing.
+        let line = "VIN_raw=-5  VIN_pin=994mV  VIN=5817mV";
+        assert!(StmBridge::parse_adc_line(line, "VIN").is_none());
     }
 }

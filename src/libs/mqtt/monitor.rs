@@ -47,6 +47,11 @@ pub type SharedScreenTimeoutHandle = std::sync::Arc<std::sync::atomic::AtomicU32
 /// Shared buzzer volume handle (0 = muted, 1-100 = active)
 pub type SharedBuzzerVolumeHandle = std::sync::Arc<std::sync::atomic::AtomicU8>;
 
+/// Shared physical-display line config. Re-exported rather than redeclared —
+/// unlike the atomics above this is a real container type and two names for it
+/// would be one name too many.
+pub use crate::libs::display::SharedDisplayLinesHandle;
+
 /// Error category for diagnostics
 #[derive(Debug, Clone, Copy)]
 enum ErrorCategory {
@@ -541,6 +546,23 @@ impl MqttHandle {
 /// default of 30 s.
 const STICKER_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// How long to wait for the encrypted audit row of a teardown command (reboot
+/// or power-off) to reach disk. Bounded on purpose: the operator's signed intent
+/// outranks a perfect audit trail, so a wedged storage thread degrades to a WARN
+/// instead of leaving the device up forever.
+const TEARDOWN_AUDIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Grace window between returning from a teardown executor and actually going
+/// down, so the queued SUCCESS ack gets on the wire. See `execute_teardown` for
+/// why this cannot be replaced by waiting on the child process.
+const TEARDOWN_GRACE: Duration = Duration::from_millis(1500);
+
+/// How long to wait for the display thread to confirm the panel is dark. Fits
+/// inside [`TEARDOWN_GRACE`] and is an order of magnitude above the display
+/// loop's 50 ms tick, so a running display always makes it; an absent or wedged
+/// one degrades to a WARN rather than holding the device up.
+const DISPLAY_BLANK_TIMEOUT: Duration = Duration::from_millis(500);
+
 pub struct MqttMonitor {
     thread_handle: Option<JoinHandle<()>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -551,6 +573,7 @@ pub struct MqttMonitor {
     screen_brightness: Option<SharedScreenBrightnessHandle>,
     screen_timeout: Option<SharedScreenTimeoutHandle>,
     buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+    display_lines: Option<SharedDisplayLinesHandle>,
     buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
     lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     /// fPort-85 command handle, filled after the LoRaWAN monitor exists (see
@@ -563,7 +586,7 @@ pub struct MqttMonitor {
 impl MqttMonitor {
     /// Create and spawn MQTT monitor thread
     pub fn new(config: MqttConfig, hostname: String, app_version: String, power_status: crate::libs::power::status::SharedPowerStatus) -> io::Result<Self> {
-        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None, None)
+        Self::new_with_stm(config, hostname, app_version, power_status, None, None, None, None, None, None, None, None, None)
     }
 
     /// Create and spawn MQTT monitor thread with optional STM bridge for hardware commands
@@ -576,6 +599,7 @@ impl MqttMonitor {
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         screen_timeout: Option<SharedScreenTimeoutHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        display_lines: Option<SharedDisplayLinesHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         lorawan_state: Option<crate::libs::lorawan::SharedLoRaWANState>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
@@ -626,6 +650,9 @@ impl MqttMonitor {
         // Clone screen timeout for monitor thread
         let screen_timeout_clone = screen_timeout.clone();
 
+        // Clone display line config for monitor thread
+        let display_lines_clone = display_lines.clone();
+
         // Clone buzzer volume and priority for monitor thread
         let buzzer_volume_clone = buzzer_volume.clone();
         let buzzer_priority_clone = buzzer_priority.clone();
@@ -662,6 +689,7 @@ impl MqttMonitor {
                 screen_brightness_clone,
                 screen_timeout_clone,
                 buzzer_volume_clone,
+                display_lines_clone,
                 buzzer_priority_clone,
                 reconnected_flag_clone,
                 lorawan_state_slot_clone,
@@ -686,6 +714,7 @@ impl MqttMonitor {
             screen_brightness,
             screen_timeout,
             buzzer_volume,
+            display_lines,
             buzzer_priority,
             lorawan_state_slot,
             lorawan_handle_slot,
@@ -744,6 +773,249 @@ impl MqttMonitor {
     /// the merged result to `lorawan/sensors/<dev_eui>/config`. Detached so the
     /// MQTT event loop stays responsive while the blocking downlink round-trips
     /// run on a blocking thread.
+    /// Run one STICKER control command (#71) and publish its outcome.
+    ///
+    /// The three commands that cannot be confirmed at Ack time are handled
+    /// explicitly rather than left to time out into a false failure:
+    ///
+    ///   * `sticker_force_send` sends no fPort-85 reply at all
+    ///     (`app_cmd.c:699-711`) — the fPort-2 telemetry frame is the answer. It
+    ///     goes out fire-and-forget, with no `seq` allocated, so it can never alias
+    ///     a pending waiter.
+    ///   * `sticker_clock_sync` with no `unix_time` asks the device to re-sync from
+    ///     the network, which also produces no immediate reply; the deferred `Info`
+    ///     arrives later and is picked up by the unsolicited-Info path from #65.
+    ///   * `sticker_reboot` / `sticker_device_reset` answer `Ack` and then restart
+    ///     8 s later, so a missing reply is expected rather than a failure.
+    fn spawn_sticker_command(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        cmd: MqttCommand,
+    ) {
+        use crate::libs::lorawan::sticker_command as sc;
+        use crate::libs::lorawan::sticker_config;
+        use crate::libs::lorawan::sticker_proto::Command as ProtoCommand;
+        use crate::libs::lorawan::sticker_response::ResponseKind;
+        use prost::Message as _;
+
+        tokio::spawn(async move {
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            let name = cmd.name().to_string();
+
+            // dev_eui + the proto command + what remains outstanding after the reply.
+            let (dev_eui, proto, expect, action_bearing): (String, ProtoCommand, Option<&str>, bool) =
+                match &cmd {
+                    MqttCommand::StickerReboot { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_reboot(),
+                        Some("unsolicited_info_on_rejoin"),
+                        true,
+                    ),
+                    MqttCommand::StickerDeviceReset { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_device_reset(),
+                        Some("unsolicited_info_on_rejoin"),
+                        true,
+                    ),
+                    MqttCommand::StickerResetCounters {
+                        dev_eui,
+                        hall_left,
+                        hall_right,
+                        input_a,
+                        input_b,
+                    } => (
+                        dev_eui.clone(),
+                        sc::build_reset_counters_selective(
+                            *hall_left, *hall_right, *input_a, *input_b,
+                        ),
+                        None,
+                        true,
+                    ),
+                    MqttCommand::StickerForceSend { dev_eui } => (
+                        dev_eui.clone(),
+                        sc::build_force_send(),
+                        Some("telemetry_uplink"),
+                        false,
+                    ),
+                    MqttCommand::StickerClockSync { dev_eui, unix_time } => match unix_time {
+                        Some(t) => (dev_eui.clone(), sc::build_clock_sync(*t), None, false),
+                        None => (
+                            dev_eui.clone(),
+                            sc::build_clock_sync_from_network(),
+                            Some("deferred_info"),
+                            false,
+                        ),
+                    },
+                    other => {
+                        eprintln!("[MQTT Monitor] spawn_sticker_command: not a control command: {}", other.name());
+                        return;
+                    }
+                };
+
+            // force_send is unsigned, so broker access alone can trigger uplinks.
+            // A sticker's duty cycle is finite, so space them per device.
+            if matches!(cmd, MqttCommand::StickerForceSend { .. }) {
+                if let Err(reason) = sticker_config::check_force_send_cooldown(&dev_eui) {
+                    let msg = MqttMessage::PublishStickerCommandResult {
+                        dev_eui,
+                        command: name,
+                        seq: 0,
+                        result: "rate_limited".to_string(),
+                        expect: None,
+                        detail: Some(reason),
+                        fault_key: None,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish command result: {}", e);
+                    }
+                    return;
+                }
+            }
+
+            // Commands that leave a deferred action on the device's single slot must
+            // not overlap. Refuse immediately rather than queueing behind a lock.
+            let guard = if action_bearing {
+                match sticker_config::try_action_guard(&dev_eui) {
+                    Ok(g) => Some(g),
+                    Err(reason) => {
+                        let msg = MqttMessage::PublishStickerCommandResult {
+                            dev_eui,
+                            command: name,
+                            seq: 0,
+                            result: "device_busy".to_string(),
+                            expect: None,
+                            detail: Some(reason),
+                            fault_key: None,
+                        };
+                        if let Err(e) = publisher.handle_message(msg).await {
+                            eprintln!("[MQTT Monitor] Failed to publish command result: {}", e);
+                        }
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            // No fPort-85 reply is ever coming for these two, so do not allocate a
+            // seq and do not wait for one.
+            let no_reply_expected =
+                matches!(expect, Some("telemetry_uplink") | Some("deferred_info"));
+
+            let dev_eui_blocking = dev_eui.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _guard = guard; // held for the duration of the exchange
+                if no_reply_expected {
+                    handle
+                        .send_raw(&dev_eui_blocking, proto.encode_to_vec(), 85)
+                        .map(|()| None)
+                } else {
+                    handle
+                        .send_command(&dev_eui_blocking, proto, STICKER_COMMAND_TIMEOUT)
+                        .map(Some)
+                }
+            })
+            .await;
+
+            let (seq, result, detail, fault_key) = match outcome {
+                // Fire-and-forget succeeded: honestly "requested", never "ok".
+                Ok(Ok(None)) => (0, "requested".to_string(), None, None),
+                Ok(Ok(Some(dr))) => match dr.kind {
+                    ResponseKind::Ack => (dr.seq, "ok".to_string(), None, None),
+                    ResponseKind::Info(_) => (dr.seq, "ok".to_string(), None, None),
+                    ResponseKind::Error { code, detail, fault_field } => (
+                        dr.seq,
+                        code.to_string(),
+                        Some(detail),
+                        sc::describe_fault(fault_field, std::iter::empty()),
+                    ),
+                    other => (dr.seq, "ok".to_string(), Some(format!("{other:?}")), None),
+                },
+                Ok(Err(e)) => {
+                    // A reboot/device_reset that never answers is the expected case:
+                    // the device restarts 8 s after the Ack.
+                    if expect == Some("unsolicited_info_on_rejoin") {
+                        (0, "requested".to_string(), Some(e), None)
+                    } else {
+                        (0, "transport_error".to_string(), Some(e), None)
+                    }
+                }
+                Err(join_err) => {
+                    (0, "transport_error".to_string(), Some(join_err.to_string()), None)
+                }
+            };
+
+            let msg = MqttMessage::PublishStickerCommandResult {
+                dev_eui,
+                command: name,
+                seq,
+                result,
+                expect: expect.map(|s| s.to_string()),
+                detail,
+                fault_key,
+            };
+            if let Err(e) = publisher.handle_message(msg).await {
+                eprintln!("[MQTT Monitor] Failed to publish sticker command result: {}", e);
+            }
+        });
+    }
+
+    /// Answer a `get_sticker_info` query (#65): one `GetInfo` round trip, then
+    /// publish the decoded info on the retained `.../info` topic.
+    fn spawn_sticker_info_read(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+    ) {
+        tokio::spawn(async move {
+            let dev_eui_blocking = dev_eui.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                crate::libs::lorawan::sticker_config::read_info(
+                    &handle,
+                    &dev_eui_blocking,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match read {
+                Ok(Ok((seq, info))) => {
+                    let msg = MqttMessage::PublishStickerInfo {
+                        info: crate::libs::lorawan::sticker_config::info_to_json(
+                            &info,
+                            &dev_eui,
+                            "query",
+                            seq,
+                            &crate::libs::mqtt::publisher::MqttPublisher::timestamp(),
+                        ),
+                        dev_eui,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker info: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    // Includes the honest 64-byte-buffer overflow case: a sticker
+                    // with several latched alarms answers "response too large".
+                    // Reported as-is and never retried — the reply would not change.
+                    if let Err(pe) =
+                        publisher.publish_error("get_sticker_info", "transport", &e).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker info error: {}", pe);
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!("[MQTT Monitor] get_sticker_info task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
     fn spawn_sticker_config_read(
         client: AsyncClient,
         topics: TopicBuilder,
@@ -769,13 +1041,25 @@ impl MqttMonitor {
             let publisher = MqttPublisher::new(client, topics, &publish_cfg);
             match read {
                 Ok(Ok(cfg)) => {
+                    // A read that only partly came back is reported as partial, not
+                    // as "ok" — the viewer must be able to tell "this key is absent
+                    // from the device" from "we never managed to read this key".
+                    let last_result = if cfg.is_complete() {
+                        "ok".to_string()
+                    } else {
+                        eprintln!(
+                            "[MQTT Monitor] partial sticker config read: {} key(s) not read",
+                            cfg.failed_keys.len()
+                        );
+                        "partial".to_string()
+                    };
                     let msg = MqttMessage::PublishStickerConfig {
                         dev_eui,
                         config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
                         page_index: 0,
                         page_count: cfg.page_count,
                         last_seq: cfg.last_seq,
-                        last_result: "ok".to_string(),
+                        last_result,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
                         eprintln!("[MQTT Monitor] Failed to publish sticker config: {}", e);
@@ -790,6 +1074,87 @@ impl MqttMonitor {
                 }
                 Err(join_err) => {
                     eprintln!("[MQTT Monitor] get_sticker_config task panicked: {}", join_err);
+                }
+            }
+        });
+    }
+
+    /// Spawn a detached task that reads *every* readable STICKER key and
+    /// publishes it to `lorawan/sensors/<dev_eui>/full-config`.
+    ///
+    /// Same engine as the settable read, a wider key list, a different topic. It
+    /// is a lot of airtime — `all_readable_keys()` is 37 settable plus 17
+    /// read-only, batched six to a chunk, one chunk per Class-A reporting cycle —
+    /// so a partial result is the normal case rather than a fault, and is reported
+    /// as `partial` with the missing keys named instead of being retried here. A
+    /// retry would cost another full pass and produce the same answer if the
+    /// device genuinely will not serve those keys.
+    fn spawn_sticker_full_config_read(
+        client: AsyncClient,
+        topics: TopicBuilder,
+        publish_cfg: crate::libs::config::PublishConfig,
+        handle: crate::libs::lorawan::LoRaWANHandle,
+        dev_eui: String,
+    ) {
+        tokio::spawn(async move {
+            let dev_eui_blocking = dev_eui.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                let keys = crate::libs::lorawan::sticker_command::all_readable_keys();
+                crate::libs::lorawan::sticker_config::read_config(
+                    &handle,
+                    &dev_eui_blocking,
+                    &keys,
+                    STICKER_COMMAND_TIMEOUT,
+                )
+            })
+            .await;
+
+            let publisher = MqttPublisher::new(client, topics, &publish_cfg);
+            match read {
+                Ok(Ok(cfg)) => {
+                    let read_status = if cfg.is_complete() {
+                        "complete".to_string()
+                    } else {
+                        eprintln!(
+                            "[MQTT Monitor] partial sticker full-config read: {} key(s) not read",
+                            cfg.failed_keys.len()
+                        );
+                        "partial".to_string()
+                    };
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_full_config {}: {}, {} key(s)",
+                        dev_eui,
+                        read_status,
+                        cfg.config.len()
+                    );
+                    let msg = MqttMessage::PublishStickerFullConfig {
+                        dev_eui,
+                        config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
+                        page_count: cfg.page_count,
+                        last_seq: cfg.last_seq,
+                        read_status,
+                        missing: cfg.failed_keys,
+                    };
+                    if let Err(e) = publisher.handle_message(msg).await {
+                        eprintln!("[MQTT Monitor] Failed to publish sticker full config: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    if let Err(pe) = publisher
+                        .publish_error("get_sticker_full_config", "transport", &e)
+                        .await
+                    {
+                        eprintln!(
+                            "[MQTT Monitor] Failed to publish sticker full config error: {}",
+                            pe
+                        );
+                    }
+                }
+                Err(join_err) => {
+                    eprintln!(
+                        "[MQTT Monitor] get_sticker_full_config task panicked: {}",
+                        join_err
+                    );
                 }
             }
         });
@@ -976,6 +1341,7 @@ impl MqttMonitor {
         screen_brightness: Option<SharedScreenBrightnessHandle>,
         screen_timeout: Option<SharedScreenTimeoutHandle>,
         buzzer_volume: Option<SharedBuzzerVolumeHandle>,
+        display_lines: Option<SharedDisplayLinesHandle>,
         buzzer_priority: Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         reconnected_flag: Arc<AtomicBool>,
         lorawan_state_slot: std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -1400,6 +1766,7 @@ impl MqttMonitor {
                                                                     &screen_brightness,
                                                                     &screen_timeout,
                                                                     &buzzer_volume,
+                                                                    &display_lines,
                                                                     &buzzer_priority,
                                                                     &led_brightness_tracker,
                                                                     &lorawan_state_slot,
@@ -1517,20 +1884,28 @@ impl MqttMonitor {
                                                             &certificate,
                                                         ) {
                                                             Ok((response_msg, maybe_command)) => {
-                                                                // Publish response
-                                                                if let Err(e) = publisher.handle_message(response_msg).await {
-                                                                    eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
-                                                                }
-
-                                                                // Execute command if approved
+                                                                // Execute FIRST, then report the real result.
+                                                                // Previously SUCCESS was published before running the
+                                                                // command and execution errors were only logged, so the
+                                                                // client always saw SUCCESS even when the command failed.
                                                                 if let Some(execute_cmd) = maybe_command {
-                                                                    if let Err(e) = Self::execute_resolved_command(
+                                                                    // Teardown commands (reboot / network reconfig) tear down
+                                                                    // the process or the MQTT-bearing interface, which races the
+                                                                    // response publish — so for those publish SUCCESS FIRST (M3).
+                                                                    let teardown = Self::is_teardown_command(&execute_cmd);
+                                                                    if teardown {
+                                                                        if let Err(e) = publisher.handle_message(response_msg.clone()).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                    }
+                                                                    let exec = Self::execute_resolved_command(
                                                                         execute_cmd,
                                                                         &config_applier,
                                                                         &stm_bridge,
                                                                         &screen_brightness,
                                                                         &screen_timeout,
                                                                         &buzzer_volume,
+                                                                        &display_lines,
                                                                         &buzzer_priority,
                                                                         &led_brightness_tracker,
                                                                         &lorawan_state_slot,
@@ -1541,16 +1916,31 @@ impl MqttMonitor {
                                                                         &topics,
                                                                         &config.publish,
                                                                         &export_handle_slot,
-                                                                    ) {
+                                                                    );
+                                                                    let succeeded = exec.is_ok();
+                                                                    if let Err(ref e) = exec {
                                                                         eprintln!("[MQTT Monitor] Failed to execute command: {}", e);
-                                                                    } else {
-                                                                        // Publish updated config state after successful command
-                                                                        let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
-                                                                        if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &screen_timeout, &buzzer_volume, led_br) {
-                                                                            if let Err(e) = publisher.handle_message(config_msg).await {
-                                                                                eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                    }
+                                                                    if !teardown {
+                                                                        // Execute-first: report the real SUCCESS/ERROR result.
+                                                                        let response = Self::confirm_response_message(exec, response_msg);
+                                                                        if let Err(e) = publisher.handle_message(response).await {
+                                                                            eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
+                                                                        }
+                                                                        if succeeded {
+                                                                            // Publish updated config state after successful command
+                                                                            let led_br = led_brightness_tracker.load(std::sync::atomic::Ordering::Relaxed);
+                                                                            if let Some(config_msg) = Self::build_config_state_message(&screen_brightness, &screen_timeout, &buzzer_volume, led_br) {
+                                                                                if let Err(e) = publisher.handle_message(config_msg).await {
+                                                                                    eprintln!("[MQTT Monitor] Failed to publish config state: {}", e);
+                                                                                }
                                                                             }
                                                                         }
+                                                                    }
+                                                                } else {
+                                                                    // REJECTED (no command to run): publish the response as-is.
+                                                                    if let Err(e) = publisher.handle_message(response_msg).await {
+                                                                        eprintln!("[MQTT Monitor] Failed to publish response: {}", e);
                                                                     }
                                                                 }
                                                             }
@@ -1709,6 +2099,67 @@ impl MqttMonitor {
                                                     }
                                                 }
 
+                                                // Unsigned control command (#71).
+                                                // Rate-limited per device below.
+                                                MqttCommand::StickerForceSend { ref dev_eui } => {
+                                                    let dev_eui = dev_eui.clone();
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_command(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                MqttCommand::StickerForceSend { dev_eui },
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "sticker_force_send",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                MqttCommand::GetStickerInfo { dev_eui } => {
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_info_read(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                dev_eui,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "get_sticker_info",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 MqttCommand::GetStickerConfig { dev_eui, keys } => {
                                                     match lorawan_handle_slot
                                                         .lock()
@@ -1729,6 +2180,36 @@ impl MqttMonitor {
                                                             if let Err(pe) = publisher
                                                                 .publish_error(
                                                                     "get_sticker_config",
+                                                                    "lorawan_unavailable",
+                                                                    "LoRaWAN command handle not available",
+                                                                )
+                                                                .await
+                                                            {
+                                                                eprintln!("[MQTT Monitor] Failed to publish error: {}", pe);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                MqttCommand::GetStickerFullConfig { dev_eui } => {
+                                                    match lorawan_handle_slot
+                                                        .lock()
+                                                        .ok()
+                                                        .and_then(|g| g.clone())
+                                                    {
+                                                        Some(lr_handle) => {
+                                                            Self::spawn_sticker_full_config_read(
+                                                                client.clone(),
+                                                                topics.clone(),
+                                                                config.publish.clone(),
+                                                                lr_handle,
+                                                                dev_eui,
+                                                            );
+                                                        }
+                                                        None => {
+                                                            if let Err(pe) = publisher
+                                                                .publish_error(
+                                                                    "get_sticker_full_config",
                                                                     "lorawan_unavailable",
                                                                     "LoRaWAN command handle not available",
                                                                 )
@@ -1937,7 +2418,18 @@ impl MqttMonitor {
                     // Periodic status reporting (every 60 seconds)
                     _ = async {
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        if last_status_log.elapsed() > Duration::from_secs(60) {
+                        // Not in standby: nothing is being measured, so there is no
+                        // status worth reporting, and the retained power/standby
+                        // topic already explains the silence. The connection itself
+                        // stays up — this loop still has to carry commands and the
+                        // resume event.
+                        //
+                        // Deliberately left as an unmet condition rather than
+                        // resetting the timer, so waking publishes a fresh status
+                        // straight away instead of up to a minute later.
+                        if last_status_log.elapsed() > Duration::from_secs(60)
+                            && !crate::libs::power::standby::is_standby()
+                        {
                             if let Ok(state) = connection_state.lock() {
                                 eprintln!("[MQTT Monitor] === STATUS REPORT ===");
                                 eprintln!("[MQTT Monitor]   State: {:?}", state.state());
@@ -2209,7 +2701,17 @@ impl MqttMonitor {
             }
             "restart_application" => {
                 let r = reason.clone().unwrap_or_else(|| "Dev platform command".to_string());
-                Ok(MqttCommand::RestartApplication { reason: r })
+                Ok(MqttCommand::RestartApplication {
+                    reason: r,
+                    requested_by: "dev-platform".to_string(),
+                })
+            }
+            "power_off" => {
+                let r = reason.clone().unwrap_or_else(|| "Dev platform command".to_string());
+                Ok(MqttCommand::PowerOffDevice {
+                    reason: r,
+                    requested_by: "dev-platform".to_string(),
+                })
             }
             "set_interval" => {
                 let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).ok_or("Missing sample_interval_ms")?;
@@ -2244,6 +2746,14 @@ impl MqttMonitor {
                 let volume = params.get("volume").and_then(|v| v.as_u64()).ok_or("Missing volume")? as u8;
                 Ok(MqttCommand::SetBuzzerVolume { volume })
             }
+            "set_display_lines" => {
+                let raw = params.get("lines").ok_or("Missing lines")?;
+                let lines: Vec<crate::libs::config::DisplayLine> =
+                    serde_json::from_value(raw.clone())
+                        .map_err(|e| format!("Invalid display lines: {}", e))?;
+                crate::libs::config_applier::validation::validate_display_custom_lines(&lines)?;
+                Ok(MqttCommand::SetDisplayLines { lines })
+            }
             "set_network_config" => {
                 Ok(MqttCommand::SetNetworkConfig {
                     interface: params.get("interface").and_then(|v| v.as_str()).unwrap_or("ethernet").to_string(),
@@ -2257,6 +2767,80 @@ impl MqttMonitor {
             }
             "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
+            "set_eye_recording" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                let interval_min = params.get("interval_min").and_then(|v| v.as_u64()).ok_or("Missing interval_min")?;
+                if !matches!(interval_min, 0 | 1 | 5 | 15) {
+                    return Err("interval_min must be 0 (off), 1, 5 or 15".to_string());
+                }
+                Ok(MqttCommand::SetEyeRecording { mac, interval_min: interval_min as u16 })
+            }
+            "download_eye_history" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                Ok(MqttCommand::DownloadEyeHistory { mac })
+            }
+            "add_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let name = params.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+                Ok(MqttCommand::AddEyeTag { mac, name })
+            }
+            "set_eye_known_tags" => {
+                // An empty list is legal and meaningful: it means the fleet knows of
+                // no tags beyond this gateway's own, so stop listening for borrowed
+                // ones. Malformed MACs are dropped rather than failing the whole
+                // push — one bad row must not stop the rest of the fleet's tags
+                // from being audible.
+                let macs: Vec<String> = params
+                    .get("macs")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing macs (array)")?
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_uppercase())
+                    .filter(|s| crate::libs::eye::state::is_valid_mac(s))
+                    .collect();
+                Ok(MqttCommand::SetEyeKnownTags { macs })
+            }
+            "remove_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::RemoveEyeTag { mac })
+            }
+            "detect_eye_tag" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                Ok(MqttCommand::DetectEyeTag { mac })
+            }
+            "set_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::SetEyeFieldThreshold {
+                    mac,
+                    field,
+                    critical_low: params.get("critical_low").and_then(|v| v.as_f64()),
+                    warning_low: params.get("warning_low").and_then(|v| v.as_f64()),
+                    warning_high: params.get("warning_high").and_then(|v| v.as_f64()),
+                    critical_high: params.get("critical_high").and_then(|v| v.as_f64()),
+                })
+            }
+            "delete_eye_field_threshold" => {
+                let mac = params.get("mac").and_then(|v| v.as_str()).ok_or("Missing mac")?.to_uppercase();
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                let field = params.get("field").and_then(|v| v.as_str()).ok_or("Missing field")?.to_string();
+                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+            }
             _ => Err(format!("Unsupported dev-platform command: {}", command_type)),
         }
     }
@@ -2272,6 +2856,7 @@ impl MqttMonitor {
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
         screen_timeout: &Option<SharedScreenTimeoutHandle>,
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -2288,6 +2873,31 @@ impl MqttMonitor {
             // its effect is confirmed by a subsequent "read from device".
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
                 Some(handle) => handle.send_raw(&dev_eui, bytes, fport),
+                None => Err("LoRaWAN command handle not available".to_string()),
+            };
+        }
+        // #71 control commands: signed, so they arrive here already authorised.
+        // Handled before execute_config_command because they talk to the radio
+        // rather than to on-disk config.
+        if matches!(
+            cmd,
+            MqttCommand::StickerReboot { .. }
+                | MqttCommand::StickerDeviceReset { .. }
+                | MqttCommand::StickerResetCounters { .. }
+                | MqttCommand::StickerClockSync { .. }
+                | MqttCommand::StickerForceSend { .. }
+        ) {
+            return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
+                Some(handle) => {
+                    Self::spawn_sticker_command(
+                        client.clone(),
+                        topics.clone(),
+                        publish_cfg.clone(),
+                        handle,
+                        cmd,
+                    );
+                    Ok(())
+                }
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
@@ -2308,20 +2918,280 @@ impl MqttMonitor {
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
-        Self::execute_config_command(
+        // Captured before `cmd` is moved: a successful removal has to clear the
+        // sticker's retained device-info topic, or the broker replays a
+        // decommissioned device's info to every new subscriber indefinitely (#65).
+        let removed_sticker = match &cmd {
+            MqttCommand::RemoveLoRaWANSticker { dev_eui } => Some(dev_eui.clone()),
+            _ => None,
+        };
+        let result = Self::execute_config_command(
             cmd,
             config_applier,
             stm_bridge,
             screen_brightness,
             screen_timeout,
             buzzer_volume,
+            display_lines,
             buzzer_priority,
             led_brightness_tracker,
             lorawan_state_slot,
             lorawan_configs,
             storage_handle,
             export_handle_slot,
+        );
+        if result.is_ok() {
+            if let Some(dev_eui) = removed_sticker {
+                let publisher =
+                    MqttPublisher::new(client.clone(), topics.clone(), publish_cfg);
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        publisher.handle_message(MqttMessage::ClearStickerInfo { dev_eui }).await
+                    {
+                        eprintln!("[MQTT Monitor] Failed to clear retained sticker info: {}", e);
+                    }
+                });
+            }
+        }
+        result
+    }
+
+    /// Decide which response to publish for a confirmed command: the pre-built
+    /// SUCCESS response when execution succeeded, or an ERROR response (reusing
+    /// the same challenge/request ids) when it failed. Pure — unit-testable
+    /// without the async MQTT/execute machinery.
+    /// Commands whose execution tears down the process or the MQTT-bearing
+    /// network interface. Their confirmation must be published BEFORE execution
+    /// (best-effort SUCCESS), because execute-then-report would race the shutdown
+    /// and the signer would never receive the response.
+    ///
+    /// `PowerOffDevice` is deliberately *not* one of them. It used to run
+    /// `systemctl poweroff` and so had to ack first, but it now enters standby:
+    /// the process and the MQTT connection both survive, and it can genuinely
+    /// fail (a marker it cannot persist means it must refuse — see
+    /// [`Self::execute_standby`]). Acking first would tell the signer the device
+    /// is off while it carries on monitoring, which is the one outcome the
+    /// preview text must never be wrong about.
+    fn is_teardown_command(cmd: &MqttCommand) -> bool {
+        matches!(
+            cmd,
+            MqttCommand::RestartApplication { .. } | MqttCommand::SetNetworkConfig { .. }
         )
+    }
+
+    fn confirm_response_message(exec: Result<(), String>, success: MqttMessage) -> MqttMessage {
+        match exec {
+            Ok(()) => success,
+            Err(e) => match success {
+                MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    ..
+                } => MqttMessage::PublishConfigResponse {
+                    challenge_id,
+                    request_id,
+                    status: "ERROR".to_string(),
+                    applied_at: None,
+                    effective_at: None,
+                    message: format!("Execution failed: {e}"),
+                },
+                other => other,
+            },
+        }
+    }
+
+    /// Take the device down — the shared body of reboot and power-off.
+    ///
+    /// Both lose the authorization record: it lives in `/tmp/fiber_audit.db` and
+    /// the unit runs with `PrivateTmp=true`, so a reboot wipes it exactly as a
+    /// power-off does. The row in the encrypted, hash-chained `audit_log` is
+    /// therefore the only surviving evidence that the gap in monitoring was
+    /// authorized and by whom, which is why this waits for it to land.
+    ///
+    /// Write the authorization record for a command that interrupts monitoring,
+    /// and block until it is durable.
+    ///
+    /// Shared by reboot and standby. `label` is only used for log prefixes.
+    ///
+    /// Never fails the caller: an unaudited teardown is bad, but refusing to act
+    /// on a signed command because the audit database is unhappy would leave a
+    /// device that cannot be stopped at all.
+    fn audit_and_flush(
+        label: &str,
+        audit_event: &'static str,
+        reason: &str,
+        requested_by: &str,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+    ) {
+        let Some(storage) = storage_handle else {
+            eprintln!("[MQTT Monitor] WARN: no storage handle — {label} will not be audited");
+            return;
+        };
+
+        let details = format!(
+            r#"{{"reason":{},"requested_by":{}}}"#,
+            serde_json::Value::String(reason.to_string()),
+            serde_json::Value::String(requested_by.to_string()),
+        );
+        if let Err(e) = storage.log_audit_event(
+            audit_event.to_string(),
+            Some("audit_log".to_string()),
+            Some(details),
+        ) {
+            eprintln!("[MQTT Monitor] WARN: failed to queue {label} audit row: {e}");
+        }
+        // The storage worker is a single thread draining one FIFO channel,
+        // so a FlushSync reply also proves the audit row queued above was
+        // committed and checkpointed. It is also what keeps unwritten
+        // temperature samples from being lost across the restart.
+        if let Err(e) = storage.flush_sync(TEARDOWN_AUDIT_FLUSH_TIMEOUT) {
+            eprintln!("[MQTT Monitor] WARN: {label} audit row may not be durable: {e}");
+        }
+    }
+
+    /// Put the device into deep standby — what a Viewer power-off now does.
+    ///
+    /// It used to run `systemctl poweroff`. That halts the BCM2711 while the
+    /// battery holds the rails up, and nothing on this board can wake a halted
+    /// CM4 (see [`crate::libs::power::standby`]), so the device stayed
+    /// unreachable until someone pulled the battery — including when PoE came
+    /// back. Standby keeps the agent alive reading VIN instead, and
+    /// `PowerMonitor` brings the device back when DC returns.
+    ///
+    /// Ordering is load-bearing:
+    ///
+    /// * The marker is written **first**, and a failure to write it aborts the
+    ///   whole thing. The unit runs with `Restart=on-failure`, so a standby the
+    ///   next boot cannot detect is a device that comes back up monitoring while
+    ///   the operator has been told it is off. Better to refuse and stay running.
+    /// * The audit row is flushed **before** anything is torn down, so the only
+    ///   surviving evidence that this gap in monitoring was authorized is on disk
+    ///   before monitoring stops.
+    /// * Sensor rails go down here rather than in `PowerMonitor`, because that
+    ///   loop's interval is a configured 60 s on-device and eight DS18B20 lines
+    ///   must not stay energised for a minute after a power-off.
+    ///
+    /// Unlike the reboot path this runs inline: there is no process teardown to
+    /// race, and the caller has already queued the SUCCESS ack.
+    fn execute_standby(
+        reason: String,
+        requested_by: String,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+        stm_bridge: &Option<SharedStmBridge>,
+    ) -> Result<(), String> {
+        use crate::libs::power::standby;
+
+        eprintln!(
+            "[MQTT Monitor] Device standby requested by {}: {}",
+            requested_by, reason
+        );
+
+        let marker_dir = standby::configured_marker_dir();
+        let marker = standby::StandbyMarker::new(reason.clone(), requested_by.clone());
+        marker.write(&marker_dir).map_err(|e| {
+            format!(
+                "cannot record standby in {}: {e} — device stays up",
+                marker_dir.display()
+            )
+        })?;
+
+        Self::audit_and_flush("standby", "POWER_OFF", &reason, &requested_by, storage_handle);
+
+        if !standby::request_standby() {
+            eprintln!("[MQTT Monitor] Device was already in standby — nothing to do");
+            return Ok(());
+        }
+
+        // Rails down before the panel goes dark, so the device is genuinely not
+        // measuring by the time it looks like it is not measuring.
+        if let Some(stm) = stm_bridge {
+            match stm.lock() {
+                Ok(mut guard) => {
+                    if let Err(e) = guard.set_sensor_power(false) {
+                        eprintln!("[MQTT Monitor] WARN: could not drop sensor rails: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[MQTT Monitor] WARN: STM bridge lock poisoned: {e}");
+                }
+            }
+        }
+
+        crate::libs::display::blank::request_blank();
+        if !crate::libs::display::blank::wait_until_blank(DISPLAY_BLANK_TIMEOUT) {
+            eprintln!("[standby] WARN: display did not confirm blank — continuing anyway");
+        }
+
+        standby::apply_cpu_governor(&standby::config().cpu_governor);
+
+        eprintln!(
+            "[standby] Device is in standby; waiting for PoE (resume_on_dc={})",
+            standby::config().resume_on_dc
+        );
+        Ok(())
+    }
+
+    /// `verb` is the systemctl subcommand ("reboot"/"poweroff") and doubles as
+    /// the worker-thread name and log prefix.
+    fn execute_teardown(
+        verb: &'static str,
+        audit_event: &'static str,
+        reason: String,
+        requested_by: String,
+        storage_handle: &Option<crate::libs::storage::StorageHandle>,
+    ) -> Result<(), String> {
+        eprintln!(
+            "[MQTT Monitor] Device {} requested by {}: {}",
+            verb, requested_by, reason
+        );
+
+        Self::audit_and_flush(verb, audit_event, &reason, &requested_by, storage_handle);
+
+        // Spawn and return immediately; do NOT wait on the child here. The
+        // SUCCESS ack for a teardown command is only *queued* at this point:
+        // `AsyncClient::publish` hands the packet to rumqttc's channel and it
+        // reaches the socket the next time `eventloop.poll()` runs — which
+        // cannot happen until this function returns, because the whole
+        // ConfigConfirm branch runs inside the poll arm of a `tokio::select!`.
+        // Blocking here would mean the signer never learns the command worked.
+        // `--no-block` for the same reason inside the thread: without it,
+        // systemctl waits for the job to finish and may never return.
+        std::thread::Builder::new()
+            .name(verb.to_string())
+            .spawn(move || {
+                // Blank inside the grace window rather than extending it: the
+                // panel goes dark while the ack is still on its way out, so the
+                // device stops showing readings it is no longer taking. The
+                // deadline keeps the ack's full window intact no matter how fast
+                // the display confirms.
+                let deadline = std::time::Instant::now() + TEARDOWN_GRACE;
+                crate::libs::display::blank::request_blank();
+                if !crate::libs::display::blank::wait_until_blank(DISPLAY_BLANK_TIMEOUT) {
+                    eprintln!("[{verb}] WARN: display did not confirm blank — continuing anyway");
+                }
+                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+                match std::process::Command::new("systemctl")
+                    .args([verb, "--no-block"])
+                    .status()
+                {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => {
+                        // A device that stays up must not stay dark.
+                        crate::libs::display::blank::cancel_blank();
+                        eprintln!(
+                            "[{verb}] systemctl {verb} exited with {status} — device stays up"
+                        );
+                    }
+                    Err(e) => {
+                        crate::libs::display::blank::cancel_blank();
+                        eprintln!(
+                            "[{verb}] failed to execute systemctl {verb}: {e} — device stays up"
+                        );
+                    }
+                }
+            })
+            .map_err(|e| format!("Failed to spawn {verb} thread: {e}"))?;
+        Ok(())
     }
 
     /// Execute an approved configuration command
@@ -2334,6 +3204,7 @@ impl MqttMonitor {
         screen_brightness: &Option<SharedScreenBrightnessHandle>,
         screen_timeout: &Option<SharedScreenTimeoutHandle>,
         buzzer_volume: &Option<SharedBuzzerVolumeHandle>,
+        display_lines: &Option<SharedDisplayLinesHandle>,
         buzzer_priority: &Option<Arc<crate::libs::buzzer::BuzzerPriorityManager>>,
         led_brightness_tracker: &std::sync::Arc<std::sync::atomic::AtomicU8>,
         lorawan_state_slot: &std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
@@ -2412,13 +3283,14 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::RestartApplication { reason } => {
-                eprintln!("[MQTT Monitor] Device reboot requested: {}", reason);
-                std::process::Command::new("reboot")
-                    .spawn()
-                    .map_err(|e| format!("Failed to execute reboot: {}", e))?;
-                Ok(())
-            }
+            MqttCommand::RestartApplication {
+                reason,
+                requested_by,
+            } => Self::execute_teardown("reboot", "REBOOT", reason, requested_by, storage_handle),
+            MqttCommand::PowerOffDevice {
+                reason,
+                requested_by,
+            } => Self::execute_standby(reason, requested_by, storage_handle, stm_bridge),
             MqttCommand::SetInterval {
                 sample_interval_ms,
                 aggregation_interval_ms,
@@ -2543,6 +3415,33 @@ impl MqttMonitor {
                 } else {
                     Err("Buzzer volume control not available".to_string())
                 }
+            }
+            MqttCommand::SetDisplayLines { lines } => {
+                // Persist first: the on-disk config is the source of truth that
+                // survives a reboot and that the display thread reconciles
+                // against. Only mirror into the live handle once the write
+                // succeeded, so a failed write can't leave the panel showing a
+                // layout that isn't saved anywhere.
+                let Some(applier) = config_applier else {
+                    return Err("Config applier not initialized".to_string());
+                };
+                let result = applier.apply_display_custom_lines(lines.clone());
+                if !result.success {
+                    return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                }
+                if let Some(handle) = display_lines.as_ref() {
+                    // Poison-recovering: a skipped write here would silently
+                    // leave the panel on the old layout until the display
+                    // thread's next reconcile, or forever if it also can't
+                    // write. The config on disk is already the new one.
+                    *crate::libs::display::supervise::write_recover(handle) = lines.clone();
+                }
+                if lines.is_empty() {
+                    eprintln!("[MQTT Monitor] ✓ Display lines cleared (built-in layout restored)");
+                } else {
+                    eprintln!("[MQTT Monitor] ✓ Display lines updated ({} lines)", lines.len());
+                }
+                Ok(())
             }
             MqttCommand::SilenceBuzzer => {
                 if let Some(bp) = &buzzer_priority {
@@ -2795,6 +3694,24 @@ impl MqttMonitor {
                 if !crate::libs::eye::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
+                // Persist the recording on/off + interval FIRST, so interval 0 =
+                // off survives a restart and the gap/fallback sync stops queueing
+                // downloads (which would otherwise re-START_RECORD the tag) — H1.
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_recording(mac.clone(), interval_min);
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so the running loop's
+                    // recording_on_for() updates without a restart.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_recording(&mac, interval_min);
+                        }
+                    }
+                } else {
+                    return Err("Config applier not initialized".to_string());
+                }
                 if crate::libs::eye::state::queue_eye_command(
                     crate::libs::eye::state::EyeCommand::SetRecording {
                         mac: mac.clone(),
@@ -2820,6 +3737,145 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
+            MqttCommand::SetEyeKnownTags { macs } => {
+                // Held in memory only, never written to fiber.config.yaml: the
+                // server re-pushes the union on every connect (the topic is
+                // retained), and persisting it would blur the line between "this
+                // gateway owns the tag" and "the fleet knows about it".
+                let n = crate::libs::eye::state::set_eye_known_tags(macs);
+                eprintln!("[MQTT Monitor] EYE fleet allowlist set: {n} MAC(s)");
+                Ok(())
+            }
+            MqttCommand::AddEyeTag { mac, name } => {
+                // Persist the tag into `eye.tags[]` so it is tracked/named
+                // explicitly (auto-provisioning still discovers unknown tags).
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_tag_config(mac.clone(), name.clone());
+                    if result.success {
+                        // Reflect the change in the monitor's live config so the
+                        // scan loop starts tracking the new tag without a restart.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.upsert_tag(&mac, name.as_deref());
+                            }
+                        }
+                        // Seed in-memory state so the tag shows up before its
+                        // first advertisement is parsed (uppercase key, matching
+                        // the scan loop and remove path).
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                let entry = s.entry(&mac.to_uppercase(), name.clone());
+                                // entry() ignores `name` for an existing tag, so a
+                                // rename must be applied explicitly (only when given).
+                                if let Some(n) = name {
+                                    entry.name = Some(n);
+                                }
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::RemoveEyeTag { mac } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.remove_eye_tag_config(mac.clone());
+                    if result.success {
+                        // Drop it from the live config too, so the scan loop stops
+                        // tracking it and cannot resurrect it on the next advert.
+                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                            if let Ok(mut c) = cfg.write() {
+                                c.remove_tag(&mac);
+                            }
+                        }
+                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                            if let Ok(mut s) = handle.write() {
+                                s.tags.remove(&mac.to_uppercase());
+                            }
+                        }
+                        eprintln!("[MQTT Monitor] ✓ EYE tag {mac} removed from config");
+                        Ok(())
+                    } else {
+                        Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+                    }
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DetectEyeTag { mac } => {
+                // Detection runs over raw L2CAP GATT, which must not overlap the
+                // active BLE scan — hand off to the EYE monitor via the queue.
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if crate::libs::eye::state::queue_eye_command(
+                    crate::libs::eye::state::EyeCommand::Detect { mac: mac.clone() },
+                ) {
+                    eprintln!("[MQTT Monitor] Queued EYE detect {mac}");
+                    Ok(())
+                } else {
+                    Err("EYE monitor not running".to_string())
+                }
+            }
+            MqttCommand::SetEyeFieldThreshold {
+                mac, field, critical_low, warning_low, warning_high, critical_high,
+            } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_eye_field_threshold(
+                        mac.clone(), field.clone(),
+                        critical_low, warning_low, warning_high, critical_high,
+                    );
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    // Reflect in the live config so evaluate_alarms uses it next tick.
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.set_field_threshold(&mac, crate::libs::config::FieldThreshold {
+                                field: field.clone(),
+                                critical_low, warning_low, warning_high, critical_high,
+                            });
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold set for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } => {
+                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    return Err(format!("Invalid MAC address: {mac}"));
+                }
+                if let Some(applier) = config_applier {
+                    let result = applier.delete_eye_field_threshold(mac.clone(), field.clone());
+                    if !result.success {
+                        return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
+                    }
+                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Ok(mut c) = cfg.write() {
+                            c.remove_field_threshold(&mac, &field);
+                        }
+                    }
+                    eprintln!("[MQTT Monitor] ✓ EYE threshold deleted for {mac} field {field}");
+                    Ok(())
+                } else {
+                    Err("Config applier not initialized".to_string())
+                }
+            }
             MqttCommand::ResetExportCursor { broker_id, stream } => {
                 // The reset is two-phase:
                 //   1. Persisted SQLite cursor → storage handle (so a restart
@@ -2834,7 +3890,11 @@ impl MqttMonitor {
                 let export_handle = export_handle_slot.lock().ok().and_then(|g| g.clone());
                 let single = [stream.as_str()];
                 let streams_to_reset: &[&str] = if stream == "all" {
-                    &["sticker", "probe", "probe_1m", "alarm"]
+                    // Must stay in step with `Stream::as_str` / `default_streams()`.
+                    // "eye" was missing here, so "reset all cursors" quietly
+                    // skipped the one stream an operator is most likely to be
+                    // resetting after a history gap.
+                    &["sticker", "probe", "probe_1m", "alarm", "eye"]
                 } else {
                     &single
                 };
@@ -3382,5 +4442,156 @@ mod tests {
         };
         let result = configure_tls_transport(&tls);
         assert!(result.is_ok(), "Should succeed loading CA, client cert, and key files: {:?}", result.err());
+    }
+
+    #[cfg(feature = "dev-platform")]
+    #[test]
+    fn test_build_dev_command_eye_arms() {
+        use serde_json::json;
+
+        // add_eye_tag: MAC uppercased, name preserved
+        match MqttMonitor::build_dev_command(
+            "add_eye_tag",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::AddEyeTag { mac, name } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(name.as_deref(), Some("Freezer"));
+            }
+            other => panic!("expected AddEyeTag, got {other:?}"),
+        }
+
+        // add_eye_tag: empty name -> None
+        assert!(matches!(
+            MqttMonitor::build_dev_command(
+                "add_eye_tag",
+                &json!({"mac": "AA:BB:CC:DD:EE:FF", "name": ""}),
+                &None,
+            )
+            .unwrap(),
+            MqttCommand::AddEyeTag { name: None, .. }
+        ));
+
+        // remove_eye_tag / detect_eye_tag uppercase the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("remove_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::RemoveEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("detect_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DetectEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set_eye_recording: valid interval accepted, 0 = off accepted, invalid rejected
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 5}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 5, .. }
+        ));
+        assert!(matches!(
+            MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 0}), &None).unwrap(),
+            MqttCommand::SetEyeRecording { interval_min: 0, .. }
+        ));
+        assert!(MqttMonitor::build_dev_command("set_eye_recording", &json!({"mac": "AA:BB:CC:DD:EE:FF", "interval_min": 7}), &None).is_err());
+
+        // download_eye_history uppercases the MAC
+        assert!(matches!(
+            MqttMonitor::build_dev_command("download_eye_history", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
+            MqttCommand::DownloadEyeHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
+        ));
+
+        // set/delete_eye_field_threshold: MAC uppercased, field + bounds parsed
+        match MqttMonitor::build_dev_command(
+            "set_eye_field_threshold",
+            &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "battery", "warning_low": 2700.0, "critical_low": 2400.0}),
+            &None,
+        )
+        .unwrap()
+        {
+            MqttCommand::SetEyeFieldThreshold { mac, field, warning_low, critical_low, .. } => {
+                assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(field, "battery");
+                assert_eq!(warning_low, Some(2700.0));
+                assert_eq!(critical_low, Some(2400.0));
+            }
+            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+        }
+        assert!(matches!(
+            MqttMonitor::build_dev_command("delete_eye_field_threshold", &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "movement"}), &None).unwrap(),
+            MqttCommand::DeleteEyeFieldThreshold { mac, field } if mac == "AA:BB:CC:DD:EE:FF" && field == "movement"
+        ));
+
+        // malformed MAC rejected
+        assert!(MqttMonitor::build_dev_command("add_eye_tag", &json!({"mac": "not-a-mac"}), &None).is_err());
+    }
+
+    #[test]
+    fn power_off_is_not_a_teardown_command() {
+        // Teardown classification decides whether the SUCCESS ack is published
+        // BEFORE execution. A power-off used to halt the SoC, so it had to ack
+        // first — the ack would otherwise queue behind a halt that never lets the
+        // event loop run again. Now it enters standby: the process and the MQTT
+        // connection both survive, and it can legitimately refuse (a standby it
+        // cannot persist must not happen). So it must be acked from its real
+        // result, or a device that stayed up monitoring would report itself off.
+        assert!(!MqttMonitor::is_teardown_command(&MqttCommand::PowerOffDevice {
+            reason: "decommissioned".to_string(),
+            requested_by: "dr.jane@hospital.eu".to_string(),
+        }));
+
+        // The genuine teardowns must stay classified.
+        assert!(MqttMonitor::is_teardown_command(&MqttCommand::RestartApplication {
+            reason: "r".to_string(),
+            requested_by: "dr.jane@hospital.eu".to_string(),
+        }));
+
+        // And an ordinary config change must NOT be, or it would be acked
+        // optimistically before anyone knows whether it applied.
+        assert!(!MqttMonitor::is_teardown_command(&MqttCommand::SetLedBrightness {
+            brightness: 50,
+        }));
+    }
+
+    #[test]
+    fn confirm_response_message_reports_execution_result() {
+        let make = || MqttMessage::PublishConfigResponse {
+            challenge_id: "chal-1".to_string(),
+            request_id: "req-1".to_string(),
+            status: "SUCCESS".to_string(),
+            applied_at: Some(123),
+            effective_at: Some(123),
+            message: "Configuration applied: set_led_brightness".to_string(),
+        };
+
+        // Ok -> the pre-built SUCCESS response passes through unchanged.
+        match MqttMonitor::confirm_response_message(Ok(()), make()) {
+            MqttMessage::PublishConfigResponse { status, applied_at, .. } => {
+                assert_eq!(status, "SUCCESS");
+                assert_eq!(applied_at, Some(123));
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
+
+        // Err -> ERROR response, same ids, nulled timestamps, error in message.
+        match MqttMonitor::confirm_response_message(Err("boom".to_string()), make()) {
+            MqttMessage::PublishConfigResponse {
+                challenge_id,
+                request_id,
+                status,
+                applied_at,
+                effective_at,
+                message,
+            } => {
+                assert_eq!(challenge_id, "chal-1");
+                assert_eq!(request_id, "req-1");
+                assert_eq!(status, "ERROR");
+                assert_eq!(applied_at, None);
+                assert_eq!(effective_at, None);
+                assert!(message.contains("boom"), "message was: {message}");
+            }
+            _ => panic!("expected PublishConfigResponse"),
+        }
     }
 }

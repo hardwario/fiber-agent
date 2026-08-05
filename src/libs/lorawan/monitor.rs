@@ -24,8 +24,10 @@ use crate::libs::storage::StorageHandle;
 use super::chirpstack;
 use super::detector;
 use super::state::{SharedLoRaWANState, create_shared_lorawan_state};
+use super::sticker_config;
 use super::sticker_proto::Command;
-use super::sticker_response::{decode_response, DecodedResponse};
+use super::sticker_reassembly;
+use super::sticker_response::{decode_response, DecodedResponse, ResponseKind};
 
 /// A downlink command queued by a `LoRaWANHandle`, picked up and published by
 /// the monitor loop, which then correlates the fPort-85 `Response` back by seq.
@@ -88,9 +90,27 @@ impl LoRaWANHandle {
                 multi: false,
             })
             .map_err(|_| "LoRaWAN monitor not running".to_string())?;
-        resp_rx
-            .recv_timeout(timeout)
-            .map_err(|_| format!("no fPort-85 response for seq {seq} within {timeout:?}"))
+        // Distinguish "the device did not answer" from "we never asked". A
+        // dropped `resp_tx` disconnects the channel and `recv_timeout` returns
+        // immediately — collapsing both into the timeout wording made a failure
+        // that happens in microseconds report as though it had waited the full
+        // 180 s, and hid the only actionable part: the reason.
+        //
+        // The reason is almost always that the monitor has no application id yet.
+        // It is learned from an uplink topic, so for up to one reporting interval
+        // after a gateway restart no downlink can be addressed at all — measured
+        // on FIBER-CE3D59F8, a read fired 44 s after a restart failed this way
+        // while the sticker's interval_report was 120 s.
+        resp_rx.recv_timeout(timeout).map_err(|e| match e {
+            crossbeam::channel::RecvTimeoutError::Timeout => {
+                format!("no fPort-85 response for seq {seq} within {timeout:?}")
+            }
+            crossbeam::channel::RecvTimeoutError::Disconnected => format!(
+                "seq {seq} was never sent: the gateway cannot address a downlink to \
+                 this device yet (no uplink seen since the last restart, so the \
+                 ChirpStack application id is unknown) — retry after its next report"
+            ),
+        })
     }
 
     /// Send a downlink `Command` and collect a multi-response reply whose pages
@@ -346,6 +366,21 @@ fn lorawan_loop(
         let mut pending_multi: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
         let mut last_app_id: Option<String> = None;
 
+        // Multi-frame telemetry reassembly (#64). Declared alongside the pending
+        // maps so it survives MQTT reconnects for the same reason they do — but
+        // unlike them it is drained on reconnect, because a partial report held
+        // across a gap would otherwise be merged with frames from a later one.
+        let mut assembler = sticker_reassembly::FrameAssembler::default();
+        if config.sensor_timeout_s < 4 * assembler.idle_window().as_secs() {
+            eprintln!(
+                "[LoRaWAN Monitor] WARNING: sensor_timeout_s={} is close to the {}s telemetry \
+                 reassembly window; last_seen lags by up to one window, so stickers may flap \
+                 to Disconnected",
+                config.sensor_timeout_s,
+                assembler.idle_window().as_secs()
+            );
+        }
+
         loop {
             if shutdown_flag.load(Ordering::Relaxed) {
                 break;
@@ -527,6 +562,47 @@ fn lorawan_loop(
                                         if tx.send(resp).is_ok() {
                                             pending_multi.insert(seq, tx);
                                         }
+                                    } else if seq == 0 {
+                                        // seq 0 is reserved for responses the device
+                                        // sends on its own initiative, so there is
+                                        // never a pending waiter for one. Two things
+                                        // arrive here:
+                                        //   * the Info the sticker emits as its first
+                                        //     uplink after EVERY join
+                                        //     (app_cmd_build_info sets seq = 0), and
+                                        //   * the deferred Info answering an
+                                        //     empty-body clock_sync, once network
+                                        //     time lands (app_lrw.c:1375-1378).
+                                        // Both are exactly the device info we would
+                                        // otherwise have to spend a downlink asking
+                                        // for, so capture them instead of logging and
+                                        // dropping. This is what keeps the retained
+                                        // /info topic fresh across reboots with no
+                                        // operator action.
+                                        match &resp.kind {
+                                            ResponseKind::Info(info) => {
+                                                eprintln!(
+                                                    "[LoRaWAN Monitor] captured unsolicited Info from {} (fw {}, uptime {}s)",
+                                                    dev_eui, info.fw_version, info.uptime_s
+                                                );
+                                                let _ = mqtt_tx.try_send(
+                                                    MqttMessage::PublishStickerInfo {
+                                                        info: sticker_config::info_to_json(
+                                                            info,
+                                                            &dev_eui,
+                                                            "unsolicited",
+                                                            0,
+                                                            &crate::libs::mqtt::publisher::MqttPublisher::timestamp(),
+                                                        ),
+                                                        dev_eui: dev_eui.clone(),
+                                                    },
+                                                );
+                                            }
+                                            other => eprintln!(
+                                                "[LoRaWAN Monitor] unsolicited fPort-85 response from {} (seq=0): {:?}",
+                                                dev_eui, other
+                                            ),
+                                        }
                                     } else {
                                         eprintln!(
                                             "[LoRaWAN Monitor] fPort-85 response from {} (unmatched seq={}): {:?}",
@@ -551,74 +627,33 @@ fn lorawan_loop(
                                     reading.rssi,
                                 );
 
-                                // Save-and-feed: persist every uplink BEFORE live publish
-                                // so the firmware DB is the authoritative store for the
-                                // sticker stream and downstream destinations can replay
-                                // from it via the export drain loop.
-                                let now_ts = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64;
-                                let message_id = chirpstack::message_id_for(&reading, now_ts);
-                                let epoch = storage
-                                    .get_provisioning_epoch(reading.dev_eui.clone())
-                                    .unwrap_or(1);
-                                let payload_json = serde_json::to_string(&serde_json::json!({
-                                    "fields":      reading.fields,
-                                    "counters":    reading.counters,
-                                    "events":      reading.events,
-                                    "rssi":        reading.rssi,
-                                    "snr":         reading.snr,
-                                    "received_at": reading.received_at,
-                                    "device_name": reading.device_name,
-                                }))
-                                .unwrap_or_else(|_| "{}".to_string());
-                                let _ = storage.write_sticker_reading(
-                                    reading.dev_eui.clone(),
-                                    epoch,
-                                    now_ts,
-                                    now_ts,
-                                    message_id,
-                                    "uplink".to_string(),
-                                    payload_json,
-                                );
-
-                                // Auto-backfill (#43): a STICKER buffers its samples
-                                // while off the air; when it reappears after an outage,
-                                // pull that gap over fPort 85 without operator action.
-                                // Read the PREVIOUS last_seen before update_sensor
-                                // overwrites it, so the window is [was_last_seen, now].
-                                let prev_last_seen = state
-                                    .read()
-                                    .ok()
-                                    .and_then(|s| {
-                                        s.sensors
-                                            .get(&reading.dev_eui)
-                                            .and_then(|se| se.last_seen.clone())
-                                    })
-                                    .and_then(|ls| {
-                                        chrono::DateTime::parse_from_rfc3339(&ls)
-                                            .ok()
-                                            .map(|dt| dt.timestamp())
-                                    });
-                                if let Some((from_unix, to_unix)) =
-                                    auto_backfill_window(prev_last_seen, now_ts, config.sensor_timeout_s)
-                                {
-                                    eprintln!(
-                                        "[LoRaWAN Monitor] sticker {} back after outage; auto-backfill {}..{}",
-                                        reading.dev_eui, from_unix, to_unix
+                                // fPort-2 telemetry can be one report split across
+                                // several frames (#64), so it goes through the
+                                // assembler. Everything else — fPort-3 alarms and the
+                                // legacy `object` path — has no snapshot semantics and
+                                // must bypass it, or its timestamp and message_id would
+                                // be re-anchored onto an unrelated telemetry report.
+                                let completed: Vec<sticker_reassembly::Reassembled> =
+                                    if reading.fport == Some(2) {
+                                        assembler.admit(reading, Instant::now())
+                                    } else {
+                                        vec![sticker_reassembly::Reassembled {
+                                            reading,
+                                            frames: 1,
+                                            fcnt_first: None,
+                                            fcnt_last: None,
+                                            closed_by: sticker_reassembly::ClosedBy::Drain,
+                                        }]
+                                    };
+                                for done in completed {
+                                    handle_telemetry_reading(
+                                        done,
+                                        &storage,
+                                        &state,
+                                        &config,
+                                        &self_handle,
+                                        &mqtt_tx,
                                     );
-                                    spawn_auto_backfill(
-                                        self_handle.clone(),
-                                        mqtt_tx.clone(),
-                                        reading.dev_eui.clone(),
-                                        from_unix,
-                                        to_unix,
-                                    );
-                                }
-
-                                if let Ok(mut s) = state.write() {
-                                    s.update_sensor(&reading);
                                 }
                             }
                             Ok(None) => {
@@ -636,11 +671,26 @@ fn lorawan_loop(
                     }
                     Ok(Err(e)) => {
                         eprintln!("[LoRaWAN Monitor] Connection error: {}", e);
+                        // Flush partial reports before the gap: holding one across a
+                        // reconnect would merge it with a later report's frames.
+                        for done in assembler.drain_all() {
+                            handle_telemetry_reading(
+                                done, &storage, &state, &config, &self_handle, &mqtt_tx,
+                            );
+                        }
                         break; // Reconnect
                     }
                     Err(_) => {
                         // Timeout - check timeouts and publish if needed
                     }
+                }
+
+                // Close out any report whose frames have stopped arriving. The poll
+                // timeout is 1 s, so expiry resolution is about a second.
+                for done in assembler.tick(Instant::now()) {
+                    handle_telemetry_reading(
+                        done, &storage, &state, &config, &self_handle, &mqtt_tx,
+                    );
                 }
 
                 // Check sensor timeouts and evaluate alarms
@@ -662,16 +712,33 @@ fn lorawan_loop(
                 // Notify the buzzer priority manager only on transitions to avoid log
                 // spam. On NEW critical transitions (off→on), also clear the 30-min
                 // button silence so the user hears the new alarm.
-                if let Some(ref pm) = buzzer_priority_manager {
-                    if any_sticker_critical != prev_any_sticker_critical {
-                        if any_sticker_critical {
-                            // off → on transition: break button silence (same as sensors do).
-                            pm.on_new_sensor_alarm();
+                //
+                // In standby the flag is held clear instead. It latches exactly like
+                // the sensor one, so a device switched off while a STICKER was
+                // critical would otherwise keep beeping on a dark, silent-looking
+                // unit — and no readings are being persisted there, so the state it
+                // was asserting is stale anyway. Forcing the tracker to false is
+                // what re-arms the edge, so a resume re-asserts if it is still
+                // critical.
+                if crate::libs::power::standby::is_standby() {
+                    if prev_any_sticker_critical {
+                        if let Some(ref pm) = buzzer_priority_manager {
+                            pm.set_sticker_critical(false);
                         }
-                        pm.set_sticker_critical(any_sticker_critical);
+                        prev_any_sticker_critical = false;
                     }
+                } else {
+                    if let Some(ref pm) = buzzer_priority_manager {
+                        if any_sticker_critical != prev_any_sticker_critical {
+                            if any_sticker_critical {
+                                // off → on transition: break button silence (same as sensors do).
+                                pm.on_new_sensor_alarm();
+                            }
+                            pm.set_sticker_critical(any_sticker_critical);
+                        }
+                    }
+                    prev_any_sticker_critical = any_sticker_critical;
                 }
-                prev_any_sticker_critical = any_sticker_critical;
 
                 // Publish sensor data periodically
                 if last_publish.elapsed() >= publish_interval {
@@ -700,6 +767,25 @@ const AUTO_BACKFILL_TIMEOUT: Duration = Duration::from_secs(180);
 /// (`< offline_threshold_s`) — i.e. the device never actually went away, so
 /// there is nothing buffered to fetch. A backwards clock also yields `None`.
 ///
+/// `auto_backfill_window`, suppressed entirely when the gateway is not the one
+/// doing backfill.
+///
+/// The PROXIMOS viewer grew its own reconnect trigger (application#43) that
+/// fires on the same event. With both enabled the same outage window is
+/// replayed twice over the air, which is the airtime waste the viewer's job
+/// queue exists to avoid — so a deployment picks one owner.
+fn auto_backfill_window_if_enabled(
+    enabled: bool,
+    prev_last_seen: Option<i64>,
+    now: i64,
+    offline_threshold_s: u64,
+) -> Option<(u32, u32)> {
+    if !enabled {
+        return None;
+    }
+    auto_backfill_window(prev_last_seen, now, offline_threshold_s)
+}
+
 /// Self-guarding by design: `update_sensor` advances `last_seen` to `now` right
 /// after this check, so the next uplink sees a small gap and does not re-trigger
 /// — one backfill per outage.
@@ -780,7 +866,29 @@ fn spawn_auto_backfill(
 
 #[cfg(test)]
 mod auto_backfill_tests {
-    use super::auto_backfill_window;
+    use super::{auto_backfill_window, auto_backfill_window_if_enabled};
+
+    #[test]
+    fn disabled_suppresses_the_gateway_trigger() {
+        // Same inputs that normally yield a window; the flag alone must stop it,
+        // so a deployment where the viewer owns backfill does not replay twice.
+        assert_eq!(
+            auto_backfill_window_if_enabled(false, Some(1000), 5000, 300),
+            None
+        );
+    }
+
+    #[test]
+    fn enabled_behaves_exactly_as_before() {
+        assert_eq!(
+            auto_backfill_window_if_enabled(true, Some(1000), 5000, 300),
+            auto_backfill_window(Some(1000), 5000, 300)
+        );
+        assert_eq!(
+            auto_backfill_window_if_enabled(true, None, 1000, 300),
+            None
+        );
+    }
 
     #[test]
     fn none_on_first_contact() {
@@ -808,6 +916,116 @@ mod auto_backfill_tests {
     fn boundary_gap_equal_threshold_triggers() {
         // gap == threshold counts as an outage (>= threshold).
         assert_eq!(auto_backfill_window(Some(1000), 1300, 300), Some((1000, 1300)));
+    }
+}
+
+/// Persist one completed telemetry report, trigger auto-backfill if the device
+/// was away, and update the live state. Extracted from the monitor loop so
+/// multi-frame reassembly could be inserted in front of it without restructuring
+/// the persist path.
+///
+/// A merged report anchors its `message_id` and `fCnt` on the **first** frame, so
+/// the row it writes is byte-identical to the one frame 0 would have written on
+/// its own — which is what keeps `sticker_readings.message_id` UNIQUE safe against
+/// rows already in the database.
+fn handle_telemetry_reading(
+    done: sticker_reassembly::Reassembled,
+    storage: &StorageHandle,
+    state: &SharedLoRaWANState,
+    config: &LoRaWANConfig,
+    self_handle: &LoRaWANHandle,
+    mqtt_tx: &Sender<MqttMessage>,
+) {
+    // A device the operator has switched off must not keep recording patients.
+    // STICKER readings arrive over the network rather than from this board's own
+    // sensors, so nothing else in the standby path stops them: without this a
+    // device reporting itself off would go on writing rows to the medical
+    // database. Dropped rather than queued — the gap is real and the audit row
+    // for the power-off is what explains it.
+    if crate::libs::power::standby::is_standby() {
+        return;
+    }
+
+    let reading = &done.reading;
+    if done.was_split() {
+        eprintln!(
+            "[LoRaWAN Monitor] reassembled {} frames from {} into one snapshot ({} fields, closed_by={})",
+            done.frames,
+            reading.dev_eui,
+            reading.fields.len(),
+            done.closed_by.as_str(),
+        );
+    }
+
+    // Save-and-feed: persist every uplink BEFORE live publish so the firmware DB
+    // is the authoritative store for the sticker stream and downstream
+    // destinations can replay from it via the export drain loop.
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let message_id = chirpstack::message_id_for(reading, now_ts);
+    let epoch = storage.get_provisioning_epoch(reading.dev_eui.clone()).unwrap_or(1);
+    // `reassembly` records how this snapshot was formed. It lives in the payload
+    // envelope rather than in `counters`, which the viewer renders as sensor
+    // counters — and it is here because the merge is heuristic (the wire carries no
+    // frame index), so the provenance belongs with the data.
+    let payload_json = serde_json::to_string(&serde_json::json!({
+        "fields":      reading.fields,
+        "counters":    reading.counters,
+        "events":      reading.events,
+        "rssi":        reading.rssi,
+        "snr":         reading.snr,
+        "received_at": reading.received_at,
+        "device_name": reading.device_name,
+        "reassembly":  {
+            "frames":      done.frames,
+            "fcnt_first":  done.fcnt_first,
+            "fcnt_last":   done.fcnt_last,
+            "closed_by":   done.closed_by.as_str(),
+        },
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
+    let _ = storage.write_sticker_reading(
+        reading.dev_eui.clone(),
+        epoch,
+        now_ts,
+        now_ts,
+        message_id,
+        "uplink".to_string(),
+        payload_json,
+    );
+
+    // Auto-backfill (#43): a STICKER buffers its samples while off the air; when it
+    // reappears after an outage, pull that gap over fPort 85 without operator
+    // action. Read the PREVIOUS last_seen before update_sensor overwrites it, so
+    // the window is [was_last_seen, now].
+    let prev_last_seen = state
+        .read()
+        .ok()
+        .and_then(|s| s.sensors.get(&reading.dev_eui).and_then(|se| se.last_seen.clone()))
+        .and_then(|ls| chrono::DateTime::parse_from_rfc3339(&ls).ok().map(|dt| dt.timestamp()));
+    if let Some((from_unix, to_unix)) = auto_backfill_window_if_enabled(
+        config.history_backfill_enabled,
+        prev_last_seen,
+        now_ts,
+        config.sensor_timeout_s,
+    ) {
+        eprintln!(
+            "[LoRaWAN Monitor] sticker {} back after outage; auto-backfill {}..{}",
+            reading.dev_eui, from_unix, to_unix
+        );
+        spawn_auto_backfill(
+            self_handle.clone(),
+            mqtt_tx.clone(),
+            reading.dev_eui.clone(),
+            from_unix,
+            to_unix,
+        );
+    }
+
+    if let Ok(mut s) = state.write() {
+        s.update_sensor(reading);
     }
 }
 

@@ -50,7 +50,9 @@ impl LoRaWANAlarmState {
     }
 }
 
-fn evaluate_threshold(
+/// Classify a value against optional 4-level bounds. Shared with the EYE tag
+/// alarm path (`eye::state::EyeTagState::evaluate_alarms`).
+pub(crate) fn evaluate_threshold(
     value: f64,
     critical_low: Option<f64>,
     warning_low: Option<f64>,
@@ -258,6 +260,7 @@ mod tests {
             rssi: Some(-80),
             snr: Some(7.0),
             received_at: "2026-05-12T10:00:00Z".into(),
+            fport: Some(2),
         }
     }
 

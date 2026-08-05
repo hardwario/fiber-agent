@@ -86,6 +86,17 @@ impl TopicBuilder {
         self.build(&["power", "events", "dc_loss"])
     }
 
+    /// Retained standby state — see
+    /// [`super::publisher::MqttPublisher::publish_standby_state`].
+    pub fn power_standby(&self) -> String {
+        self.build(&["power", "standby"])
+    }
+
+    /// One-off standby/resume transition.
+    pub fn power_events_standby(&self) -> String {
+        self.build(&["power", "events", "standby"])
+    }
+
     // Network topics
     pub fn network_status(&self) -> String {
         self.build(&["network", "status"])
@@ -191,14 +202,44 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors", dev_eui, "config"])
     }
 
+    /// Per-sticker full non-secret config read-back — every readable key, not
+    /// just the settable ones. Deliberately a separate topic from `config`: a
+    /// Feature-C write publishes to `config`, and if the wide read shared that
+    /// topic each write would clobber the read-only snapshot the drawer renders.
+    /// Not retained, for the same reason `config` is not.
+    pub fn lorawan_sensor_full_config(&self, dev_eui: &str) -> String {
+        self.build(&["lorawan", "sensors", dev_eui, "full-config"])
+    }
+
     /// Per-sticker fPort-85 history page (Feature D).
     pub fn lorawan_sensor_history(&self, dev_eui: &str) -> String {
         self.build(&["lorawan", "sensors", dev_eui, "history"])
     }
 
+    /// Per-sticker fPort-85 device info (`GetInfo`, #65). Published **retained**:
+    /// it is the device's identity and last-known health, and a sticker only
+    /// speaks every `interval_report` (900 s by default), so a reconnecting
+    /// viewer must be able to render a firmware version without waiting for an
+    /// operator to re-query. Contrast `lorawan_sensor_config`, which is the answer
+    /// to one specific query and is deliberately not retained.
+    pub fn lorawan_sensor_info(&self, dev_eui: &str) -> String {
+        self.build(&["lorawan", "sensors", dev_eui, "info"])
+    }
+
+    /// Per-sticker control-command outcome (#71). **Not** retained: it is the
+    /// result of one operator action, and a replayed copy would read as a fresh
+    /// command to a reconnecting viewer.
+    pub fn lorawan_sensor_command(&self, dev_eui: &str) -> String {
+        self.build(&["lorawan", "sensors", dev_eui, "command"])
+    }
+
     // EYE BLE tag topics
     pub fn eye_sensors(&self) -> String {
         self.build(&["eye", "sensors"])
+    }
+
+    pub fn eye_detect(&self) -> String {
+        self.build(&["eye", "detect"])
     }
 
     // Error topic
@@ -254,6 +295,20 @@ mod tests {
         assert_eq!(
             builder.lorawan_sensor_history("0102030405060708"),
             "fiber/DEVICE001/lorawan/sensors/0102030405060708/history"
+        );
+        // The viewer distinguishes these by suffix, so "/info" must not collide
+        // with "/config" or "/history".
+        assert_eq!(
+            builder.lorawan_sensor_info("0102030405060708"),
+            "fiber/DEVICE001/lorawan/sensors/0102030405060708/info"
+        );
+        // The wide read gets its own topic so a Feature-C write to "/config"
+        // cannot clobber the read-only snapshot. Note the hyphen: the viewer
+        // routes on `topic.endswith("/full-config")`, and an underscore here
+        // would silently fall through to the generic sensors branch.
+        assert_eq!(
+            builder.lorawan_sensor_full_config("0102030405060708"),
+            "fiber/DEVICE001/lorawan/sensors/0102030405060708/full-config"
         );
     }
 

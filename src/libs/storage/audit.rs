@@ -332,9 +332,23 @@ mod tests {
     use super::*;
     use crate::libs::storage::db::Database;
 
+    /// A DB on a private temp path. Fixed paths under /tmp are not safe here:
+    /// AuthorizationManager's test helper opens /tmp/test_audit.db with a bare
+    /// Connection::open (no PRAGMA key), so it leaves a *plaintext* file behind,
+    /// and this module then failed to reopen it with "file is not a database"
+    /// whenever a key existed at /data/fiber/config/db_encryption.key — i.e.
+    /// only when the suite ran as root, which is why CI failed and dev boxes
+    /// did not. The TempDir also takes the -wal/-shm sidecars with it, which
+    /// remove_file(path) never did.
+    fn test_db(name: &str) -> (tempfile::TempDir, Database) {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let db = Database::new(dir.path().join(name), 5).expect("Failed to create test DB");
+        (dir, db)
+    }
+
     #[test]
     fn test_log_operation() {
-        let db = Database::new("/tmp/test_audit.db", 5).expect("Failed to create test DB");
+        let (_dir, db) = test_db("audit.db");
         let conn = db.connect().expect("Failed to connect");
 
         let result = AuditLogger::log_operation(&conn, "TEST_OP", Some("test_table"), Some(10), Some(5));
@@ -343,13 +357,11 @@ mod tests {
         // Verify it was logged
         let count = AuditLogger::audit_log_count(&conn).expect("Failed to count");
         assert!(count > 0);
-
-        let _ = std::fs::remove_file("/tmp/test_audit.db");
     }
 
     #[test]
     fn test_log_error() {
-        let db = Database::new("/tmp/test_audit_error.db", 5).expect("Failed to create test DB");
+        let (_dir, db) = test_db("audit_error.db");
         let conn = db.connect().expect("Failed to connect");
 
         let result =
@@ -365,7 +377,5 @@ mod tests {
         let errors = AuditLogger::query_errors(&conn, now - 100, now + 100, 10).expect("Failed to query");
         assert!(!errors.is_empty());
         assert!(errors[0].error_msg.is_some());
-
-        let _ = std::fs::remove_file("/tmp/test_audit_error.db");
     }
 }
