@@ -1,7 +1,7 @@
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle, Circle};
 use embedded_graphics::draw_target::DrawTarget;
 use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Circle, Line, PrimitiveStyle, Rectangle};
 
 use crate::libs::network::status::NetworkStatus;
 
@@ -9,12 +9,7 @@ use crate::libs::network::status::NetworkStatus;
 
 /// Draw network connection status icon
 /// Returns the width of the drawn icon for layout calculations
-pub fn draw_network_status<D>(
-    display: &mut D,
-    x: i32,
-    y: i32,
-    status: &NetworkStatus,
-) -> u32
+pub fn draw_network_status<D>(display: &mut D, x: i32, y: i32, status: &NetworkStatus) -> u32
 where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
@@ -36,7 +31,7 @@ where
         }
         11 // width of the Wi-Fi bitmap below
     } else {
-        draw_no_connection(display, x, y+1);
+        draw_no_connection(display, x, y + 1);
         11 // width of the X bitmap
     }
 }
@@ -75,26 +70,21 @@ const WIFI_WEAK_BITMAP: [[u8; 11]; 7] = [
     [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
 ];
 
-
 // NO CONNECTION BITMAP – X SYMBOL
 
 const NO_CONNECTION_BITMAP: [[u8; 11]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  
-    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0], 
-    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], 
-    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],  
-    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],  
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ];
 
 // Generic helper to draw any of the bitmaps above
-fn draw_wifi_bitmap<D>(
-    display: &mut D,
-    x: i32,
-    y: i32,
-    bitmap: &[[u8; 11]; 7],
-) where
+fn draw_wifi_bitmap<D>(display: &mut D, x: i32, y: i32, bitmap: &[[u8; 11]; 7])
+where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
@@ -147,7 +137,7 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y+1, &WIFI_STRONG_BITMAP);
+    draw_wifi_bitmap(display, x, y + 1, &WIFI_STRONG_BITMAP);
 }
 
 fn draw_wifi_medium<D>(display: &mut D, x: i32, y: i32)
@@ -155,7 +145,7 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y+1, &WIFI_MEDIUM_BITMAP);
+    draw_wifi_bitmap(display, x, y + 1, &WIFI_MEDIUM_BITMAP);
 }
 
 fn draw_wifi_weak<D>(display: &mut D, x: i32, y: i32)
@@ -163,7 +153,7 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y+1, &WIFI_WEAK_BITMAP);
+    draw_wifi_bitmap(display, x, y + 1, &WIFI_WEAK_BITMAP);
 }
 
 fn draw_no_connection<D>(display: &mut D, x: i32, y: i32)
@@ -171,20 +161,20 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y+1, &NO_CONNECTION_BITMAP);
+    draw_wifi_bitmap(display, x, y + 1, &NO_CONNECTION_BITMAP);
 }
 
 // ETHERNET BITMAP – MATCHING WIFI DIMENSIONS
 // grid: 11 (width) x 7 (height)
 
 const ETHERNET_BITMAP: [[u8; 11]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0], 
-    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0], 
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],
     [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
-    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0], 
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], 
+    [0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
 ];
 
 fn draw_ethernet<D>(display: &mut D, x: i32, y: i32)
@@ -192,7 +182,7 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_ethernet_bitmap(display, x, y+1, &ETHERNET_BITMAP);
+    draw_ethernet_bitmap(display, x, y + 1, &ETHERNET_BITMAP);
 }
 
 // LORAWAN RADIO TOWER BITMAP – 11x7 matching other icon dimensions
@@ -212,15 +202,11 @@ where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {
-    draw_wifi_bitmap(display, x, y+1, &LORAWAN_BITMAP);
+    draw_wifi_bitmap(display, x, y + 1, &LORAWAN_BITMAP);
 }
 
-fn draw_ethernet_bitmap<D>(
-    display: &mut D,
-    x: i32,
-    y: i32,
-    bitmap: &[[u8; 11]; 7],
-) where
+fn draw_ethernet_bitmap<D>(display: &mut D, x: i32, y: i32, bitmap: &[[u8; 11]; 7])
+where
     D: DrawTarget<Color = BinaryColor>,
     D::Error: core::fmt::Debug,
 {

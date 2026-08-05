@@ -77,7 +77,10 @@ fn read_version(raw: &Value) -> u32 {
 }
 
 fn backup_path(path: &Path, from_version: u32) -> PathBuf {
-    let stem = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     dir.join(format!("{}.v{}.bak", stem, from_version))
 }
@@ -112,7 +115,10 @@ fn migrate_v1_to_v2(mut value: Value) -> Result<Value, MigrationError> {
         .as_mapping_mut()
         .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
 
-    root.insert(Value::String("config_version".into()), Value::Number(2u32.into()));
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(2u32.into()),
+    );
 
     let eye = Value::String("eye".into());
     if let Some(streams) = root
@@ -138,11 +144,15 @@ fn migrate_v1_to_v2(mut value: Value) -> Result<Value, MigrationError> {
 /// `enabled: false` and one disabled `local` destination — operators flip
 /// `enabled: true` per destination when they're ready.
 fn migrate_v0_to_v1(mut value: Value) -> Result<Value, MigrationError> {
-    let root = value.as_mapping_mut()
+    let root = value
+        .as_mapping_mut()
         .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
 
     // 1. Stamp config_version at the top.
-    root.insert(Value::String("config_version".into()), Value::Number(1u32.into()));
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(1u32.into()),
+    );
 
     // 2. Inject mqtt.export defaults if absent.
     let mqtt_key = Value::String("mqtt".into());
@@ -167,9 +177,15 @@ fn default_export_block() -> Value {
     tls.insert(Value::String("enabled".into()), Value::Bool(false));
 
     let mut local = serde_yaml::Mapping::new();
-    local.insert(Value::String("broker_id".into()), Value::String("local".into()));
+    local.insert(
+        Value::String("broker_id".into()),
+        Value::String("local".into()),
+    );
     local.insert(Value::String("enabled".into()), Value::Bool(true));
-    local.insert(Value::String("host".into()), Value::String("localhost".into()));
+    local.insert(
+        Value::String("host".into()),
+        Value::String("localhost".into()),
+    );
     local.insert(Value::String("port".into()), Value::Number(1883.into()));
     local.insert(Value::String("username".into()), Value::String("".into()));
     local.insert(Value::String("password".into()), Value::String("".into()));
@@ -186,8 +202,14 @@ fn default_export_block() -> Value {
             Value::String("alarm".into()),
         ]),
     );
-    export.insert(Value::String("batch_size".into()), Value::Number(200.into()));
-    export.insert(Value::String("drain_interval_ms".into()), Value::Number(500.into()));
+    export.insert(
+        Value::String("batch_size".into()),
+        Value::Number(200.into()),
+    );
+    export.insert(
+        Value::String("drain_interval_ms".into()),
+        Value::Number(500.into()),
+    );
     export.insert(Value::String("publish_qos".into()), Value::Number(1.into()));
     export.insert(
         Value::String("destinations".into()),
@@ -240,31 +262,70 @@ ble:
 
         let root = migrated.as_mapping().unwrap();
         assert_eq!(
-            root.get(&Value::String("config_version".into())).and_then(|v| v.as_u64()),
+            root.get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
             Some(1),
         );
 
-        let mqtt = root.get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap();
-        let export = mqtt.get(&Value::String("export".into())).unwrap().as_mapping().unwrap();
+        let mqtt = root
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let export = mqtt
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
         // Save-and-feed defaults to ON so the firmware↔viewer mirror is live
         // from first boot without operator intervention.
-        assert_eq!(export.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
-        assert_eq!(export.get(&Value::String("batch_size".into())).unwrap().as_u64(), Some(200));
+        assert_eq!(
+            export
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            export
+                .get(&Value::String("batch_size".into()))
+                .unwrap()
+                .as_u64(),
+            Some(200)
+        );
         // All four streams must be present — probe_1m is the long-term history
         // path; if a v0 upgrade drops it the viewer mirror silently loses every
         // minute-aggregate beyond the 30-day raw retention window.
         let streams: Vec<&str> = export
-            .get(&Value::String("streams".into())).unwrap()
-            .as_sequence().unwrap()
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(streams, vec!["sticker", "probe", "probe_1m", "alarm"]);
         // And the always-on `local` destination must also default-enabled.
-        let dests = export.get(&Value::String("destinations".into())).unwrap().as_sequence().unwrap();
+        let dests = export
+            .get(&Value::String("destinations".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
         let local = dests[0].as_mapping().unwrap();
-        assert_eq!(local.get(&Value::String("broker_id".into())).unwrap().as_str(), Some("local"));
-        assert_eq!(local.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
+        assert_eq!(
+            local
+                .get(&Value::String("broker_id".into()))
+                .unwrap()
+                .as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            local
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -281,13 +342,33 @@ ble:
         let raw: Value = serde_yaml::from_str(v0).unwrap();
         let migrated = migrate_v0_to_v1(raw).unwrap();
 
-        let mqtt = migrated.as_mapping().unwrap()
-            .get(&Value::String("mqtt".into())).unwrap()
-            .as_mapping().unwrap();
-        let export = mqtt.get(&Value::String("export".into())).unwrap().as_mapping().unwrap();
+        let mqtt = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let export = mqtt
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
         // User had enabled=true with custom batch_size; migration must not stomp it.
-        assert_eq!(export.get(&Value::String("enabled".into())).unwrap().as_bool(), Some(true));
-        assert_eq!(export.get(&Value::String("batch_size".into())).unwrap().as_u64(), Some(50));
+        assert_eq!(
+            export
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            export
+                .get(&Value::String("batch_size".into()))
+                .unwrap()
+                .as_u64(),
+            Some(50)
+        );
     }
 
     #[test]
@@ -311,17 +392,32 @@ mqtt:
 
         let root = migrated.as_mapping().unwrap();
         assert_eq!(
-            root.get(&Value::String("config_version".into())).and_then(|v| v.as_u64()),
+            root.get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
             Some(2),
         );
         let streams: Vec<&str> = root
-            .get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap()
-            .get(&Value::String("export".into())).unwrap().as_mapping().unwrap()
-            .get(&Value::String("streams".into())).unwrap().as_sequence().unwrap()
-            .iter().map(|v| v.as_str().unwrap()).collect();
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         // Appended, not replaced: the existing four keep their order so a
         // deployment that pruned one does not silently get it back.
-        assert_eq!(streams, vec!["sticker", "probe", "probe_1m", "alarm", "eye"]);
+        assert_eq!(
+            streams,
+            vec!["sticker", "probe", "probe_1m", "alarm", "eye"]
+        );
     }
 
     #[test]
@@ -336,11 +432,24 @@ mqtt:
 "#;
         let raw: Value = serde_yaml::from_str(v1).unwrap();
         let migrated = migrate_v1_to_v2(raw).unwrap();
-        let streams: Vec<&str> = migrated.as_mapping().unwrap()
-            .get(&Value::String("mqtt".into())).unwrap().as_mapping().unwrap()
-            .get(&Value::String("export".into())).unwrap().as_mapping().unwrap()
-            .get(&Value::String("streams".into())).unwrap().as_sequence().unwrap()
-            .iter().map(|v| v.as_str().unwrap()).collect();
+        let streams: Vec<&str> = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(streams, vec!["eye", "sticker"]);
     }
 
@@ -349,11 +458,15 @@ mqtt:
         // `mqtt.export` absent means the serde default applies at load time, and
         // that default already lists eye — so there is nothing to append, but the
         // version must still advance or the file migrates forever.
-        let raw: Value = serde_yaml::from_str("config_version: 1\nble:\n  enabled: false\n").unwrap();
+        let raw: Value =
+            serde_yaml::from_str("config_version: 1\nble:\n  enabled: false\n").unwrap();
         let migrated = migrate_v1_to_v2(raw).unwrap();
         assert_eq!(
-            migrated.as_mapping().unwrap()
-                .get(&Value::String("config_version".into())).and_then(|v| v.as_u64()),
+            migrated
+                .as_mapping()
+                .unwrap()
+                .get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
             Some(2),
         );
     }
@@ -362,11 +475,7 @@ mqtt:
     fn migrate_and_persist_writes_backup_and_updates_version() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
-        fs::write(
-            &path,
-            "mqtt:\n  enabled: true\nble:\n  enabled: false\n",
-        )
-        .unwrap();
+        fs::write(&path, "mqtt:\n  enabled: true\nble:\n  enabled: false\n").unwrap();
 
         let migrated_str = migrate_and_persist(&path).unwrap();
         // A v0 file runs the whole chain in one pass, so it lands on the current

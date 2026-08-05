@@ -21,7 +21,10 @@ impl Buzzer {
         // Assuming "inactive" = high
         pin.set_high();
 
-        Ok(Self { pin, pwm_active: false })
+        Ok(Self {
+            pin,
+            pwm_active: false,
+        })
     }
 
     pub fn on(&mut self) {
@@ -40,7 +43,7 @@ impl Buzzer {
     pub fn set_state(&mut self, on: bool) {
         if on {
             self.stop_pwm();
-            self.pin.set_low();  // Buzzer ON (active-low)
+            self.pin.set_low(); // Buzzer ON (active-low)
         } else {
             self.stop_pwm();
             self.pin.set_high(); // Buzzer OFF (inactive)
@@ -104,10 +107,10 @@ impl Buzzer {
 
         // Rapidly toggle pin to create PWM waveform
         while start.elapsed() < duration {
-            self.pin.set_low();    // Buzzer ON (active-low)
+            self.pin.set_low(); // Buzzer ON (active-low)
             thread::sleep(half_period);
 
-            self.pin.set_high();   // Buzzer OFF (inactive)
+            self.pin.set_high(); // Buzzer OFF (inactive)
             thread::sleep(half_period);
         }
 

@@ -22,15 +22,23 @@ fn simulate_fb0e_write(
     req: &EyeTagAddRequest,
 ) -> EyeTagAddResponse {
     let resp = match eye_tag_add::prepare(req) {
-        Err(msg) => EyeTagAddResponse { success: false, message: msg },
+        Err(msg) => EyeTagAddResponse {
+            success: false,
+            message: msg,
+        },
         Ok(prepared) => {
             let result = applier.apply_eye_tag_config(prepared.mac.clone(), prepared.name.clone());
             if result.success {
-                EyeTagAddResponse { success: true, message: String::new() }
+                EyeTagAddResponse {
+                    success: true,
+                    message: String::new(),
+                }
             } else {
                 EyeTagAddResponse {
                     success: false,
-                    message: result.error_message.unwrap_or_else(|| "unknown error".to_string()),
+                    message: result
+                        .error_message
+                        .unwrap_or_else(|| "unknown error".to_string()),
                 }
             }
         }
@@ -40,13 +48,19 @@ fn simulate_fb0e_write(
 }
 
 fn applier_on(dir: &std::path::Path) -> ConfigApplier {
-    std::fs::write(dir.join("fiber.config.yaml"), "system:\n  device_label: TEST\n")
-        .expect("seed fiber.config.yaml");
+    std::fs::write(
+        dir.join("fiber.config.yaml"),
+        "system:\n  device_label: TEST\n",
+    )
+    .expect("seed fiber.config.yaml");
     ConfigApplier::new(dir).expect("ConfigApplier on tempdir")
 }
 
 fn req(mac: &str, name: Option<&str>) -> EyeTagAddRequest {
-    EyeTagAddRequest { mac: mac.to_string(), name: name.map(|s| s.to_string()) }
+    EyeTagAddRequest {
+        mac: mac.to_string(),
+        name: name.map(|s| s.to_string()),
+    }
 }
 
 #[test]
@@ -67,9 +81,15 @@ fn fb0e_add_persists_tag_into_config() {
 
     // The tag was persisted (uppercase) into eye.tags[] in fiber.config.yaml.
     let yaml = std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap();
-    assert!(yaml.contains("7C:D9:F4:10:00:00"), "config should contain the uppercased MAC:\n{yaml}");
+    assert!(
+        yaml.contains("7C:D9:F4:10:00:00"),
+        "config should contain the uppercased MAC:\n{yaml}"
+    );
     assert!(yaml.contains("Lobby"), "config should contain the tag name");
-    assert!(yaml.contains("eye"), "config should have gained an eye section");
+    assert!(
+        yaml.contains("eye"),
+        "config should have gained an eye section"
+    );
 }
 
 #[test]
@@ -80,11 +100,17 @@ fn fb0e_add_rejects_invalid_mac_and_does_not_persist() {
 
     let resp = simulate_fb0e_write(&slot, &applier, &req("not-a-mac", None));
 
-    assert!(!resp.success, "invalid MAC must be rejected before persisting");
+    assert!(
+        !resp.success,
+        "invalid MAC must be rejected before persisting"
+    );
     assert!(resp.message.contains("invalid MAC"));
     // Nothing was written to eye.tags[].
     let yaml = std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap();
-    assert!(!yaml.contains("tags"), "no tag should have been persisted:\n{yaml}");
+    assert!(
+        !yaml.contains("tags"),
+        "no tag should have been persisted:\n{yaml}"
+    );
 }
 
 #[test]
@@ -98,5 +124,8 @@ fn fb0e_add_is_idempotent_no_duplicate_entry() {
 
     let yaml = std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap();
     let occurrences = yaml.matches("AA:BB:CC:DD:EE:FF").count();
-    assert_eq!(occurrences, 1, "re-adding the same MAC must upsert, not duplicate:\n{yaml}");
+    assert_eq!(
+        occurrences, 1,
+        "re-adding the same MAC must upsert, not duplicate:\n{yaml}"
+    );
 }

@@ -131,7 +131,11 @@ impl Default for FrameAssembler {
 
 impl FrameAssembler {
     pub fn new(idle_window: Duration, max_span: Duration) -> Self {
-        Self { idle_window, max_span, pending: HashMap::new() }
+        Self {
+            idle_window,
+            max_span,
+            pending: HashMap::new(),
+        }
     }
 
     pub fn idle_window(&self) -> Duration {
@@ -246,7 +250,11 @@ impl FrameAssembler {
             let too_long = now.saturating_duration_since(p.first_seen) >= self.max_span;
             if idle || too_long {
                 let p = self.pending.remove(&dev_eui).expect("just checked");
-                let why = if idle { ClosedBy::Idle } else { ClosedBy::MaxSpan };
+                let why = if idle {
+                    ClosedBy::Idle
+                } else {
+                    ClosedBy::MaxSpan
+                };
                 out.push(Self::finish(&dev_eui, p, why));
             }
         }
@@ -328,8 +336,14 @@ mod tests {
     use super::*;
     use crate::libs::lorawan::chirpstack::{parse_uplink, StickerEvent};
 
-    fn reading(dev_eui: &str, fcnt: u64, fields: &[(&str, f64)], counters: &[(&str, u64)]) -> StickerReading {
-        let mut c: HashMap<String, u64> = counters.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+    fn reading(
+        dev_eui: &str,
+        fcnt: u64,
+        fields: &[(&str, f64)],
+        counters: &[(&str, u64)],
+    ) -> StickerReading {
+        let mut c: HashMap<String, u64> =
+            counters.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         c.insert("fCnt".to_string(), fcnt);
         StickerReading {
             dev_eui: dev_eui.to_string(),
@@ -354,13 +368,23 @@ mod tests {
         let base = t0();
         // frame 0: G_INTERNAL + G_SYSTEM
         let out = a.admit(
-            reading("aabb", 10, &[("temperature", 24.5), ("humidity", 53.0), ("voltage", 2.74)], &[]),
+            reading(
+                "aabb",
+                10,
+                &[("temperature", 24.5), ("humidity", 53.0), ("voltage", 2.74)],
+                &[],
+            ),
             base,
         );
         assert!(out.is_empty(), "a first frame completes nothing on its own");
         // frame 1: G_BAROMETER + G_LIGHT, 3 s later
         let out = a.admit(
-            reading("aabb", 11, &[("pressure", 1013.2), ("illuminance", 120.0)], &[]),
+            reading(
+                "aabb",
+                11,
+                &[("pressure", 1013.2), ("illuminance", 120.0)],
+                &[],
+            ),
             base + Duration::from_secs(3),
         );
         assert!(out.is_empty(), "still accumulating");
@@ -387,12 +411,19 @@ mod tests {
         // firmware-guaranteed report boundary.
         let mut a = FrameAssembler::default();
         let base = t0();
-        a.admit(reading("aabb", 10, &[("voltage", 2.74), ("temperature", 24.5)], &[]), base);
+        a.admit(
+            reading("aabb", 10, &[("voltage", 2.74), ("temperature", 24.5)], &[]),
+            base,
+        );
         let out = a.admit(
             reading("aabb", 12, &[("voltage", 2.73), ("temperature", 24.1)], &[]),
             base + Duration::from_secs(5),
         );
-        assert_eq!(out.len(), 1, "the overlapping frame closes the previous report");
+        assert_eq!(
+            out.len(),
+            1,
+            "the overlapping frame closes the previous report"
+        );
         assert_eq!(out[0].closed_by, ClosedBy::Overlap);
         assert_eq!(out[0].frames, 1);
         assert_eq!(out[0].reading.fields["temperature"], 24.5);
@@ -414,7 +445,10 @@ mod tests {
             reading("aabb", 11, &[("pressure", 1013.0)], &[]),
             base + Duration::from_secs(3),
         );
-        assert!(out.is_empty(), "differing fCnt must not be read as an overlap");
+        assert!(
+            out.is_empty(),
+            "differing fCnt must not be read as an overlap"
+        );
         assert_eq!(a.tick(base + Duration::from_secs(25))[0].frames, 2);
     }
 
@@ -447,7 +481,10 @@ mod tests {
             reading("aabb", 11, &[("pressure", 1013.0)], &[]),
             base + Duration::from_secs(16),
         );
-        assert!(out.is_empty(), "a 16 s retry gap is still one report at a 20 s window");
+        assert!(
+            out.is_empty(),
+            "a 16 s retry gap is still one report at a 20 s window"
+        );
         assert_eq!(a.tick(base + Duration::from_secs(40))[0].frames, 2);
     }
 
@@ -456,7 +493,10 @@ mod tests {
         let mut a = FrameAssembler::default();
         let base = t0();
         a.admit(reading("aabb", 10, &[("temperature", 24.5)], &[]), base);
-        assert!(a.tick(base + Duration::from_secs(19)).is_empty(), "still inside the window");
+        assert!(
+            a.tick(base + Duration::from_secs(19)).is_empty(),
+            "still inside the window"
+        );
         let done = a.tick(base + Duration::from_secs(21));
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].closed_by, ClosedBy::Idle);
@@ -482,9 +522,14 @@ mod tests {
         }
         flushed.extend(a.tick(base + Duration::from_secs(400)));
 
-        let capped: Vec<_> =
-            flushed.iter().filter(|r| r.closed_by == ClosedBy::MaxSpan).collect();
-        assert!(!capped.is_empty(), "the span cap must close the runaway partial");
+        let capped: Vec<_> = flushed
+            .iter()
+            .filter(|r| r.closed_by == ClosedBy::MaxSpan)
+            .collect();
+        assert!(
+            !capped.is_empty(),
+            "the span cap must close the runaway partial"
+        );
         // It was capped at the limit, not left to grow to all 20 frames.
         assert!(
             capped[0].frames < 20,
@@ -500,7 +545,12 @@ mod tests {
         // frames == 1, so nothing about existing behaviour shifts.
         let mut a = FrameAssembler::default();
         let base = t0();
-        let input = reading("aabb", 7, &[("temperature", 24.5), ("voltage", 2.74)], &[("motion_count", 9)]);
+        let input = reading(
+            "aabb",
+            7,
+            &[("temperature", 24.5), ("voltage", 2.74)],
+            &[("motion_count", 9)],
+        );
         a.admit(input.clone(), base);
         let done = a.tick(base + Duration::from_secs(25));
         assert_eq!(done.len(), 1);
@@ -518,7 +568,10 @@ mod tests {
         a.admit(reading("aaaa", 1, &[("temperature", 20.0)], &[]), base);
         a.admit(reading("bbbb", 1, &[("temperature", 30.0)], &[]), base);
         // A repeat on one device must not close the other's report.
-        let out = a.admit(reading("aaaa", 2, &[("temperature", 21.0)], &[]), base + Duration::from_secs(2));
+        let out = a.admit(
+            reading("aaaa", 2, &[("temperature", 21.0)], &[]),
+            base + Duration::from_secs(2),
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].reading.dev_eui, "aaaa");
         assert_eq!(a.pending_len(), 2);
@@ -564,7 +617,11 @@ mod tests {
             extra: serde_json::json!({ "value": 3 }),
         });
         let out = a.admit(second, base + Duration::from_secs(3));
-        assert_eq!(out.len(), 1, "a repeated orientation event is a report boundary");
+        assert_eq!(
+            out.len(),
+            1,
+            "a repeated orientation event is a report boundary"
+        );
         assert_eq!(out[0].closed_by, ClosedBy::Overlap);
     }
 
@@ -590,7 +647,10 @@ mod tests {
             extra: serde_json::json!({ "channel": "right", "active": true }),
         });
         let out = a.admit(second, base + Duration::from_secs(3));
-        assert!(out.is_empty(), "left and right are distinct content, not an overlap");
+        assert!(
+            out.is_empty(),
+            "left and right are distinct content, not an overlap"
+        );
         let done = a.tick(base + Duration::from_secs(25));
         assert_eq!(done[0].frames, 2);
         assert_eq!(done[0].reading.events.len(), 2);
@@ -639,7 +699,9 @@ mod tests {
 
         let mut a = FrameAssembler::default();
         let base = t0();
-        let f0 = parse_uplink(uplink("01088901100018b226206b", 8).as_bytes()).unwrap().unwrap();
+        let f0 = parse_uplink(uplink("01088901100018b226206b", 8).as_bytes())
+            .unwrap()
+            .unwrap();
         let f1 = parse_uplink(uplink("014002480 9d00125".replace(' ', "").as_str(), 9).as_bytes())
             .unwrap()
             .unwrap();

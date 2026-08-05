@@ -45,8 +45,12 @@ pub struct AlarmThreshold {
     pub critical_high_celsius: f32,
 }
 
-fn default_alarm_low() -> f32 { 0.0 }
-fn default_alarm_high() -> f32 { 100.0 }
+fn default_alarm_low() -> f32 {
+    0.0
+}
+fn default_alarm_high() -> f32 {
+    100.0
+}
 
 impl AlarmThreshold {
     /// Create thresholds with custom values
@@ -72,10 +76,10 @@ impl AlarmThreshold {
     pub fn default_medical() -> Self {
         Self {
             critical_low_celsius: 32.0,
-            low_alarm_celsius: 0.0,     // disabled - defaults
+            low_alarm_celsius: 0.0, // disabled - defaults
             warning_low_celsius: 34.0,
             warning_high_celsius: 39.0,
-            high_alarm_celsius: 100.0,  // disabled - defaults
+            high_alarm_celsius: 100.0, // disabled - defaults
             critical_high_celsius: 40.0,
         }
     }
@@ -109,10 +113,10 @@ mod tests {
     fn test_default_medical_thresholds() {
         let t = AlarmThreshold::default_medical();
         assert_eq!(t.critical_low_celsius, 32.0);
-        assert_eq!(t.low_alarm_celsius, 0.0);     // disabled
+        assert_eq!(t.low_alarm_celsius, 0.0); // disabled
         assert_eq!(t.warning_low_celsius, 34.0);
         assert_eq!(t.warning_high_celsius, 39.0);
-        assert_eq!(t.high_alarm_celsius, 100.0);   // disabled
+        assert_eq!(t.high_alarm_celsius, 100.0); // disabled
         assert_eq!(t.critical_high_celsius, 40.0);
     }
 
@@ -142,7 +146,7 @@ mod tests {
         assert!(!t.is_alarm(34.0)); // Not below 0.0
         assert!(!t.is_alarm(39.0)); // Not above 100.0
         assert!(!t.is_alarm(36.0)); // Normal
-        assert!(t.is_alarm(-1.0));  // Below 0.0
+        assert!(t.is_alarm(-1.0)); // Below 0.0
         assert!(t.is_alarm(101.0)); // Above 100.0
     }
 

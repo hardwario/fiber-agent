@@ -44,7 +44,8 @@ const TM_U32_NA: u32 = u32::MAX; // uint32 fields: humidity, pressure, illuminan
 /// Scaling per `ttn.js` `decodeTelemetry`: voltage ÷50, temperature ÷100,
 /// humidity ÷2, pressure ÷10, altitude ÷10, illuminance ×2.
 pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTelemetry, String> {
-    let t = Telemetry::decode(bytes).map_err(|e| format!("Telemetry protobuf decode failed: {e}"))?;
+    let t =
+        Telemetry::decode(bytes).map_err(|e| format!("Telemetry protobuf decode failed: {e}"))?;
     let mut d = DecodedTelemetry::default();
 
     let mut event = |ty: &str, extra: serde_json::Value| {
@@ -167,16 +168,20 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
             d.fields.insert(format!("ext_illuminance_{n}"), v as f64);
         }
         if let Some(v) = sr.magnetic_field {
-            d.fields.insert(format!("ext_magnetic_field_{n}"), v as f64 / 1000.0);
+            d.fields
+                .insert(format!("ext_magnetic_field_{n}"), v as f64 / 1000.0);
         }
         if let Some(v) = sr.accel_x {
-            d.fields.insert(format!("ext_accel_x_{n}"), v as f64 / 100.0);
+            d.fields
+                .insert(format!("ext_accel_x_{n}"), v as f64 / 100.0);
         }
         if let Some(v) = sr.accel_y {
-            d.fields.insert(format!("ext_accel_y_{n}"), v as f64 / 100.0);
+            d.fields
+                .insert(format!("ext_accel_y_{n}"), v as f64 / 100.0);
         }
         if let Some(v) = sr.accel_z {
-            d.fields.insert(format!("ext_accel_z_{n}"), v as f64 / 100.0);
+            d.fields
+                .insert(format!("ext_accel_z_{n}"), v as f64 / 100.0);
         }
     }
 
@@ -189,7 +194,8 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
 /// since the quantity→scale map is not yet fixed host-side, the raw value and
 /// quantity are passed through in `extra` for the consumer to interpret.
 pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<StickerEvent>, String> {
-    let r = AlarmReport::decode(bytes).map_err(|e| format!("AlarmReport protobuf decode failed: {e}"))?;
+    let r = AlarmReport::decode(bytes)
+        .map_err(|e| format!("AlarmReport protobuf decode failed: {e}"))?;
     // time_synced absent = old FW = treat as synced (mirrors ttn.js decodeAlarmBatch).
     let synced = r.time_synced.unwrap_or(true);
     let events = r
@@ -233,14 +239,14 @@ mod tests {
     #[test]
     fn telemetry_scaling_matches_ttn_js() {
         let t = Telemetry {
-            voltage: Some(150),          // /50 = 3.0 V
-            system_flags: Some(0b1),     // bit0 boot
-            temperature: Some(2300),     // /100 = 23.0 °C
-            humidity: Some(120),         // /2  = 60.0 %
-            pressure: Some(10130),       // /10 = 1013.0 hPa
-            altitude: Some(2500),        // /10 = 250.0 m
-            illuminance: Some(200),      // *2  = 400 lux
-            orientation: Some(3),        // event
+            voltage: Some(150),      // /50 = 3.0 V
+            system_flags: Some(0b1), // bit0 boot
+            temperature: Some(2300), // /100 = 23.0 °C
+            humidity: Some(120),     // /2  = 60.0 %
+            pressure: Some(10130),   // /10 = 1013.0 hPa
+            altitude: Some(2500),    // /10 = 250.0 m
+            illuminance: Some(200),  // *2  = 400 lux
+            orientation: Some(3),    // event
             motion_count: Some(7),
             hall_left_count: Some(3),
             hall_left_flags: Some(0b100), // bit2 active
@@ -270,7 +276,10 @@ mod tests {
     #[test]
     fn telemetry_negative_temperature_zigzag() {
         // sint32 -1550 → -15.5 °C (exercises zigzag via prost)
-        let t = Telemetry { temperature: Some(-1550), ..Default::default() };
+        let t = Telemetry {
+            temperature: Some(-1550),
+            ..Default::default()
+        };
         let d = decode_telemetry(&t.encode_to_vec(), "t").unwrap();
         assert_eq!(d.fields.get("temperature").copied(), Some(-15.5));
     }
@@ -308,11 +317,17 @@ mod tests {
             "illuminance",
             "machine_probe_temperature_1",
         ] {
-            assert!(!d.fields.contains_key(k), "{k} should be omitted for its sentinel");
+            assert!(
+                !d.fields.contains_key(k),
+                "{k} should be omitted for its sentinel"
+            );
         }
         // non-sentinel neighbours still decode
         assert_eq!(d.fields.get("voltage").copied(), Some(3.0));
-        assert_eq!(d.fields.get("machine_probe_humidity_1").copied(), Some(70.0));
+        assert_eq!(
+            d.fields.get("machine_probe_humidity_1").copied(),
+            Some(70.0)
+        );
     }
 
     #[test]
@@ -329,8 +344,14 @@ mod tests {
             ..Default::default()
         };
         let d = decode_telemetry(&t.encode_to_vec(), "t").unwrap();
-        assert_eq!(d.fields.get("machine_probe_temperature_2").copied(), Some(4.5));
-        assert_eq!(d.fields.get("machine_probe_humidity_2").copied(), Some(70.0));
+        assert_eq!(
+            d.fields.get("machine_probe_temperature_2").copied(),
+            Some(4.5)
+        );
+        assert_eq!(
+            d.fields.get("machine_probe_humidity_2").copied(),
+            Some(70.0)
+        );
         assert!(d.events.iter().any(|e| e.event_type == "tilt_alert"));
     }
 

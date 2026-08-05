@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::drivers::buttons::{Buttons, ButtonEvent, Button};
-use crate::libs::network::{ProvisioningSession, SharedProvisioningSession};
-use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
-use crate::libs::buzzer::BuzzerPriorityManager;
 use super::supervise::{lock_recover, read_recover};
 use super::SharedDisplayStateHandle;
+use crate::drivers::buttons::{Button, ButtonEvent, Buttons};
+use crate::libs::buzzer::BuzzerPriorityManager;
+use crate::libs::network::{ProvisioningSession, SharedProvisioningSession};
+use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
 
 /// Button monitor state machine for handling ENTER button countdown and DOWN button hold
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,7 +56,10 @@ fn progress_pixels(elapsed: Duration, total: Duration) -> u8 {
 /// the screen would go blank on a poisoning it could otherwise have ridden out.
 fn ds_readings_snapshot(
     sensor_state: &crate::libs::sensors::SharedSensorStateHandle,
-) -> ([Option<crate::libs::sensors::state::SensorReading>; 8], [bool; 8]) {
+) -> (
+    [Option<crate::libs::sensors::state::SensorReading>; 8],
+    [bool; 8],
+) {
     let state = read_recover(sensor_state);
     (state.readings.clone(), state.has_reported)
 }
@@ -151,7 +154,7 @@ impl ButtonMonitor {
         let mut up_hold_start = Instant::now();
         let mut selection_activity = Instant::now(); // Track last activity in selection/detail mode
         let mut last_enter_click: Option<Instant> = None; // Track last ENTER click for double-click detection
-        // When a button was first pressed while in standby, for the wake hold.
+                                                          // When a button was first pressed while in standby, for the wake hold.
         let mut standby_hold_start: Option<Instant> = None;
 
         // Main button monitoring loop
@@ -229,7 +232,9 @@ impl ButtonMonitor {
                     if let Some(ref bp) = buzzer_priority {
                         if bp.is_sensor_beeping() {
                             bp.silence_sensor_30min();
-                            eprintln!("[ButtonMonitor] Sensor beep silenced by button press (30 min)");
+                            eprintln!(
+                                "[ButtonMonitor] Sensor beep silenced by button press (30 min)"
+                            );
                             continue;
                         }
                     }
@@ -273,7 +278,8 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::ShowingSystem => {
                                 // On System screen - navigate pages instead of starting hold
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     display_state_lock.next_page(&ds_readings, &ds_reported);
@@ -282,7 +288,8 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor up
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     display_state_lock.selection_up(&ds_readings, &ds_reported);
@@ -297,7 +304,9 @@ impl ButtonMonitor {
                                 // Cancel ENTER countdown and start UP hold
                                 state = ButtonMonitorState::UpHoldActive;
                                 up_hold_start = Instant::now();
-                                eprintln!("[ButtonMonitor] ENTER countdown cancelled, UP hold started");
+                                eprintln!(
+                                    "[ButtonMonitor] ENTER countdown cancelled, UP hold started"
+                                );
                             }
                             ButtonMonitorState::DownHoldActive => {
                                 // Cancel DOWN hold
@@ -305,10 +314,8 @@ impl ButtonMonitor {
                                 eprintln!("[ButtonMonitor] DOWN hold cancelled by UP button");
                             }
                             ButtonMonitorState::ShowingDetail => {
-                                {
-                                    let mut display_state_lock = lock_recover(&display_state);
-                                    display_state_lock.lorawan_detail_prev();
-                                }
+                                let mut display_state_lock = lock_recover(&display_state);
+                                display_state_lock.lorawan_detail_prev();
                             }
                             _ => {
                                 // Other states (ShowingQr) - ignore UP
@@ -320,8 +327,12 @@ impl ButtonMonitor {
                             let elapsed = up_hold_start.elapsed();
                             if elapsed < COUNTDOWN_DURATION {
                                 // Released early - cancel hold and navigate page
-                                eprintln!("[ButtonMonitor] UP released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                eprintln!(
+                                    "[ButtonMonitor] UP released early ({:.1}s) - navigating page",
+                                    elapsed.as_secs_f32()
+                                );
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     if display_state_lock.current_screen.is_navigable() {
@@ -366,12 +377,15 @@ impl ButtonMonitor {
                                     // Start DOWN hold countdown
                                     state = ButtonMonitorState::DownHoldActive;
                                     down_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] DOWN hold started - counting 2 seconds");
+                                    eprintln!(
+                                        "[ButtonMonitor] DOWN hold started - counting 2 seconds"
+                                    );
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
                                 // On System screen - navigate pages instead of starting hold
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     display_state_lock.next_page(&ds_readings, &ds_reported);
@@ -385,7 +399,9 @@ impl ButtonMonitor {
                                 // Cancel ENTER countdown and start DOWN hold
                                 state = ButtonMonitorState::DownHoldActive;
                                 down_hold_start = Instant::now();
-                                eprintln!("[ButtonMonitor] ENTER countdown cancelled, DOWN hold started");
+                                eprintln!(
+                                    "[ButtonMonitor] ENTER countdown cancelled, DOWN hold started"
+                                );
                             }
                             ButtonMonitorState::UpHoldActive => {
                                 // Cancel UP hold
@@ -394,7 +410,8 @@ impl ButtonMonitor {
                             }
                             ButtonMonitorState::SelectionMode => {
                                 // In selection mode - move cursor down
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     display_state_lock.selection_down(&ds_readings, &ds_reported);
@@ -403,10 +420,8 @@ impl ButtonMonitor {
                                 selection_activity = Instant::now(); // Reset inactivity timer
                             }
                             ButtonMonitorState::ShowingDetail => {
-                                {
-                                    let mut display_state_lock = lock_recover(&display_state);
-                                    display_state_lock.lorawan_detail_next();
-                                }
+                                let mut display_state_lock = lock_recover(&display_state);
+                                display_state_lock.lorawan_detail_next();
                             }
                             _ => {
                                 // Other states (ShowingQr) - ignore DOWN
@@ -419,7 +434,8 @@ impl ButtonMonitor {
                             if elapsed < COUNTDOWN_DURATION {
                                 // Released early - cancel hold and navigate page
                                 eprintln!("[ButtonMonitor] DOWN released early ({:.1}s) - navigating page", elapsed.as_secs_f32());
-                                let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                let (ds_readings, ds_reported) =
+                                    ds_readings_snapshot(&sensor_state);
                                 {
                                     let mut display_state_lock = lock_recover(&display_state);
                                     display_state_lock.next_page(&ds_readings, &ds_reported);
@@ -452,7 +468,9 @@ impl ButtonMonitor {
                                 // Start countdown
                                 state = ButtonMonitorState::CountdownActive;
                                 countdown_start = Instant::now();
-                                eprintln!("[ButtonMonitor] Starting 2-second countdown to QR code screen");
+                                eprintln!(
+                                    "[ButtonMonitor] Starting 2-second countdown to QR code screen"
+                                );
                             }
                             ButtonMonitorState::CountdownActive => {
                                 // ENTER pressed again during countdown - restart
@@ -465,13 +483,18 @@ impl ButtonMonitor {
                                 // racing pairing attempt fails closed.
                                 if let Ok(mut slot) = provisioning_session.write() {
                                     if slot.is_some() {
-                                        eprintln!("[ButtonMonitor] Provisioning session closed by user");
+                                        eprintln!(
+                                            "[ButtonMonitor] Provisioning session closed by user"
+                                        );
                                     }
                                     *slot = None;
                                 }
                                 // Stop BLE advertising
                                 if let Err(e) = crate::libs::ble::stop_ble_advertising() {
-                                    eprintln!("[ButtonMonitor] Failed to stop BLE advertising: {}", e);
+                                    eprintln!(
+                                        "[ButtonMonitor] Failed to stop BLE advertising: {}",
+                                        e
+                                    );
                                 }
                                 // Return to sensor overview
                                 {
@@ -485,7 +508,9 @@ impl ButtonMonitor {
                                 // Cancel DOWN hold and start ENTER countdown
                                 state = ButtonMonitorState::CountdownActive;
                                 countdown_start = Instant::now();
-                                eprintln!("[ButtonMonitor] DOWN hold cancelled, ENTER countdown started");
+                                eprintln!(
+                                    "[ButtonMonitor] DOWN hold cancelled, ENTER countdown started"
+                                );
                             }
                             ButtonMonitorState::ShowingSystem => {
                                 // Return to sensor overview
@@ -504,7 +529,8 @@ impl ButtonMonitor {
                             ButtonMonitorState::ShowingPairing => {
                                 // Already handled above
                             }
-                            ButtonMonitorState::SelectionMode | ButtonMonitorState::ShowingDetail => {
+                            ButtonMonitorState::SelectionMode
+                            | ButtonMonitorState::ShowingDetail => {
                                 // Actions handled on release for double-click detection
                                 selection_activity = Instant::now();
                             }
@@ -529,10 +555,15 @@ impl ButtonMonitor {
 
                                         if is_double_click {
                                             // Double-click detected - enter selection mode
-                                            let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                            let (ds_readings, ds_reported) =
+                                                ds_readings_snapshot(&sensor_state);
                                             {
-                                                let mut display_state_lock = lock_recover(&display_state);
-                                                display_state_lock.enter_selection_mode(&ds_readings, &ds_reported);
+                                                let mut display_state_lock =
+                                                    lock_recover(&display_state);
+                                                display_state_lock.enter_selection_mode(
+                                                    &ds_readings,
+                                                    &ds_reported,
+                                                );
                                                 eprintln!("[ButtonMonitor] Double-click detected - entering selection mode");
                                             }
                                             state = ButtonMonitorState::SelectionMode;
@@ -596,10 +627,12 @@ impl ButtonMonitor {
                                     last_enter_click = None;
                                 } else {
                                     // Single click - exit to selection mode
-                                    let (ds_readings, ds_reported) = ds_readings_snapshot(&sensor_state);
+                                    let (ds_readings, ds_reported) =
+                                        ds_readings_snapshot(&sensor_state);
                                     {
                                         let mut display_state_lock = lock_recover(&display_state);
-                                        display_state_lock.exit_detail_view(&ds_readings, &ds_reported);
+                                        display_state_lock
+                                            .exit_detail_view(&ds_readings, &ds_reported);
                                         eprintln!("[ButtonMonitor] Exiting sensor detail view to selection mode");
                                     }
                                     state = ButtonMonitorState::SelectionMode;
@@ -629,7 +662,9 @@ impl ButtonMonitor {
                                 );
                                 *slot = Some(session);
                             } else {
-                                eprintln!("[ButtonMonitor] Failed to lock provisioning session for write");
+                                eprintln!(
+                                    "[ButtonMonitor] Failed to lock provisioning session for write"
+                                );
                             }
                         }
                         Err(e) => {
@@ -645,7 +680,9 @@ impl ButtonMonitor {
                     {
                         let mut display_state_lock = lock_recover(&display_state);
                         display_state_lock.show_qr_code();
-                        eprintln!("[ButtonMonitor] Countdown complete - transitioning to QR code screen");
+                        eprintln!(
+                            "[ButtonMonitor] Countdown complete - transitioning to QR code screen"
+                        );
                     }
                     state = ButtonMonitorState::ShowingQr;
                 }
@@ -711,7 +748,9 @@ impl ButtonMonitor {
                         state = ButtonMonitorState::Idle;
                     } else if let Some(ref ph) = pairing_handle {
                         ph.start_pairing();
-                        eprintln!("[ButtonMonitor] UP hold complete (3s) - triggering pairing mode");
+                        eprintln!(
+                            "[ButtonMonitor] UP hold complete (3s) - triggering pairing mode"
+                        );
                         state = ButtonMonitorState::ShowingPairing;
                     } else {
                         eprintln!("[ButtonMonitor] UP hold complete (3s) - pairing not available (MQTT disabled)");
@@ -721,14 +760,17 @@ impl ButtonMonitor {
             }
 
             // Check inactivity timeout for selection/detail mode (15 seconds)
-            if (state == ButtonMonitorState::SelectionMode || state == ButtonMonitorState::ShowingDetail)
+            if (state == ButtonMonitorState::SelectionMode
+                || state == ButtonMonitorState::ShowingDetail)
                 && selection_activity.elapsed() >= SELECTION_TIMEOUT
             {
                 // Return to normal sensor overview
                 {
                     let mut display_state_lock = lock_recover(&display_state);
                     display_state_lock.show_sensor_overview();
-                    eprintln!("[ButtonMonitor] Selection mode timeout (15s) - returning to normal view");
+                    eprintln!(
+                        "[ButtonMonitor] Selection mode timeout (15s) - returning to normal view"
+                    );
                 }
                 state = ButtonMonitorState::Idle;
             }

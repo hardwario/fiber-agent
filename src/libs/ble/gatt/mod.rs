@@ -13,8 +13,8 @@ pub mod eye_tag_add;
 pub mod lan;
 pub mod net_error;
 pub mod service;
-pub mod sticker;
 pub mod state;
+pub mod sticker;
 pub mod terminal;
 pub mod time_sync;
 pub mod wifi;
@@ -87,9 +87,7 @@ impl BleMonitor {
         config_applier: Option<Arc<ConfigApplier>>,
         storage: Option<crate::libs::storage::StorageHandle>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
-        lorawan_state_slot: Arc<
-            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
-        >,
+        lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
@@ -134,9 +132,7 @@ impl BleMonitor {
         config_applier: Option<Arc<ConfigApplier>>,
         storage: Option<crate::libs::storage::StorageHandle>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
-        lorawan_state_slot: Arc<
-            std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>,
-        >,
+        lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -283,7 +279,10 @@ async fn run_server(
 
     let hostname = state::get_hostname();
 
-    let advertising_name = config.advertising_name.clone().unwrap_or_else(|| hostname.clone());
+    let advertising_name = config
+        .advertising_name
+        .clone()
+        .unwrap_or_else(|| hostname.clone());
     adapter.set_alias(advertising_name.clone()).await?;
 
     let state = Arc::new(Mutex::new(state::ServiceState::new(
@@ -307,7 +306,8 @@ async fn run_server(
         }
     });
 
-    let app = service::create_gatt_app(state.clone(), event_tx_async, config.enable_terminal).await?;
+    let app =
+        service::create_gatt_app(state.clone(), event_tx_async, config.enable_terminal).await?;
 
     eprintln!("[BleMonitor] Registering GATT application...");
     let app_handle = adapter.serve_gatt_application(app).await?;
@@ -343,7 +343,9 @@ async fn run_server(
     pin_mut!(events);
 
     loop {
-        if shutdown_flag.load(Ordering::Relaxed) { break; }
+        if shutdown_flag.load(Ordering::Relaxed) {
+            break;
+        }
 
         // Drain any pending commands (non-blocking).
         while let Ok(cmd) = command_rx.try_recv() {

@@ -7,8 +7,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::pattern::BuzzerPattern;
 use super::controller::BuzzerController;
+use super::pattern::BuzzerPattern;
 use crate::libs::config::BuzzerTiming;
 
 /// Injectable clock for testing. Returns the current Instant.
@@ -279,10 +279,7 @@ impl BuzzerPriorityManager {
             raw_critical
         };
 
-        let new_pattern_source = match (
-            critical_active,
-            state.battery_critical_active,
-        ) {
+        let new_pattern_source = match (critical_active, state.battery_critical_active) {
             // Only sensor critical: play sensor pattern
             (true, false) => {
                 //eprintln!("[BuzzerPriority] Decision: Sensor critical (priority)");
@@ -383,9 +380,8 @@ mod tests {
         let offset_ms = Arc::new(AtomicU64::new(0));
         let offset_clone = offset_ms.clone();
 
-        let clock: Clock = Arc::new(move || {
-            base + Duration::from_millis(offset_ms.load(AtomicOrdering::Relaxed))
-        });
+        let clock: Clock =
+            Arc::new(move || base + Duration::from_millis(offset_ms.load(AtomicOrdering::Relaxed)));
 
         let advance: Arc<dyn Fn(Duration) + Send + Sync> = Arc::new(move |d: Duration| {
             offset_clone.fetch_add(d.as_millis() as u64, AtomicOrdering::Relaxed);
@@ -409,10 +405,16 @@ mod tests {
 
     /// Helper: evaluate is_sensor_beeping logic
     fn eval_is_sensor_beeping(state: &BuzzerPriorityState, clock: &Clock) -> bool {
-        if !state.sensor_critical_active { return false; }
-        if state.silenced { return false; }
+        if !state.sensor_critical_active {
+            return false;
+        }
+        if state.silenced {
+            return false;
+        }
         if let Some(deadline) = state.sensor_silenced_until {
-            if (clock)() < deadline { return false; }
+            if (clock)() < deadline {
+                return false;
+            }
         }
         true
     }
@@ -436,8 +438,14 @@ mod tests {
         state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
         let sensor_active = eval_sensor_active(&state, &clock);
-        assert!(!sensor_active, "sensor should be suppressed by button silence");
-        assert!(state.battery_critical_active, "battery should NOT be suppressed");
+        assert!(
+            !sensor_active,
+            "sensor should be suppressed by button silence"
+        );
+        assert!(
+            state.battery_critical_active,
+            "battery should NOT be suppressed"
+        );
 
         let pattern = eval_pattern(sensor_active, state.battery_critical_active);
         assert_eq!(pattern, PatternSource::BatteryCritical);
@@ -457,7 +465,10 @@ mod tests {
         advance(Duration::from_secs(31 * 60));
 
         // After expiry
-        assert!(eval_sensor_active(&state, &clock), "sensor should resume after 30min");
+        assert!(
+            eval_sensor_active(&state, &clock),
+            "sensor should resume after 30min"
+        );
     }
 
     #[test]
@@ -470,7 +481,10 @@ mod tests {
         // Simulate on_new_sensor_alarm: clears sensor_silenced_until
         state.sensor_silenced_until = None;
 
-        assert!(eval_sensor_active(&state, &clock), "sensor should resume after new alarm");
+        assert!(
+            eval_sensor_active(&state, &clock),
+            "sensor should resume after new alarm"
+        );
     }
 
     /// Helper: evaluate "any critical-sensor source is active" given silence state.
@@ -478,7 +492,11 @@ mod tests {
     fn eval_critical_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
         let raw = state.sensor_critical_active || state.sticker_critical_active;
         if let Some(deadline) = state.sensor_silenced_until {
-            if (clock)() >= deadline { raw } else { false }
+            if (clock)() >= deadline {
+                raw
+            } else {
+                false
+            }
         } else {
             raw
         }
@@ -491,7 +509,10 @@ mod tests {
         state.sticker_critical_active = true;
 
         assert!(eval_critical_active(&state, &clock));
-        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        let pattern = eval_pattern(
+            eval_critical_active(&state, &clock),
+            state.battery_critical_active,
+        );
         assert_eq!(pattern, PatternSource::SensorCritical);
     }
 
@@ -503,7 +524,10 @@ mod tests {
         state.battery_critical_active = true;
 
         assert!(eval_critical_active(&state, &clock));
-        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        let pattern = eval_pattern(
+            eval_critical_active(&state, &clock),
+            state.battery_critical_active,
+        );
         assert_eq!(pattern, PatternSource::SensorCritical);
     }
 
@@ -515,7 +539,10 @@ mod tests {
         state.sticker_critical_active = true;
 
         assert!(eval_critical_active(&state, &clock));
-        let pattern = eval_pattern(eval_critical_active(&state, &clock), state.battery_critical_active);
+        let pattern = eval_pattern(
+            eval_critical_active(&state, &clock),
+            state.battery_critical_active,
+        );
         assert_eq!(pattern, PatternSource::SensorCritical);
     }
 
@@ -526,8 +553,10 @@ mod tests {
         state.sticker_critical_active = true;
         state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
-        assert!(!eval_critical_active(&state, &clock),
-                "sticker should be suppressed by 30-min button silence");
+        assert!(
+            !eval_critical_active(&state, &clock),
+            "sticker should be suppressed by 30-min button silence"
+        );
     }
 
     #[test]
@@ -545,7 +574,10 @@ mod tests {
             state.silenced = false;
         }
 
-        assert!(!state.silenced, "ACK silence should be cleared on sticker off→on transition");
+        assert!(
+            !state.silenced,
+            "ACK silence should be cleared on sticker off→on transition"
+        );
         assert!(state.sticker_critical_active);
     }
 
@@ -578,7 +610,10 @@ mod tests {
         state.silenced = false;
         state.sensor_silenced_until = None;
 
-        assert!(!state.silenced, "MQTT silence SHOULD be cleared by new sensor alarm");
+        assert!(
+            !state.silenced,
+            "MQTT silence SHOULD be cleared by new sensor alarm"
+        );
     }
 
     #[test]
@@ -603,8 +638,11 @@ mod tests {
 
         let sensor_active = eval_sensor_active(&state, &clock);
         let pattern = eval_pattern(sensor_active, state.battery_critical_active);
-        assert_eq!(pattern, PatternSource::BatteryCritical,
-            "battery should still beep when only button silence is active");
+        assert_eq!(
+            pattern,
+            PatternSource::BatteryCritical,
+            "battery should still beep when only button silence is active"
+        );
     }
 
     #[test]

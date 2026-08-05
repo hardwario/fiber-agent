@@ -9,9 +9,9 @@ use crate::libs::alarms::AlarmState;
 use crate::libs::storage::db::Database;
 use crate::libs::storage::error::StorageResult;
 use crate::libs::storage::models::{AlarmEvent, SensorReading};
+use crate::libs::storage::reader::StorageReader;
 use crate::libs::storage::retention::RetentionPolicy;
 use crate::libs::storage::writer::StorageWriter;
-use crate::libs::storage::reader::StorageReader;
 
 /// Message types for communication with storage thread
 #[derive(Debug)]
@@ -57,9 +57,7 @@ pub enum StorageMessage {
     /// only means "queued". Because the worker is a single thread draining one
     /// FIFO channel, a reply to this also proves every message queued *before*
     /// it (e.g. the `WriteAuditEvent` for a power-off) has been committed.
-    FlushSync {
-        reply: Sender<StorageResult<()>>,
-    },
+    FlushSync { reply: Sender<StorageResult<()>> },
 
     /// Graceful shutdown
     Shutdown,
@@ -85,10 +83,7 @@ pub enum StorageMessage {
         payload_json: String,
     },
     /// Append a `sticker_removed` marker event (fire-and-forget).
-    AppendStickerRemoved {
-        dev_eui: String,
-        ts: i64,
-    },
+    AppendStickerRemoved { dev_eui: String, ts: i64 },
     /// Bump and return the new provisioning epoch for a dev_eui.
     BumpProvisioningEpoch {
         dev_eui: String,
@@ -106,15 +101,10 @@ pub enum StorageMessage {
         new_id: i64,
     },
     /// Reset the export cursor for a `(broker_id, stream)` pair to 0.
-    ResetExportCursor {
-        broker_id: String,
-        stream: String,
-    },
+    ResetExportCursor { broker_id: String, stream: String },
     /// Enforce retention on `sticker_readings` (delete rows older than
     /// `retention_seconds`, log a WARN for un-exported drops).
-    EnforceStickerRetention {
-        retention_seconds: i64,
-    },
+    EnforceStickerRetention { retention_seconds: i64 },
     /// Returns true if `dev_eui` has no sticker_readings rows OR the
     /// most-recent one is a `sticker_removed` marker. Used by provisioning
     /// to decide whether to bump the epoch.
@@ -191,14 +181,12 @@ impl StorageHandle {
 
     /// Flush pending writes to disk
     pub fn flush(&self) -> StorageResult<()> {
-        self.sender
-            .send(StorageMessage::Flush)
-            .map_err(|e| {
-                crate::libs::storage::error::StorageError::ChannelError(format!(
-                    "Failed to send flush message: {}",
-                    e
-                ))
-            })
+        self.sender.send(StorageMessage::Flush).map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to send flush message: {}",
+                e
+            ))
+        })
     }
 
     /// Flush pending writes and block until the storage thread confirms it.
@@ -228,14 +216,12 @@ impl StorageHandle {
 
     /// Signal shutdown
     pub fn shutdown(&self) -> StorageResult<()> {
-        self.sender
-            .send(StorageMessage::Shutdown)
-            .map_err(|e| {
-                crate::libs::storage::error::StorageError::ChannelError(format!(
-                    "Failed to send shutdown message: {}",
-                    e
-                ))
-            })
+        self.sender.send(StorageMessage::Shutdown).map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to send shutdown message: {}",
+                e
+            ))
+        })
     }
 
     // ===== Save-and-feed (sticker stream + export cursor) =====
@@ -384,10 +370,7 @@ impl StorageHandle {
     /// LoRaWAN provisioning path to decide whether bumping the epoch is
     /// the right thing to do (vs. an idempotent re-provision of an already-
     /// active sticker).
-    pub fn dev_eui_last_event_was_removal_or_absent(
-        &self,
-        dev_eui: String,
-    ) -> StorageResult<bool> {
+    pub fn dev_eui_last_event_was_removal_or_absent(&self, dev_eui: String) -> StorageResult<bool> {
         let (tx, rx) = bounded(1);
         self.sender
             .send(StorageMessage::DevEuiLastEventWasRemovalOrAbsent { dev_eui, reply: tx })
@@ -451,7 +434,10 @@ impl StorageThread {
     /// `max_size_gb` is the legacy integer-GB cap. Most call sites use
     /// this directly; `spawn_with_max_bytes` is the precision variant
     /// for configs that set `storage.max_size_mb` (e.g. 2500 MB).
-    pub fn spawn(db_path: &str, max_size_gb: i32) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
+    pub fn spawn(
+        db_path: &str,
+        max_size_gb: i32,
+    ) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         Self::spawn_with_hmac(db_path, max_size_gb, None)
     }
 
@@ -466,7 +452,11 @@ impl StorageThread {
 
     /// Spawn the background storage thread with optional HMAC secret path
     /// If hmac_secret_path is provided, loads the HMAC key for sensor reading integrity (EU MDR)
-    pub fn spawn_with_hmac(db_path: &str, max_size_gb: i32, hmac_secret_path: Option<&str>) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
+    pub fn spawn_with_hmac(
+        db_path: &str,
+        max_size_gb: i32,
+        hmac_secret_path: Option<&str>,
+    ) -> StorageResult<(StorageHandle, thread::JoinHandle<()>)> {
         Self::spawn_with_hmac_and_max_bytes(
             db_path,
             (max_size_gb.max(1) as i64) * 1024 * 1024 * 1024,
@@ -548,7 +538,12 @@ impl StorageThread {
     }
 
     /// Main storage thread loop
-    fn run(db_path: &str, max_size_bytes: i64, receiver: Receiver<StorageMessage>, hmac_secret: Option<&[u8]>) {
+    fn run(
+        db_path: &str,
+        max_size_bytes: i64,
+        receiver: Receiver<StorageMessage>,
+        hmac_secret: Option<&[u8]>,
+    ) {
         // Initialize database
         let db = match Database::with_max_bytes(db_path, max_size_bytes) {
             Ok(d) => d,
@@ -770,10 +765,8 @@ impl StorageThread {
                                 );
                                 next_reconnect_attempt =
                                     Some(std::time::Instant::now() + reconnect_backoff);
-                                reconnect_backoff = std::cmp::min(
-                                    reconnect_backoff * 2,
-                                    RECONNECT_BACKOFF_MAX,
-                                );
+                                reconnect_backoff =
+                                    std::cmp::min(reconnect_backoff * 2, RECONNECT_BACKOFF_MAX);
                             }
                         }
                     }
@@ -813,13 +806,18 @@ impl StorageThread {
                             }
                             Err(e) => {
                                 eprintln!("STORAGE THREAD: Failed to write reading: {}", e);
-                                consecutive_write_failures = consecutive_write_failures.saturating_add(1);
+                                consecutive_write_failures =
+                                    consecutive_write_failures.saturating_add(1);
                             }
                         }
                     }
 
                     StorageMessage::WriteSensorReadingsBatch { readings } => {
-                        match StorageWriter::write_sensor_readings_batch(&mut conn, &readings, hmac_secret) {
+                        match StorageWriter::write_sensor_readings_batch(
+                            &mut conn,
+                            &readings,
+                            hmac_secret,
+                        ) {
                             Ok(count) => {
                                 pending_writes += count as usize;
                                 message_count += count as u64;
@@ -830,7 +828,8 @@ impl StorageThread {
                             }
                             Err(e) => {
                                 eprintln!("STORAGE THREAD: Failed to write batch: {}", e);
-                                consecutive_write_failures = consecutive_write_failures.saturating_add(1);
+                                consecutive_write_failures =
+                                    consecutive_write_failures.saturating_add(1);
                             }
                         }
                     }
@@ -842,8 +841,13 @@ impl StorageThread {
                         to_state,
                         temperature,
                     } => {
-                        let event =
-                            AlarmEvent::new(timestamp, sensor_line, from_state, to_state, temperature);
+                        let event = AlarmEvent::new(
+                            timestamp,
+                            sensor_line,
+                            from_state,
+                            to_state,
+                            temperature,
+                        );
 
                         match StorageWriter::write_alarm_event(&conn, &event) {
                             Ok(_) => {
@@ -995,8 +999,8 @@ impl StorageThread {
                     }
 
                     StorageMessage::BumpProvisioningEpoch { dev_eui, reply } => {
-                        let _ = reply
-                            .send(StorageWriter::bump_provisioning_epoch(&mut conn, &dev_eui));
+                        let _ =
+                            reply.send(StorageWriter::bump_provisioning_epoch(&mut conn, &dev_eui));
                     }
 
                     StorageMessage::GetProvisioningEpoch { dev_eui, reply } => {
@@ -1009,10 +1013,7 @@ impl StorageThread {
                         new_id,
                     } => {
                         if let Err(e) = StorageWriter::advance_export_cursor(
-                            &mut conn,
-                            &broker_id,
-                            &stream,
-                            new_id,
+                            &mut conn, &broker_id, &stream, new_id,
                         ) {
                             eprintln!("STORAGE THREAD: advance_export_cursor failed: {}", e);
                         }
@@ -1050,18 +1051,24 @@ impl StorageThread {
                         let _ = reply.send(result);
                     }
 
-                    StorageMessage::WriteAuditEvent { operation, table_name, details } => {
+                    StorageMessage::WriteAuditEvent {
+                        operation,
+                        table_name,
+                        details,
+                    } => {
                         // Fire-and-forget audit row. Used by config-applier
                         // paths (e.g. device label changes) that don't
                         // otherwise touch the database. record_count and
                         // duration_ms aren't meaningful for these events.
                         let result = match details.as_deref() {
-                            Some(d) => crate::libs::storage::audit::AuditLogger::log_operation_with_details(
-                                &conn,
-                                &operation,
-                                table_name.as_deref(),
-                                d,
-                            ),
+                            Some(d) => {
+                                crate::libs::storage::audit::AuditLogger::log_operation_with_details(
+                                    &conn,
+                                    &operation,
+                                    table_name.as_deref(),
+                                    d,
+                                )
+                            }
                             None => crate::libs::storage::audit::AuditLogger::log_operation(
                                 &conn,
                                 &operation,
@@ -1071,10 +1078,7 @@ impl StorageThread {
                             ),
                         };
                         if let Err(e) = result {
-                            eprintln!(
-                                "STORAGE THREAD: audit '{}' failed: {}",
-                                operation, e
-                            );
+                            eprintln!("STORAGE THREAD: audit '{}' failed: {}", operation, e);
                         }
                     }
 
@@ -1091,10 +1095,7 @@ impl StorageThread {
                                 }
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "STORAGE THREAD: sweep_sticker_readings failed: {}",
-                                    e
-                                );
+                                eprintln!("STORAGE THREAD: sweep_sticker_readings failed: {}", e);
                             }
                         }
                     }
@@ -1102,7 +1103,10 @@ impl StorageThread {
                     StorageMessage::Shutdown => {
                         if pending_writes > 0 {
                             let _ = conn.execute("PRAGMA wal_checkpoint(RESTART)", []);
-                            eprintln!("STORAGE THREAD: Final flush of {} pending writes", pending_writes);
+                            eprintln!(
+                                "STORAGE THREAD: Final flush of {} pending writes",
+                                pending_writes
+                            );
                         }
                         eprintln!(
                             "STORAGE THREAD: Shutting down after processing {} messages",
@@ -1126,7 +1130,10 @@ impl StorageThread {
                     if let Ok(should_clean) = retention_policy.needs_cleanup(&db) {
                         if should_clean {
                             if let Ok(usage) = retention_policy.get_usage_percent(&db) {
-                                eprintln!("STORAGE THREAD: Storage at {:.1}%, enforcing retention", usage);
+                                eprintln!(
+                                    "STORAGE THREAD: Storage at {:.1}%, enforcing retention",
+                                    usage
+                                );
                                 let _ = retention_policy.enforce(&db, &mut conn);
                             }
                         }
@@ -1147,13 +1154,7 @@ mod tests {
             StorageThread::spawn("/tmp/test_thread.db", 5).expect("Failed to spawn thread");
 
         // Send a write message
-        let result = handle.write_sensor_reading(
-            1000,
-            0,
-            36.5,
-            true,
-            AlarmState::Normal,
-        );
+        let result = handle.write_sensor_reading(1000, 0, 36.5, true, AlarmState::Normal);
         assert!(result.is_ok());
 
         let _ = handle.shutdown();
@@ -1228,7 +1229,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(details.contains("dr.jane"), "signer missing from audit row: {details}");
+        assert!(
+            details.contains("dr.jane"),
+            "signer missing from audit row: {details}"
+        );
 
         handle.shutdown().unwrap();
         join.join().unwrap();
@@ -1256,7 +1260,9 @@ mod tests {
         let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
 
         // Absent → true
-        assert!(handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
+        assert!(handle
+            .dev_eui_last_event_was_removal_or_absent("abc".into())
+            .unwrap());
 
         handle
             .write_sticker_reading(
@@ -1271,12 +1277,16 @@ mod tests {
             .unwrap();
         handle.flush().unwrap();
         // Last event is uplink → false
-        assert!(!handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
+        assert!(!handle
+            .dev_eui_last_event_was_removal_or_absent("abc".into())
+            .unwrap());
 
         handle.append_sticker_removed("abc".into(), 1100).unwrap();
         handle.flush().unwrap();
         // Last event is sticker_removed → true
-        assert!(handle.dev_eui_last_event_was_removal_or_absent("abc".into()).unwrap());
+        assert!(handle
+            .dev_eui_last_event_was_removal_or_absent("abc".into())
+            .unwrap());
 
         handle.shutdown().unwrap();
         join.join().unwrap();

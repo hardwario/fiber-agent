@@ -72,12 +72,7 @@ impl ConfigValidator {
         Self::validate_temperature_range(critical_high, "critical_high")?;
 
         // Validate ordering
-        Self::validate_threshold_ordering(
-            critical_low,
-            warning_low,
-            warning_high,
-            critical_high,
-        )?;
+        Self::validate_threshold_ordering(critical_low, warning_low, warning_high, critical_high)?;
 
         Ok(())
     }
@@ -306,18 +301,14 @@ mod tests {
 
     #[test]
     fn test_valid_threshold_ordering() {
-        let result = ConfigValidator::validate_threshold_ordering(
-            32.0, 35.0, 39.0, 42.0,
-        );
+        let result = ConfigValidator::validate_threshold_ordering(32.0, 35.0, 39.0, 42.0);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_invalid_threshold_ordering() {
         // critical_low >= warning_low
-        let result = ConfigValidator::validate_threshold_ordering(
-            36.0, 35.0, 39.0, 42.0,
-        );
+        let result = ConfigValidator::validate_threshold_ordering(36.0, 35.0, 39.0, 42.0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("critical_low"));
     }
@@ -334,28 +325,16 @@ mod tests {
     #[test]
     fn test_sensor_thresholds_validation() {
         // Valid thresholds
-        assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 35.0, 39.0, 42.0
-        )
-        .is_ok());
+        assert!(ConfigValidator::validate_sensor_thresholds(0, 32.0, 35.0, 39.0, 42.0).is_ok());
 
         // Invalid line number
-        assert!(ConfigValidator::validate_sensor_thresholds(
-            99, 32.0, 35.0, 39.0, 42.0
-        )
-        .is_err());
+        assert!(ConfigValidator::validate_sensor_thresholds(99, 32.0, 35.0, 39.0, 42.0).is_err());
 
         // Temperature out of range
-        assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 35.0, 39.0, 150.0
-        )
-        .is_err());
+        assert!(ConfigValidator::validate_sensor_thresholds(0, 32.0, 35.0, 39.0, 150.0).is_err());
 
         // Invalid ordering
-        assert!(ConfigValidator::validate_sensor_thresholds(
-            0, 32.0, 38.0, 36.0, 42.0
-        )
-        .is_err());
+        assert!(ConfigValidator::validate_sensor_thresholds(0, 32.0, 38.0, 36.0, 42.0).is_err());
     }
 
     // ---- device label validation ------------------------------------------------
@@ -377,7 +356,10 @@ mod tests {
     fn device_label_rejects_too_long() {
         let s = "A".repeat(MAX_DEVICE_LABEL_LEN + 1);
         let err = validate_device_label(&s).unwrap_err();
-        assert!(err.contains(&MAX_DEVICE_LABEL_LEN.to_string()), "got: {err}");
+        assert!(
+            err.contains(&MAX_DEVICE_LABEL_LEN.to_string()),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -528,7 +510,12 @@ mod display_line_tests {
 
     #[test]
     fn rejects_bad_dev_eui() {
-        for bad in ["70b3d57ed0051f2", "70b3d57ed0051f2ab", "70b3d57ed0051fZZ", ""] {
+        for bad in [
+            "70b3d57ed0051f2",
+            "70b3d57ed0051f2ab",
+            "70b3d57ed0051fZZ",
+            "",
+        ] {
             let err = validate_display_line(&sticker(bad, "temperature")).unwrap_err();
             assert!(err.contains("16 hex"), "for {:?} got: {}", bad, err);
         }

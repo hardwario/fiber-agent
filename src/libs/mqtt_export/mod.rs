@@ -7,9 +7,9 @@ pub mod config;
 pub mod destination;
 pub mod drain;
 pub mod envelope;
-pub mod replay;
 #[cfg(test)]
 mod integration_tests;
+pub mod replay;
 
 pub use config::{DestinationConfig, ExportConfig, TlsConfig};
 pub use destination::RumqttcDestination;
@@ -156,12 +156,8 @@ impl MqttExportThread {
             if let Some(conn) = export_conn.as_ref() {
                 for (broker_id, _dest, streams) in &destinations {
                     for s in streams {
-                        let cur = StorageReader::load_export_cursor(
-                            conn,
-                            broker_id,
-                            s.as_str(),
-                        )
-                        .unwrap_or(0);
+                        let cur = StorageReader::load_export_cursor(conn, broker_id, s.as_str())
+                            .unwrap_or(0);
                         cursors.insert((broker_id.clone(), s.as_str()), cur);
                     }
                 }

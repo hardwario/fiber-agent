@@ -32,13 +32,16 @@ pub fn send_to(path: &str, req: &Request) -> Result<Response, String> {
     line.push('\n');
     {
         let mut w = &stream;
-        w.write_all(line.as_bytes()).map_err(|e| format!("write request: {e}"))?;
+        w.write_all(line.as_bytes())
+            .map_err(|e| format!("write request: {e}"))?;
         w.flush().map_err(|e| format!("flush request: {e}"))?;
     }
 
     let mut reader = BufReader::new(&stream);
     let mut resp_line = String::new();
-    let n = reader.read_line(&mut resp_line).map_err(|e| format!("read response: {e}"))?;
+    let n = reader
+        .read_line(&mut resp_line)
+        .map_err(|e| format!("read response: {e}"))?;
     if n == 0 {
         return Err("daemon closed the connection without responding".to_string());
     }

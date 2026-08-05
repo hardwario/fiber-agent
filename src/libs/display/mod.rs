@@ -5,18 +5,18 @@
 //! alarm states, and status indicators in a multi-page format.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rppal::gpio::Gpio;
 
-use crate::libs::leds::SharedLedStateHandle;
-use crate::libs::sensors::SharedSensorStateHandle;
-use crate::libs::network::{NetworkStatus, SharedProvisioningSession};
-use crate::libs::lorawan::SharedLoRaWANState;
 use crate::libs::buzzer::BuzzerPriorityManager;
+use crate::libs::leds::SharedLedStateHandle;
+use crate::libs::lorawan::SharedLoRaWANState;
+use crate::libs::network::{NetworkStatus, SharedProvisioningSession};
+use crate::libs::sensors::SharedSensorStateHandle;
 
 /// Type alias for shared screen brightness handle (0-100%)
 pub type SharedScreenBrightnessHandle = Arc<AtomicU8>;
@@ -78,14 +78,14 @@ impl OverviewMode {
 pub const SYSTEM_INFO_PAGES: usize = 3;
 
 pub mod blank;
-pub mod font;
-pub mod monitor;
-pub mod screens;
-pub mod overview;
-pub mod supervise;
 pub mod buttons;
+pub mod font;
 pub mod icons;
+pub mod monitor;
+pub mod overview;
+pub mod screens;
 pub mod splash;
+pub mod supervise;
 
 pub use buttons::ButtonMonitor;
 
@@ -114,9 +114,16 @@ pub enum Screen {
     /// BLE provisioning a WiFi connection.
     BleProvisioning { ssid: String },
     /// WiFi provisioning succeeded — auto-reverts at `until`.
-    BleWifiOk { ssid: String, ip: String, until: std::time::Instant },
+    BleWifiOk {
+        ssid: String,
+        ip: String,
+        until: std::time::Instant,
+    },
     /// WiFi provisioning failed — auto-reverts at `until`.
-    BleWifiFail { error: String, until: std::time::Instant },
+    BleWifiFail {
+        error: String,
+        until: std::time::Instant,
+    },
 }
 
 impl Screen {
@@ -143,7 +150,15 @@ impl Screen {
 
     /// Check if this is a special screen (QR code or Pairing - System info allows navigation)
     pub fn is_special_screen(&self) -> bool {
-        matches!(self, Screen::QrCodeConfig | Screen::Pairing { .. } | Screen::BleConnected { .. } | Screen::BleProvisioning { .. } | Screen::BleWifiOk { .. } | Screen::BleWifiFail { .. })
+        matches!(
+            self,
+            Screen::QrCodeConfig
+                | Screen::Pairing { .. }
+                | Screen::BleConnected { .. }
+                | Screen::BleProvisioning { .. }
+                | Screen::BleWifiOk { .. }
+                | Screen::BleWifiFail { .. }
+        )
     }
 
     /// Check if this is a pairing screen
@@ -158,7 +173,10 @@ impl Screen {
 
     /// Check if this is a navigable screen (Sensor Overview or System Info)
     pub fn is_navigable(&self) -> bool {
-        matches!(self, Screen::SensorOverview { .. } | Screen::SystemInfo { .. })
+        matches!(
+            self,
+            Screen::SensorOverview { .. } | Screen::SystemInfo { .. }
+        )
     }
 
     /// Check if this is a sensor overview screen
@@ -168,18 +186,29 @@ impl Screen {
 
     /// Check if sensor selection mode is active
     pub fn is_selection_mode(&self) -> bool {
-        matches!(self, Screen::SensorOverview { selected_sensor: Some(_), .. })
+        matches!(
+            self,
+            Screen::SensorOverview {
+                selected_sensor: Some(_),
+                ..
+            }
+        )
     }
 
     /// Check if this is a sensor detail screen (DS18B20 or LoRaWAN)
     pub fn is_sensor_detail(&self) -> bool {
-        matches!(self, Screen::SensorDetail { .. } | Screen::LoRaWANSensorDetail { .. })
+        matches!(
+            self,
+            Screen::SensorDetail { .. } | Screen::LoRaWANSensorDetail { .. }
+        )
     }
 
     /// Get selected sensor index if in selection mode
     pub fn get_selected_sensor(&self) -> Option<usize> {
         match self {
-            Screen::SensorOverview { selected_sensor, .. } => *selected_sensor,
+            Screen::SensorOverview {
+                selected_sensor, ..
+            } => *selected_sensor,
             _ => None,
         }
     }
@@ -229,7 +258,10 @@ pub struct DisplayState {
 impl DisplayState {
     pub fn new() -> Self {
         Self {
-            current_screen: Screen::SensorOverview { page: 0, selected_sensor: None },
+            current_screen: Screen::SensorOverview {
+                page: 0,
+                selected_sensor: None,
+            },
             should_update: true,
             provisioning_session: None,
             network_status: NetworkStatus::disconnected(),
@@ -317,7 +349,8 @@ impl DisplayState {
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
         ds_has_reported: &[bool; 8],
     ) -> usize {
-        self.overview_mode(ds_readings, ds_has_reported).total_pages()
+        self.overview_mode(ds_readings, ds_has_reported)
+            .total_pages()
     }
 
     /// Pull the overview page and the selection cursor back into range after
@@ -326,7 +359,11 @@ impl DisplayState {
     /// selection mode with no cursor drawn — until the next button press.
     /// No-op on any other screen.
     pub fn clamp_overview(&mut self, entries: &[crate::libs::display::screens::OverviewEntry]) {
-        let Screen::SensorOverview { page, selected_sensor } = &self.current_screen else {
+        let Screen::SensorOverview {
+            page,
+            selected_sensor,
+        } = &self.current_screen
+        else {
             return;
         };
         let (page, selected_sensor) = (*page, *selected_sensor);
@@ -360,21 +397,23 @@ impl DisplayState {
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
         ds_has_reported: &[bool; 8],
     ) -> Vec<crate::libs::display::screens::OverviewEntry> {
-        let lr_vec: Vec<crate::libs::lorawan::state::LoRaWANSensorState> =
-            self.lorawan_state.as_ref()
-                .and_then(|s| s.read().ok())
-                .map(|s| {
-                    let mut v: Vec<_> = s.sensors.values().cloned().collect();
-                    v.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
-                    v
-                })
-                .unwrap_or_default();
+        let lr_vec: Vec<crate::libs::lorawan::state::LoRaWANSensorState> = self
+            .lorawan_state
+            .as_ref()
+            .and_then(|s| s.read().ok())
+            .map(|s| {
+                let mut v: Vec<_> = s.sensors.values().cloned().collect();
+                v.sort_by(|a, b| a.dev_eui.cmp(&b.dev_eui));
+                v
+            })
+            .unwrap_or_default();
         crate::libs::display::screens::ordered_sensors(ds_readings, ds_has_reported, &lr_vec)
     }
 
     /// Get sorted LoRaWAN dev_euis for consistent indexing
     pub fn sorted_lorawan_dev_euis(&self) -> Vec<String> {
-        self.lorawan_state.as_ref()
+        self.lorawan_state
+            .as_ref()
             .and_then(|s| s.read().ok())
             .map(|s| {
                 let mut euis: Vec<String> = s.sensors.keys().cloned().collect();
@@ -403,7 +442,10 @@ impl DisplayState {
         ds_has_reported: &[bool; 8],
     ) {
         match self.current_screen {
-            Screen::SensorOverview { page, selected_sensor: None } => {
+            Screen::SensorOverview {
+                page,
+                selected_sensor: None,
+            } => {
                 let total = self.total_pages(ds_readings, ds_has_reported);
                 let next = if page + 1 >= total { 0 } else { page + 1 };
                 self.current_screen = Screen::SensorOverview {
@@ -413,7 +455,11 @@ impl DisplayState {
             }
             Screen::SystemInfo { page } => {
                 // System info has 3 pages (0, 1, 2)
-                let next = if page + 1 >= SYSTEM_INFO_PAGES { 0 } else { page + 1 };
+                let next = if page + 1 >= SYSTEM_INFO_PAGES {
+                    0
+                } else {
+                    page + 1
+                };
                 self.current_screen = Screen::SystemInfo { page: next };
             }
             _ => {}
@@ -447,7 +493,10 @@ impl DisplayState {
 
     /// Return to sensor overview (page 0, no selection)
     pub fn show_sensor_overview(&mut self) {
-        self.current_screen = Screen::SensorOverview { page: 0, selected_sensor: None };
+        self.current_screen = Screen::SensorOverview {
+            page: 0,
+            selected_sensor: None,
+        };
     }
 
     /// Switch to system info screen (page 0)
@@ -464,13 +513,17 @@ impl DisplayState {
     /// Show "BLE Connected" with truncated address.
     pub fn show_ble_connected(&mut self, addr: &str) {
         let short = if addr.len() > 17 { &addr[..17] } else { addr };
-        self.current_screen = Screen::BleConnected { addr: short.to_string() };
+        self.current_screen = Screen::BleConnected {
+            addr: short.to_string(),
+        };
         self.should_update = true;
     }
 
     /// Show "Connecting WiFi..." with the SSID being attempted.
     pub fn show_ble_provisioning(&mut self, ssid: &str) {
-        self.current_screen = Screen::BleProvisioning { ssid: ssid.to_string() };
+        self.current_screen = Screen::BleProvisioning {
+            ssid: ssid.to_string(),
+        };
         self.should_update = true;
     }
 
@@ -515,7 +568,9 @@ impl DisplayState {
     ) {
         if let Screen::SensorOverview { page, .. } = self.current_screen {
             let entries = self.ordered_entries(ds_readings, ds_has_reported);
-            if entries.is_empty() { return; }
+            if entries.is_empty() {
+                return;
+            }
             let pos = (page * screens::ROWS_PER_PAGE).min(entries.len() - 1);
             // Derive the page from the clamped cursor rather than carrying the
             // old one over. Selection mode pages over the sensor list, which can
@@ -542,7 +597,11 @@ impl DisplayState {
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
         ds_has_reported: &[bool; 8],
     ) {
-        if let Screen::SensorOverview { page, selected_sensor: Some(_) } = self.current_screen {
+        if let Screen::SensorOverview {
+            page,
+            selected_sensor: Some(_),
+        } = self.current_screen
+        {
             // Selection mode pages over the full sensor list, which may have
             // more pages than the custom-line list we're returning to. Without
             // this clamp the stale page would land past the end of the rows and
@@ -565,10 +624,19 @@ impl DisplayState {
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
         ds_has_reported: &[bool; 8],
     ) {
-        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+        if let Screen::SensorOverview {
+            selected_sensor: Some(idx),
+            ..
+        } = self.current_screen
+        {
             let entries = self.ordered_entries(ds_readings, ds_has_reported);
-            if entries.is_empty() { return; }
-            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
+            if entries.is_empty() {
+                return;
+            }
+            let pos = entries
+                .iter()
+                .position(|e| e.global_idx == idx)
+                .unwrap_or(0);
             let new_pos = if pos == 0 { entries.len() - 1 } else { pos - 1 };
             let new_global = entries[new_pos].global_idx;
             let new_page = new_pos / screens::ROWS_PER_PAGE;
@@ -586,10 +654,19 @@ impl DisplayState {
         ds_readings: &[Option<crate::libs::sensors::state::SensorReading>; 8],
         ds_has_reported: &[bool; 8],
     ) {
-        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+        if let Screen::SensorOverview {
+            selected_sensor: Some(idx),
+            ..
+        } = self.current_screen
+        {
             let entries = self.ordered_entries(ds_readings, ds_has_reported);
-            if entries.is_empty() { return; }
-            let pos = entries.iter().position(|e| e.global_idx == idx).unwrap_or(0);
+            if entries.is_empty() {
+                return;
+            }
+            let pos = entries
+                .iter()
+                .position(|e| e.global_idx == idx)
+                .unwrap_or(0);
             let new_pos = if pos + 1 >= entries.len() { 0 } else { pos + 1 };
             let new_global = entries[new_pos].global_idx;
             let new_page = new_pos / screens::ROWS_PER_PAGE;
@@ -603,13 +680,19 @@ impl DisplayState {
 
     /// Enter detail view for selected sensor
     pub fn enter_detail_view(&mut self) {
-        if let Screen::SensorOverview { selected_sensor: Some(idx), .. } = self.current_screen {
+        if let Screen::SensorOverview {
+            selected_sensor: Some(idx),
+            ..
+        } = self.current_screen
+        {
             if idx >= 8 {
                 // LoRaWAN sensor - find dev_eui by sorted index
                 let lorawan_idx = idx - 8;
                 let dev_euis = self.sorted_lorawan_dev_euis();
                 if let Some(dev_eui) = dev_euis.get(lorawan_idx) {
-                    self.current_screen = Screen::LoRaWANSensorDetail { dev_eui: dev_eui.clone() };
+                    self.current_screen = Screen::LoRaWANSensorDetail {
+                        dev_eui: dev_eui.clone(),
+                    };
                     self.lorawan_detail_page = 0;
                     self.should_update = true;
                 }
@@ -812,8 +895,15 @@ mod paging_tests {
         // Page mode: one custom line, one page.
         assert_eq!(ds.total_pages(&r, &h), 1);
         // Selection mode falls back to the canonical sensor list.
-        ds.current_screen = Screen::SensorOverview { page: 0, selected_sensor: Some(0) };
-        assert_eq!(ds.total_pages(&r, &h), 2, "8 DS18B20 slots over 4 rows/page");
+        ds.current_screen = Screen::SensorOverview {
+            page: 0,
+            selected_sensor: Some(0),
+        };
+        assert_eq!(
+            ds.total_pages(&r, &h),
+            2,
+            "8 DS18B20 slots over 4 rows/page"
+        );
     }
 
     #[test]
@@ -827,15 +917,27 @@ mod paging_tests {
         // with no custom lines the row count is the *filtered* sensor list, not
         // all 8 slots. Guards against reverting to `total_sensor_count()`.
         let r = no_readings();
-        assert_eq!(state(0).total_pages(&r, &none_reported()), 1, "nothing visible still has one page");
+        assert_eq!(
+            state(0).total_pages(&r, &none_reported()),
+            1,
+            "nothing visible still has one page"
+        );
 
         let mut four = none_reported();
         four[0..4].fill(true);
-        assert_eq!(state(0).total_pages(&r, &four), 1, "4 visible rows fit one page");
+        assert_eq!(
+            state(0).total_pages(&r, &four),
+            1,
+            "4 visible rows fit one page"
+        );
 
         let mut five = none_reported();
         five[0..5].fill(true);
-        assert_eq!(state(0).total_pages(&r, &five), 2, "5 visible rows spill onto a second page");
+        assert_eq!(
+            state(0).total_pages(&r, &five),
+            2,
+            "5 visible rows spill onto a second page"
+        );
     }
 
     #[test]
@@ -843,7 +945,10 @@ mod paging_tests {
         // Selection mode falls back to the canonical list, and that list is
         // filtered too — so an unreported slot is not selectable.
         let mut ds = state(1);
-        ds.current_screen = Screen::SensorOverview { page: 0, selected_sensor: Some(0) };
+        ds.current_screen = Screen::SensorOverview {
+            page: 0,
+            selected_sensor: Some(0),
+        };
         assert_eq!(ds.total_pages(&no_readings(), &none_reported()), 1);
     }
 
@@ -874,9 +979,15 @@ mod paging_tests {
         let r = no_readings();
         for custom_line_count in 0..=64usize {
             for selected in [None, Some(0usize)] {
-                for (label, h) in [("none reported", none_reported()), ("all reported", all_reported())] {
+                for (label, h) in [
+                    ("none reported", none_reported()),
+                    ("all reported", all_reported()),
+                ] {
                     let mut ds = state(custom_line_count);
-                    ds.current_screen = Screen::SensorOverview { page: 0, selected_sensor: selected };
+                    ds.current_screen = Screen::SensorOverview {
+                        page: 0,
+                        selected_sensor: selected,
+                    };
                     let total = ds.total_pages(&r, &h);
                     assert!(
                         total >= 1,
@@ -888,14 +999,22 @@ mod paging_tests {
 
                     // And next_page() must map every valid page back into range.
                     for page in 0..total {
-                        ds.current_screen = Screen::SensorOverview { page, selected_sensor: selected };
+                        ds.current_screen = Screen::SensorOverview {
+                            page,
+                            selected_sensor: selected,
+                        };
                         ds.next_page(&r, &h);
                         if selected.is_some() {
                             // Paging is disabled in selection mode.
                             assert_eq!(ds.current_screen.get_page(), Some(page));
                         } else {
                             let next = ds.current_screen.get_page().expect("still on overview");
-                            assert!(next < total, "next_page() left range: {} >= {}", next, total);
+                            assert!(
+                                next < total,
+                                "next_page() left range: {} >= {}",
+                                next,
+                                total
+                            );
                         }
                     }
                 }
@@ -908,7 +1027,10 @@ mod paging_tests {
         // Regression guard for the divide-by-zero this arithmetic used to have:
         // must land on a valid page, and above all must not panic.
         let mut ds = state(0);
-        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        ds.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: None,
+        };
         ds.next_page(&no_readings(), &all_reported());
         assert_eq!(ds.current_screen.get_page(), Some(0));
     }
@@ -917,7 +1039,10 @@ mod paging_tests {
     fn next_page_wraps_at_last_custom_page() {
         let (r, h) = (no_readings(), all_reported());
         let mut ds = state(16);
-        ds.current_screen = Screen::SensorOverview { page: 2, selected_sensor: None };
+        ds.current_screen = Screen::SensorOverview {
+            page: 2,
+            selected_sensor: None,
+        };
         ds.next_page(&r, &h);
         assert_eq!(ds.current_screen.get_page(), Some(3));
         ds.next_page(&r, &h);
@@ -930,7 +1055,11 @@ mod paging_tests {
         let mut ds = state(0);
         for expected in [1, 2, 0] {
             ds.current_screen = Screen::SystemInfo {
-                page: if expected == 0 { SYSTEM_INFO_PAGES - 1 } else { expected - 1 },
+                page: if expected == 0 {
+                    SYSTEM_INFO_PAGES - 1
+                } else {
+                    expected - 1
+                },
             };
             ds.next_page(&r, &h);
             assert_eq!(ds.current_screen.get_page(), Some(expected));
@@ -943,7 +1072,10 @@ mod paging_tests {
         // single custom line (1 page). Without the clamp the stale page 1 would
         // render an empty screen.
         let mut ds = state(1);
-        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(4) };
+        ds.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: Some(4),
+        };
         ds.exit_selection_mode(&no_readings(), &all_reported());
         assert_eq!(ds.current_screen.get_page(), Some(0));
         assert_eq!(ds.current_screen.get_selected_sensor(), None);
@@ -957,7 +1089,10 @@ mod paging_tests {
         // actually contains the cursor, not leave a blank "SEL" screen.
         let (r, h) = (no_readings(), all_reported());
         let mut ds = state(16);
-        ds.current_screen = Screen::SensorOverview { page: 3, selected_sensor: None };
+        ds.current_screen = Screen::SensorOverview {
+            page: 3,
+            selected_sensor: None,
+        };
         ds.enter_selection_mode(&r, &h);
 
         let page = ds.current_screen.get_page().expect("still on overview");
@@ -967,7 +1102,10 @@ mod paging_tests {
 
         // And the cursor must be on the page being shown.
         let entries = ds.ordered_entries(&r, &h);
-        let pos = entries.iter().position(|e| e.global_idx == selected).unwrap();
+        let pos = entries
+            .iter()
+            .position(|e| e.global_idx == selected)
+            .unwrap();
         assert_eq!(pos / screens::ROWS_PER_PAGE, page, "cursor is off-page");
     }
 
@@ -977,20 +1115,29 @@ mod paging_tests {
         // and must survive, cursor landing on the first row of that page.
         let (r, h) = (no_readings(), all_reported());
         let mut ds = state(0);
-        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        ds.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: None,
+        };
         ds.enter_selection_mode(&r, &h);
         assert_eq!(ds.current_screen.get_page(), Some(1));
 
         let selected = ds.current_screen.get_selected_sensor().expect("cursor set");
         let entries = ds.ordered_entries(&r, &h);
-        let pos = entries.iter().position(|e| e.global_idx == selected).unwrap();
+        let pos = entries
+            .iter()
+            .position(|e| e.global_idx == selected)
+            .unwrap();
         assert_eq!(pos, screens::ROWS_PER_PAGE, "first row of page 1");
     }
 
     #[test]
     fn exit_selection_mode_keeps_valid_page() {
         let mut ds = state(16);
-        ds.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(4) };
+        ds.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: Some(4),
+        };
         ds.exit_selection_mode(&no_readings(), &all_reported());
         assert_eq!(ds.current_screen.get_page(), Some(1));
     }
@@ -1003,7 +1150,11 @@ mod pagination_tests {
     use crate::libs::sensors::state::SensorReading;
 
     fn connected(temp: f32) -> Option<SensorReading> {
-        Some(SensorReading { temperature: temp, is_connected: true, alarm_state: AlarmState::Normal })
+        Some(SensorReading {
+            temperature: temp,
+            is_connected: true,
+            alarm_state: AlarmState::Normal,
+        })
     }
 
     fn empty_ds() -> [Option<SensorReading>; 8] {
@@ -1025,7 +1176,9 @@ mod pagination_tests {
     fn total_pages_counts_only_visible_sensors() {
         let state = DisplayState::new();
         let mut ds_arr = empty_ds();
-        for i in 0..3 { ds_arr[i] = connected(20.0); }
+        for i in 0..3 {
+            ds_arr[i] = connected(20.0);
+        }
         assert_eq!(state.total_pages(&ds_arr, &no_reports()), 1);
         ds_arr[4] = connected(20.0);
         ds_arr[5] = connected(20.0);
@@ -1036,31 +1189,50 @@ mod pagination_tests {
     fn next_page_does_not_divide_by_zero_when_nothing_reported() {
         let mut state = DisplayState::new();
         state.next_page(&empty_ds(), &no_reports());
-        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 0, .. }));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, .. }
+        ));
     }
 
     /// `n` visible DS18B20 entries, slots 0..n.
     fn entries(n: usize) -> Vec<crate::libs::display::screens::OverviewEntry> {
         use crate::libs::display::screens::{OverviewEntry, OverviewKind};
         (0..n)
-            .map(|i| OverviewEntry { kind: OverviewKind::Ds18b20, global_idx: i, active: true })
+            .map(|i| OverviewEntry {
+                kind: OverviewKind::Ds18b20,
+                global_idx: i,
+                active: true,
+            })
             .collect()
     }
 
     #[test]
     fn clamp_overview_pulls_stale_page_back() {
         let mut state = DisplayState::new();
-        state.current_screen = Screen::SensorOverview { page: 3, selected_sensor: None };
+        state.current_screen = Screen::SensorOverview {
+            page: 3,
+            selected_sensor: None,
+        };
         state.clamp_overview(&entries(2));
-        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 0, .. }));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, .. }
+        ));
     }
 
     #[test]
     fn clamp_overview_leaves_valid_page_alone() {
         let mut state = DisplayState::new();
-        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: None };
+        state.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: None,
+        };
         state.clamp_overview(&entries(6));
-        assert!(matches!(state.current_screen, Screen::SensorOverview { page: 1, .. }));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 1, .. }
+        ));
     }
 
     /// A cursor left pointing at a sensor that dropped off the list (a LoRa
@@ -1068,11 +1240,17 @@ mod pagination_tests {
     #[test]
     fn clamp_overview_moves_cursor_off_a_vanished_sensor() {
         let mut state = DisplayState::new();
-        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(9) };
+        state.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: Some(9),
+        };
         state.clamp_overview(&entries(2));
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: Some(0) }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: Some(0)
+            }
         ));
         assert!(state.should_update);
     }
@@ -1080,22 +1258,34 @@ mod pagination_tests {
     #[test]
     fn clamp_overview_drops_selection_when_nothing_visible() {
         let mut state = DisplayState::new();
-        state.current_screen = Screen::SensorOverview { page: 0, selected_sensor: Some(3) };
+        state.current_screen = Screen::SensorOverview {
+            page: 0,
+            selected_sensor: Some(3),
+        };
         state.clamp_overview(&entries(0));
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: None }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: None
+            }
         ));
     }
 
     #[test]
     fn clamp_overview_keeps_a_still_listed_cursor() {
         let mut state = DisplayState::new();
-        state.current_screen = Screen::SensorOverview { page: 1, selected_sensor: Some(5) };
+        state.current_screen = Screen::SensorOverview {
+            page: 1,
+            selected_sensor: Some(5),
+        };
         state.clamp_overview(&entries(6));
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 1, selected_sensor: Some(5) }
+            Screen::SensorOverview {
+                page: 1,
+                selected_sensor: Some(5)
+            }
         ));
     }
 
@@ -1104,7 +1294,10 @@ mod pagination_tests {
         let mut state = DisplayState::new();
         state.current_screen = Screen::SystemInfo { page: 2 };
         state.clamp_overview(&entries(0));
-        assert!(matches!(state.current_screen, Screen::SystemInfo { page: 2 }));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SystemInfo { page: 2 }
+        ));
     }
 
     #[test]
@@ -1118,7 +1311,10 @@ mod pagination_tests {
         // Must select something the renderer can draw a cursor for, not slot 1.
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: Some(4)
+            }
         ));
     }
 
@@ -1131,7 +1327,10 @@ mod pagination_tests {
         state.exit_detail_view(&ds_arr, &no_reports());
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: Some(4)
+            }
         ));
     }
 
@@ -1142,7 +1341,10 @@ mod pagination_tests {
         state.exit_detail_view(&empty_ds(), &no_reports());
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: None }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: None
+            }
         ));
     }
 
@@ -1155,11 +1357,16 @@ mod pagination_tests {
         let mut state = DisplayState::new();
         let mut ds_arr = empty_ds();
         ds_arr[4] = connected(20.0);
-        state.current_screen = Screen::LoRaWANSensorDetail { dev_eui: "0011223344556677".to_string() };
+        state.current_screen = Screen::LoRaWANSensorDetail {
+            dev_eui: "0011223344556677".to_string(),
+        };
         state.exit_detail_view(&ds_arr, &no_reports());
         assert!(matches!(
             state.current_screen,
-            Screen::SensorOverview { page: 0, selected_sensor: Some(4) }
+            Screen::SensorOverview {
+                page: 0,
+                selected_sensor: Some(4)
+            }
         ));
     }
 
@@ -1168,6 +1375,9 @@ mod pagination_tests {
         let mut state = DisplayState::new();
         state.current_screen = Screen::SystemInfo { page: 1 };
         state.exit_detail_view(&empty_ds(), &no_reports());
-        assert!(matches!(state.current_screen, Screen::SystemInfo { page: 1 }));
+        assert!(matches!(
+            state.current_screen,
+            Screen::SystemInfo { page: 1 }
+        ));
     }
 }

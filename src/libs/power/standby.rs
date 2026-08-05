@@ -314,7 +314,10 @@ static SETTINGS: OnceLock<StandbySettings> = OnceLock::new();
 
 /// Publish the standby settings. Called once, early in `main`.
 pub fn init(marker_dir: PathBuf, config: StandbyConfig) {
-    if SETTINGS.set(StandbySettings { marker_dir, config }).is_err() {
+    if SETTINGS
+        .set(StandbySettings { marker_dir, config })
+        .is_err()
+    {
         eprintln!("[standby] WARN: settings already initialised — ignoring second init");
     }
 }
@@ -331,10 +334,7 @@ pub fn configured_marker_dir() -> PathBuf {
 
 /// The standby settings, or defaults if `init` never ran.
 pub fn config() -> StandbyConfig {
-    SETTINGS
-        .get()
-        .map(|s| s.config.clone())
-        .unwrap_or_default()
+    SETTINGS.get().map(|s| s.config.clone()).unwrap_or_default()
 }
 
 /// Directory the marker lives in, derived from the configured database path so
@@ -391,7 +391,10 @@ pub fn apply_cpu_governor(name: &str) {
     for policy in policies {
         let path = policy.join("scaling_governor");
         if let Err(e) = fs::write(&path, name) {
-            eprintln!("[standby] WARN: cannot set governor via {}: {e}", path.display());
+            eprintln!(
+                "[standby] WARN: cannot set governor via {}: {e}",
+                path.display()
+            );
         }
     }
 }
@@ -405,7 +408,10 @@ pub fn restore_cpu_governor() {
     for policy in governor_policies() {
         let path = policy.join("scaling_governor");
         if let Err(e) = fs::write(&path, saved) {
-            eprintln!("[standby] WARN: cannot restore governor via {}: {e}", path.display());
+            eprintln!(
+                "[standby] WARN: cannot restore governor via {}: {e}",
+                path.display()
+            );
         }
     }
 }
@@ -725,7 +731,9 @@ mod tests {
             reason: "r".into(),
             requested_by: "b".into(),
         };
-        assert!(marker.entered_at_rfc3339().starts_with("1970-01-01T00:00:00"));
+        assert!(marker
+            .entered_at_rfc3339()
+            .starts_with("1970-01-01T00:00:00"));
     }
 
     // --- marker_dir -------------------------------------------------------
@@ -756,7 +764,12 @@ mod tests {
         const T: u16 = 12000;
         let cases = [
             // (marker, vin, expected, why)
-            (false, Some(15000), BootDecision::Awake, "no marker, on mains"),
+            (
+                false,
+                Some(15000),
+                BootDecision::Awake,
+                "no marker, on mains",
+            ),
             (false, Some(0), BootDecision::Awake, "no marker, no power"),
             (false, None, BootDecision::Awake, "no marker, ADC silent"),
             (
@@ -897,7 +910,10 @@ mod tests {
         // Next poll: VIN still reads present, but carrier has bounced.
         assert!(!w.observe(true, true), "armed, first confirmation");
         assert_eq!(w.evidence(), Some(ArmEvidence::LinkDown));
-        assert!(w.observe(true, true), "second confirmation fires the resume");
+        assert!(
+            w.observe(true, true),
+            "second confirmation fires the resume"
+        );
     }
 
     #[test]
@@ -921,7 +937,10 @@ mod tests {
             assert!(!w.observe(false, true));
         }
         assert!(w.is_armed());
-        assert!(w.observe(true, true), "and it wakes once power is really back");
+        assert!(
+            w.observe(true, true),
+            "and it wakes once power is really back"
+        );
     }
 
     #[test]
@@ -929,7 +948,10 @@ mod tests {
         let mut w = ResumeWatch::new(3, false);
         assert!(!w.observe(true, false));
         assert!(!w.observe(true, false));
-        assert!(!w.observe(false, false), "flap resets the run but keeps it armed");
+        assert!(
+            !w.observe(false, false),
+            "flap resets the run but keeps it armed"
+        );
         assert!(w.is_armed());
         assert!(!w.observe(true, false));
         assert!(!w.observe(true, false));
@@ -942,7 +964,10 @@ mod tests {
         w.observe(true, false);
         assert!(w.observe(true, false));
         for _ in 0..10 {
-            assert!(!w.observe(true, false), "the resume must not re-fire every poll");
+            assert!(
+                !w.observe(true, false),
+                "the resume must not re-fire every poll"
+            );
         }
     }
 
