@@ -1435,6 +1435,60 @@ impl MqttMonitor {
         });
     }
 
+    /// Move the synchronous publish queue onto an awaitable channel.
+    ///
+    /// The event loop below is a `tokio::select!` whose other arms are periodic
+    /// timers. Draining the queue with `crossbeam`'s blocking
+    /// `recv_timeout(100ms)` broke every one of them: the call is synchronous
+    /// and all of its outcomes fall through, so that arm returned `Ready` on its
+    /// first poll every single time. `select!` short-circuits at the first ready
+    /// arm and drops the rest, so each freshly-created `sleep(100ms)` was polled
+    /// once at elapsed = 0, returned `Pending`, and was dropped — never
+    /// re-polled after its deadline, even though the deadline passed while
+    /// `recv_timeout` blocked. The periodic arms were unreachable in practice,
+    /// which is why `system/info` was never published at all and the Viewer's
+    /// power/network/system cards were permanently empty.
+    ///
+    /// `tokio::sync::mpsc::Receiver::recv` is both awaitable and cancel-safe, so
+    /// the arm can now pend and cannot lose a message when another arm wins —
+    /// the old code took the message off the queue before awaiting the publish,
+    /// and dropped it on the floor if `select!` resolved elsewhere meanwhile.
+    ///
+    /// The blocking receive still happens, but on a dedicated OS thread where it
+    /// costs nothing, rather than stalling a tokio worker for 100 ms per idle
+    /// iteration. Bounded at the same capacity so backpressure is unchanged.
+    fn spawn_publish_bridge(
+        receiver: Receiver<MqttMessage>,
+        capacity: usize,
+    ) -> tokio::sync::mpsc::Receiver<MqttMessage> {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity.max(1));
+
+        let spawned = thread::Builder::new()
+            .name("mqtt-publish-bridge".to_string())
+            .spawn(move || {
+                // Ok(_) until every MqttHandle sender is dropped; Err ends the
+                // thread, which in turn closes `rx` and tells the event loop to
+                // shut down.
+                while let Ok(msg) = receiver.recv() {
+                    // Safe here (and only here): this is a plain std::thread, not
+                    // a runtime worker.
+                    if tx.blocking_send(msg).is_err() {
+                        // Monitor task is gone; nothing left to publish to.
+                        break;
+                    }
+                }
+                eprintln!("[MQTT Monitor] Publish bridge stopped");
+            });
+
+        if let Err(e) = spawned {
+            // Without the bridge nothing can be published at all, so fail loudly
+            // rather than limping along with a silent queue.
+            panic!("Failed to spawn MQTT publish bridge thread: {}", e);
+        }
+
+        rx
+    }
+
     /// Main monitoring loop (runs in background thread)
     fn monitor_loop(
         config: MqttConfig,
@@ -1589,6 +1643,11 @@ impl MqttMonitor {
         // Track connection attempts for logging
         let mut connection_attempt: u32 = 0;
 
+        // Move the publish queue onto an awaitable channel before entering the
+        // runtime. See spawn_publish_bridge: the event loop's `select!` cannot
+        // work correctly while one of its arms is a blocking crossbeam recv.
+        let mut publish_rx = Self::spawn_publish_bridge(receiver, config.publish.max_queue_size);
+
         runtime.block_on(async {
             // Initialize reconnection state with exponential backoff
             let mut reconnect_state = ReconnectionState::new(
@@ -1740,17 +1799,41 @@ impl MqttMonitor {
 
                 eprintln!("[MQTT Monitor] Connection established, entering event loop");
 
-                // Initialize network monitoring for this connection
-                let mut last_network_check = Instant::now();
-                let mut last_known_network = get_network_status();
+                // Periodic jobs for this connection.
+                //
+                // These are real timers rather than `sleep(100ms)` polls inside
+                // the select arms. The old shape could not fire at all — see
+                // spawn_publish_bridge for the full explanation — which is why
+                // system/info was never published and network changes were never
+                // noticed. `MissedTickBehavior::Delay` keeps a stalled loop from
+                // firing a catch-up burst; the first tick of each interval
+                // completes immediately, so a fresh connection reports its status
+                // straight away instead of one interval later.
+                let interval_of = |period: Duration| {
+                    let mut iv = tokio::time::interval(period);
+                    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    iv
+                };
 
-                // Initialize periodic status reporting
-                let mut last_status_log = Instant::now();
+                // Deliberately still 5s, not config.publish.intervals.network_sec
+                // (which defaults to 30). That field was only ever echoed into
+                // config/state — no network publish loop has ever read it — so
+                // adopting it here would quietly make disconnect alarms six times
+                // slower. Repointing it is a separate decision.
+                let mut network_tick = interval_of(Duration::from_secs(5));
+                // Honour the configured cadence instead of a hardcoded 60s. The
+                // value was already parsed and echoed into config/state, but the
+                // publish loop never read it, so set_system_info_interval could
+                // not take effect.
+                let mut status_tick = interval_of(Duration::from_secs(
+                    config.publish.intervals.system_info_sec.max(1),
+                ));
+                let mut challenge_cleanup_tick = interval_of(Duration::from_secs(30));
+                let mut pairing_poll_tick = interval_of(Duration::from_millis(100));
+
+                let mut last_known_network = get_network_status();
                 let app_start_time = Instant::now();
                 let firmware_version = app_version.clone();
-
-                // Initialize periodic challenge cleanup
-                let mut last_challenge_cleanup = Instant::now();
 
                 // ========== INNER LOOP: Event Processing ==========
                 // This loop handles MQTT events until an error requires client recreation
@@ -2466,43 +2549,36 @@ impl MqttMonitor {
                         }
                     }
 
-                    // Handle messages from channel
-                    _ = async {
-                        // Check for messages with timeout
-                        match receiver.recv_timeout(Duration::from_millis(100)) {
-                            Ok(msg) => {
-                                match msg {
-                                    MqttMessage::Shutdown => {
-                                        eprintln!("[MQTT Monitor] Shutdown message received");
-                                        shutdown_flag.store(true, Ordering::Relaxed);
-                                    }
-                                    _ => {
-                                        // Publish message
-                                        if let Err(e) = publisher.handle_message(msg).await {
-                                            eprintln!("[MQTT Monitor] Failed to publish message: {}", e);
-                                        } else {
-                                            // Record successful publish
-                                            if let Ok(mut state) = connection_state.lock() {
-                                                state.record_publish();
-                                            }
-                                        }
+                    // Handle messages from channel. `recv` is cancel-safe, so a
+                    // message is never consumed unless this arm is the one that
+                    // wins the select.
+                    maybe_msg = publish_rx.recv() => {
+                        match maybe_msg {
+                            Some(MqttMessage::Shutdown) => {
+                                eprintln!("[MQTT Monitor] Shutdown message received");
+                                shutdown_flag.store(true, Ordering::Relaxed);
+                            }
+                            Some(msg) => {
+                                // Publish message
+                                if let Err(e) = publisher.handle_message(msg).await {
+                                    eprintln!("[MQTT Monitor] Failed to publish message: {}", e);
+                                } else {
+                                    // Record successful publish
+                                    if let Ok(mut state) = connection_state.lock() {
+                                        state.record_publish();
                                     }
                                 }
                             }
-                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                                // Timeout is expected, continue
-                            }
-                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                            None => {
                                 eprintln!("[MQTT Monitor] Channel disconnected");
                                 shutdown_flag.store(true, Ordering::Relaxed);
                             }
                         }
-                    } => {}
+                    }
 
-                    // Network status monitoring (every 5 seconds)
-                    _ = async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        if last_network_check.elapsed() > Duration::from_secs(5) {
+                    // Network status monitoring
+                    _ = network_tick.tick() => {
+                        {
                             let current_network = get_network_status();
 
                             // Detect network changes
@@ -2551,14 +2627,12 @@ impl MqttMonitor {
                             }
 
                             last_known_network = current_network;
-                            last_network_check = Instant::now();
                         }
-                    } => {}
+                    }
 
-                    // Periodic status reporting (every 60 seconds)
-                    _ = async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        if last_status_log.elapsed() > Duration::from_secs(60) {
+                    // Periodic status reporting — publishes system/info
+                    _ = status_tick.tick() => {
+                        {
                             if let Ok(state) = connection_state.lock() {
                                 eprintln!("[MQTT Monitor] === STATUS REPORT ===");
                                 eprintln!("[MQTT Monitor]   State: {:?}", state.state());
@@ -2647,28 +2721,23 @@ impl MqttMonitor {
                             }).await {
                                 eprintln!("[MQTT Monitor] Failed to publish system status: {}", e);
                             }
-
-                            last_status_log = Instant::now();
                         }
-                    } => {}
+                    }
 
                     // Periodic challenge cleanup (every 30 seconds)
-                    _ = async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        if last_challenge_cleanup.elapsed() > Duration::from_secs(30) {
+                    _ = challenge_cleanup_tick.tick() => {
+                        {
                             if let Some(ref auth) = auth_manager {
                                 let expired_count = auth.cleanup_expired_challenges();
                                 if expired_count > 0 {
                                     eprintln!("[MQTT Monitor] Cleaned up {} expired challenges", expired_count);
                                 }
                             }
-                            last_challenge_cleanup = Instant::now();
                         }
-                    } => {}
+                    }
 
                     // Poll for pairing results and publish them
-                    _ = async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    _ = pairing_poll_tick.tick() => {
                         if let Ok(ph_guard) = pairing_handle.lock() {
                             if let Some(ref ph) = *ph_guard {
                                 while let Some(result) = ph.try_recv_result() {
@@ -2690,7 +2759,7 @@ impl MqttMonitor {
                                 }
                             }
                         }
-                    } => {}
+                    }
                     }
                 } // End of inner event loop
             } // End of 'connection outer loop
@@ -4852,5 +4921,221 @@ mod tests {
             }
             _ => panic!("expected PublishConfigResponse"),
         }
+    }
+}
+
+#[cfg(test)]
+mod publish_bridge_tests {
+    use super::*;
+
+    /// The property whose absence broke every periodic publish.
+    ///
+    /// The event loop drained the publish queue with `crossbeam`'s blocking
+    /// `recv_timeout(100ms)` inside a `tokio::select!` arm. That call is
+    /// synchronous and all of its outcomes fall through, so the arm returned
+    /// `Ready` on its first poll every time — after 0 ms with a message queued,
+    /// after 100 ms of blocked worker thread without one. `select!`
+    /// short-circuits at the first ready arm and drops the others, so each
+    /// freshly built `sleep(100ms)` in the periodic arms was polled once at
+    /// elapsed = 0 and thrown away before it could be re-polled past its
+    /// deadline. `system/info` was therefore never published at all.
+    ///
+    /// An idle receive must *pend*. If this assertion ever fails, the periodic
+    /// arms are starved again.
+    #[tokio::test]
+    async fn idle_receive_pends_instead_of_returning_ready() {
+        let (_tx, receiver) = bounded::<MqttMessage>(8);
+        let mut rx = MqttMonitor::spawn_publish_bridge(receiver, 8);
+
+        let outcome = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+
+        assert!(
+            outcome.is_err(),
+            "an empty queue must leave the select arm pending, not resolve it"
+        );
+    }
+
+    #[tokio::test]
+    async fn forwards_queued_messages_in_order() {
+        let (tx, receiver) = bounded::<MqttMessage>(8);
+        let mut rx = MqttMonitor::spawn_publish_bridge(receiver, 8);
+
+        tx.send(MqttMessage::Shutdown).unwrap();
+        tx.send(MqttMessage::Shutdown).unwrap();
+
+        for _ in 0..2 {
+            let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("bridge should forward promptly")
+                .expect("channel should still be open");
+            assert!(matches!(msg, MqttMessage::Shutdown));
+        }
+    }
+
+    /// Dropping every sender must close the bridge, so the loop sees `None` and
+    /// shuts down rather than spinning on a dead queue.
+    #[tokio::test]
+    async fn closes_when_all_senders_drop() {
+        let (tx, receiver) = bounded::<MqttMessage>(8);
+        let mut rx = MqttMonitor::spawn_publish_bridge(receiver, 8);
+
+        drop(tx);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("bridge should notice the disconnect");
+        assert!(outcome.is_none(), "expected the channel to be closed");
+    }
+
+    /// A zero-capacity queue must not panic — `tokio::sync::mpsc::channel(0)`
+    /// does, hence the `.max(1)` in the bridge.
+    #[tokio::test]
+    async fn tolerates_a_zero_capacity_queue() {
+        let (tx, receiver) = bounded::<MqttMessage>(1);
+        let mut rx = MqttMonitor::spawn_publish_bridge(receiver, 0);
+
+        tx.send(MqttMessage::Shutdown).unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("bridge should forward")
+            .expect("channel open");
+        assert!(matches!(msg, MqttMessage::Shutdown));
+    }
+
+    /// Characterisation of the loop shape the fix relies on: a periodic arm must
+    /// keep firing while the message arm is permanently ready.
+    ///
+    /// This exercises the concurrency pattern, not `monitor_loop` itself (which
+    /// needs a broker and hardware), so treat it as documentation of *why* the
+    /// arms are `interval.tick()` rather than `sleep`-and-check.
+    #[tokio::test]
+    async fn periodic_arm_still_fires_while_message_arm_is_saturated() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(4);
+
+        // Keep the message arm ready for the whole test.
+        let feeder = tokio::spawn(async move {
+            while tx.send(1).await.is_ok() {
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let mut ticks = 0u32;
+        let mut msgs = 0u32;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+
+        while tokio::time::Instant::now() < deadline && ticks < 5 {
+            tokio::select! {
+                _ = tick.tick() => ticks += 1,
+                Some(_) = rx.recv() => msgs += 1,
+            }
+        }
+
+        feeder.abort();
+
+        assert!(msgs > 0, "message arm never ran, test is not exercising contention");
+        assert!(ticks >= 5, "periodic arm was starved: only {ticks} ticks fired");
+    }
+}
+
+/// Executable demonstration of the bug this module was fixed for.
+///
+/// Kept because the diagnosis is subtle and counter-intuitive: it looks like a
+/// load-dependent race, but the periodic arms could not fire *at all*. These two
+/// tests contrast the old and new loop shapes side by side so the next person to
+/// touch the event loop can see why it is written the way it is.
+#[cfg(test)]
+mod select_loop_shape_tests {
+    use super::*;
+
+    /// The old shape: a blocking `crossbeam::recv_timeout` arm beside a
+    /// `sleep`-and-check arm. The periodic arm never fires — not rarely, never.
+    ///
+    /// `recv_timeout` is synchronous and every outcome falls through, so its arm
+    /// returns `Ready` on first poll. `select!` short-circuits there and drops
+    /// the other arms' futures, so the freshly built `sleep` is polled once at
+    /// elapsed = 0 and discarded before it can be re-polled past its deadline.
+    #[tokio::test]
+    async fn old_shape_starves_the_periodic_arm() {
+        let (tx, rx) = bounded::<u8>(4);
+
+        // Feed the queue from a plain thread, as the real senders do.
+        let feeder = thread::spawn(move || {
+            while tx.send(1).is_ok() {
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let mut ticks = 0u32;
+        let mut msgs = 0u32;
+        let started = std::time::Instant::now();
+        let mut last_periodic = Instant::now();
+
+        while started.elapsed() < Duration::from_millis(400) {
+            tokio::select! {
+                _ = async {
+                    // Verbatim the old channel arm.
+                    let _ = rx.recv_timeout(Duration::from_millis(100));
+                } => msgs += 1,
+
+                _ = async {
+                    // Verbatim the old periodic arm, with a 10ms period so a
+                    // working implementation would tick ~40 times.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    if last_periodic.elapsed() > Duration::from_millis(10) {
+                        last_periodic = Instant::now();
+                        ticks += 1;
+                    }
+                } => {}
+            }
+        }
+
+        drop(rx);
+        let _ = feeder.join();
+
+        assert!(msgs > 0, "channel arm should have run");
+        assert_eq!(
+            ticks, 0,
+            "this is the bug: the periodic arm fired {ticks} times, so the \
+             starvation this module works around no longer reproduces — \
+             re-check whether the fix is still necessary"
+        );
+    }
+
+    /// The new shape: an awaitable receive beside `interval.tick()`. Both arms
+    /// make progress.
+    #[tokio::test]
+    async fn new_shape_lets_both_arms_progress() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(4);
+
+        let feeder = tokio::spawn(async move {
+            while tx.send(1).await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let mut ticks = 0u32;
+        let mut msgs = 0u32;
+        let started = std::time::Instant::now();
+
+        while started.elapsed() < Duration::from_millis(400) {
+            tokio::select! {
+                _ = tick.tick() => ticks += 1,
+                Some(_) = rx.recv() => msgs += 1,
+            }
+        }
+
+        feeder.abort();
+
+        assert!(msgs > 0, "channel arm should have run");
+        assert!(
+            ticks >= 5,
+            "periodic arm should tick freely, got only {ticks}"
+        );
     }
 }

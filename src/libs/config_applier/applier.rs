@@ -2175,21 +2175,54 @@ impl ConfigApplier {
         Ok(())
     }
 
-    /// Update system info interval in the MQTT section of main config
+    /// Update system info interval in the MQTT section of main config.
+    ///
+    /// Writes `mqtt.publish.intervals.system_info_sec`, which is the key the
+    /// deserializer actually reads (`config::PublishIntervals`). This used to
+    /// write a flat `mqtt.system_info_interval_seconds` — a key nothing in the
+    /// codebase ever read — so `set_system_info_interval` reported success,
+    /// rewrote the config file, and changed nothing.
     fn update_system_info_interval(
         &self,
         config: &mut Value,
         interval_seconds: u64,
     ) -> Result<(), String> {
-        // Get or create 'mqtt' section
         let mqtt = config
             .get_mut("mqtt")
             .and_then(|v| v.as_mapping_mut())
             .ok_or_else(|| "Missing 'mqtt' section in config".to_string())?;
 
-        // Update system_info_interval_seconds field
-        mqtt.insert(
-            Value::String("system_info_interval_seconds".to_string()),
+        // Drop the stale flat key first, so a config written by an older build
+        // stops carrying a value that looks authoritative but is inert.
+        mqtt.remove(Value::String("system_info_interval_seconds".to_string()));
+
+        let publish_key = Value::String("publish".to_string());
+        if !mqtt.get(&publish_key).map(|v| v.is_mapping()).unwrap_or(false) {
+            mqtt.insert(publish_key.clone(), Value::Mapping(serde_yaml::Mapping::new()));
+        }
+        let publish = mqtt
+            .get_mut(&publish_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Could not access 'mqtt.publish' section".to_string())?;
+
+        let intervals_key = Value::String("intervals".to_string());
+        if !publish
+            .get(&intervals_key)
+            .map(|v| v.is_mapping())
+            .unwrap_or(false)
+        {
+            publish.insert(
+                intervals_key.clone(),
+                Value::Mapping(serde_yaml::Mapping::new()),
+            );
+        }
+        let intervals = publish
+            .get_mut(&intervals_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "Could not access 'mqtt.publish.intervals' section".to_string())?;
+
+        intervals.insert(
+            Value::String("system_info_sec".to_string()),
             Value::Number(serde_yaml::Number::from(interval_seconds)),
         );
 
@@ -3814,6 +3847,103 @@ mod tests {
             details.contains("New Label"),
             "details should carry new label: {details}"
         );
+    }
+}
+
+#[cfg(test)]
+mod system_info_interval_tests {
+    use super::*;
+
+    /// The written key must be the one the deserializer reads.
+    ///
+    /// This wrote a flat `mqtt.system_info_interval_seconds` while
+    /// `config::PublishIntervals` reads `mqtt.publish.intervals.system_info_sec`,
+    /// so `set_system_info_interval` rewrote the config, reported success, and
+    /// changed nothing. The round-trip assertion below is the part that matters:
+    /// it fails if the two ever drift apart again.
+    fn applier() -> ConfigApplier {
+        let dir = tempfile::tempdir().unwrap();
+        let applier = ConfigApplier::new(dir.path()).unwrap();
+        std::mem::forget(dir); // keep the temp dir alive for the test
+        applier
+    }
+
+    #[test]
+    fn writes_the_key_the_deserializer_reads() {
+        let applier = applier();
+        let mut config: Value = serde_yaml::from_str(
+            r#"
+mqtt:
+  enabled: true
+  publish:
+    intervals:
+      system_info_sec: 60
+"#,
+        )
+        .unwrap();
+
+        applier.update_system_info_interval(&mut config, 15).unwrap();
+
+        // Round-trip through the real config type that owns the field, so the
+        // assertion is against serde's actual contract rather than a string we
+        // also wrote. This is what fails if the two paths drift apart again.
+        let intervals: crate::libs::config::PublishIntervals = serde_yaml::from_value(
+            config
+                .get("mqtt")
+                .and_then(|m| m.get("publish"))
+                .and_then(|p| p.get("intervals"))
+                .expect("mqtt.publish.intervals must exist")
+                .clone(),
+        )
+        .expect("intervals must deserialize into PublishIntervals");
+        assert_eq!(intervals.system_info_sec, 15);
+    }
+
+    #[test]
+    fn creates_the_nested_sections_when_absent() {
+        let applier = applier();
+        let mut config: Value = serde_yaml::from_str("mqtt:\n  enabled: true\n").unwrap();
+
+        applier.update_system_info_interval(&mut config, 45).unwrap();
+
+        let value = config
+            .get("mqtt")
+            .and_then(|m| m.get("publish"))
+            .and_then(|p| p.get("intervals"))
+            .and_then(|i| i.get("system_info_sec"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(value, Some(45));
+    }
+
+    #[test]
+    fn drops_the_stale_flat_key() {
+        let applier = applier();
+        let mut config: Value = serde_yaml::from_str(
+            "mqtt:\n  enabled: true\n  system_info_interval_seconds: 999\n",
+        )
+        .unwrap();
+
+        applier.update_system_info_interval(&mut config, 30).unwrap();
+
+        let mqtt = config.get("mqtt").unwrap();
+        assert!(
+            mqtt.get("system_info_interval_seconds").is_none(),
+            "the inert key a previous build wrote must not survive"
+        );
+        assert_eq!(
+            mqtt.get("publish")
+                .and_then(|p| p.get("intervals"))
+                .and_then(|i| i.get("system_info_sec"))
+                .and_then(|v| v.as_u64()),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn errors_without_an_mqtt_section() {
+        let applier = applier();
+        let mut config: Value = serde_yaml::from_str("system:\n  led_brightness: 50\n").unwrap();
+        assert!(applier.update_system_info_interval(&mut config, 30).is_err());
     }
 }
 
