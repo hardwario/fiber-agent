@@ -104,7 +104,10 @@ impl PairingStateMachine {
     pub fn start_pairing(&mut self, code: String) {
         let expires_at = Instant::now() + std::time::Duration::from_secs(CODE_EXPIRY_SECS);
         self.state = PairingState::WaitingForRequest { code, expires_at };
-        eprintln!("[PairingState] Entered pairing mode, code expires in {} seconds", CODE_EXPIRY_SECS);
+        eprintln!(
+            "[PairingState] Entered pairing mode, code expires in {} seconds",
+            CODE_EXPIRY_SECS
+        );
     }
 
     /// Begin processing a request

@@ -7,16 +7,18 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::drivers::StmBridge;
-use crate::libs::config::{Config, SensorConfig, SensorFileConfig};
-use crate::libs::alarms::{AlarmController, AlarmState, LoggingCallback, BuzzerCallback, MqttAlarmCallback};
+use crate::libs::alarms::{
+    AlarmController, AlarmState, BuzzerCallback, LoggingCallback, MqttAlarmCallback,
+};
 use crate::libs::buzzer::{BuzzerController, BuzzerPattern, BuzzerPriorityManager};
+use crate::libs::config::{Config, SensorConfig, SensorFileConfig};
 use crate::libs::leds::SharedLedStateHandle;
 use crate::libs::mqtt::MqttHandle;
 use crate::libs::storage::StorageHandle;
 
+use super::aggregation::AggregationState;
 use super::reader::W1DeviceReader;
 use super::state::{SensorReading, SharedSensorStateHandle};
-use super::aggregation::AggregationState;
 
 const W1_BASE_PATH: &str = "/sys/bus/w1/devices";
 const SENSOR_CONFIG_FILE: &str = "/data/fiber/config/fiber.sensors.config.yaml";
@@ -30,7 +32,16 @@ pub struct SensorMonitor {
 
 impl SensorMonitor {
     /// Create and spawn background sensor monitoring thread
-    pub fn new(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, led_state: SharedLedStateHandle, buzzer: Arc<Mutex<BuzzerController>>, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>, storage_handle: Option<StorageHandle>) -> io::Result<Self> {
+    pub fn new(
+        config: SensorConfig,
+        stm: Arc<Mutex<StmBridge>>,
+        led_state: SharedLedStateHandle,
+        buzzer: Arc<Mutex<BuzzerController>>,
+        sensor_state: SharedSensorStateHandle,
+        priority_manager: Arc<BuzzerPriorityManager>,
+        mqtt_handle: Option<MqttHandle>,
+        storage_handle: Option<StorageHandle>,
+    ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
 
@@ -38,7 +49,17 @@ impl SensorMonitor {
 
         // Spawn the main sensor monitoring thread
         let thread_handle = thread::spawn(move || {
-            Self::monitor_loop(config, stm, shutdown_flag_clone, buzzer_clone, led_state, sensor_state, priority_manager, mqtt_handle, storage_handle);
+            Self::monitor_loop(
+                config,
+                stm,
+                shutdown_flag_clone,
+                buzzer_clone,
+                led_state,
+                sensor_state,
+                priority_manager,
+                mqtt_handle,
+                storage_handle,
+            );
         });
 
         Ok(Self {
@@ -49,15 +70,31 @@ impl SensorMonitor {
     }
 
     /// Background monitoring loop
-    fn monitor_loop(config: SensorConfig, stm: Arc<Mutex<StmBridge>>, shutdown_flag: Arc<AtomicBool>, buzzer: Arc<Mutex<BuzzerController>>, led_state: SharedLedStateHandle, sensor_state: SharedSensorStateHandle, priority_manager: Arc<BuzzerPriorityManager>, mqtt_handle: Option<MqttHandle>, storage_handle: Option<StorageHandle>) {
+    fn monitor_loop(
+        config: SensorConfig,
+        stm: Arc<Mutex<StmBridge>>,
+        shutdown_flag: Arc<AtomicBool>,
+        buzzer: Arc<Mutex<BuzzerController>>,
+        led_state: SharedLedStateHandle,
+        sensor_state: SharedSensorStateHandle,
+        priority_manager: Arc<BuzzerPriorityManager>,
+        mqtt_handle: Option<MqttHandle>,
+        storage_handle: Option<StorageHandle>,
+    ) {
         // Load sensor file configuration
         let sensor_file_config = match SensorFileConfig::load_default() {
             Ok(cfg) => {
-                eprintln!("[SensorMonitor] Loaded sensor configuration from {}", SENSOR_CONFIG_FILE);
+                eprintln!(
+                    "[SensorMonitor] Loaded sensor configuration from {}",
+                    SENSOR_CONFIG_FILE
+                );
                 cfg
             }
             Err(e) => {
-                eprintln!("[SensorMonitor] Warning: Failed to load {}: {}", SENSOR_CONFIG_FILE, e);
+                eprintln!(
+                    "[SensorMonitor] Warning: Failed to load {}: {}",
+                    SENSOR_CONFIG_FILE, e
+                );
                 eprintln!("[SensorMonitor] Using default sensor configuration");
                 SensorFileConfig::default_config()
             }
@@ -73,7 +110,12 @@ impl SensorMonitor {
         let mut alarm_controllers: [AlarmController; 8] = (0..8)
             .map(|idx| {
                 let thresholds = sensor_file_config.get_line_thresholds(idx as u8);
-                let mut controller = AlarmController::new(thresholds, config.failure_threshold, 5, config.warmup_threshold);
+                let mut controller = AlarmController::new(
+                    thresholds,
+                    config.failure_threshold,
+                    5,
+                    config.warmup_threshold,
+                );
 
                 // Register logging callback for this sensor
                 let logger = Arc::new(LoggingCallback::new(&format!("[Sensor {}]", idx)));
@@ -85,14 +127,13 @@ impl SensorMonitor {
 
                 // Register MQTT callback for publishing alarm state transitions
                 if let Some(ref mqtt) = mqtt_handle {
-                    let name = sensor_file_config.lines.get(idx)
+                    let name = sensor_file_config
+                        .lines
+                        .get(idx)
                         .map(|l| l.name.clone())
                         .unwrap_or_else(|| format!("Sensor {}", idx + 1));
-                    let mqtt_callback = Arc::new(MqttAlarmCallback::new(
-                        mqtt.clone(),
-                        idx as u8,
-                        name,
-                    ));
+                    let mqtt_callback =
+                        Arc::new(MqttAlarmCallback::new(mqtt.clone(), idx as u8, name));
                     controller.register_callback(mqtt_callback.clone());
                     mqtt_callbacks.push(mqtt_callback);
                 }
@@ -116,31 +157,34 @@ impl SensorMonitor {
             .unwrap_or_default();
 
         // Load alarm patterns for buzzer configuration (to use enabled/pattern fields)
-        let alarm_patterns = sensor_file_config.alarm_patterns.as_ref().map(|p| {
-            (
-                p.critical.clone(),
-                p.disconnected.clone(),
-            )
-        });
+        let alarm_patterns = sensor_file_config
+            .alarm_patterns
+            .as_ref()
+            .map(|p| (p.critical.clone(), p.disconnected.clone()));
 
         // Alarm type tracking - only reset buzzer timer when alarm type actually changes
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum AlarmType { None, Disconnected, Critical, Reconnecting }
+        enum AlarmType {
+            None,
+            Disconnected,
+            Critical,
+            Reconnecting,
+        }
 
         let mut current_alarm_type = AlarmType::None;
-        let mut happy_beep_played = false;  // Track if we've already played happy beep for this reconnection
-        let mut happy_beep_start_time: Option<Instant> = None;  // Track when happy beep started to auto-clear it
-        let mut last_sensor_states: [Option<AlarmState>; 8] = [None; 8];  // Track previous states to detect reconnection
-        let mut consecutive_failures: [u32; 8] = [0; 8];  // Track consecutive failures per sensor for debouncing
+        let mut happy_beep_played = false; // Track if we've already played happy beep for this reconnection
+        let mut happy_beep_start_time: Option<Instant> = None; // Track when happy beep started to auto-clear it
+        let mut last_sensor_states: [Option<AlarmState>; 8] = [None; 8]; // Track previous states to detect reconnection
+        let mut consecutive_failures: [u32; 8] = [0; 8]; // Track consecutive failures per sensor for debouncing
 
         let mut update_interval = Duration::from_millis(config.sample_interval_ms);
-        let failure_debounce_count = 2;  // Require 2 consecutive failures before marking sensor as failed
+        let failure_debounce_count = 2; // Require 2 consecutive failures before marking sensor as failed
 
         // Initialize aggregation state for MQTT reporting
         let pending_path = std::path::Path::new("/data/fiber/pending_aggregations.json");
-        let aggregation_state = Arc::new(RwLock::new(
-            AggregationState::new(Duration::from_millis(config.aggregation_interval_ms))
-        ));
+        let aggregation_state = Arc::new(RwLock::new(AggregationState::new(
+            Duration::from_millis(config.aggregation_interval_ms),
+        )));
 
         // Load any pending periods saved from a previous run
         let recovered_periods = AggregationState::load_pending(pending_path);
@@ -167,21 +211,31 @@ impl SensorMonitor {
 
         // Initialize sensor names, locations and thresholds from config
         {
-            let names: [String; 8] = sensor_file_config.lines.iter()
+            let names: [String; 8] = sensor_file_config
+                .lines
+                .iter()
                 .take(8)
                 .map(|l| l.name.clone())
                 .chain(std::iter::repeat("Unknown".to_string()))
                 .take(8)
                 .collect::<Vec<_>>()
                 .try_into()
-                .unwrap_or_else(|_| [
-                    "Sensor 1".to_string(), "Sensor 2".to_string(),
-                    "Sensor 3".to_string(), "Sensor 4".to_string(),
-                    "Sensor 5".to_string(), "Sensor 6".to_string(),
-                    "Sensor 7".to_string(), "Sensor 8".to_string(),
-                ]);
+                .unwrap_or_else(|_| {
+                    [
+                        "Sensor 1".to_string(),
+                        "Sensor 2".to_string(),
+                        "Sensor 3".to_string(),
+                        "Sensor 4".to_string(),
+                        "Sensor 5".to_string(),
+                        "Sensor 6".to_string(),
+                        "Sensor 7".to_string(),
+                        "Sensor 8".to_string(),
+                    ]
+                });
 
-            let locations: [Option<String>; 8] = sensor_file_config.lines.iter()
+            let locations: [Option<String>; 8] = sensor_file_config
+                .lines
+                .iter()
                 .take(8)
                 .map(|l| l.location.clone())
                 .chain(std::iter::repeat(None))
@@ -210,7 +264,8 @@ impl SensorMonitor {
         );
         eprintln!(
             "[SensorMonitor] MQTT reporting enabled with {}ms ({}s) interval",
-            config.report_interval_ms, config.report_interval_ms / 1000
+            config.report_interval_ms,
+            config.report_interval_ms / 1000
         );
         eprintln!(
             "[SensorMonitor] Aggregation enabled with {}ms ({}s) window, reporting every {}ms ({}s)",
@@ -225,7 +280,9 @@ impl SensorMonitor {
 
             // Check for shutdown signal
             if shutdown_flag.load(Ordering::Relaxed) {
-                eprintln!("[SensorMonitor] Shutdown signal received, saving pending aggregations...");
+                eprintln!(
+                    "[SensorMonitor] Shutdown signal received, saving pending aggregations..."
+                );
                 if let Ok(agg) = aggregation_state.read() {
                     if let Err(e) = agg.save_pending(pending_path) {
                         eprintln!("[SensorMonitor] Warning: Failed to save pending periods on shutdown: {}", e);
@@ -251,21 +308,31 @@ impl SensorMonitor {
                         }
 
                         // Update sensor names
-                        let names: [String; 8] = new_config.lines.iter()
+                        let names: [String; 8] = new_config
+                            .lines
+                            .iter()
                             .take(8)
                             .map(|l| l.name.clone())
                             .chain(std::iter::repeat("Unknown".to_string()))
                             .take(8)
                             .collect::<Vec<_>>()
                             .try_into()
-                            .unwrap_or_else(|_| [
-                                "Sensor 1".to_string(), "Sensor 2".to_string(),
-                                "Sensor 3".to_string(), "Sensor 4".to_string(),
-                                "Sensor 5".to_string(), "Sensor 6".to_string(),
-                                "Sensor 7".to_string(), "Sensor 8".to_string(),
-                            ]);
+                            .unwrap_or_else(|_| {
+                                [
+                                    "Sensor 1".to_string(),
+                                    "Sensor 2".to_string(),
+                                    "Sensor 3".to_string(),
+                                    "Sensor 4".to_string(),
+                                    "Sensor 5".to_string(),
+                                    "Sensor 6".to_string(),
+                                    "Sensor 7".to_string(),
+                                    "Sensor 8".to_string(),
+                                ]
+                            });
 
-                        let locations: [Option<String>; 8] = new_config.lines.iter()
+                        let locations: [Option<String>; 8] = new_config
+                            .lines
+                            .iter()
                             .take(8)
                             .map(|l| l.location.clone())
                             .chain(std::iter::repeat(None))
@@ -293,10 +360,12 @@ impl SensorMonitor {
                                 mqtt_cb.set_name(name.clone());
                             }
                         }
-
                     }
                     Err(e) => {
-                        eprintln!("[SensorMonitor] Warning: Failed to reload sensor config: {}", e);
+                        eprintln!(
+                            "[SensorMonitor] Warning: Failed to reload sensor config: {}",
+                            e
+                        );
                     }
                 }
 
@@ -337,13 +406,17 @@ impl SensorMonitor {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[SensorMonitor] Warning: Failed to reload main config: {}", e);
+                        eprintln!(
+                            "[SensorMonitor] Warning: Failed to reload main config: {}",
+                            e
+                        );
                     }
                 }
             }
 
             // Check for MQTT reconnect flag (immediate flush) or regular timer
-            let force_flush = mqtt_handle.as_ref()
+            let force_flush = mqtt_handle
+                .as_ref()
                 .map(|mqtt| mqtt.reconnected_flag.swap(false, Ordering::AcqRel))
                 .unwrap_or(false);
 
@@ -355,23 +428,36 @@ impl SensorMonitor {
                 last_aggregation_report = Instant::now();
 
                 let periods = if let Ok(mut agg_state) = aggregation_state.write() {
-                    agg_state.take_completed_periods()  // Drain queue once
+                    agg_state.take_completed_periods() // Drain queue once
                 } else {
                     Vec::new()
                 };
 
                 if let Some(ref mqtt) = mqtt_handle {
                     // Get sensor names and locations from shared state
-                    let (names, locations) = sensor_state.read()
+                    let (names, locations) = sensor_state
+                        .read()
                         .map(|s| (s.names.clone(), s.locations.clone()))
-                        .unwrap_or_else(|_| ([
-                            "Sensor 1".to_string(), "Sensor 2".to_string(),
-                            "Sensor 3".to_string(), "Sensor 4".to_string(),
-                            "Sensor 5".to_string(), "Sensor 6".to_string(),
-                            "Sensor 7".to_string(), "Sensor 8".to_string(),
-                        ], [None, None, None, None, None, None, None, None]));
+                        .unwrap_or_else(|_| {
+                            (
+                                [
+                                    "Sensor 1".to_string(),
+                                    "Sensor 2".to_string(),
+                                    "Sensor 3".to_string(),
+                                    "Sensor 4".to_string(),
+                                    "Sensor 5".to_string(),
+                                    "Sensor 6".to_string(),
+                                    "Sensor 7".to_string(),
+                                    "Sensor 8".to_string(),
+                                ],
+                                [None, None, None, None, None, None, None, None],
+                            )
+                        });
                     if force_flush && !periods.is_empty() {
-                        eprintln!("[SensorMonitor] Flushing {} buffered periods after reconnect", periods.len());
+                        eprintln!(
+                            "[SensorMonitor] Flushing {} buffered periods after reconnect",
+                            periods.len()
+                        );
                     }
                     let published_count = periods.len();
                     for period in periods {
@@ -389,7 +475,10 @@ impl SensorMonitor {
                 last_pending_save = Instant::now();
                 if let Ok(agg) = aggregation_state.read() {
                     if let Err(e) = agg.save_pending(pending_path) {
-                        eprintln!("[SensorMonitor] Warning: Failed to save pending periods: {}", e);
+                        eprintln!(
+                            "[SensorMonitor] Warning: Failed to save pending periods: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -415,7 +504,9 @@ impl SensorMonitor {
                     // Also check if sensor transitioned from DISCONNECTED/RECONNECTING to any valid state
                     // (NORMAL, Warning, or ALARM) - this means it successfully reconnected
                     if let Some(last_state) = last_sensor_states[idx] {
-                        if last_state == AlarmState::Disconnected || last_state == AlarmState::Reconnecting {
+                        if last_state == AlarmState::Disconnected
+                            || last_state == AlarmState::Reconnecting
+                        {
                             match current_state {
                                 AlarmState::Normal | AlarmState::Warning | AlarmState::Critical => {
                                     // Successfully reconnected to a valid measurement state
@@ -430,8 +521,12 @@ impl SensorMonitor {
                     // to bust button silence when a NEW sensor alarms
                     // NOTE: must run BEFORE the break below so all sensors are checked
                     if let Some(last_state) = last_sensor_states[idx] {
-                        let was_critical_like = matches!(last_state, AlarmState::Critical | AlarmState::Disconnected);
-                        let is_critical_like = matches!(current_state, AlarmState::Critical | AlarmState::Disconnected);
+                        let was_critical_like =
+                            matches!(last_state, AlarmState::Critical | AlarmState::Disconnected);
+                        let is_critical_like = matches!(
+                            current_state,
+                            AlarmState::Critical | AlarmState::Disconnected
+                        );
                         if !was_critical_like && is_critical_like {
                             priority_manager.on_new_sensor_alarm();
                             eprintln!("[SensorMonitor] New sensor alarm detected (sensor {}), silence cleared", idx);
@@ -468,7 +563,9 @@ impl SensorMonitor {
                     if let Some(start_time) = happy_beep_start_time {
                         if start_time.elapsed().as_millis() >= 1500 {
                             happy_beep_start_time = None;
-                            eprintln!("[SensorMonitor] Happy beep duration expired, clearing pattern");
+                            eprintln!(
+                                "[SensorMonitor] Happy beep duration expired, clearing pattern"
+                            );
                             if let Ok(mut bz) = buzzer.lock() {
                                 bz.stop();
                             }
@@ -493,7 +590,10 @@ impl SensorMonitor {
                             match new_alarm_type {
                                 AlarmType::Critical | AlarmType::Disconnected => {
                                     // Sensor has critical or disconnected alarm
-                                    eprintln!("[SensorMonitor] Sensor alarm type changed: {:?}", new_alarm_type);
+                                    eprintln!(
+                                        "[SensorMonitor] Sensor alarm type changed: {:?}",
+                                        new_alarm_type
+                                    );
                                     priority_manager.set_sensor_critical(true);
                                 }
                                 AlarmType::None => {
@@ -514,7 +614,8 @@ impl SensorMonitor {
             match reader.enum_devices() {
                 Ok(devices) => {
                     // Filter devices to only those within configured line count
-                    let devices_to_read: Vec<_> = devices.iter()
+                    let devices_to_read: Vec<_> = devices
+                        .iter()
                         .filter(|(line_num, _)| (*line_num as usize) < config.num_lines as usize)
                         .collect();
 
@@ -522,19 +623,28 @@ impl SensorMonitor {
                     // Since each sensor is on a separate 1-Wire bus (w1_bus_master1, w1_bus_master2, etc.),
                     // they can be read simultaneously, reducing total read time from ~8s to ~1s
                     let read_results: Vec<(u8, Result<f32, std::io::Error>)> = thread::scope(|s| {
-                        let handles: Vec<_> = devices_to_read.iter().map(|(line_num, device_id)| {
-                            let reader_ref = &reader;
-                            let line = *line_num;
-                            let dev_id = device_id.clone();
-                            s.spawn(move || {
-                                (line, reader_ref.read_temperature(line, &dev_id, 3000))
+                        let handles: Vec<_> = devices_to_read
+                            .iter()
+                            .map(|(line_num, device_id)| {
+                                let reader_ref = &reader;
+                                let line = *line_num;
+                                let dev_id = device_id.clone();
+                                s.spawn(move || {
+                                    (line, reader_ref.read_temperature(line, &dev_id, 3000))
+                                })
                             })
-                        }).collect();
+                            .collect();
 
-                        handles.into_iter()
-                            .map(|h: thread::ScopedJoinHandle<'_, (u8, Result<f32, std::io::Error>)>| {
-                                h.join().expect("Sensor read thread panicked")
-                            })
+                        handles
+                            .into_iter()
+                            .map(
+                                |h: thread::ScopedJoinHandle<
+                                    '_,
+                                    (u8, Result<f32, std::io::Error>),
+                                >| {
+                                    h.join().expect("Sensor read thread panicked")
+                                },
+                            )
                             .collect()
                     });
 
@@ -545,7 +655,8 @@ impl SensorMonitor {
                         match result {
                             Ok(temp) => {
                                 // Successful read - update alarm controller and reset failure counter
-                                let _was_disconnected = consecutive_failures[sensor_idx] >= failure_debounce_count;
+                                let _was_disconnected =
+                                    consecutive_failures[sensor_idx] >= failure_debounce_count;
 
                                 // Update MQTT callback temperature BEFORE updating alarm controller
                                 // so that state change events have the correct temperature
@@ -559,12 +670,20 @@ impl SensorMonitor {
                                 // Update shared sensor state for display with current alarm state
                                 let alarm_state = alarm_controllers[sensor_idx].state();
                                 if let Ok(mut state) = sensor_state.write() {
-                                    state.set_reading(sensor_idx as u8, SensorReading::new(temp, true, alarm_state));
+                                    state.set_reading(
+                                        sensor_idx as u8,
+                                        SensorReading::new(temp, true, alarm_state),
+                                    );
                                 }
 
                                 // Add reading to aggregation state
                                 if let Ok(mut agg_state) = aggregation_state.write() {
-                                    agg_state.add_reading(sensor_idx as u8, temp, true, alarm_state);
+                                    agg_state.add_reading(
+                                        sensor_idx as u8,
+                                        temp,
+                                        true,
+                                        alarm_state,
+                                    );
                                 }
 
                                 // Store sensor reading in database for audit trail
@@ -572,7 +691,8 @@ impl SensorMonitor {
                                     let timestamp = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
-                                        .as_secs() as i64;
+                                        .as_secs()
+                                        as i64;
                                     let _ = storage.write_sensor_reading(
                                         timestamp,
                                         sensor_idx as u8,
@@ -595,12 +715,20 @@ impl SensorMonitor {
                                     // Mark as disconnected in shared sensor state
                                     let alarm_state = alarm_controllers[sensor_idx].state();
                                     if let Ok(mut state) = sensor_state.write() {
-                                        state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
+                                        state.set_reading(
+                                            sensor_idx as u8,
+                                            SensorReading::new(0.0, false, alarm_state),
+                                        );
                                     }
 
                                     // Add disconnected reading to aggregation state
                                     if let Ok(mut agg_state) = aggregation_state.write() {
-                                        agg_state.add_reading(sensor_idx as u8, 0.0, false, alarm_state);
+                                        agg_state.add_reading(
+                                            sensor_idx as u8,
+                                            0.0,
+                                            false,
+                                            alarm_state,
+                                        );
                                     }
 
                                     // Store disconnected reading in database for audit trail
@@ -608,7 +736,8 @@ impl SensorMonitor {
                                         let timestamp = std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .unwrap_or_default()
-                                            .as_secs() as i64;
+                                            .as_secs()
+                                            as i64;
                                         let _ = storage.write_sensor_reading(
                                             timestamp,
                                             sensor_idx as u8,
@@ -630,7 +759,10 @@ impl SensorMonitor {
                             // Mark as disconnected in shared sensor state
                             let alarm_state = alarm_controllers[sensor_idx].state();
                             if let Ok(mut state) = sensor_state.write() {
-                                state.set_reading(sensor_idx as u8, SensorReading::new(0.0, false, alarm_state));
+                                state.set_reading(
+                                    sensor_idx as u8,
+                                    SensorReading::new(0.0, false, alarm_state),
+                                );
                             }
 
                             // Add disconnected reading to aggregation state
@@ -643,7 +775,8 @@ impl SensorMonitor {
                                 let timestamp = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
-                                    .as_secs() as i64;
+                                    .as_secs()
+                                    as i64;
                                 let _ = storage.write_sensor_reading(
                                     timestamp,
                                     sensor_idx as u8,
@@ -694,7 +827,8 @@ impl SensorMonitor {
 
             if sleep_time.is_zero() && update_interval.as_millis() > 0 {
                 // Only warn once per minute to avoid log spam
-                static LAST_WARNING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                static LAST_WARNING: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
                 let now_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

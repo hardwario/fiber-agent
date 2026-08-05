@@ -117,12 +117,18 @@ mod tests {
 
     #[test]
     fn categorize_unknown_is_other() {
-        assert_eq!(categorize("some weird message"), NetworkErrorCategory::Other);
+        assert_eq!(
+            categorize("some weird message"),
+            NetworkErrorCategory::Other
+        );
     }
 
     #[test]
     fn as_str_is_stable() {
-        assert_eq!(NetworkErrorCategory::GatewayUnreachable.as_str(), "gateway_unreachable");
+        assert_eq!(
+            NetworkErrorCategory::GatewayUnreachable.as_str(),
+            "gateway_unreachable"
+        );
         assert_eq!(NetworkErrorCategory::InvalidIp.as_str(), "invalid_ip");
     }
 }

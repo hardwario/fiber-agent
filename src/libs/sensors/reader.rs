@@ -82,7 +82,12 @@ impl W1DeviceReader {
     /// line_num: which w1_bus_master line (0-based)
     /// timeout_ms: timeout in milliseconds for the read operation
     /// Returns temperature in Celsius or error
-    pub fn read_temperature(&self, line_num: u8, device_id: &str, timeout_ms: u64) -> io::Result<f32> {
+    pub fn read_temperature(
+        &self,
+        line_num: u8,
+        device_id: &str,
+        timeout_ms: u64,
+    ) -> io::Result<f32> {
         self.read_temperature_with_callback(line_num, device_id, timeout_ms, &mut |_| {})
     }
 

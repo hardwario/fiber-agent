@@ -111,9 +111,17 @@ impl MotionDetector {
         let az = accel.z_g.abs();
 
         if az >= ax && az >= ay {
-            if accel.z_g >= 0.0 { 1 } else { 2 }
+            if accel.z_g >= 0.0 {
+                1
+            } else {
+                2
+            }
         } else if ax >= ay {
-            if accel.x_g >= 0.0 { 3 } else { 4 }
+            if accel.x_g >= 0.0 {
+                3
+            } else {
+                4
+            }
         } else if accel.y_g >= 0.0 {
             5
         } else {

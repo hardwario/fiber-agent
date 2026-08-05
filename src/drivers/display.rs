@@ -1,15 +1,12 @@
 use anyhow::Result;
-use embedded_graphics::{
-    pixelcolor::BinaryColor,
-    prelude::*,
-};
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 use rppal::gpio::{Gpio, OutputPin};
 use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-// PIN ASSIGNMENTS 
+// PIN ASSIGNMENTS
 const BL_PIN: u8 = 13;
 const RST_PIN: u8 = 16;
 const CS_PIN: u8 = 12;
@@ -60,18 +57,26 @@ impl St7920 {
         self.rst.set_high();
         thread::sleep(Duration::from_millis(100));
 
-        self.send_command(0x30)?; thread::sleep(Duration::from_micros(200));
-        self.send_command(0x30)?; thread::sleep(Duration::from_micros(50));
-        self.send_command(0x0C)?; thread::sleep(Duration::from_micros(200));
-        self.send_command(0x01)?; thread::sleep(Duration::from_millis(20));
+        self.send_command(0x30)?;
+        thread::sleep(Duration::from_micros(200));
+        self.send_command(0x30)?;
+        thread::sleep(Duration::from_micros(50));
+        self.send_command(0x0C)?;
+        thread::sleep(Duration::from_micros(200));
+        self.send_command(0x01)?;
+        thread::sleep(Duration::from_millis(20));
         self.send_command(0x06)?;
         self.send_command(0x34)?;
         self.send_command(0x36)?;
         Ok(())
     }
 
-    fn send_command(&mut self, cmd: u8) -> Result<()> { self.write_packet(0xF8, cmd) }
-    fn send_data(&mut self, data: u8) -> Result<()> { self.write_packet(0xFA, data) }
+    fn send_command(&mut self, cmd: u8) -> Result<()> {
+        self.write_packet(0xF8, cmd)
+    }
+    fn send_data(&mut self, data: u8) -> Result<()> {
+        self.write_packet(0xFA, data)
+    }
 
     fn write_packet(&mut self, sync: u8, byte: u8) -> Result<()> {
         let buffer = [sync, byte & 0xF0, (byte & 0x0F) << 4];
@@ -83,11 +88,17 @@ impl St7920 {
 
     pub fn flush(&mut self) -> Result<()> {
         for y in 0..32 {
-            self.send_command(0x80 + y as u8)?; self.send_command(0x80)?;
-            for x in 0..16 { self.send_data(self.buffer[y * 16 + x])?; }
-            
-            self.send_command(0x80 + y as u8)?; self.send_command(0x88)?;
-            for x in 0..16 { self.send_data(self.buffer[(y + 32) * 16 + x])?; }
+            self.send_command(0x80 + y as u8)?;
+            self.send_command(0x80)?;
+            for x in 0..16 {
+                self.send_data(self.buffer[y * 16 + x])?;
+            }
+
+            self.send_command(0x80 + y as u8)?;
+            self.send_command(0x88)?;
+            for x in 0..16 {
+                self.send_data(self.buffer[(y + 32) * 16 + x])?;
+            }
         }
         Ok(())
     }

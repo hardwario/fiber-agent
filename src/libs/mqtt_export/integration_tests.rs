@@ -22,7 +22,9 @@ use crate::libs::storage::{db::Database, reader::StorageReader, StorageThread};
 #[ignore]
 async fn ten_hour_offline_drain_matches_input() {
     let local = tokio::task::LocalSet::new();
-    local.run_until(ten_hour_offline_drain_matches_input_inner()).await;
+    local
+        .run_until(ten_hour_offline_drain_matches_input_inner())
+        .await;
 }
 
 async fn ten_hour_offline_drain_matches_input_inner() {

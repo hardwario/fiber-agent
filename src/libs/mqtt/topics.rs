@@ -269,8 +269,14 @@ mod tests {
         let builder = TopicBuilder::new("fiber".to_string(), "DEVICE001".to_string(), true);
 
         assert_eq!(builder.status(), "fiber/DEVICE001/status");
-        assert_eq!(builder.sensors_aggregated(), "fiber/DEVICE001/sensors/aggregated");
-        assert_eq!(builder.power_battery_percentage(), "fiber/DEVICE001/power/battery/percentage");
+        assert_eq!(
+            builder.sensors_aggregated(),
+            "fiber/DEVICE001/sensors/aggregated"
+        );
+        assert_eq!(
+            builder.power_battery_percentage(),
+            "fiber/DEVICE001/power/battery/percentage"
+        );
         assert_eq!(builder.commands_wildcard(), "fiber/DEVICE001/commands/#");
     }
 
@@ -307,7 +313,10 @@ mod tests {
 
         assert_eq!(builder.status(), "fiber/status");
         assert_eq!(builder.sensors_aggregated(), "fiber/sensors/aggregated");
-        assert_eq!(builder.power_battery_percentage(), "fiber/power/battery/percentage");
+        assert_eq!(
+            builder.power_battery_percentage(),
+            "fiber/power/battery/percentage"
+        );
         assert_eq!(builder.commands_wildcard(), "fiber/commands/#");
     }
 

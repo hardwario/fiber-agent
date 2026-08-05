@@ -95,7 +95,12 @@ impl NonceTracker {
     }
 
     /// Record nonce usage
-    pub fn record_nonce(&mut self, nonce: &str, signer_id: &str, timestamp: i64) -> Result<(), CryptoError> {
+    pub fn record_nonce(
+        &mut self,
+        nonce: &str,
+        signer_id: &str,
+        timestamp: i64,
+    ) -> Result<(), CryptoError> {
         // Add to cache
         self.cache.put(nonce.to_string(), timestamp);
 
@@ -108,9 +113,7 @@ impl NonceTracker {
             "INSERT INTO used_nonces (nonce, timestamp, signer_id) VALUES (?, ?, ?)",
             rusqlite::params![nonce, timestamp, signer_id],
         )
-        .map_err(|e| {
-            CryptoError::NonceDatabaseError(format!("Failed to insert nonce: {}", e))
-        })?;
+        .map_err(|e| CryptoError::NonceDatabaseError(format!("Failed to insert nonce: {}", e)))?;
 
         Ok(())
     }
@@ -133,6 +136,19 @@ impl NonceTracker {
             .map_err(|e| {
                 CryptoError::NonceDatabaseError(format!("Failed to cleanup nonces: {}", e))
             })?;
+
+        // is_nonce_used() checks the cache before the DB, so any entry just
+        // deleted above must also be evicted here -- otherwise a cleaned-up
+        // nonce keeps reading as "used" via a stale cache hit.
+        let expired_cache_entries: Vec<String> = self
+            .cache
+            .iter()
+            .filter(|(_, &timestamp)| timestamp < cutoff_time)
+            .map(|(nonce, _)| nonce.clone())
+            .collect();
+        for nonce in &expired_cache_entries {
+            self.cache.pop(nonce);
+        }
 
         if deleted > 0 {
             eprintln!("[NonceTracker] Cleaned up {} old nonces", deleted);
@@ -191,7 +207,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing failure: cleaned nonce still reads as used. FOLLOW-UP: investigate cleanup logic and unignore."]
     fn test_nonce_cleanup() {
         let temp_db = "/tmp/test_nonces_cleanup.db";
         let _ = fs::remove_file(temp_db);

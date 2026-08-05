@@ -23,10 +23,10 @@ use serde_json::{json, Value};
 
 use crate::libs::config::Config;
 use crate::libs::config_applier::ConfigApplier;
+use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::sticker_command as sc;
 use crate::libs::lorawan::sticker_config::{self, BatchOutcome};
 use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue};
-use crate::libs::lorawan::state::SharedLoRaWANState;
 use crate::libs::lorawan::LoRaWANHandle;
 use crate::libs::mqtt::{ConnectionState, SharedConnectionState};
 use crate::libs::power::SharedPowerStatus;
@@ -109,7 +109,9 @@ pub fn serve(ctx: ControlContext, path: &str) -> std::io::Result<()> {
             .recursive(true)
             .mode(0o700)
             .create(parent)
-            .map_err(|e| std::io::Error::new(e.kind(), format!("create control dir {parent:?}: {e}")))?;
+            .map_err(|e| {
+                std::io::Error::new(e.kind(), format!("create control dir {parent:?}: {e}"))
+            })?;
         // tighten perms in case the dir pre-existed looser
         let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
@@ -149,16 +151,22 @@ fn handle_conn(stream: UnixStream, ctx: &ControlContext) -> std::io::Result<()> 
     let resp = match serde_json::from_str::<Request>(line.trim_end()) {
         Ok(req) if req.v > PROTOCOL_VERSION => Response::err_coded(
             "unsupported_version",
-            format!("unsupported protocol version {} (server speaks {})", req.v, PROTOCOL_VERSION),
+            format!(
+                "unsupported protocol version {} (server speaks {})",
+                req.v, PROTOCOL_VERSION
+            ),
             json!(null),
         ),
         Ok(req) => dispatch(ctx, req.cmd),
-        Err(e) => Response::err_coded("bad_request", format!("malformed request: {e}"), json!(null)),
+        Err(e) => Response::err_coded(
+            "bad_request",
+            format!("malformed request: {e}"),
+            json!(null),
+        ),
     };
 
-    let mut out = serde_json::to_string(&resp).unwrap_or_else(|e| {
-        format!("{{\"ok\":false,\"error\":\"encode response: {e}\"}}")
-    });
+    let mut out = serde_json::to_string(&resp)
+        .unwrap_or_else(|e| format!("{{\"ok\":false,\"error\":\"encode response: {e}\"}}"));
     out.push('\n');
     let mut w = &stream;
     w.write_all(out.as_bytes())?;
@@ -176,22 +184,31 @@ pub fn dispatch(ctx: &ControlContext, cmd: Command) -> Response {
                 redact_secrets(&mut v);
                 Response::ok(v)
             }
-            Err(e) => Response::err_coded("internal", format!("serialize config: {e}"), json!(null)),
+            Err(e) => {
+                Response::err_coded("internal", format!("serialize config: {e}"), json!(null))
+            }
         },
         Command::ConfigGet { key } => config_get(ctx, &key),
         Command::SensorsRead => sensors_read(ctx),
         Command::PowerStatus => power_status(ctx),
         Command::MqttStatus => mqtt_status(ctx),
         Command::ConfigSet { setting, force } => config_set(ctx, setting, force),
-        Command::LorawanSetParam { dev_eui, fields, save, force } => {
-            lorawan_set_param(ctx, &dev_eui, fields, save, force)
-        }
-        Command::LorawanGetParam { dev_eui, keys, desired } => {
-            lorawan_get_param(ctx, &dev_eui, keys, desired)
-        }
-        Command::LorawanSend { dev_eui, command, force } => {
-            lorawan_send(ctx, &dev_eui, command, force)
-        }
+        Command::LorawanSetParam {
+            dev_eui,
+            fields,
+            save,
+            force,
+        } => lorawan_set_param(ctx, &dev_eui, fields, save, force),
+        Command::LorawanGetParam {
+            dev_eui,
+            keys,
+            desired,
+        } => lorawan_get_param(ctx, &dev_eui, keys, desired),
+        Command::LorawanSend {
+            dev_eui,
+            command,
+            force,
+        } => lorawan_send(ctx, &dev_eui, command, force),
     }
 }
 
@@ -221,7 +238,9 @@ fn status(ctx: &ControlContext) -> Response {
 /// A poisoned lock is recovered (the data has no broken invariant), matching the
 /// rest of the codebase — so `null` unambiguously means "not enabled".
 fn power_json(ctx: &ControlContext) -> Value {
-    let Some(p) = &ctx.power else { return Value::Null };
+    let Some(p) = &ctx.power else {
+        return Value::Null;
+    };
     let g = p.lock().unwrap_or_else(|e| e.into_inner());
     json!({
         "vbat_mv": g.vbat_mv,
@@ -234,7 +253,9 @@ fn power_json(ctx: &ControlContext) -> Value {
 /// Per-line sensor snapshot as a JSON array, or `null` ONLY if absent (poison
 /// recovered, as above).
 fn sensors_json(ctx: &ControlContext) -> Value {
-    let Some(s) = &ctx.sensors else { return Value::Null };
+    let Some(s) = &ctx.sensors else {
+        return Value::Null;
+    };
     let g = s.read().unwrap_or_else(|e| e.into_inner());
     let lines: Vec<Value> = (0u8..8)
         .map(|i| {
@@ -247,7 +268,9 @@ fn sensors_json(ctx: &ControlContext) -> Value {
                     // Display impl = canonical SCREAMING_SNAKE (matches MQTT alarm events).
                     "alarm_state": r.alarm_state.to_string(),
                 }),
-                None => json!({ "line": i, "name": name, "location": location, "connected": false }),
+                None => {
+                    json!({ "line": i, "name": name, "location": location, "connected": false })
+                }
             }
         })
         .collect();
@@ -256,14 +279,18 @@ fn sensors_json(ctx: &ControlContext) -> Value {
 
 fn sensors_read(ctx: &ControlContext) -> Response {
     match sensors_json(ctx) {
-        Value::Null => Response::err_coded("not_enabled", "sensor subsystem not available", json!(null)),
+        Value::Null => {
+            Response::err_coded("not_enabled", "sensor subsystem not available", json!(null))
+        }
         v => Response::ok(json!({ "sensors": v })),
     }
 }
 
 fn power_status(ctx: &ControlContext) -> Response {
     match power_json(ctx) {
-        Value::Null => Response::err_coded("not_enabled", "power subsystem not available", json!(null)),
+        Value::Null => {
+            Response::err_coded("not_enabled", "power subsystem not available", json!(null))
+        }
         v => Response::ok(v),
     }
 }
@@ -279,7 +306,11 @@ fn connection_state_str(s: ConnectionState) -> &'static str {
 
 fn mqtt_status(ctx: &ControlContext) -> Response {
     let Some(c) = &ctx.mqtt_connection else {
-        return Response::err_coded("not_enabled", "MQTT is not enabled on this device", json!(null));
+        return Response::err_coded(
+            "not_enabled",
+            "MQTT is not enabled on this device",
+            json!(null),
+        );
     };
     let st = c.lock().unwrap_or_else(|e| e.into_inner()).state();
     Response::ok(json!({
@@ -307,7 +338,11 @@ fn config_set(ctx: &ControlContext, setting: ConfigSetting, force: bool) -> Resp
     let Some(applier) = &ctx.config_applier else {
         return Response::err_coded("not_enabled", "config applier not available", json!(null));
     };
-    eprintln!("[control] AUDIT t={} config set {} force={force}", now_unix(), setting.audit_label());
+    eprintln!(
+        "[control] AUDIT t={} config set {} force={force}",
+        now_unix(),
+        setting.audit_label()
+    );
 
     let result = match &setting {
         ConfigSetting::DeviceLabel { label } => applier.apply_device_label_change(label.clone()),
@@ -334,7 +369,10 @@ fn config_set(ctx: &ControlContext, setting: ConfigSetting, force: bool) -> Resp
     } else {
         Response::err_coded(
             "apply_failed",
-            result.error_message.clone().unwrap_or_else(|| "apply failed".into()),
+            result
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "apply failed".into()),
             data,
         )
     }
@@ -343,7 +381,9 @@ fn config_set(ctx: &ControlContext, setting: ConfigSetting, force: bool) -> Resp
 fn config_get(ctx: &ControlContext, key: &str) -> Response {
     let root = match serde_json::to_value(&*ctx.config) {
         Ok(v) => v,
-        Err(e) => return Response::err_coded("internal", format!("serialize config: {e}"), json!(null)),
+        Err(e) => {
+            return Response::err_coded("internal", format!("serialize config: {e}"), json!(null))
+        }
     };
     let mut cur = &root;
     let mut last = "";
@@ -353,7 +393,13 @@ fn config_get(ctx: &ControlContext, key: &str) -> Response {
                 cur = v;
                 last = part;
             }
-            None => return Response::err_coded("not_found", format!("no such config key: {key}"), json!(null)),
+            None => {
+                return Response::err_coded(
+                    "not_found",
+                    format!("no such config key: {key}"),
+                    json!(null),
+                )
+            }
         }
     }
     let mut out = cur.clone();
@@ -369,9 +415,19 @@ fn config_get(ctx: &ControlContext, key: &str) -> Response {
 /// plane (terminals/CI logs). Conservative substring match.
 fn is_secret_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    ["password", "passwd", "secret", "token", "appkey", "nwkkey", "appskey", "nwkskey", "private_key"]
-        .iter()
-        .any(|needle| k.contains(needle))
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "appkey",
+        "nwkkey",
+        "appskey",
+        "nwkskey",
+        "private_key",
+    ]
+    .iter()
+    .any(|needle| k.contains(needle))
 }
 
 /// Recursively replace scalar values held under secret-looking keys with "***".
@@ -395,12 +451,19 @@ fn redact_secrets(v: &mut Value) {
 
 fn lorawan_handle(ctx: &ControlContext) -> Result<&LoRaWANHandle, Response> {
     ctx.lorawan.as_ref().ok_or_else(|| {
-        Response::err_coded("not_enabled", "LoRaWAN is not enabled on this device", json!(null))
+        Response::err_coded(
+            "not_enabled",
+            "LoRaWAN is not enabled on this device",
+            json!(null),
+        )
     })
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn cv_to_json(v: &ConfigValue) -> Value {
@@ -442,16 +505,26 @@ fn lorawan_set_param(
         }
     }
     if !parse_errors.is_empty() {
-        return Response::err_coded("validation", "invalid field value(s)", json!({ "errors": parse_errors }));
+        return Response::err_coded(
+            "validation",
+            "invalid field value(s)",
+            json!({ "errors": parse_errors }),
+        );
     }
 
     // Fail-fast on invalid values before taking the device lock or auditing
     // (write_config re-validates internally; this preserves the original
     // pre-lock validation-failure path).
     if let Err(errs) = sc::validate(&config) {
-        let errors: Vec<Value> =
-            errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
-        return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
+        let errors: Vec<Value> = errs
+            .iter()
+            .map(|e| json!({ "key": e.key, "reason": e.reason }))
+            .collect();
+        return Response::err_coded(
+            "validation",
+            "validation failed",
+            json!({ "errors": errors }),
+        );
     }
 
     // Serialize device-mutating ops, and audit every attempt (staging or commit).
@@ -463,14 +536,21 @@ fn lorawan_set_param(
     );
 
     let sent_keys: Vec<&str> = config.keys().map(|s| s.as_str()).collect();
-    let write = match sticker_config::write_config(handle, dev_eui, &config, save, ctx.command_timeout) {
-        Ok(w) => w,
-        Err(errs) => {
-            let errors: Vec<Value> =
-                errs.iter().map(|e| json!({ "key": e.key, "reason": e.reason })).collect();
-            return Response::err_coded("validation", "validation failed", json!({ "errors": errors }));
-        }
-    };
+    let write =
+        match sticker_config::write_config(handle, dev_eui, &config, save, ctx.command_timeout) {
+            Ok(w) => w,
+            Err(errs) => {
+                let errors: Vec<Value> = errs
+                    .iter()
+                    .map(|e| json!({ "key": e.key, "reason": e.reason }))
+                    .collect();
+                return Response::err_coded(
+                    "validation",
+                    "validation failed",
+                    json!({ "errors": errors }),
+                );
+            }
+        };
 
     let batches: Vec<Value> = write
         .batches
@@ -509,11 +589,20 @@ fn lorawan_get_param(
     // the prior single-page read, which silently dropped pages 1..n).
     let read = match sticker_config::read_config(handle, dev_eui, &key_refs, ctx.command_timeout) {
         Ok(r) => r,
-        Err(e) => return Response::err_coded("transport", format!("no response from device: {e}"), json!(null)),
+        Err(e) => {
+            return Response::err_coded(
+                "transport",
+                format!("no response from device: {e}"),
+                json!(null),
+            )
+        }
     };
 
-    let config_json: BTreeMap<String, Value> =
-        read.config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect();
+    let config_json: BTreeMap<String, Value> = read
+        .config
+        .iter()
+        .map(|(k, v)| (k.clone(), cv_to_json(v)))
+        .collect();
 
     let mut data = json!({
         "seq": read.last_seq,
@@ -535,7 +624,11 @@ fn lorawan_get_param(
             }
         }
         if !perr.is_empty() {
-            return Response::err_coded("validation", "invalid desired value(s)", json!({ "errors": perr }));
+            return Response::err_coded(
+                "validation",
+                "invalid desired value(s)",
+                json!({ "errors": perr }),
+            );
         }
         let mismatches = crate::libs::lorawan::sticker_response::diff_config(&want, &read.config);
         data["diff"] = json!(mismatches.iter().map(mismatch_to_json).collect::<Vec<_>>());
@@ -552,16 +645,20 @@ fn lorawan_send(
     force: bool,
 ) -> Response {
     if command.is_destructive() && !force {
-        return Response::err_coded("forbidden", format!("{command:?} is destructive; pass --force"), json!(null));
+        return Response::err_coded(
+            "forbidden",
+            format!("{command:?} is destructive; pass --force"),
+            json!(null),
+        );
     }
     let handle = match lorawan_handle(ctx) {
         Ok(h) => h,
         Err(r) => return r,
     };
     let _guard = ctx.lorawan_lock.lock(); // serialize with other device ops
-    // Additionally serialise against the device's single 8-s deferred-action slot,
-    // which the MQTT path shares. lorawan_lock only covers this process's control
-    // socket, so it alone cannot stop an MQTT save from colliding with a reboot.
+                                          // Additionally serialise against the device's single 8-s deferred-action slot,
+                                          // which the MQTT path shares. lorawan_lock only covers this process's control
+                                          // socket, so it alone cannot stop an MQTT save from colliding with a reboot.
     let _action_guard = if command.is_action_bearing() {
         match sticker_config::try_action_guard(dev_eui) {
             Ok(g) => Some(g),
@@ -578,7 +675,10 @@ fn lorawan_send(
         LorawanSimpleCommand::DeviceReset => sc::build_device_reset(),
         LorawanSimpleCommand::FactoryReset => sc::build_factory_reset(),
         LorawanSimpleCommand::ClockSync => {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as u32)
+                .unwrap_or(0);
             sc::build_clock_sync(now)
         }
     };
@@ -606,7 +706,11 @@ fn lorawan_send(
                 "note": "no fPort-85 reply by design; the answer is the next telemetry uplink",
                 "expect": "telemetry_uplink",
             })),
-            _ => Response::err_coded("transport", format!("no response from device: {e}"), json!(null)),
+            _ => Response::err_coded(
+                "transport",
+                format!("no response from device: {e}"),
+                json!(null),
+            ),
         },
     }
 }
@@ -642,16 +746,28 @@ fn decoded_to_json(
             }
             v
         }
-        K::Error { code, fault_field, detail } => json!({
+        K::Error {
+            code,
+            fault_field,
+            detail,
+        } => json!({
             "kind": "error", "code": code, "fault_field": fault_field,
             "fault_key": sc::describe_fault(*fault_field, sent_keys.iter().copied()),
             "detail": detail,
         }),
-        K::ConfigDump { page_index, page_count, config } => json!({
+        K::ConfigDump {
+            page_index,
+            page_count,
+            config,
+        } => json!({
             "kind": "config_dump", "page_index": page_index, "page_count": page_count,
             "config": config.iter().map(|(k, v)| (k.clone(), cv_to_json(v))).collect::<BTreeMap<_, _>>(),
         }),
-        K::HistoryFrame { frame_index, frame_count, .. } => json!({
+        K::HistoryFrame {
+            frame_index,
+            frame_count,
+            ..
+        } => json!({
             "kind": "history_frame", "frame_index": frame_index, "frame_count": frame_count,
         }),
         K::W1Scan { roms } => json!({ "kind": "w1_scan", "roms": roms }),
@@ -682,7 +798,11 @@ mod tests {
     /// Spawn the server on a temp socket and wait until it accepts connections.
     fn start_server() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock").to_string_lossy().to_string();
+        let path = dir
+            .path()
+            .join("control.sock")
+            .to_string_lossy()
+            .to_string();
         let ctx = test_ctx();
         let p = path.clone();
         std::thread::spawn(move || {
@@ -719,7 +839,9 @@ mod tests {
 
         let get = client::send_to(
             &path,
-            &Request::new(Command::ConfigGet { key: "system.app_version".into() }),
+            &Request::new(Command::ConfigGet {
+                key: "system.app_version".into(),
+            }),
         )
         .unwrap();
         assert!(get.ok);
@@ -729,7 +851,9 @@ mod tests {
 
         let missing = client::send_to(
             &path,
-            &Request::new(Command::ConfigGet { key: "nope.nada".into() }),
+            &Request::new(Command::ConfigGet {
+                key: "nope.nada".into(),
+            }),
         )
         .unwrap();
         assert!(!missing.ok);
@@ -805,7 +929,10 @@ mod tests {
         let resp = dispatch(&ctx, Command::ConfigShow);
         assert!(resp.ok);
         let dumped = serde_json::to_string(&resp.data).unwrap();
-        assert!(!dumped.contains("hunter2-supersecret"), "secret leaked: {dumped}");
+        assert!(
+            !dumped.contains("hunter2-supersecret"),
+            "secret leaked: {dumped}"
+        );
         assert!(dumped.contains("***"), "expected redaction marker");
     }
 
@@ -879,23 +1006,36 @@ mod tests {
     #[test]
     fn config_set_gating_and_validation() {
         let ctx = test_ctx(); // no applier
-        // without force -> forbidden (before applier/validation)
-        let f = dispatch(&ctx, Command::ConfigSet {
-            setting: ConfigSetting::DeviceLabel { label: "Lab A".into() },
-            force: false,
-        });
+                              // without force -> forbidden (before applier/validation)
+        let f = dispatch(
+            &ctx,
+            Command::ConfigSet {
+                setting: ConfigSetting::DeviceLabel {
+                    label: "Lab A".into(),
+                },
+                force: false,
+            },
+        );
         assert_eq!(f.error_code.as_deref(), Some("forbidden"));
         // out-of-range brightness, force -> validation (server-side, no applier needed)
-        let v = dispatch(&ctx, Command::ConfigSet {
-            setting: ConfigSetting::LedBrightness { value: 250 },
-            force: true,
-        });
+        let v = dispatch(
+            &ctx,
+            Command::ConfigSet {
+                setting: ConfigSetting::LedBrightness { value: 250 },
+                force: true,
+            },
+        );
         assert_eq!(v.error_code.as_deref(), Some("validation"));
         // valid setting, force, but no applier wired -> not_enabled
-        let n = dispatch(&ctx, Command::ConfigSet {
-            setting: ConfigSetting::DeviceLabel { label: "Lab A".into() },
-            force: true,
-        });
+        let n = dispatch(
+            &ctx,
+            Command::ConfigSet {
+                setting: ConfigSetting::DeviceLabel {
+                    label: "Lab A".into(),
+                },
+                force: true,
+            },
+        );
         assert_eq!(n.error_code.as_deref(), Some("not_enabled"));
     }
 
@@ -903,16 +1043,28 @@ mod tests {
     fn config_set_applies_via_real_applier() {
         use crate::libs::config_applier::ConfigApplier;
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("fiber.config.yaml"), "system:\n  device_label: \"OLD\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("fiber.config.yaml"),
+            "system:\n  device_label: \"OLD\"\n",
+        )
+        .unwrap();
         let ctx = test_ctx().with_config_applier(Arc::new(ConfigApplier::new(dir.path()).unwrap()));
 
-        let r = dispatch(&ctx, Command::ConfigSet {
-            setting: ConfigSetting::DeviceLabel { label: "Ward 9".into() },
-            force: true,
-        });
+        let r = dispatch(
+            &ctx,
+            Command::ConfigSet {
+                setting: ConfigSetting::DeviceLabel {
+                    label: "Ward 9".into(),
+                },
+                force: true,
+            },
+        );
         assert!(r.ok, "config set failed: {:?}", r.error);
         let c = std::fs::read_to_string(dir.path().join("fiber.config.yaml")).unwrap();
-        assert!(c.contains("Ward 9") && !c.contains("OLD"), "config not updated: {c}");
+        assert!(
+            c.contains("Ward 9") && !c.contains("OLD"),
+            "config not updated: {c}"
+        );
     }
 
     #[test]
@@ -936,13 +1088,21 @@ mod tests {
     #[test]
     fn errors_carry_stable_codes() {
         let ctx = test_ctx();
-        let nf = dispatch(&ctx, Command::ConfigGet { key: "no.such".into() });
+        let nf = dispatch(
+            &ctx,
+            Command::ConfigGet {
+                key: "no.such".into(),
+            },
+        );
         assert_eq!(nf.error_code.as_deref(), Some("not_found"));
-        let val = dispatch(&ctx, Command::LorawanSend {
-            dev_eui: "x".into(),
-            command: LorawanSimpleCommand::Reboot,
-            force: false,
-        });
+        let val = dispatch(
+            &ctx,
+            Command::LorawanSend {
+                dev_eui: "x".into(),
+                command: LorawanSimpleCommand::Reboot,
+                force: false,
+            },
+        );
         assert_eq!(val.error_code.as_deref(), Some("forbidden"));
     }
 
@@ -966,7 +1126,9 @@ mod tests {
         use std::os::unix::net::UnixStream;
         let (_d, path) = start_server();
         let stream = UnixStream::connect(&path).unwrap();
-        (&stream).write_all(b"{\"v\":999,\"cmd\":{\"type\":\"status\"}}\n").unwrap();
+        (&stream)
+            .write_all(b"{\"v\":999,\"cmd\":{\"type\":\"status\"}}\n")
+            .unwrap();
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let resp: Response = serde_json::from_str(line.trim()).unwrap();
@@ -974,4 +1136,3 @@ mod tests {
         assert!(resp.error.unwrap().contains("unsupported protocol version"));
     }
 }
-

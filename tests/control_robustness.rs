@@ -22,7 +22,11 @@ use fiber_app::libs::control::server::{serve, ControlContext};
 /// Spawn the real server on a unique temp socket; return (tempdir, path).
 fn start_server() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("control.sock").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("control.sock")
+        .to_string_lossy()
+        .to_string();
     let ctx = ControlContext::new(
         "robust-test".to_string(),
         Arc::new(Config::default_config()),
@@ -129,7 +133,11 @@ fn oversized_request_is_rejected_not_oom() {
         assert!(!r.ok, "oversized junk should not be ok");
     }
     // crucially, the server is still alive afterwards:
-    assert!(client::send_to(&path, &Request::new(Command::Status)).unwrap().ok);
+    assert!(
+        client::send_to(&path, &Request::new(Command::Status))
+            .unwrap()
+            .ok
+    );
 }
 
 #[test]
@@ -147,7 +155,11 @@ fn connection_closed_without_newline_is_handled() {
     // write partial bytes, no newline, then close the write half
     let _ = raw_exchange(&path, b"{\"v\":1,\"cmd\"");
     // server must not crash; next request still works
-    assert!(client::send_to(&path, &Request::new(Command::Status)).unwrap().ok);
+    assert!(
+        client::send_to(&path, &Request::new(Command::Status))
+            .unwrap()
+            .ok
+    );
 }
 
 #[test]
@@ -155,7 +167,11 @@ fn non_utf8_request_does_not_crash_server() {
     let (_d, path) = start_server();
     // invalid UTF-8; read_line errors -> connection dropped, server survives
     let _ = raw_exchange(&path, &[0xff, 0xfe, 0x00, 0x80, b'\n']);
-    assert!(client::send_to(&path, &Request::new(Command::Status)).unwrap().ok);
+    assert!(
+        client::send_to(&path, &Request::new(Command::Status))
+            .unwrap()
+            .ok
+    );
 }
 
 #[test]
@@ -166,7 +182,11 @@ fn connect_then_immediately_close_is_handled() {
         let s = UnixStream::connect(&path).unwrap();
         drop(s);
     }
-    assert!(client::send_to(&path, &Request::new(Command::Status)).unwrap().ok);
+    assert!(
+        client::send_to(&path, &Request::new(Command::Status))
+            .unwrap()
+            .ok
+    );
 }
 
 #[test]
@@ -194,7 +214,11 @@ fn socket_and_parent_have_locked_down_perms() {
 fn serve_recovers_over_a_stale_socket_file() {
     // pre-create a leftover file where the socket should bind
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("control.sock").to_string_lossy().to_string();
+    let path = dir
+        .path()
+        .join("control.sock")
+        .to_string_lossy()
+        .to_string();
     std::fs::write(&path, b"stale").unwrap();
     let ctx = ControlContext::new(
         "stale-test".to_string(),
@@ -222,15 +246,24 @@ fn serve_recovers_over_a_stale_socket_file() {
 fn interleaved_raw_and_typed_clients() {
     // a malformed raw client between two good clients must not corrupt state
     let (_d, path) = start_server();
-    assert!(client::send_to(&path, &Request::new(Command::Status)).unwrap().ok);
+    assert!(
+        client::send_to(&path, &Request::new(Command::Status))
+            .unwrap()
+            .ok
+    );
     let _ = raw_exchange(&path, b"{ broken \n");
     let mut reader_threads = Vec::new();
     for _ in 0..8 {
         let p = path.clone();
         reader_threads.push(std::thread::spawn(move || {
-            client::send_to(&p, &Request::new(Command::ConfigGet { key: "system.app_version".into() }))
-                .unwrap()
-                .ok
+            client::send_to(
+                &p,
+                &Request::new(Command::ConfigGet {
+                    key: "system.app_version".into(),
+                }),
+            )
+            .unwrap()
+            .ok
         }));
     }
     for t in reader_threads {

@@ -57,7 +57,10 @@ impl StorageWriter {
                     &e.to_string(),
                     Some(duration_ms),
                 );
-                Err(StorageError::InsertError(format!("Failed to insert reading: {}", e)))
+                Err(StorageError::InsertError(format!(
+                    "Failed to insert reading: {}",
+                    e
+                )))
             }
         }
     }
@@ -74,9 +77,9 @@ impl StorageWriter {
             return Ok(0);
         }
 
-        let tx = conn
-            .transaction()
-            .map_err(|e| StorageError::InsertError(format!("Failed to start transaction: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| {
+            StorageError::InsertError(format!("Failed to start transaction: {}", e))
+        })?;
 
         let mut inserted_count = 0i64;
 
@@ -117,10 +120,7 @@ impl StorageWriter {
     }
 
     /// Write an alarm event
-    pub fn write_alarm_event(
-        conn: &Connection,
-        event: &AlarmEvent,
-    ) -> StorageResult<i64> {
+    pub fn write_alarm_event(conn: &Connection, event: &AlarmEvent) -> StorageResult<i64> {
         let start = std::time::Instant::now();
 
         let result = conn.execute(
@@ -139,7 +139,13 @@ impl StorageWriter {
         match result {
             Ok(_) => {
                 let duration_ms = start.elapsed().as_millis() as i64;
-                let _ = AuditLogger::log_operation(conn, "INSERT", Some("alarm_events"), Some(1), Some(duration_ms));
+                let _ = AuditLogger::log_operation(
+                    conn,
+                    "INSERT",
+                    Some("alarm_events"),
+                    Some(1),
+                    Some(duration_ms),
+                );
                 Ok(conn.last_insert_rowid())
             }
             Err(e) => {
@@ -151,7 +157,10 @@ impl StorageWriter {
                     &e.to_string(),
                     Some(duration_ms),
                 );
-                Err(StorageError::InsertError(format!("Failed to insert alarm event: {}", e)))
+                Err(StorageError::InsertError(format!(
+                    "Failed to insert alarm event: {}",
+                    e
+                )))
             }
         }
     }
@@ -167,9 +176,9 @@ impl StorageWriter {
 
         let start = std::time::Instant::now();
 
-        let tx = conn
-            .transaction()
-            .map_err(|e| StorageError::InsertError(format!("Failed to start transaction: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| {
+            StorageError::InsertError(format!("Failed to start transaction: {}", e))
+        })?;
 
         let mut inserted_count = 0i64;
 
@@ -402,13 +411,24 @@ impl StorageWriter {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let res = conn.execute(
-            "INSERT OR IGNORE INTO eye_readings
+        let res = conn
+            .execute(
+                "INSERT OR IGNORE INTO eye_readings
              (mac, ts, received_at, message_id, event_type, payload_json, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
-            rusqlite::params![mac, ts, received_at, message_id, event_type, payload_json, now],
-        )
-        .map_err(|e| StorageError::InsertError(format!("Failed to insert eye reading: {}", e)))?;
+                rusqlite::params![
+                    mac,
+                    ts,
+                    received_at,
+                    message_id,
+                    event_type,
+                    payload_json,
+                    now
+                ],
+            )
+            .map_err(|e| {
+                StorageError::InsertError(format!("Failed to insert eye reading: {}", e))
+            })?;
 
         if res == 0 {
             Ok(None)
@@ -494,9 +514,16 @@ mod tests {
             )
             .expect("Failed to query HMAC");
 
-        assert!(stored_hmac.is_some(), "HMAC should be stored when secret is provided");
+        assert!(
+            stored_hmac.is_some(),
+            "HMAC should be stored when secret is provided"
+        );
         let hmac_value = stored_hmac.unwrap();
-        assert_eq!(hmac_value.len(), 64, "HMAC-SHA256 hex digest should be 64 chars");
+        assert_eq!(
+            hmac_value.len(),
+            64,
+            "HMAC-SHA256 hex digest should be 64 chars"
+        );
 
         // Verify the stored HMAC matches what we'd compute independently
         let expected_hmac = crate::libs::storage::integrity::compute_reading_hmac(
@@ -507,7 +534,10 @@ mod tests {
             reading.is_connected,
             &reading.alarm_state,
         );
-        assert_eq!(hmac_value, expected_hmac, "Stored HMAC should match computed HMAC");
+        assert_eq!(
+            hmac_value, expected_hmac,
+            "Stored HMAC should match computed HMAC"
+        );
 
         // Verify using the verify function for constant-time comparison
         assert!(crate::libs::storage::integrity::verify_reading_hmac(
@@ -541,7 +571,10 @@ mod tests {
             )
             .expect("Failed to query HMAC");
 
-        assert!(stored_hmac.is_none(), "HMAC should be None when no secret is provided");
+        assert!(
+            stored_hmac.is_none(),
+            "HMAC should be None when no secret is provided"
+        );
 
         let _ = std::fs::remove_file("/tmp/test_write_no_hmac.db");
     }
@@ -581,8 +614,14 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert_eq!(hmacs.len(), 3);
-        assert_ne!(hmacs[0], hmacs[1], "Different readings should have different HMACs");
-        assert_ne!(hmacs[1], hmacs[2], "Different readings should have different HMACs");
+        assert_ne!(
+            hmacs[0], hmacs[1],
+            "Different readings should have different HMACs"
+        );
+        assert_ne!(
+            hmacs[1], hmacs[2],
+            "Different readings should have different HMACs"
+        );
 
         let _ = std::fs::remove_file("/tmp/test_batch_hmac.db");
     }
@@ -618,7 +657,10 @@ mod tests {
             r#"{"fields":{"temp":21.0}}"#,
         )
         .unwrap();
-        assert!(id2.is_none(), "duplicate message_id must not insert a new row");
+        assert!(
+            id2.is_none(),
+            "duplicate message_id must not insert a new row"
+        );
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM sticker_readings", [], |r| r.get(0))
@@ -632,7 +674,10 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "abc").unwrap(), 1);
+        assert_eq!(
+            StorageWriter::get_provisioning_epoch(&conn, "abc").unwrap(),
+            1
+        );
 
         let v = StorageWriter::bump_provisioning_epoch(&mut conn, "abc").unwrap();
         assert_eq!(v, 2);
@@ -641,7 +686,10 @@ mod tests {
         assert_eq!(v, 3);
 
         // Different dev_eui starts fresh
-        assert_eq!(StorageWriter::get_provisioning_epoch(&conn, "def").unwrap(), 1);
+        assert_eq!(
+            StorageWriter::get_provisioning_epoch(&conn, "def").unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -652,24 +700,45 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 0);
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(),
+            0
+        );
 
         StorageWriter::advance_export_cursor(&mut conn, "remote", "sticker", 42).unwrap();
-        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(),
+            42
+        );
 
         // Going backwards is rejected (no-op). Monotonic guarantee.
         StorageWriter::advance_export_cursor(&mut conn, "remote", "sticker", 41).unwrap();
-        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(),
+            42
+        );
 
         // Independent across (broker_id, stream)
         StorageWriter::advance_export_cursor(&mut conn, "local", "sticker", 7).unwrap();
-        assert_eq!(StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(), 7);
-        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 42);
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(),
+            7
+        );
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(),
+            42
+        );
 
         // Reset clears just the targeted pair
         StorageWriter::reset_export_cursor(&mut conn, "remote", "sticker").unwrap();
-        assert_eq!(StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(), 0);
-        assert_eq!(StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(), 7);
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "remote", "sticker").unwrap(),
+            0
+        );
+        assert_eq!(
+            StorageReader::load_export_cursor(&conn, "local", "sticker").unwrap(),
+            7
+        );
     }
 
     #[test]
@@ -678,7 +747,8 @@ mod tests {
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let id = StorageWriter::append_sticker_removed_event(&mut conn, "70b3d5", 1716120100).unwrap();
+        let id =
+            StorageWriter::append_sticker_removed_event(&mut conn, "70b3d5", 1716120100).unwrap();
         assert!(id.is_some());
 
         let (event_type, dev_eui): (String, String) = conn

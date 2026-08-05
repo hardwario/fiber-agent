@@ -87,16 +87,13 @@ impl Database {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(
-                        key_path,
-                        std::fs::Permissions::from_mode(0o600),
-                    )
-                    .map_err(|e| {
-                        StorageError::IoError(format!(
-                            "Failed to chmod 0600 the DB encryption key at {:?}: {}",
-                            key_path, e
-                        ))
-                    })?;
+                    std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+                        .map_err(|e| {
+                            StorageError::IoError(format!(
+                                "Failed to chmod 0600 the DB encryption key at {:?}: {}",
+                                key_path, e
+                            ))
+                        })?;
                 }
                 eprintln!("Generated new database encryption key");
             }
@@ -110,10 +107,9 @@ impl Database {
 
     /// Create a new connection to the database
     pub fn connect(&self) -> StorageResult<Connection> {
-        let conn =
-            Connection::open(&self.db_path).map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to open database: {}", e),
-            ))?;
+        let conn = Connection::open(&self.db_path).map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to open database: {}", e))
+        })?;
 
         // Configure WAL mode for crash safety
         self.configure_pragmas(&conn)?;
@@ -167,40 +163,40 @@ impl Database {
                 )));
             }
             conn.execute_batch(&format!("PRAGMA key = '{}';", key))
-                .map_err(|e| StorageError::DatabaseInitError(
-                    format!("Failed to set encryption key: {}", e),
-                ))?;
+                .map_err(|e| {
+                    StorageError::DatabaseInitError(format!("Failed to set encryption key: {}", e))
+                })?;
         }
 
         // Enable WAL mode for crash-safe operation (required for medical devices)
         // Note: PRAGMA journal_mode returns the mode, so use query_row
-        let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        let _mode: String = conn
+            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
             .map_err(|e| StorageError::DatabaseInitError(format!("Failed to enable WAL: {}", e)))?;
 
         // Enable foreign key constraints for data integrity
-        conn.execute("PRAGMA foreign_keys = ON", [])
-            .map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to enable foreign keys: {}", e),
-            ))?;
+        conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to enable foreign keys: {}", e))
+        })?;
 
         // NORMAL provides good balance: fsync on commit but not between writes
         // This is safer than OFF but faster than FULL
         conn.execute("PRAGMA synchronous = NORMAL", [])
-            .map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to set synchronous mode: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::DatabaseInitError(format!("Failed to set synchronous mode: {}", e))
+            })?;
 
         // Use in-memory temp storage (don't write to disk)
         conn.execute("PRAGMA temp_store = MEMORY", [])
-            .map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to set temp_store: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::DatabaseInitError(format!("Failed to set temp_store: {}", e))
+            })?;
 
         // Set cache size to 10MB for better performance with many sensors
         conn.execute("PRAGMA cache_size = -10000", [])
-            .map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to set cache size: {}", e),
-            ))?;
+            .map_err(|e| {
+                StorageError::DatabaseInitError(format!("Failed to set cache size: {}", e))
+            })?;
 
         // Cap WAL growth so a stuck/slow checkpoint cannot eat the partition.
         // 64MB ceiling on the -wal file; auto-checkpoint every 1000 pages
@@ -210,9 +206,9 @@ impl Database {
             "PRAGMA journal_size_limit = 67108864;
              PRAGMA wal_autocheckpoint = 1000;",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to set WAL size pragmas: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to set WAL size pragmas: {}", e))
+        })?;
 
         Ok(())
     }
@@ -227,9 +223,9 @@ impl Database {
                 description TEXT NOT NULL
             )",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create schema_version table: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to create schema_version table: {}", e))
+        })?;
 
         // Create sensor_readings table (main medical data)
         conn.execute_batch(
@@ -244,9 +240,12 @@ impl Database {
                 data_hmac TEXT
             )",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create sensor_readings table: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!(
+                "Failed to create sensor_readings table: {}",
+                e
+            ))
+        })?;
 
         // Create alarm_events table (alarm history)
         conn.execute_batch(
@@ -260,9 +259,9 @@ impl Database {
                 details TEXT
             )",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create alarm_events table: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to create alarm_events table: {}", e))
+        })?;
 
         // Create audit_log table (EU MDR compliance - track all operations)
         conn.execute_batch(
@@ -280,9 +279,9 @@ impl Database {
                 previous_hash TEXT
             )",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create audit_log table: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to create audit_log table: {}", e))
+        })?;
 
         // Create config_changes table (EU MDR compliance - signed configuration changes)
         conn.execute_batch(
@@ -302,9 +301,9 @@ impl Database {
                 error_msg TEXT
             )",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create config_changes table: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::DatabaseInitError(format!("Failed to create config_changes table: {}", e))
+        })?;
 
         // Create indexes for fast queries
         conn.execute_batch(
@@ -331,9 +330,7 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_config_changes_nonce
              ON config_changes(nonce);",
         )
-        .map_err(|e| StorageError::DatabaseInitError(
-            format!("Failed to create indexes: {}", e),
-        ))?;
+        .map_err(|e| StorageError::DatabaseInitError(format!("Failed to create indexes: {}", e)))?;
 
         Ok(())
     }
@@ -342,15 +339,13 @@ impl Database {
     fn verify_schema(&self, conn: &Connection) -> StorageResult<()> {
         // Check if schema_version table has any entries
         let version: Option<i32> = conn
-            .query_row(
-                "SELECT MAX(version) FROM schema_version",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
             .optional()
-            .map_err(|e| StorageError::DatabaseInitError(
-                format!("Failed to query schema version: {}", e),
-            ))?
+            .map_err(|e| {
+                StorageError::DatabaseInitError(format!("Failed to query schema version: {}", e))
+            })?
             .flatten();
 
         match version {
@@ -373,12 +368,10 @@ impl Database {
                 }
                 Ok(())
             }
-            Some(v) if v > CURRENT_SCHEMA_VERSION => {
-                Err(StorageError::MigrationError(
-                    format!("Database schema version {} is newer than application version {}",
-                        v, CURRENT_SCHEMA_VERSION)
-                ))
-            }
+            Some(v) if v > CURRENT_SCHEMA_VERSION => Err(StorageError::MigrationError(format!(
+                "Database schema version {} is newer than application version {}",
+                v, CURRENT_SCHEMA_VERSION
+            ))),
             Some(_) => {
                 // v == CURRENT_SCHEMA_VERSION already handled above; unreachable
                 Ok(())
@@ -420,25 +413,24 @@ impl Database {
 
         conn.execute_batch(
             "ALTER TABLE audit_log ADD COLUMN record_hash TEXT;
-             ALTER TABLE audit_log ADD COLUMN previous_hash TEXT;"
+             ALTER TABLE audit_log ADD COLUMN previous_hash TEXT;",
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to add hash columns to audit_log: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::MigrationError(format!("Failed to add hash columns to audit_log: {}", e))
+        })?;
+
+        conn.execute_batch("ALTER TABLE sensor_readings ADD COLUMN data_hmac TEXT;")
+            .map_err(|e| {
+                StorageError::MigrationError(format!(
+                    "Failed to add HMAC column to sensor_readings: {}",
+                    e
+                ))
+            })?;
 
         conn.execute_batch(
-            "ALTER TABLE sensor_readings ADD COLUMN data_hmac TEXT;"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_hash ON audit_log(record_hash);",
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to add HMAC column to sensor_readings: {}", e),
-        ))?;
-
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_hash ON audit_log(record_hash);"
-        )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to create hash index: {}", e),
-        ))?;
+        .map_err(|e| StorageError::MigrationError(format!("Failed to create hash index: {}", e)))?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -457,7 +449,10 @@ impl Database {
             format!("Failed to record migration: {}", e),
         ))?;
 
-        AuditLogger::log_schema_change(conn, "Migration v1\u{2192}v2: added tamper-evidence columns")?;
+        AuditLogger::log_schema_change(
+            conn,
+            "Migration v1\u{2192}v2: added tamper-evidence columns",
+        )?;
 
         eprintln!("MIGRATION: Schema upgraded from v1 to v2 (tamper-evident audit trail)");
         Ok(())
@@ -495,11 +490,9 @@ impl Database {
                  last_exported_id INTEGER NOT NULL DEFAULT 0,
                  updated_at       INTEGER NOT NULL,
                  PRIMARY KEY (broker_id, stream)
-             );"
+             );",
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to create v3 tables: {}", e),
-        ))?;
+        .map_err(|e| StorageError::MigrationError(format!("Failed to create v3 tables: {}", e)))?;
         Ok(())
     }
 
@@ -524,9 +517,9 @@ impl Database {
                 "Save-and-feed: sticker_readings, sticker_provisioning_epoch, export_cursor"
             ],
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to record v3 migration: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::MigrationError(format!("Failed to record v3 migration: {}", e))
+        })?;
 
         AuditLogger::log_schema_change(conn, "Migration v2\u{2192}v3: save-and-feed tables")?;
 
@@ -559,11 +552,9 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_srm_minute_ts
                  ON sensor_readings_minute(minute_ts DESC);
              CREATE INDEX IF NOT EXISTS idx_srm_line_minute
-                 ON sensor_readings_minute(sensor_line, minute_ts DESC);"
+                 ON sensor_readings_minute(sensor_line, minute_ts DESC);",
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to create v4 tables: {}", e),
-        ))?;
+        .map_err(|e| StorageError::MigrationError(format!("Failed to create v4 tables: {}", e)))?;
         Ok(())
     }
 
@@ -581,15 +572,11 @@ impl Database {
 
         conn.execute(
             "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
-            rusqlite::params![
-                4,
-                now,
-                "Minute-aggregate table for long-term retention"
-            ],
+            rusqlite::params![4, now, "Minute-aggregate table for long-term retention"],
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to record v4 migration: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::MigrationError(format!("Failed to record v4 migration: {}", e))
+        })?;
 
         AuditLogger::log_schema_change(conn, "Migration v3\u{2192}v4: sensor_readings_minute")?;
 
@@ -614,11 +601,9 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_eye_readings_mac_ts
                  ON eye_readings(mac, ts);
              CREATE INDEX IF NOT EXISTS idx_eye_readings_id
-                 ON eye_readings(id);"
+                 ON eye_readings(id);",
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to create v5 tables: {}", e),
-        ))?;
+        .map_err(|e| StorageError::MigrationError(format!("Failed to create v5 tables: {}", e)))?;
         Ok(())
     }
 
@@ -635,15 +620,11 @@ impl Database {
 
         conn.execute(
             "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
-            rusqlite::params![
-                5,
-                now,
-                "EYE BLE tag readings (save-and-feed stream)"
-            ],
+            rusqlite::params![5, now, "EYE BLE tag readings (save-and-feed stream)"],
         )
-        .map_err(|e| StorageError::MigrationError(
-            format!("Failed to record v5 migration: {}", e),
-        ))?;
+        .map_err(|e| {
+            StorageError::MigrationError(format!("Failed to record v5 migration: {}", e))
+        })?;
 
         AuditLogger::log_schema_change(conn, "Migration v4\u{2192}v5: eye_readings")?;
 
@@ -753,7 +734,11 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("Failed to query journal mode");
 
-        assert_eq!(journal_mode.to_uppercase(), "WAL", "WAL mode should be enabled");
+        assert_eq!(
+            journal_mode.to_uppercase(),
+            "WAL",
+            "WAL mode should be enabled"
+        );
 
         cleanup_test_db(&path);
     }
@@ -793,11 +778,7 @@ mod tests {
         assert!(tables.contains(&"sensor_readings_minute".to_string()));
 
         let version: i32 = conn
-            .query_row(
-                "SELECT MAX(version) FROM schema_version",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }

@@ -1,6 +1,6 @@
 //! Display monitor thread - continuously updates the ST7920 display
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -10,20 +10,20 @@ use rppal::gpio::Gpio;
 use crate::drivers::display::St7920;
 use crate::libs::alarms::color::LedColor;
 use crate::libs::leds::SharedLedStateHandle;
-use crate::libs::sensors::SharedSensorStateHandle;
+use crate::libs::lorawan::LoRaWANSensorState;
 use crate::libs::network::get_network_status;
 use crate::libs::power::SharedPowerStatus;
-use crate::libs::lorawan::LoRaWANSensorState;
+use crate::libs::sensors::SharedSensorStateHandle;
 
 use super::blank;
+use super::screens::{
+    render_ble_connected, render_ble_provisioning, render_ble_wifi_fail, render_ble_wifi_ok,
+    render_custom_overview, render_lorawan_sensor_detail, render_pairing_screen,
+    render_qr_code_screen, render_qr_session_ended_screen, render_sensor_detail,
+    render_sensor_overview, render_system_info,
+};
 use super::supervise::{lock_recover, read_recover, write_recover};
 use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
-use super::screens::{
-    render_sensor_overview, render_custom_overview, render_qr_code_screen,
-    render_qr_session_ended_screen, render_system_info,
-    render_pairing_screen, render_sensor_detail, render_lorawan_sensor_detail,
-    render_ble_connected, render_ble_provisioning, render_ble_wifi_ok, render_ble_wifi_fail,
-};
 
 /// How often the loop re-reads the config file to pick up out-of-band edits
 /// (a hand-edited YAML, or a write from another process).
@@ -50,7 +50,10 @@ struct DisplayConfigSnapshot {
 fn load_config_snapshot(hostname: &str) -> Option<DisplayConfigSnapshot> {
     let cfg = crate::libs::config::Config::load_default().ok()?;
     Some(DisplayConfigSnapshot {
-        device_label: cfg.system.device_label.unwrap_or_else(|| hostname.to_string()),
+        device_label: cfg
+            .system
+            .device_label
+            .unwrap_or_else(|| hostname.to_string()),
         custom_lines: cfg.display.custom_lines,
     })
 }
@@ -88,8 +91,8 @@ pub fn display_loop(
     // Initialize display. Reported as an error rather than a quiet return so
     // the supervisor retries — re-running init() is the recovery path, and a
     // controller that isn't ready yet at boot is exactly what it's for.
-    let mut display = St7920::new(gpio)
-        .map_err(|e| format!("failed to initialize display: {}", e))?;
+    let mut display =
+        St7920::new(gpio).map_err(|e| format!("failed to initialize display: {}", e))?;
     eprintln!("[DisplayMonitor] Display initialized successfully");
 
     // Boot splash: render the HARDWARIO logo once and dwell for a short
@@ -132,7 +135,9 @@ pub fn display_loop(
         None => {
             // Unreadable at startup: keep whatever main.rs seeded the handle
             // with, which is the same file read a moment earlier.
-            eprintln!("[DisplayMonitor] Config unreadable at startup, using the seeded display config");
+            eprintln!(
+                "[DisplayMonitor] Config unreadable at startup, using the seeded display config"
+            );
             config_readable = false;
             DisplayConfigSnapshot {
                 device_label: hostname.clone(),
@@ -142,7 +147,10 @@ pub fn display_loop(
     };
     let mut last_config_reconcile = std::time::Instant::now();
 
-    eprintln!("[DisplayMonitor] Started display loop with {}ms update interval", UPDATE_INTERVAL_MS);
+    eprintln!(
+        "[DisplayMonitor] Started display loop with {}ms update interval",
+        UPDATE_INTERVAL_MS
+    );
 
     // Main display loop
     loop {
@@ -190,28 +198,44 @@ pub fn display_loop(
         // audible alert forces it lit. Non-critical warnings (yellow) do not
         // keep the screen awake. The configured brightness is preserved and
         // restored on wake.
-        let alarm_lit = led_state.read().lines.iter().flatten()
+        let alarm_lit = led_state
+            .read()
+            .lines
+            .iter()
+            .flatten()
             .any(|l| l.led_state.color == LedColor::Red);
         let (idle, force_lit) = {
             let mut ds = lock_recover(&display_state);
             let force = alarm_lit
-                || ds.buzzer_priority.as_ref().is_some_and(|bp| bp.is_sensor_beeping());
+                || ds
+                    .buzzer_priority
+                    .as_ref()
+                    .is_some_and(|bp| bp.is_sensor_beeping());
             // Keep the timer fresh while lit so a full timeout starts once the
             // alarm clears (alarm onset counts as activity).
-            if force { ds.mark_activity(); }
+            if force {
+                ds.mark_activity();
+            }
             (ds.last_activity.elapsed(), force)
         };
         // Read the idle timeout live each tick so runtime changes (e.g. via
         // MQTT) take effect without a restart. 0 disables the timeout.
         let timeout = Duration::from_secs(u64::from(screen_timeout.load(Ordering::Relaxed)));
         let target_brightness = effective_backlight(
-            screen_brightness.load(Ordering::Relaxed), idle, timeout, force_lit);
+            screen_brightness.load(Ordering::Relaxed),
+            idle,
+            timeout,
+            force_lit,
+        );
         if target_brightness != last_brightness {
             // On idle timeout only the backlight is cut (PWM to 0); the panel
             // keeps being rendered below so its content stays current and simply
             // reappears when the backlight returns on the next activity.
             if let Err(e) = display.set_brightness(target_brightness) {
-                eprintln!("[DisplayMonitor] Failed to set backlight to {}%: {}", target_brightness, e);
+                eprintln!(
+                    "[DisplayMonitor] Failed to set backlight to {}%: {}",
+                    target_brightness, e
+                );
             } else if target_brightness == 0 {
                 eprintln!("[DisplayMonitor] Backlight off (idle timeout)");
             } else {
@@ -275,7 +299,13 @@ pub fn display_loop(
             };
 
             // Get current display state (screen and page)
-            let (current_screen, qr_generator, lorawan_gateway_present, overview_mode, hold_bar_pixels) = {
+            let (
+                current_screen,
+                qr_generator,
+                lorawan_gateway_present,
+                overview_mode,
+                hold_bar_pixels,
+            ) = {
                 let mut state = lock_recover(&display_state);
                 // Revert any expired timed screens (BleWifiOk / BleWifiFail) before rendering
                 state.tick_timed_screens();
@@ -293,7 +323,13 @@ pub fn display_loop(
                         .ok()
                         .and_then(|g| g.as_ref().map(|sess| sess.qr_generator()))
                 });
-                (state.current_screen.clone(), qr, state.lorawan_gateway_present, mode, state.hold_bar_pixels)
+                (
+                    state.current_screen.clone(),
+                    qr,
+                    state.lorawan_gateway_present,
+                    mode,
+                    state.hold_bar_pixels,
+                )
             };
             let total_pages = overview_mode.total_pages();
 
@@ -302,7 +338,10 @@ pub fn display_loop(
 
             // Dispatch rendering based on current screen
             match current_screen {
-                Screen::SensorOverview { page, selected_sensor } => {
+                Screen::SensorOverview {
+                    page,
+                    selected_sensor,
+                } => {
                     // Read sensor state for temperature readings
                     let sensor_snapshot = read_recover(&sensor_state);
 
@@ -313,7 +352,9 @@ pub fn display_loop(
                     // taking the inner RwLock.
                     let (lorawan_state_arc, sensor_silenced) = {
                         let ds = lock_recover(&display_state);
-                        let silenced = ds.buzzer_priority.as_ref()
+                        let silenced = ds
+                            .buzzer_priority
+                            .as_ref()
                             .map(|bp| bp.is_button_silenced())
                             .unwrap_or(false);
                         (ds.lorawan_state.clone(), silenced)
@@ -343,8 +384,14 @@ pub fn display_loop(
                             &lorawan_sensors,
                         );
                         render_custom_overview(
-                            &mut display, page, &network_status, current_device_label,
-                            lorawan_gateway_present, &rows, total_pages, sensor_silenced,
+                            &mut display,
+                            page,
+                            &network_status,
+                            current_device_label,
+                            lorawan_gateway_present,
+                            &rows,
+                            total_pages,
+                            sensor_silenced,
                             hold_bar_pixels,
                         )
                     } else {
@@ -368,7 +415,10 @@ pub fn display_loop(
                             let mut ds = lock_recover(&display_state);
                             ds.clamp_overview(&entries);
                             match ds.current_screen {
-                                Screen::SensorOverview { page, selected_sensor } => (page, selected_sensor),
+                                Screen::SensorOverview {
+                                    page,
+                                    selected_sensor,
+                                } => (page, selected_sensor),
                                 // Screen changed under us (button press between the
                                 // snapshot and now) — draw the snapshot, the next
                                 // frame picks up the new screen.
@@ -377,9 +427,18 @@ pub fn display_loop(
                         };
 
                         render_sensor_overview(
-                            &mut display, page, &led_snapshot, &sensor_snapshot, &network_status,
-                            selected_sensor, current_device_label, lorawan_gateway_present,
-                            &lorawan_sensors, &entries, total_pages, sensor_silenced,
+                            &mut display,
+                            page,
+                            &led_snapshot,
+                            &sensor_snapshot,
+                            &network_status,
+                            selected_sensor,
+                            current_device_label,
+                            lorawan_gateway_present,
+                            &lorawan_sensors,
+                            &entries,
+                            total_pages,
+                            sensor_silenced,
                             hold_bar_pixels,
                         )
                     };
@@ -392,8 +451,12 @@ pub fn display_loop(
                     let sensor_snapshot = read_recover(&sensor_state);
 
                     // Render the sensor detail screen with thresholds
-                    if let Err(e) = render_sensor_detail(&mut display, sensor_idx, &sensor_snapshot) {
-                        eprintln!("[DisplayMonitor] Error rendering sensor detail display: {}", e);
+                    if let Err(e) = render_sensor_detail(&mut display, sensor_idx, &sensor_snapshot)
+                    {
+                        eprintln!(
+                            "[DisplayMonitor] Error rendering sensor detail display: {}",
+                            e
+                        );
                     }
                 }
                 Screen::LoRaWANSensorDetail { dev_eui } => {
@@ -402,15 +465,21 @@ pub fn display_loop(
                     // the Mutex while readers/writers contend on the LoRa handles.
                     let (lorawan_state_arc, lorawan_configs_arc, detail_page) =
                         if let Ok(ds) = display_state.lock() {
-                            (ds.lorawan_state.clone(), ds.lorawan_configs.clone(), ds.lorawan_detail_page)
+                            (
+                                ds.lorawan_state.clone(),
+                                ds.lorawan_configs.clone(),
+                                ds.lorawan_detail_page,
+                            )
                         } else {
                             (None, None, 0)
                         };
 
-                    let lorawan_sensor = lorawan_state_arc.as_ref()
+                    let lorawan_sensor = lorawan_state_arc
+                        .as_ref()
                         .and_then(|s| s.read().ok())
                         .and_then(|s| s.sensors.get(&dev_eui).cloned());
-                    let config_snapshot = lorawan_configs_arc.as_ref()
+                    let config_snapshot = lorawan_configs_arc
+                        .as_ref()
                         .and_then(|c| c.read().ok())
                         .and_then(|v| v.iter().find(|c| c.dev_eui == dev_eui).cloned());
 
@@ -421,7 +490,10 @@ pub fn display_loop(
                             detail_page,
                             config_snapshot.as_ref(),
                         ) {
-                            eprintln!("[DisplayMonitor] Error rendering LoRaWAN detail display: {}", e);
+                            eprintln!(
+                                "[DisplayMonitor] Error rendering LoRaWAN detail display: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -431,11 +503,15 @@ pub fn display_loop(
                     // a session is active; otherwise show a session-ended
                     // notice so the user knows the QR is no longer valid.
                     if let Some(qr_gen) = qr_generator {
-                        if let Err(e) = render_qr_code_screen(&mut display, &led_snapshot, &qr_gen) {
+                        if let Err(e) = render_qr_code_screen(&mut display, &led_snapshot, &qr_gen)
+                        {
                             eprintln!("[DisplayMonitor] Error rendering QR code display: {}", e);
                         }
                     } else if let Err(e) = render_qr_session_ended_screen(&mut display) {
-                        eprintln!("[DisplayMonitor] Error rendering session-ended screen: {}", e);
+                        eprintln!(
+                            "[DisplayMonitor] Error rendering session-ended screen: {}",
+                            e
+                        );
                     }
                 }
                 Screen::SystemInfo { page } => {
@@ -463,7 +539,10 @@ pub fn display_loop(
                         current_device_label,
                         &app_version,
                     ) {
-                        eprintln!("[DisplayMonitor] Error rendering system info display: {}", e);
+                        eprintln!(
+                            "[DisplayMonitor] Error rendering system info display: {}",
+                            e
+                        );
                     }
                 }
                 Screen::Pairing { code } => {

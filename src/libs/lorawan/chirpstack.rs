@@ -6,12 +6,12 @@
 //! codec is no longer the source of truth; its decoded `object` is only used as
 //! a migration fallback until every STICKER runs firmware v1.4.0.
 
-use std::collections::HashMap;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use std::collections::HashMap;
 
-use super::registry::{REGISTRY, FieldKind};
+use super::registry::{FieldKind, REGISTRY};
 use super::sticker_payload;
 
 /// fPort 2 (Telemetry), fPort 3 (AlarmReport) and fPort 85 (Response) payloads
@@ -38,8 +38,10 @@ pub fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8
     match bytes.split_first() {
         Some((&v, rest)) => {
             if v != APP_PROTO_VERSION {
-                eprintln!("[LoRaWAN] {}: unexpected payload version 0x{:02x} (expected 0x{:02x})",
-                    dev_eui, v, APP_PROTO_VERSION);
+                eprintln!(
+                    "[LoRaWAN] {}: unexpected payload version 0x{:02x} (expected 0x{:02x})",
+                    dev_eui, v, APP_PROTO_VERSION
+                );
             }
             Ok(rest)
         }
@@ -88,17 +90,34 @@ pub struct StickerReading {
 pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
     let v: Value = serde_json::from_slice(payload).map_err(|e| format!("Invalid JSON: {}", e))?;
     let device_info = v.get("deviceInfo").ok_or("Missing deviceInfo")?;
-    let dev_eui = device_info.get("devEui")
+    let dev_eui = device_info
+        .get("devEui")
         .and_then(|v| v.as_str())
         .ok_or("Missing deviceInfo.devEui")?
         .to_lowercase();
-    let device_name = device_info.get("deviceName")
-        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let received_at = v.get("time").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let device_name = device_info
+        .get("deviceName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let received_at = v
+        .get("time")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    let rx_info = v.get("rxInfo").and_then(|v| v.as_array()).and_then(|arr| arr.first());
-    let rssi = rx_info.and_then(|r| r.get("rssi")).and_then(|v| v.as_i64()).map(|v| v as i32);
-    let snr = rx_info.and_then(|r| r.get("snr")).and_then(|v| v.as_f64()).map(|v| v as f32);
+    let rx_info = v
+        .get("rxInfo")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first());
+    let rssi = rx_info
+        .and_then(|r| r.get("rssi"))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    let snr = rx_info
+        .and_then(|r| r.get("snr"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
 
     let mut fields = HashMap::new();
     let mut counters = HashMap::new();
@@ -115,7 +134,9 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
     match (fport, data_b64) {
         // fPort 2: protobuf Telemetry (#64), 1-byte proto-version prefix stripped first.
         (Some(2), Some(b64)) => {
-            let raw = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
+            let raw = BASE64
+                .decode(b64)
+                .map_err(|e| format!("Invalid base64 data: {}", e))?;
             let bytes = strip_proto_version(&raw, &dev_eui)?;
             let d = sticker_payload::decode_telemetry(bytes, &received_at)?;
             fields.extend(d.fields);
@@ -126,7 +147,9 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
         // first — same as fPort 2 (confirmed against a real device frame; the
         // firmware send path prepends the version on the alarm port too).
         (Some(3), Some(b64)) => {
-            let raw = BASE64.decode(b64).map_err(|e| format!("Invalid base64 data: {}", e))?;
+            let raw = BASE64
+                .decode(b64)
+                .map_err(|e| format!("Invalid base64 data: {}", e))?;
             let bytes = strip_proto_version(&raw, &dev_eui)?;
             events.extend(sticker_payload::decode_alarm_report(bytes, &received_at)?);
         }
@@ -139,17 +162,34 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
             if object.is_null() {
                 return Ok(None);
             }
-            decode_object_legacy(&object, &received_at, &mut fields, &mut counters, &mut events);
+            decode_object_legacy(
+                &object,
+                &received_at,
+                &mut fields,
+                &mut counters,
+                &mut events,
+            );
         }
         // Any other fPort is unknown to this monitor: log + skip (forward-compat).
         (Some(other), _) => {
-            eprintln!("[LoRaWAN] {}: skipping uplink on unhandled fPort {}", dev_eui, other);
+            eprintln!(
+                "[LoRaWAN] {}: skipping uplink on unhandled fPort {}",
+                dev_eui, other
+            );
             return Ok(None);
         }
     }
 
     Ok(Some(StickerReading {
-        dev_eui, device_name, fields, counters, events, rssi, snr, received_at, fport,
+        dev_eui,
+        device_name,
+        fields,
+        counters,
+        events,
+        rssi,
+        snr,
+        received_at,
+        fport,
     }))
 }
 
@@ -165,8 +205,12 @@ fn decode_object_legacy(
 ) {
     // Iterate the registry: assign each known field to fields/counters
     for fdef in REGISTRY {
-        let Some(val) = object.get(fdef.name) else { continue; };
-        if val.is_null() { continue; }
+        let Some(val) = object.get(fdef.name) else {
+            continue;
+        };
+        if val.is_null() {
+            continue;
+        }
         match fdef.kind {
             FieldKind::Continuous => {
                 if let Some(n) = val.as_f64() {
@@ -195,46 +239,73 @@ fn decode_object_legacy(
     };
 
     // Events: boot/orientation/tilt/hall/input flags
-    if object.get("boot").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if object
+        .get("boot")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         push_event("boot", serde_json::json!({}));
     }
     if let Some(o) = object.get("orientation").and_then(|v| v.as_u64()) {
         push_event("orientation", serde_json::json!({"value": o}));
     }
-    if object.get("machine_probe_tilt_alert_1").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if object
+        .get("machine_probe_tilt_alert_1")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         push_event("tilt_alert_1", serde_json::json!({}));
     }
-    if object.get("machine_probe_tilt_alert_2").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if object
+        .get("machine_probe_tilt_alert_2")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         push_event("tilt_alert_2", serde_json::json!({}));
     }
-    for (channel, key) in [("left", "hall_left_is_active"), ("right", "hall_right_is_active")] {
+    for (channel, key) in [
+        ("left", "hall_left_is_active"),
+        ("right", "hall_right_is_active"),
+    ] {
         if object.get(key).and_then(|v| v.as_bool()).unwrap_or(false) {
-            push_event("hall_active", serde_json::json!({"channel": channel, "active": true}));
+            push_event(
+                "hall_active",
+                serde_json::json!({"channel": channel, "active": true}),
+            );
         }
     }
     for (channel, key, kind) in [
-        ("left",  "hall_left_notify_act",    "act"),
-        ("left",  "hall_left_notify_deact",  "deact"),
-        ("right", "hall_right_notify_act",   "act"),
+        ("left", "hall_left_notify_act", "act"),
+        ("left", "hall_left_notify_deact", "deact"),
+        ("right", "hall_right_notify_act", "act"),
         ("right", "hall_right_notify_deact", "deact"),
     ] {
         if object.get(key).and_then(|v| v.as_bool()).unwrap_or(false) {
-            push_event("hall_notify", serde_json::json!({"channel": channel, "kind": kind}));
+            push_event(
+                "hall_notify",
+                serde_json::json!({"channel": channel, "kind": kind}),
+            );
         }
     }
     for (channel, key) in [("a", "input_a_is_active"), ("b", "input_b_is_active")] {
         if object.get(key).and_then(|v| v.as_bool()).unwrap_or(false) {
-            push_event("input_active", serde_json::json!({"channel": channel, "active": true}));
+            push_event(
+                "input_active",
+                serde_json::json!({"channel": channel, "active": true}),
+            );
         }
     }
     for (channel, key, kind) in [
-        ("a", "input_a_notify_act",    "act"),
-        ("a", "input_a_notify_deact",  "deact"),
-        ("b", "input_b_notify_act",    "act"),
-        ("b", "input_b_notify_deact",  "deact"),
+        ("a", "input_a_notify_act", "act"),
+        ("a", "input_a_notify_deact", "deact"),
+        ("b", "input_b_notify_act", "act"),
+        ("b", "input_b_notify_deact", "deact"),
     ] {
         if object.get(key).and_then(|v| v.as_bool()).unwrap_or(false) {
-            push_event("input_notify", serde_json::json!({"channel": channel, "kind": kind}));
+            push_event(
+                "input_notify",
+                serde_json::json!({"channel": channel, "kind": kind}),
+            );
         }
     }
 }
@@ -255,7 +326,8 @@ pub fn message_id_for(reading: &StickerReading, ts: i64) -> String {
 /// Extract dev_eui from a ChirpStack MQTT topic.
 pub fn extract_dev_eui_from_topic(topic: &str) -> Option<String> {
     let parts: Vec<&str> = topic.split('/').collect();
-    if parts.len() >= 6 && parts[0] == "application" && parts[2] == "device" && parts[4] == "event" {
+    if parts.len() >= 6 && parts[0] == "application" && parts[2] == "device" && parts[4] == "event"
+    {
         Some(parts[3].to_lowercase())
     } else {
         None
@@ -273,7 +345,9 @@ mod tests {
     /// fPort 3 does not.
     fn chirpstack_uplink(dev_eui: &str, fport: u64, fcnt: u64, proto: &[u8]) -> String {
         let payload: Vec<u8> = if matches!(fport, 2 | 3 | 85) {
-            std::iter::once(APP_PROTO_VERSION).chain(proto.iter().copied()).collect()
+            std::iter::once(APP_PROTO_VERSION)
+                .chain(proto.iter().copied())
+                .collect()
         } else {
             proto.to_vec()
         };
@@ -285,17 +359,18 @@ mod tests {
             "data": data,
             "rxInfo": [{ "rssi": -85, "snr": 7.5 }],
             "time": "2026-06-19T10:30:00Z",
-        }).to_string()
+        })
+        .to_string()
     }
 
     #[test]
     fn dispatch_fport2_telemetry_decodes_in_app() {
         let t = Telemetry {
-            voltage: Some(150),       // /50 = 3.0 V
-            temperature: Some(2300),  // /100 = 23.0 °C
-            humidity: Some(120),      // /2  = 60.0 %
+            voltage: Some(150),      // /50 = 3.0 V
+            temperature: Some(2300), // /100 = 23.0 °C
+            humidity: Some(120),     // /2  = 60.0 %
             motion_count: Some(7),
-            system_flags: Some(0b1),  // boot
+            system_flags: Some(0b1), // boot
             ..Default::default()
         };
         let payload = chirpstack_uplink("70B3D57ED0060ABC", 2, 11, &t.encode_to_vec());
@@ -317,8 +392,13 @@ mod tests {
             total: 1,
             time_synced: None,
             events: vec![AlarmEvent {
-                source: 1, edge: 0, r#type: 2, rel_s: 5,
-                value: Some(5500), quantity: 1, slot: 0,
+                source: 1,
+                edge: 0,
+                r#type: 2,
+                rel_s: 5,
+                value: Some(5500),
+                quantity: 1,
+                slot: 0,
             }],
         };
         let payload = chirpstack_uplink("aabb", 3, 4, &report.encode_to_vec());
@@ -348,20 +428,21 @@ mod tests {
         // proto-version byte. Guards the version-strip: without it prost fails
         // with "invalid tag value: 0".
         let raw: &[u8] = &[
-            0x01, 0x08, 0xae, 0x01, 0x10, 0x01, 0x18, 0xa8, 0x23, 0x20, 0x78,
-            0x90, 0x01, 0x00, 0x98, 0x01, 0x04, 0xa0, 0x01, 0x00, 0xa8, 0x01, 0x04,
+            0x01, 0x08, 0xae, 0x01, 0x10, 0x01, 0x18, 0xa8, 0x23, 0x20, 0x78, 0x90, 0x01, 0x00,
+            0x98, 0x01, 0x04, 0xa0, 0x01, 0x00, 0xa8, 0x01, 0x04,
         ];
         let payload = serde_json::json!({
             "deviceInfo": { "devEui": "2162164514AABBCC", "deviceName": "sticker-real" },
             "fPort": 2, "fCnt": 1, "data": BASE64.encode(raw),
             "rxInfo": [{ "rssi": -77, "snr": 9.0 }],
             "time": "2026-06-19T12:00:00Z",
-        }).to_string();
+        })
+        .to_string();
         let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
         let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
-        assert!(approx(r.fields["voltage"], 3.48));      // 174/50
-        assert!(approx(r.fields["temperature"], 22.6));  // zigzag 4520->2260 /100
-        assert!(approx(r.fields["humidity"], 60.0));     // 120/2
+        assert!(approx(r.fields["voltage"], 3.48)); // 174/50
+        assert!(approx(r.fields["temperature"], 22.6)); // zigzag 4520->2260 /100
+        assert!(approx(r.fields["humidity"], 60.0)); // 120/2
         assert!(r.events.iter().any(|e| e.event_type == "boot"));
     }
 
@@ -377,13 +458,14 @@ mod tests {
             "fPort": 2, "fCnt": 3, "data": "AQiuARAAGM4mIGqQAQCYAQSgAQCoAQQ=",
             "rxInfo": [{ "rssi": -69, "snr": 10.0 }],
             "time": "2026-06-23T05:40:19Z",
-        }).to_string();
+        })
+        .to_string();
         let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
         let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
         assert_eq!(r.dev_eui, "5876070000000001");
-        assert!(approx(r.fields["voltage"], 3.48));        // 174/50
-        assert!(approx(r.fields["temperature"], 24.71));   // zigzag 4942->2471 /100
-        assert!(approx(r.fields["humidity"], 53.0));       // 106/2
+        assert!(approx(r.fields["voltage"], 3.48)); // 174/50
+        assert!(approx(r.fields["temperature"], 24.71)); // zigzag 4942->2471 /100
+        assert!(approx(r.fields["humidity"], 53.0)); // 106/2
     }
 
     #[test]
@@ -406,7 +488,8 @@ mod tests {
             "fPort": 2, "fCnt": 8, "data": "AQiJARAAGLImIGtAAkgJ0AEl",
             "rxInfo": [{ "gatewayId": "24e124fffefd3bda", "rssi": -41, "snr": 13.5 }],
             "time": "2026-07-28T19:01:02Z",
-        }).to_string();
+        })
+        .to_string();
         let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
         let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
         assert_eq!(r.dev_eui, "70b3d57ed80051b2");
@@ -417,7 +500,9 @@ mod tests {
         assert_eq!(r.counters.get("accel_motion_count").copied(), Some(37));
         assert_eq!(r.counters.get("fCnt").copied(), Some(8));
         assert!(
-            r.events.iter().any(|e| e.event_type == "orientation" && e.extra["value"] == 2),
+            r.events
+                .iter()
+                .any(|e| e.event_type == "orientation" && e.extra["value"] == 2),
             "orientation 2 should surface as an event"
         );
         assert!(
@@ -439,9 +524,14 @@ mod tests {
             "deviceInfo": { "devEui": "5876070000000001" },
             "fPort": 3, "fCnt": 6, "data": "AQjlu+jRBhABGgUYASjMJg==",
             "rxInfo": [{ "rssi": -69, "snr": 10.0 }], "time": "2026-06-23T05:42:00Z",
-        }).to_string();
+        })
+        .to_string();
         let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
-        let alarms: Vec<_> = r.events.iter().filter(|e| e.event_type == "alarm").collect();
+        let alarms: Vec<_> = r
+            .events
+            .iter()
+            .filter(|e| e.event_type == "alarm")
+            .collect();
         assert_eq!(alarms.len(), 1, "expected exactly one alarm event");
         assert!(alarms[0].extra.get("value").is_some());
     }
@@ -455,7 +545,8 @@ mod tests {
             "fPort": 85, "fCnt": 8,
             "data": "AQgDGikIARAEIAIoooaAhwgwigQ467vo0QZAAUoQFYpqXVtUxRGOYqj0rw3o0g==",
             "rxInfo": [{ "rssi": -69, "snr": 10.0 }], "time": "2026-06-23T05:42:10Z",
-        }).to_string();
+        })
+        .to_string();
         assert!(parse_uplink(payload.as_bytes()).unwrap().is_none());
     }
 
@@ -531,7 +622,10 @@ mod tests {
     #[test]
     fn test_extract_dev_eui_from_topic() {
         let topic = "application/1/device/70b3d57ed0060abc/event/up";
-        assert_eq!(extract_dev_eui_from_topic(topic), Some("70b3d57ed0060abc".to_string()));
+        assert_eq!(
+            extract_dev_eui_from_topic(topic),
+            Some("70b3d57ed0060abc".to_string())
+        );
         let bad_topic = "fiber/device-1/sensors/aggregated";
         assert_eq!(extract_dev_eui_from_topic(bad_topic), None);
     }

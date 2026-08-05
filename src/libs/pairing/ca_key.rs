@@ -86,8 +86,8 @@ impl DeviceCaKey {
         let hex_content = fs::read_to_string(path)?;
         let hex_trimmed = hex_content.trim();
 
-        let seed_bytes = hex::decode(hex_trimmed)
-            .map_err(|e| CaKeyError::HexDecodeError(e.to_string()))?;
+        let seed_bytes =
+            hex::decode(hex_trimmed).map_err(|e| CaKeyError::HexDecodeError(e.to_string()))?;
 
         if seed_bytes.len() != 32 {
             return Err(CaKeyError::InvalidKeyFormat(format!(

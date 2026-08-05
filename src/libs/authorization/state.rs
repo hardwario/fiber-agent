@@ -162,7 +162,8 @@ impl ChallengeRegistry {
             ));
         }
 
-        self.challenges.insert(challenge.challenge_id.clone(), challenge);
+        self.challenges
+            .insert(challenge.challenge_id.clone(), challenge);
         Ok(())
     }
 

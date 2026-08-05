@@ -38,10 +38,7 @@ pub fn get_partition_usage(path: &str) -> PartitionUsage {
                 if parts.len() >= 5 {
                     let total_bytes = parts[1].parse::<u64>().unwrap_or(0);
                     let available_bytes = parts[3].parse::<u64>().unwrap_or(0);
-                    let used_percent = parts[4]
-                        .trim_end_matches('%')
-                        .parse::<u8>()
-                        .unwrap_or(0);
+                    let used_percent = parts[4].trim_end_matches('%').parse::<u8>().unwrap_or(0);
 
                     return PartitionUsage {
                         total_bytes,

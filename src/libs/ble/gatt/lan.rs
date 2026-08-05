@@ -93,7 +93,11 @@ pub struct LanStatusResponse {
 /// convention) and composes `address/prefix`. An empty DNS list yields an
 /// empty `ipv4.dns ""` (valid — DNS is optional).
 pub fn build_nmcli_modify_args(conn: &str, req: &LanConfigRequest) -> Vec<String> {
-    let mut args = vec!["connection".to_string(), "modify".to_string(), conn.to_string()];
+    let mut args = vec![
+        "connection".to_string(),
+        "modify".to_string(),
+        conn.to_string(),
+    ];
     match req.mode {
         LanMode::Dhcp => {
             args.extend([
@@ -255,7 +259,13 @@ fn read_mac(iface: &str) -> String {
 /// Read the static `connection.interface-name` property of a profile.
 fn connection_interface_name(conn: &str) -> Option<String> {
     let output = Command::new("nmcli")
-        .args(["-g", "connection.interface-name", "connection", "show", conn])
+        .args([
+            "-g",
+            "connection.interface-name",
+            "connection",
+            "show",
+            conn,
+        ])
         .output()
         .ok()?;
     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -282,9 +292,7 @@ fn find_eth_connection_name(iface: &str) -> Option<String> {
         let Some((uuid, ctype)) = line.split_once(':') else {
             continue;
         };
-        if ctype == "802-3-ethernet"
-            && connection_interface_name(uuid).as_deref() == Some(iface)
-        {
+        if ctype == "802-3-ethernet" && connection_interface_name(uuid).as_deref() == Some(iface) {
             return Some(uuid.to_string());
         }
     }
@@ -354,7 +362,10 @@ fn ensure_eth_connection(iface: &str) -> Result<(String, bool), NetworkErrorCate
 /// so the config must stay written for the next boot / cable insertion.
 fn cleanup_failed_modify(conn: &str, created: bool) {
     if created {
-        eprintln!("[LAN] modify failed; deleting freshly-created profile {}", conn);
+        eprintln!(
+            "[LAN] modify failed; deleting freshly-created profile {}",
+            conn
+        );
         let _ = Command::new("nmcli")
             .args(["connection", "delete", conn])
             .output();
@@ -403,7 +414,10 @@ pub fn apply_lan_config(req: &LanConfigRequest) -> Result<(), NetworkErrorCatego
 /// the next boot / cable insertion. The failure is still surfaced via FB0C.
 fn apply_lan_config_inner(req: &LanConfigRequest) -> Result<(), NetworkErrorCategory> {
     let iface = detect_lan_interface().ok_or(NetworkErrorCategory::NotFound)?;
-    eprintln!("[LAN] Configure requested: iface={} mode={:?}", iface, req.mode);
+    eprintln!(
+        "[LAN] Configure requested: iface={} mode={:?}",
+        iface, req.mode
+    );
 
     if let LanMode::Static = req.mode {
         let cfg = req.ipv4.as_ref().ok_or(NetworkErrorCategory::InvalidIp)?;
@@ -428,7 +442,10 @@ fn apply_lan_config_inner(req: &LanConfigRequest) -> Result<(), NetworkErrorCate
         "up".to_string(),
         conn.clone(),
     ]) {
-        eprintln!("[LAN] 'up' failed on {} (config kept for next link/boot)", conn);
+        eprintln!(
+            "[LAN] 'up' failed on {} (config kept for next link/boot)",
+            conn
+        );
         return Err(e);
     }
 
@@ -484,7 +501,10 @@ mod tests {
 
     #[test]
     fn modify_args_dhcp_clears_static_keys() {
-        let req = LanConfigRequest { mode: LanMode::Dhcp, ipv4: None };
+        let req = LanConfigRequest {
+            mode: LanMode::Dhcp,
+            ipv4: None,
+        };
         let args = build_nmcli_modify_args("eth0", &req);
         assert_eq!(&args[0..3], &["connection", "modify", "eth0"]);
         assert!(args.windows(2).any(|w| w == ["ipv4.method", "auto"]));
@@ -497,7 +517,10 @@ mod tests {
 
     #[test]
     fn modify_args_static_composes_fields() {
-        let req = LanConfigRequest { mode: LanMode::Static, ipv4: Some(static_cfg()) };
+        let req = LanConfigRequest {
+            mode: LanMode::Static,
+            ipv4: Some(static_cfg()),
+        };
         let args = build_nmcli_modify_args("eth0", &req);
         assert!(args.windows(2).any(|w| w == ["ipv4.method", "manual"]));
         let addr_idx = args.iter().position(|a| a == "ipv4.addresses").unwrap();
@@ -512,7 +535,10 @@ mod tests {
     fn modify_args_static_empty_dns_ok() {
         let mut cfg = static_cfg();
         cfg.dns.clear();
-        let req = LanConfigRequest { mode: LanMode::Static, ipv4: Some(cfg) };
+        let req = LanConfigRequest {
+            mode: LanMode::Static,
+            ipv4: Some(cfg),
+        };
         let args = build_nmcli_modify_args("eth0", &req);
         let dns_idx = args.iter().position(|a| a == "ipv4.dns").unwrap();
         assert_eq!(args[dns_idx + 1], "");
@@ -544,23 +570,35 @@ mod tests {
     fn validate_bad_address() {
         let mut cfg = static_cfg();
         cfg.address = "999.1.1.1".to_string();
-        assert_eq!(validate_static_config(&cfg), Err(NetworkErrorCategory::InvalidIp));
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
     }
 
     #[test]
     fn validate_bad_prefix() {
         let mut cfg = static_cfg();
         cfg.prefix = 33;
-        assert_eq!(validate_static_config(&cfg), Err(NetworkErrorCategory::InvalidIp));
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
         cfg.prefix = 0;
-        assert_eq!(validate_static_config(&cfg), Err(NetworkErrorCategory::InvalidIp));
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
     }
 
     #[test]
     fn validate_bad_dns() {
         let mut cfg = static_cfg();
         cfg.dns = vec!["not-an-ip".to_string()];
-        assert_eq!(validate_static_config(&cfg), Err(NetworkErrorCategory::InvalidIp));
+        assert_eq!(
+            validate_static_config(&cfg),
+            Err(NetworkErrorCategory::InvalidIp)
+        );
     }
 
     #[test]

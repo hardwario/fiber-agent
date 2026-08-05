@@ -104,12 +104,14 @@ fn decode_message(data: &[u8]) -> std::collections::HashMap<u32, Vec<u8>> {
                 pos = new_pos;
                 let end = pos + length as usize;
                 if end <= data.len() {
-                    fields.entry(field_number).or_insert_with(|| data[pos..end].to_vec());
+                    fields
+                        .entry(field_number)
+                        .or_insert_with(|| data[pos..end].to_vec());
                 }
                 pos = end;
             }
-            5 => pos += 4,  // 32-bit
-            1 => pos += 8,  // 64-bit
+            5 => pos += 4, // 32-bit
+            1 => pos += 8, // 64-bit
             _ => break,
         }
     }
@@ -152,7 +154,11 @@ fn decode_varint_field(data: &[u8], target_field: u32) -> Option<u64> {
 
 // --- gRPC-web Transport ---
 
-fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Result<Option<Vec<u8>>, String> {
+fn grpc_web_call(
+    method: &str,
+    request_data: &[u8],
+    token: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
     // Frame: 1 byte flags (0x00=data) + 4 bytes big-endian length + payload
     let mut frame = vec![0u8]; // flags = 0 (data frame)
     frame.extend_from_slice(&(request_data.len() as u32).to_be_bytes());
@@ -176,18 +182,27 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
     headers.push_str("\r\n");
 
     let addr = format!("{}:{}", CHIRPSTACK_HOST, CHIRPSTACK_PORT);
-    let socket_addr = addr.to_socket_addrs()
+    let socket_addr = addr
+        .to_socket_addrs()
         .map_err(|e| format!("Failed to resolve ChirpStack address {}: {}", addr, e))?
         .next()
         .ok_or_else(|| format!("No address found for ChirpStack at {}", addr))?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))
-        .map_err(|e| format!("Failed to connect to ChirpStack at {} (5s timeout): {}", addr, e))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))
+    let mut stream =
+        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5)).map_err(|e| {
+            format!(
+                "Failed to connect to ChirpStack at {} (5s timeout): {}",
+                addr, e
+            )
+        })?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
-    stream.write_all(headers.as_bytes())
+    stream
+        .write_all(headers.as_bytes())
         .map_err(|e| format!("Failed to send request: {}", e))?;
-    stream.write_all(&frame)
+    stream
+        .write_all(&frame)
         .map_err(|e| format!("Failed to send body: {}", e))?;
 
     // Read response
@@ -197,13 +212,19 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
         match stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => response.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
             Err(e) => return Err(format!("Failed to read response: {}", e)),
         }
     }
 
     // Find body after \r\n\r\n
-    let header_end = response.windows(4)
+    let header_end = response
+        .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| "Invalid HTTP response: no header end".to_string())?;
 
@@ -222,12 +243,14 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
         let lower = header_str.to_lowercase();
         if let Some(idx) = lower.find("grpc-status:") {
             let rest = &lower[idx + "grpc-status:".len()..];
-            let val: String = rest.chars()
+            let val: String = rest
+                .chars()
                 .take_while(|c| !matches!(c, '\r' | '\n'))
                 .collect();
             let val = val.trim();
             if !val.is_empty() && val != "0" {
-                let msg = lower.find("grpc-message:")
+                let msg = lower
+                    .find("grpc-message:")
                     .map(|i| {
                         let r = &header_str[i + "grpc-message:".len()..];
                         r.lines().next().unwrap_or("").trim().to_string()
@@ -241,7 +264,10 @@ fn grpc_web_call(method: &str, request_data: &[u8], token: Option<&str>) -> Resu
     let body = &response[header_end + 4..];
 
     // Handle chunked transfer encoding
-    let body = if header_str.to_lowercase().contains("transfer-encoding: chunked") {
+    let body = if header_str
+        .to_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         decode_chunked(body)?
     } else {
         body.to_vec()
@@ -300,7 +326,8 @@ fn decode_chunked(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut pos = 0;
     loop {
         // Find chunk size line
-        let line_end = data[pos..].windows(2)
+        let line_end = data[pos..]
+            .windows(2)
             .position(|w| w == b"\r\n")
             .map(|p| pos + p);
         let line_end = match line_end {
@@ -329,19 +356,16 @@ fn decode_chunked(data: &[u8]) -> Result<Vec<u8>, String> {
 // --- ChirpStack API Methods ---
 
 fn login() -> Result<String, String> {
-    let req = [
-        encode_string(1, "admin"),
-        encode_string(2, "admin"),
-    ].concat();
+    let req = [encode_string(1, "admin"), encode_string(2, "admin")].concat();
 
     let resp = grpc_web_call("api.InternalService/Login", &req, None)?
         .ok_or_else(|| "Login returned empty response".to_string())?;
 
     let fields = decode_message(&resp);
-    let jwt = fields.get(&1)
+    let jwt = fields
+        .get(&1)
         .ok_or_else(|| "No JWT in login response".to_string())?;
-    String::from_utf8(jwt.clone())
-        .map_err(|_| "Invalid JWT encoding".to_string())
+    String::from_utf8(jwt.clone()).map_err(|_| "Invalid JWT encoding".to_string())
 }
 
 fn create_device(
@@ -371,18 +395,15 @@ fn create_device(
     Ok(())
 }
 
-fn set_device_keys(
-    token: &str,
-    dev_eui: &str,
-    app_key: &str,
-) -> Result<(), String> {
+fn set_device_keys(token: &str, dev_eui: &str, app_key: &str) -> Result<(), String> {
     // DeviceKeys message (proto): dev_eui=1, nwk_key=2, app_key=3.
     // LoRaWAN 1.0.x convention: nwk_key slot stores the same value as app_key.
     let keys = [
         encode_string(1, dev_eui),
         encode_string(2, app_key),
         encode_string(3, app_key),
-    ].concat();
+    ]
+    .concat();
 
     let req = encode_submessage(1, &keys);
     grpc_web_call("api.DeviceService/CreateKeys", &req, Some(token))?;
@@ -407,11 +428,12 @@ fn activate_device_abp(
     let activation = [
         encode_string(1, dev_eui),
         encode_string(2, dev_addr),
-        encode_string(3, app_s_key),     // app_s_key
-        encode_string(4, nwk_s_key),     // nwk_s_enc_key
-        encode_string(8, nwk_s_key),     // s_nwk_s_int_key
-        encode_string(9, nwk_s_key),     // f_nwk_s_int_key
-    ].concat();
+        encode_string(3, app_s_key), // app_s_key
+        encode_string(4, nwk_s_key), // nwk_s_enc_key
+        encode_string(8, nwk_s_key), // s_nwk_s_int_key
+        encode_string(9, nwk_s_key), // f_nwk_s_int_key
+    ]
+    .concat();
 
     let req = encode_submessage(1, &activation);
     grpc_web_call("api.DeviceService/Activate", &req, Some(token))?;
@@ -430,18 +452,24 @@ pub fn provision_sticker(
     app_s_key: &str,
 ) -> Result<(), String> {
     // Read provisioning config
-    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
-        .map_err(|e| format!("Cannot read {}: {}. Has ChirpStack been provisioned?", LORAWAN_CONFIG_PATH, e))?;
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH).map_err(|e| {
+        format!(
+            "Cannot read {}: {}. Has ChirpStack been provisioned?",
+            LORAWAN_CONFIG_PATH, e
+        )
+    })?;
 
     let config: serde_json::Value = serde_json::from_str(&config_str)
         .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
 
-    let application_id = config.get("application_id")
+    let application_id = config
+        .get("application_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
 
-    let device_profile_id = config.get("device_profile_id_abp")
-        .or_else(|| config.get("device_profile_id"))  // legacy fallback during rollout
+    let device_profile_id = config
+        .get("device_profile_id_abp")
+        .or_else(|| config.get("device_profile_id")) // legacy fallback during rollout
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("Missing device_profile_id_abp in {}", LORAWAN_CONFIG_PATH))?;
 
@@ -455,19 +483,36 @@ pub fn provision_sticker(
         format!("HARDWARIO STICKER S/N: {}", serial_number)
     };
 
-    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, None) {
+    match create_device(
+        &token,
+        dev_eui,
+        name,
+        &description,
+        application_id,
+        device_profile_id,
+        None,
+    ) {
         Ok(()) => {
-            eprintln!("[lorawan-provision] Created device {} in ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Created device {} in ChirpStack",
+                dev_eui
+            );
         }
         Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
-            eprintln!("[lorawan-provision] Device {} already exists in ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Device {} already exists in ChirpStack",
+                dev_eui
+            );
         }
         Err(e) => return Err(e),
     }
 
     // Activate with ABP keys
     activate_device_abp(&token, dev_eui, dev_addr, nwk_s_key, app_s_key)?;
-    eprintln!("[lorawan-provision] Activated device {} with ABP keys", dev_eui);
+    eprintln!(
+        "[lorawan-provision] Activated device {} with ABP keys",
+        dev_eui
+    );
 
     Ok(())
 }
@@ -482,13 +527,18 @@ pub fn provision_sticker_otaa(
     app_key: &str,
     join_eui: &str,
 ) -> Result<(), String> {
-    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
-        .map_err(|e| format!("Cannot read {}: {}. Has ChirpStack been provisioned?", LORAWAN_CONFIG_PATH, e))?;
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH).map_err(|e| {
+        format!(
+            "Cannot read {}: {}. Has ChirpStack been provisioned?",
+            LORAWAN_CONFIG_PATH, e
+        )
+    })?;
 
     let config: serde_json::Value = serde_json::from_str(&config_str)
         .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
 
-    let application_id = config.get("application_id")
+    let application_id = config
+        .get("application_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
 
@@ -507,12 +557,26 @@ pub fn provision_sticker_otaa(
         format!("HARDWARIO STICKER S/N: {}", serial_number)
     };
 
-    match create_device(&token, dev_eui, name, &description, application_id, device_profile_id, Some(join_eui)) {
+    match create_device(
+        &token,
+        dev_eui,
+        name,
+        &description,
+        application_id,
+        device_profile_id,
+        Some(join_eui),
+    ) {
         Ok(()) => {
-            eprintln!("[lorawan-provision] Created OTAA device {} in ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Created OTAA device {} in ChirpStack",
+                dev_eui
+            );
         }
         Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
-            eprintln!("[lorawan-provision] Device {} already exists in ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Device {} already exists in ChirpStack",
+                dev_eui
+            );
         }
         Err(e) => return Err(e),
     }
@@ -529,15 +593,22 @@ pub fn deprovision_sticker(dev_eui: &str) -> Result<(), String> {
     let token = login()?;
     match delete_device(&token, dev_eui) {
         Ok(()) => {
-            eprintln!("[lorawan-provision] Deleted device {} from ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Deleted device {} from ChirpStack",
+                dev_eui
+            );
             Ok(())
         }
-        Err(e) if e.contains("NOT_FOUND")
-            || e.to_lowercase().contains("not found")
-            || e.contains("grpc-status:5")
-            || e.contains("grpc-status: 5") =>
+        Err(e)
+            if e.contains("NOT_FOUND")
+                || e.to_lowercase().contains("not found")
+                || e.contains("grpc-status:5")
+                || e.contains("grpc-status: 5") =>
         {
-            eprintln!("[lorawan-provision] Device {} already absent in ChirpStack", dev_eui);
+            eprintln!(
+                "[lorawan-provision] Device {} already absent in ChirpStack",
+                dev_eui
+            );
             Ok(())
         }
         Err(e) => Err(e),
@@ -556,7 +627,10 @@ pub fn normalize_eui(eui: &str) -> Result<String, String> {
     if s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(s.to_lowercase())
     } else {
-        Err(format!("Invalid Gateway EUI '{}': expected 16 hex characters", eui))
+        Err(format!(
+            "Invalid Gateway EUI '{}': expected 16 hex characters",
+            eui
+        ))
     }
 }
 
@@ -636,13 +710,25 @@ pub fn provision_external_gateway(gateway_eui: &str, name: &str) -> Result<(), S
     let token = login()?;
     let tenant_id = resolve_tenant_id(&token)?;
 
-    match create_gateway(&token, gateway_eui, name, "External LoRaWAN gateway (FIBER)", &tenant_id) {
+    match create_gateway(
+        &token,
+        gateway_eui,
+        name,
+        "External LoRaWAN gateway (FIBER)",
+        &tenant_id,
+    ) {
         Ok(()) => {
-            eprintln!("[lorawan-provision] Created gateway {} in ChirpStack", gateway_eui);
+            eprintln!(
+                "[lorawan-provision] Created gateway {} in ChirpStack",
+                gateway_eui
+            );
             Ok(())
         }
         Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
-            eprintln!("[lorawan-provision] Gateway {} already exists in ChirpStack", gateway_eui);
+            eprintln!(
+                "[lorawan-provision] Gateway {} already exists in ChirpStack",
+                gateway_eui
+            );
             Ok(())
         }
         Err(e) => Err(e),
@@ -655,15 +741,22 @@ pub fn deprovision_external_gateway(gateway_eui: &str) -> Result<(), String> {
     let token = login()?;
     match delete_gateway(&token, gateway_eui) {
         Ok(()) => {
-            eprintln!("[lorawan-provision] Deleted gateway {} from ChirpStack", gateway_eui);
+            eprintln!(
+                "[lorawan-provision] Deleted gateway {} from ChirpStack",
+                gateway_eui
+            );
             Ok(())
         }
-        Err(e) if e.contains("NOT_FOUND")
-            || e.to_lowercase().contains("not found")
-            || e.contains("grpc-status:5")
-            || e.contains("grpc-status: 5") =>
+        Err(e)
+            if e.contains("NOT_FOUND")
+                || e.to_lowercase().contains("not found")
+                || e.contains("grpc-status:5")
+                || e.contains("grpc-status: 5") =>
         {
-            eprintln!("[lorawan-provision] Gateway {} already absent in ChirpStack", gateway_eui);
+            eprintln!(
+                "[lorawan-provision] Gateway {} already absent in ChirpStack",
+                gateway_eui
+            );
             Ok(())
         }
         Err(e) => Err(e),

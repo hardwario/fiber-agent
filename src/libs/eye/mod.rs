@@ -15,13 +15,13 @@
 pub mod advertising;
 pub mod config;
 pub mod en12830;
+pub mod monitor;
 pub mod provisioning;
 pub mod state;
-pub mod monitor;
 
 pub use config::{EyeConfig, EyeTagConfig};
 
 pub use advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
-pub use monitor::{EyeMonitor, EyeHandle};
+pub use monitor::{EyeHandle, EyeMonitor};
 pub use provisioning::{EyeProfile, ProvisionError};
 pub use state::{EyeSensorState, EyeTagState, SharedEyeState};

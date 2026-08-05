@@ -70,7 +70,8 @@ fn encrypt(data: &[u8]) -> Vec<u8> {
         for _ in 0..TIMES {
             v0 = (v0 + ((((v1 << 4) ^ (v1 >> 5)) + v1) ^ (s + KEYS[(s & 3) as usize]))) & 0xFF;
             s += DELTA;
-            v1 = (v1 + ((((v0 << 4) ^ (v0 >> 5)) + v0) ^ (s + KEYS[((s >> 6) & 3) as usize]))) & 0xFF;
+            v1 = (v1 + ((((v0 << 4) ^ (v0 >> 5)) + v0) ^ (s + KEYS[((s >> 6) & 3) as usize])))
+                & 0xFF;
         }
         out.push(v0 as u8);
         out.push(v1 as u8);
@@ -86,7 +87,8 @@ fn decrypt(data: &[u8]) -> Vec<u8> {
         let (mut v0, mut v1) = (data[i] as i64, data[i + 1] as i64);
         let mut s = DELTA * TIMES;
         for _ in 0..TIMES {
-            v1 = (v1 - ((((v0 << 4) ^ (v0 >> 5)) + v0) ^ (s + KEYS[((s >> 6) & 3) as usize]))) & 0xFF;
+            v1 = (v1 - ((((v0 << 4) ^ (v0 >> 5)) + v0) ^ (s + KEYS[((s >> 6) & 3) as usize])))
+                & 0xFF;
             s -= DELTA;
             v0 = (v0 - ((((v1 << 4) ^ (v1 >> 5)) + v1) ^ (s + KEYS[(s & 3) as usize]))) & 0xFF;
         }
@@ -366,7 +368,12 @@ fn parse_record_info(dec: &[u8]) -> io::Result<RecordInfo> {
 /// timestamp is `start_ts + ordinal*interval`. Empty slots (`0xFFFF` /
 /// `i16::MIN`) are trailing padding and are skipped, but still advance the slot
 /// position so filled records keep their correct time.
-fn parse_data_chunk(chunk_index: u16, body: &[u8], start_ts: u32, interval_s: u16) -> Vec<(i64, f32)> {
+fn parse_data_chunk(
+    chunk_index: u16,
+    body: &[u8],
+    start_ts: u32,
+    interval_s: u16,
+) -> Vec<(i64, f32)> {
     let mut out = Vec::new();
     let base = (chunk_index.saturating_sub(1)) as u64 * RECORDS_PER_CHUNK;
     let mut off = 0usize;
@@ -464,7 +471,12 @@ impl Recorder {
     /// `START_RECORD` didn't get an OK response (BLE glitch, transient tag
     /// state) and the caller must schedule a fast re-sync — otherwise the tag
     /// silently stops logging until the next fallback tick.
-    fn download_since(&self, since_ts: u32, interval_s: u16, now_ts: u32) -> io::Result<(Vec<(i64, f32)>, bool)> {
+    fn download_since(
+        &self,
+        since_ts: u32,
+        interval_s: u16,
+        now_ts: u32,
+    ) -> io::Result<(Vec<(i64, f32)>, bool)> {
         // Finalize the active page so its data chunks become readable.
         self.send_cmd(CMD_STOP_RECORD, &[])?;
         std::thread::sleep(Duration::from_millis(400));
@@ -496,7 +508,11 @@ impl Recorder {
                         header = Some((le32(&body, 0), le16(&body, 4)));
                     }
                 } else if let Some((start_ts, hdr_interval)) = header {
-                    let step = if hdr_interval > 0 { hdr_interval } else { interval_s };
+                    let step = if hdr_interval > 0 {
+                        hdr_interval
+                    } else {
+                        interval_s
+                    };
                     out.extend(parse_data_chunk(idx, &body, start_ts, step));
                 }
                 std::thread::sleep(Duration::from_millis(60));

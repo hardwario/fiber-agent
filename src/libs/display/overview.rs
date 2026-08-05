@@ -61,7 +61,13 @@ pub fn default_decimals(field: &str) -> u8 {
         "snr" => 1,
         "humidity" | "pressure" | "illuminance" | "altitude" | "rssi" => 0,
         f if f.contains("humidity") => 0,
-        f if matches!(registry::lookup(f).map(|d| d.kind), Some(FieldKind::Counter)) => 0,
+        f if matches!(
+            registry::lookup(f).map(|d| d.kind),
+            Some(FieldKind::Counter)
+        ) =>
+        {
+            0
+        }
         // Temperatures and anything else continuous.
         _ => 1,
     }
@@ -206,7 +212,10 @@ fn find_sticker<'a>(
 }
 
 /// Resolve one DS18B20 line against live state.
-fn build_ds18b20_line(line: &DisplayLine, ds_readings: &[Option<SensorReading>; 8]) -> (String, char, bool) {
+fn build_ds18b20_line(
+    line: &DisplayLine,
+    ds_readings: &[Option<SensorReading>; 8],
+) -> (String, char, bool) {
     let reading = line
         .line
         .map(usize::from)
@@ -446,7 +455,10 @@ mod tests {
             decimals: Some(2),
             ..fmt()
         };
-        assert_eq!(format_field_value("temperature", Some(23.446), &f), "23.45°C");
+        assert_eq!(
+            format_field_value("temperature", Some(23.446), &f),
+            "23.45°C"
+        );
     }
 
     #[test]
@@ -545,7 +557,8 @@ mod tests {
     fn fit_label_and_value_never_overflows_the_row() {
         for value in ["23.4°C", "1013hPa", "-72dBm", "3.02V", "CRIT", "0"] {
             for has_status in [true, false] {
-                let (label, value) = fit_label_and_value("Very Long Sensor Label", value, has_status);
+                let (label, value) =
+                    fit_label_and_value("Very Long Sensor Label", value, has_status);
                 let used = label.chars().count()
                     + 1
                     + value.chars().count()
@@ -776,7 +789,10 @@ mod tests {
         // Only reachable from a hand-edited config; the command path rejects it.
         let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         let rows = build_custom_lines(
-            &[sticker_line(EUI1, "battery_percent"), ds_line(0, "humidity")],
+            &[
+                sticker_line(EUI1, "battery_percent"),
+                ds_line(0, "humidity"),
+            ],
             &no_readings(),
             &names(),
             &[s],
@@ -807,7 +823,11 @@ mod tests {
         ];
         let rows = build_custom_lines(&lines, &readings, &names(), &[s1, s2]);
 
-        assert_eq!(rows.len(), 4, "one row per configured line, never collapsed");
+        assert_eq!(
+            rows.len(),
+            4,
+            "one row per configured line, never collapsed"
+        );
         assert_eq!(rows[0].value, "-18.2°C");
         assert_eq!(rows[1].value, "4.5°C");
         assert_eq!(rows[2].value, "48%");
@@ -831,7 +851,12 @@ mod tests {
     fn build_lines_out_of_range_probe_index_does_not_panic() {
         // Validation rejects this on the command path, but a hand-edited file
         // can still carry it and must not take the display thread down.
-        let rows = build_custom_lines(&[ds_line(200, "temperature")], &no_readings(), &names(), &[]);
+        let rows = build_custom_lines(
+            &[ds_line(200, "temperature")],
+            &no_readings(),
+            &names(),
+            &[],
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status_char, Some('?'));
     }
@@ -860,12 +885,7 @@ mod tests {
         let mut hum = sticker_line(EUI2, "humidity");
         hum.label = Some("Stkr2 RH".to_string());
 
-        let rows = build_custom_lines(
-            &[ext, probe, hum, battery],
-            &readings,
-            &names(),
-            &[s1, s2],
-        );
+        let rows = build_custom_lines(&[ext, probe, hum, battery], &readings, &names(), &[s1, s2]);
 
         // 21 columns: label left, value right-aligned before the status column.
         let expected = "\

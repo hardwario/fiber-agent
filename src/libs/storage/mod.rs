@@ -63,20 +63,9 @@ mod tests {
     #[test]
     fn test_storage_module_exports() {
         // Verify all public types are accessible
-        let _: AlarmEvent = AlarmEvent::new(
-            1000,
-            0,
-            AlarmState::Normal,
-            AlarmState::Warning,
-            Some(37.0),
-        );
+        let _: AlarmEvent =
+            AlarmEvent::new(1000, 0, AlarmState::Normal, AlarmState::Warning, Some(37.0));
 
-        let _: SensorReading = SensorReading::new(
-            1000,
-            0,
-            36.5,
-            true,
-            AlarmState::Normal,
-        );
+        let _: SensorReading = SensorReading::new(1000, 0, 36.5, true, AlarmState::Normal);
     }
 }

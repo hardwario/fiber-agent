@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use super::state::{PowerLedColor, SharedLedStateHandle};
 use crate::drivers::StmBridge;
 use crate::libs::alarms::color::{BlinkPattern, LedColor};
-use super::state::{PowerLedColor, SharedLedStateHandle};
 
 /// Dedicated LED control thread
 ///
@@ -52,7 +52,7 @@ impl LedMonitor {
         shutdown_flag: Arc<AtomicBool>,
         shared_state: SharedLedStateHandle,
     ) {
-        const CHECK_INTERVAL_MS: u64 = 100;  // Only need to check for state changes
+        const CHECK_INTERVAL_MS: u64 = 100; // Only need to check for state changes
         let check_interval = Duration::from_millis(CHECK_INTERVAL_MS);
 
         eprintln!("[LedMonitor] Started (firmware-managed blinking)");
@@ -102,7 +102,10 @@ impl LedMonitor {
                                 BlinkPattern::BlinkSlow => 'L',
                                 BlinkPattern::BlinkFast => 'F',
                             };
-                            eprintln!("[LedMonitor] DEBUG: Setting LED {} to color={} pattern={}", idx, color, pattern);
+                            eprintln!(
+                                "[LedMonitor] DEBUG: Setting LED {} to color={} pattern={}",
+                                idx, color, pattern
+                            );
                             if let Err(e) = stm_guard.set_led_state(idx as u8, color, pattern) {
                                 eprintln!("[LedMonitor] Error setting LED {}: {}", idx, e);
                             } else {
@@ -124,7 +127,10 @@ impl LedMonitor {
                     };
                     // Power LED blink uses slow pattern
                     let pattern = if led_state.power.blink { 'L' } else { 'S' };
-                    eprintln!("[LedMonitor] DEBUG: Setting PWR LED to color={} pattern={}", color, pattern);
+                    eprintln!(
+                        "[LedMonitor] DEBUG: Setting PWR LED to color={} pattern={}",
+                        color, pattern
+                    );
                     if let Err(e) = stm_guard.set_pwr_led_state(color, pattern) {
                         eprintln!("[LedMonitor] Error setting power LED: {}", e);
                     } else {

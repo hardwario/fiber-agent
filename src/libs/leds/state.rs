@@ -1,7 +1,7 @@
 // Shared LED state for communication between monitoring threads and LED controller
 
-use std::sync::{Arc, Mutex, Condvar};
 use crate::libs::alarms::color::LedState as AlarmLedState;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// LED state for a single line (sensor)
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +38,7 @@ pub enum PowerLedColor {
 #[derive(Debug, Clone, Copy)]
 pub struct PowerLedState {
     pub color: PowerLedColor,
-    pub blink: bool,  // Should LED blink?
+    pub blink: bool, // Should LED blink?
 }
 
 impl PowerLedState {
@@ -137,7 +137,7 @@ impl SharedLedStateWithNotify {
     pub fn wait_for_change(&self, timeout: std::time::Duration) {
         let _ = self.notify.wait_timeout(
             self.state.lock().unwrap_or_else(|e| e.into_inner()),
-            timeout
+            timeout,
         );
     }
 }

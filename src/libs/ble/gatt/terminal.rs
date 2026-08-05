@@ -12,8 +12,7 @@ const DESTRUCTIVE_PATTERNS: &[&str] = &["rm -rf /", "mkfs", "dd if="];
 
 /// Commands that don't make sense over BLE (interactive UIs, full-screen apps).
 const INTERACTIVE_COMMANDS: &[&str] = &[
-    "vi", "vim", "nano", "top", "htop", "less", "more",
-    "ssh", "telnet", "screen", "tmux", "man",
+    "vi", "vim", "nano", "top", "htop", "less", "more", "ssh", "telnet", "screen", "tmux", "man",
 ];
 
 /// Decision of the security filter for an incoming command.
@@ -72,7 +71,7 @@ pub(crate) async fn spawn_persistent_shell(
         .args(["-q", "-c", "bash 2>&1", "/dev/null"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())  // Discard stderr to avoid buffer deadlock
+        .stderr(std::process::Stdio::null()) // Discard stderr to avoid buffer deadlock
         .spawn()
         .map_err(|e| format!("Failed to spawn script: {}", e))?;
 
@@ -162,20 +161,26 @@ mod tests {
 
     #[test]
     fn destructive_rm_rejected() {
-        assert_eq!(classify_command("rm -rf /"),
-                   CommandPolicy::Reject("Error: Command not allowed for security reasons"));
+        assert_eq!(
+            classify_command("rm -rf /"),
+            CommandPolicy::Reject("Error: Command not allowed for security reasons")
+        );
     }
 
     #[test]
     fn destructive_mkfs_rejected() {
-        assert_eq!(classify_command("mkfs.ext4 /dev/sda1"),
-                   CommandPolicy::Reject("Error: Command not allowed for security reasons"));
+        assert_eq!(
+            classify_command("mkfs.ext4 /dev/sda1"),
+            CommandPolicy::Reject("Error: Command not allowed for security reasons")
+        );
     }
 
     #[test]
     fn destructive_dd_rejected() {
-        assert_eq!(classify_command("dd if=/dev/zero of=/dev/sda"),
-                   CommandPolicy::Reject("Error: Command not allowed for security reasons"));
+        assert_eq!(
+            classify_command("dd if=/dev/zero of=/dev/sda"),
+            CommandPolicy::Reject("Error: Command not allowed for security reasons")
+        );
     }
 
     #[test]
@@ -185,14 +190,18 @@ mod tests {
 
     #[test]
     fn interactive_top_rejected() {
-        assert_eq!(classify_command("top"),
-                   CommandPolicy::Reject("Error: Interactive commands not supported over BLE"));
+        assert_eq!(
+            classify_command("top"),
+            CommandPolicy::Reject("Error: Interactive commands not supported over BLE")
+        );
     }
 
     #[test]
     fn interactive_vim_with_args_rejected() {
-        assert_eq!(classify_command("vim /etc/hostname"),
-                   CommandPolicy::Reject("Error: Interactive commands not supported over BLE"));
+        assert_eq!(
+            classify_command("vim /etc/hostname"),
+            CommandPolicy::Reject("Error: Interactive commands not supported over BLE")
+        );
     }
 
     #[test]
@@ -216,7 +225,9 @@ mod tests {
         // We deliberately use substring match for "rm -rf /", so quoted
         // appearances also trigger. This is a known false-positive — fine
         // for a debug terminal.
-        assert!(matches!(classify_command(r#"echo "do not run rm -rf /""#),
-                         CommandPolicy::Reject(_)));
+        assert!(matches!(
+            classify_command(r#"echo "do not run rm -rf /""#),
+            CommandPolicy::Reject(_)
+        ));
     }
 }

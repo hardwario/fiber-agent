@@ -38,9 +38,9 @@ pub fn aggregate_closed_minutes(
 ) -> StorageResult<AggregationStats> {
     let cutoff_minute = ((now_ts - 60) / 60) * 60;
 
-    let tx = conn.transaction().map_err(|e| {
-        StorageError::InsertError(format!("aggregator: begin tx: {}", e))
-    })?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| StorageError::InsertError(format!("aggregator: begin tx: {}", e)))?;
 
     // Insert per-minute aggregates for any closed minute not already present.
     // `worst_alarm` uses a severity ranking (CRITICAL > DISCONNECTED >
@@ -86,9 +86,8 @@ pub fn aggregate_closed_minutes(
              GROUP BY (timestamp / 60), sensor_line",
             rusqlite::params![now_ts, cutoff_minute],
         )
-        .map_err(|e| {
-            StorageError::InsertError(format!("aggregator: insert: {}", e))
-        })? as i64;
+        .map_err(|e| StorageError::InsertError(format!("aggregator: insert: {}", e)))?
+        as i64;
 
     // If we have an HMAC secret, fill in data_hmac for the rows we just
     // inserted (those with NULL hmac, bounded by the cutoff). Splitting it
@@ -103,9 +102,9 @@ pub fn aggregate_closed_minutes(
                      FROM sensor_readings_minute
                      WHERE data_hmac IS NULL AND minute_ts < ?1",
                 )
-                .map_err(|e| StorageError::QueryError(
-                    format!("aggregator: prepare hmac scan: {}", e),
-                ))?;
+                .map_err(|e| {
+                    StorageError::QueryError(format!("aggregator: prepare hmac scan: {}", e))
+                })?;
             let rows = stmt
                 .query_map(rusqlite::params![cutoff_minute], |row| {
                     Ok((
@@ -119,18 +118,25 @@ pub fn aggregate_closed_minutes(
                         row.get::<_, String>(7)?,
                     ))
                 })
-                .map_err(|e| StorageError::QueryError(
-                    format!("aggregator: query hmac scan: {}", e),
-                ))?;
-            let pending: Vec<(i64, i32, f64, f64, f64, i64, i64, String)> = rows
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| StorageError::QueryError(
-                    format!("aggregator: collect hmac scan: {}", e),
-                ))?;
+                .map_err(|e| {
+                    StorageError::QueryError(format!("aggregator: query hmac scan: {}", e))
+                })?;
+            let pending: Vec<(i64, i32, f64, f64, f64, i64, i64, String)> =
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| {
+                    StorageError::QueryError(format!("aggregator: collect hmac scan: {}", e))
+                })?;
             drop(stmt);
 
-            for (minute_ts, sensor_line, min_c, avg_c, max_c,
-                 sample_count, disconnect_count, worst_alarm) in pending
+            for (
+                minute_ts,
+                sensor_line,
+                min_c,
+                avg_c,
+                max_c,
+                sample_count,
+                disconnect_count,
+                worst_alarm,
+            ) in pending
             {
                 let hmac = compute_minute_aggregate_hmac(
                     secret,
@@ -149,9 +155,9 @@ pub fn aggregate_closed_minutes(
                      WHERE minute_ts = ?2 AND sensor_line = ?3",
                     rusqlite::params![hmac, minute_ts, sensor_line],
                 )
-                .map_err(|e| StorageError::InsertError(
-                    format!("aggregator: update hmac: {}", e),
-                ))?;
+                .map_err(|e| {
+                    StorageError::InsertError(format!("aggregator: update hmac: {}", e))
+                })?;
             }
         }
     }
@@ -167,9 +173,8 @@ pub fn aggregate_closed_minutes(
         )
         .unwrap_or((None, None));
 
-    tx.commit().map_err(|e| {
-        StorageError::InsertError(format!("aggregator: commit: {}", e))
-    })?;
+    tx.commit()
+        .map_err(|e| StorageError::InsertError(format!("aggregator: commit: {}", e)))?;
 
     Ok(AggregationStats {
         rows_inserted,
@@ -181,10 +186,10 @@ pub fn aggregate_closed_minutes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::libs::alarms::AlarmState;
     use crate::libs::storage::db::Database;
     use crate::libs::storage::models::SensorReading;
     use crate::libs::storage::writer::StorageWriter;
-    use crate::libs::alarms::AlarmState;
 
     fn fresh_db() -> (Database, rusqlite::Connection) {
         let tmp = tempfile::NamedTempFile::new().unwrap();

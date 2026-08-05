@@ -2,9 +2,9 @@
 //! Implements SHA-256 hash-chain for audit trail tamper detection
 //! and HMAC-SHA256 for sensor reading authenticity
 
-use sha2::{Sha256, Digest};
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
 
@@ -104,8 +104,19 @@ pub fn verify_audit_chain(conn: &Connection) -> StorageResult<i64> {
         .map_err(|e| StorageError::QueryError(format!("Failed to query chain: {}", e)))?;
 
     for row_result in rows {
-        let (id, timestamp, operation, table_name, record_count, duration_ms, thread_id, details, error_msg, record_hash, previous_hash)
-            = row_result.map_err(|e| StorageError::QueryError(format!("Row error: {}", e)))?;
+        let (
+            id,
+            timestamp,
+            operation,
+            table_name,
+            record_count,
+            duration_ms,
+            thread_id,
+            details,
+            error_msg,
+            record_hash,
+            previous_hash,
+        ) = row_result.map_err(|e| StorageError::QueryError(format!("Row error: {}", e)))?;
 
         // Verify previous_hash matches our expectation
         if expected_previous.is_none() {
@@ -121,9 +132,10 @@ pub fn verify_audit_chain(conn: &Connection) -> StorageResult<i64> {
         if let Some(ref expected) = expected_previous {
             let actual_prev = previous_hash.as_deref().unwrap_or("GENESIS");
             if actual_prev != expected {
-                return Err(StorageError::IntegrityError(
-                    format!("Hash chain broken at audit_log id={}: expected previous_hash='{}', found='{}'", id, expected, actual_prev)
-                ));
+                return Err(StorageError::IntegrityError(format!(
+                    "Hash chain broken at audit_log id={}: expected previous_hash='{}', found='{}'",
+                    id, expected, actual_prev
+                )));
             }
         }
 
@@ -142,9 +154,10 @@ pub fn verify_audit_chain(conn: &Connection) -> StorageResult<i64> {
 
         if let Some(ref stored_hash) = record_hash {
             if &computed != stored_hash {
-                return Err(StorageError::IntegrityError(
-                    format!("Record hash mismatch at audit_log id={}: stored='{}', computed='{}'", id, stored_hash, computed)
-                ));
+                return Err(StorageError::IntegrityError(format!(
+                    "Record hash mismatch at audit_log id={}: stored='{}', computed='{}'",
+                    id, stored_hash, computed
+                )));
             }
         }
 
@@ -164,8 +177,7 @@ pub fn compute_reading_hmac(
     is_connected: bool,
     alarm_state: &str,
 ) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(&timestamp.to_le_bytes());
     mac.update(&[sensor_line]);
     mac.update(&temperature_c.to_le_bytes());
@@ -191,8 +203,7 @@ pub fn compute_minute_aggregate_hmac(
     disconnect_count: i64,
     worst_alarm: &str,
 ) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(&minute_ts.to_le_bytes());
     mac.update(&[sensor_line]);
     mac.update(&min_c.to_le_bytes());
@@ -215,8 +226,7 @@ pub fn verify_reading_hmac(
     alarm_state: &str,
     expected_hmac: &str,
 ) -> bool {
-    let mut mac = HmacSha256::new_from_slice(secret)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(&timestamp.to_le_bytes());
     mac.update(&[sensor_line]);
     mac.update(&temperature_c.to_le_bytes());
@@ -235,12 +245,26 @@ mod tests {
     #[test]
     fn test_compute_audit_record_hash_deterministic() {
         let hash1 = compute_audit_record_hash(
-            1000, "INSERT", Some("sensor_readings"), Some(10), Some(5),
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("sensor_readings"),
+            Some(10),
+            Some(5),
+            "main",
+            None,
+            None,
+            None,
         );
         let hash2 = compute_audit_record_hash(
-            1000, "INSERT", Some("sensor_readings"), Some(10), Some(5),
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("sensor_readings"),
+            Some(10),
+            Some(5),
+            "main",
+            None,
+            None,
+            None,
         );
         assert_eq!(hash1, hash2, "Same inputs must produce same hash");
         assert_eq!(hash1.len(), 64, "SHA-256 hex digest should be 64 chars");
@@ -249,22 +273,46 @@ mod tests {
     #[test]
     fn test_compute_audit_record_hash_changes_with_input() {
         let hash1 = compute_audit_record_hash(
-            1000, "INSERT", Some("sensor_readings"), Some(10), Some(5),
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("sensor_readings"),
+            Some(10),
+            Some(5),
+            "main",
+            None,
+            None,
+            None,
         );
         let hash2 = compute_audit_record_hash(
-            1001, "INSERT", Some("sensor_readings"), Some(10), Some(5),
-            "main", None, None, None,
+            1001,
+            "INSERT",
+            Some("sensor_readings"),
+            Some(10),
+            Some(5),
+            "main",
+            None,
+            None,
+            None,
         );
-        assert_ne!(hash1, hash2, "Different timestamp must produce different hash");
+        assert_ne!(
+            hash1, hash2,
+            "Different timestamp must produce different hash"
+        );
     }
 
     #[test]
     fn test_genesis_hash() {
         // First record in chain uses GENESIS as previous
         let hash = compute_audit_record_hash(
-            1000, "INSERT", Some("test"), None, None,
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("test"),
+            None,
+            None,
+            "main",
+            None,
+            None,
+            None,
         );
         assert!(!hash.is_empty());
     }
@@ -272,24 +320,49 @@ mod tests {
     #[test]
     fn test_chain_links_previous_hash() {
         let hash1 = compute_audit_record_hash(
-            1000, "INSERT", Some("test"), None, None,
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("test"),
+            None,
+            None,
+            "main",
+            None,
+            None,
+            None,
         );
         let hash2 = compute_audit_record_hash(
-            1001, "INSERT", Some("test"), None, None,
-            "main", None, None, Some(&hash1),
+            1001,
+            "INSERT",
+            Some("test"),
+            None,
+            None,
+            "main",
+            None,
+            None,
+            Some(&hash1),
         );
         // hash2 includes hash1 as previous, so changing hash1 would change hash2
         let hash2_alt = compute_audit_record_hash(
-            1001, "INSERT", Some("test"), None, None,
-            "main", None, None, Some("tampered"),
+            1001,
+            "INSERT",
+            Some("test"),
+            None,
+            None,
+            "main",
+            None,
+            None,
+            Some("tampered"),
         );
-        assert_ne!(hash2, hash2_alt, "Different previous_hash must produce different record_hash");
+        assert_ne!(
+            hash2, hash2_alt,
+            "Different previous_hash must produce different record_hash"
+        );
     }
 
     #[test]
     fn test_get_latest_audit_hash_empty_db() {
-        let db = Database::new("/tmp/test_integrity_empty.db", 5).expect("Failed to create test DB");
+        let db =
+            Database::new("/tmp/test_integrity_empty.db", 5).expect("Failed to create test DB");
         let conn = db.connect().expect("Failed to connect");
 
         let result = get_latest_audit_hash(&conn).expect("Should not error on empty DB");
@@ -300,7 +373,8 @@ mod tests {
 
     #[test]
     fn test_verify_audit_chain_empty() {
-        let db = Database::new("/tmp/test_integrity_chain_empty.db", 5).expect("Failed to create test DB");
+        let db = Database::new("/tmp/test_integrity_chain_empty.db", 5)
+            .expect("Failed to create test DB");
         let conn = db.connect().expect("Failed to connect");
 
         let count = verify_audit_chain(&conn).expect("Should verify empty chain");
@@ -311,14 +385,22 @@ mod tests {
 
     #[test]
     fn test_verify_audit_chain_with_entries() {
-        let db = Database::new("/tmp/test_integrity_chain_entries.db", 5).expect("Failed to create test DB");
+        let db = Database::new("/tmp/test_integrity_chain_entries.db", 5)
+            .expect("Failed to create test DB");
         let conn = db.connect().expect("Failed to connect");
 
         // Insert a chain of 3 records
         let prev_hash: Option<String> = None;
         let hash1 = compute_audit_record_hash(
-            1000, "INSERT", Some("test"), Some(1), Some(5),
-            "main", None, None, prev_hash.as_deref(),
+            1000,
+            "INSERT",
+            Some("test"),
+            Some(1),
+            Some(5),
+            "main",
+            None,
+            None,
+            prev_hash.as_deref(),
         );
 
         conn.execute(
@@ -328,8 +410,15 @@ mod tests {
         ).expect("Insert 1");
 
         let hash2 = compute_audit_record_hash(
-            1001, "DELETE", Some("test"), Some(2), Some(10),
-            "main", None, None, Some(hash1.as_str()),
+            1001,
+            "DELETE",
+            Some("test"),
+            Some(2),
+            Some(10),
+            "main",
+            None,
+            None,
+            Some(hash1.as_str()),
         );
 
         conn.execute(
@@ -339,8 +428,15 @@ mod tests {
         ).expect("Insert 2");
 
         let hash3 = compute_audit_record_hash(
-            1002, "EXPORT", None, Some(100), Some(50),
-            "main", None, None, Some(hash2.as_str()),
+            1002,
+            "EXPORT",
+            None,
+            Some(100),
+            Some(50),
+            "main",
+            None,
+            None,
+            Some(hash2.as_str()),
         );
 
         conn.execute(
@@ -357,12 +453,20 @@ mod tests {
 
     #[test]
     fn test_verify_audit_chain_detects_tamper() {
-        let db = Database::new("/tmp/test_integrity_tamper.db", 5).expect("Failed to create test DB");
+        let db =
+            Database::new("/tmp/test_integrity_tamper.db", 5).expect("Failed to create test DB");
         let conn = db.connect().expect("Failed to connect");
 
         let hash1 = compute_audit_record_hash(
-            1000, "INSERT", Some("test"), Some(1), Some(5),
-            "main", None, None, None,
+            1000,
+            "INSERT",
+            Some("test"),
+            Some(1),
+            Some(5),
+            "main",
+            None,
+            None,
+            None,
         );
 
         conn.execute(
@@ -381,7 +485,10 @@ mod tests {
         let result = verify_audit_chain(&conn);
         assert!(result.is_err(), "Should detect tampered record");
         if let Err(StorageError::IntegrityError(msg)) = result {
-            assert!(msg.contains("Record hash mismatch"), "Error should mention hash mismatch");
+            assert!(
+                msg.contains("Record hash mismatch"),
+                "Error should mention hash mismatch"
+            );
         }
 
         let _ = std::fs::remove_file("/tmp/test_integrity_tamper.db");
@@ -407,8 +514,20 @@ mod tests {
     fn test_verify_reading_hmac() {
         let secret = b"test_secret_key";
         let hmac = compute_reading_hmac(secret, 1000, 0, 36.5, true, "NORMAL");
-        assert!(verify_reading_hmac(secret, 1000, 0, 36.5, true, "NORMAL", &hmac));
-        assert!(!verify_reading_hmac(secret, 1001, 0, 36.5, true, "NORMAL", &hmac));
-        assert!(!verify_reading_hmac(b"wrong_key", 1000, 0, 36.5, true, "NORMAL", &hmac));
+        assert!(verify_reading_hmac(
+            secret, 1000, 0, 36.5, true, "NORMAL", &hmac
+        ));
+        assert!(!verify_reading_hmac(
+            secret, 1001, 0, 36.5, true, "NORMAL", &hmac
+        ));
+        assert!(!verify_reading_hmac(
+            b"wrong_key",
+            1000,
+            0,
+            36.5,
+            true,
+            "NORMAL",
+            &hmac
+        ));
     }
 }

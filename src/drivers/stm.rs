@@ -213,8 +213,16 @@ impl StmBridge {
     // PWR LED helpers (PWRLEDG / PWRLEDY) – great for alarm LED mapping
 
     pub fn set_pwr_leds(&mut self, green_on: bool, yellow_on: bool) -> io::Result<()> {
-        let g_cmd = if green_on { "PWRLEDG ON" } else { "PWRLEDG OFF" };
-        let y_cmd = if yellow_on { "PWRLEDY ON" } else { "PWRLEDY OFF" };
+        let g_cmd = if green_on {
+            "PWRLEDG ON"
+        } else {
+            "PWRLEDG OFF"
+        };
+        let y_cmd = if yellow_on {
+            "PWRLEDY ON"
+        } else {
+            "PWRLEDY OFF"
+        };
 
         let _ = self.send_cmd(g_cmd)?;
         let _ = self.send_cmd(y_cmd)?;
@@ -235,7 +243,10 @@ impl StmBridge {
             match self.send_cmd(&cmd) {
                 Ok(Some(response)) => {
                     if !response.contains("OK") {
-                        eprintln!("[stm] Warning: unexpected response for P{}: {}", i, response);
+                        eprintln!(
+                            "[stm] Warning: unexpected response for P{}: {}",
+                            i, response
+                        );
                     }
                 }
                 Ok(None) => {

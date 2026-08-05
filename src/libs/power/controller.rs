@@ -3,9 +3,9 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use super::status::PowerStatus;
 use crate::drivers::stm::StmBridge;
 use crate::libs::logging::get_timestamp_str;
-use super::status::PowerStatus;
 
 /// Controls power monitoring
 /// LED control is now delegated to the dedicated LedMonitor thread
@@ -51,7 +51,10 @@ impl PowerController {
         let mut stm_guard = match self.stm.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
-                eprintln!("[{}] [PowerController] STM lock busy, skipping ADC read this iteration", crate::libs::logging::get_timestamp_str());
+                eprintln!(
+                    "[{}] [PowerController] STM lock busy, skipping ADC read this iteration",
+                    crate::libs::logging::get_timestamp_str()
+                );
                 // Return success to keep the loop running - we'll use cached values
                 return Ok(());
             }
@@ -63,19 +66,27 @@ impl PowerController {
         // Handle timeout cases: use last successful values if read returns None
         let vin_mv = if let Some(adc) = vin_opt {
             let voltage = adc.voltage_mv as u16;
-            self.last_successful_vin_mv = voltage;  // Update cache on successful read
+            self.last_successful_vin_mv = voltage; // Update cache on successful read
             voltage
         } else {
-            eprintln!("[{}] [PowerController] Warning: VIN read timed out, using cached value: {} mV", get_timestamp_str(), self.last_successful_vin_mv);
+            eprintln!(
+                "[{}] [PowerController] Warning: VIN read timed out, using cached value: {} mV",
+                get_timestamp_str(),
+                self.last_successful_vin_mv
+            );
             self.last_successful_vin_mv
         };
 
         let vbat_mv = if let Some(adc) = vbat_opt {
             let voltage = adc.voltage_mv as u16;
-            self.last_successful_vbat_mv = voltage;  // Update cache on successful read
+            self.last_successful_vbat_mv = voltage; // Update cache on successful read
             voltage
         } else {
-            eprintln!("[{}] [PowerController] Warning: VBAT read timed out, using cached value: {} mV", get_timestamp_str(), self.last_successful_vbat_mv);
+            eprintln!(
+                "[{}] [PowerController] Warning: VBAT read timed out, using cached value: {} mV",
+                get_timestamp_str(),
+                self.last_successful_vbat_mv
+            );
             self.last_successful_vbat_mv
         };
 
@@ -86,5 +97,4 @@ impl PowerController {
 
         Ok(())
     }
-
 }

@@ -44,7 +44,13 @@ impl MqttPublisher {
     }
 
     /// Publish a message to a topic
-    async fn publish(&self, topic: String, payload: String, qos: QoS, retain: bool) -> Result<(), String> {
+    async fn publish(
+        &self,
+        topic: String,
+        payload: String,
+        qos: QoS,
+        retain: bool,
+    ) -> Result<(), String> {
         self.client
             .publish(topic.clone(), qos, retain, payload.as_bytes())
             .await
@@ -72,8 +78,14 @@ impl MqttPublisher {
                 to_state,
                 message,
             } => {
-                self.publish_system_alarm_event(&alarm_type, &name, &from_state, &to_state, &message)
-                    .await
+                self.publish_system_alarm_event(
+                    &alarm_type,
+                    &name,
+                    &from_state,
+                    &to_state,
+                    &message,
+                )
+                .await
             }
 
             MqttMessage::PublishAccelerometerEvent {
@@ -82,7 +94,8 @@ impl MqttPublisher {
                 z_g,
                 position,
             } => {
-                self.publish_accelerometer_event(x_g, y_g, z_g, position).await
+                self.publish_accelerometer_event(x_g, y_g, z_g, position)
+                    .await
             }
 
             MqttMessage::PublishSystemStatus {
@@ -134,8 +147,13 @@ impl MqttPublisher {
                 .await
             }
 
-            MqttMessage::PublishAggregatedSensorData { period, names, locations } => {
-                self.publish_aggregated_sensor_data(period, &names, &locations).await
+            MqttMessage::PublishAggregatedSensorData {
+                period,
+                names,
+                locations,
+            } => {
+                self.publish_aggregated_sensor_data(period, &names, &locations)
+                    .await
             }
 
             MqttMessage::PublishConfigChallenge {
@@ -145,8 +163,14 @@ impl MqttPublisher {
                 expires_at,
                 preview,
             } => {
-                self.publish_config_challenge(&challenge_id, &request_id, &signer_id, expires_at, preview)
-                    .await
+                self.publish_config_challenge(
+                    &challenge_id,
+                    &request_id,
+                    &signer_id,
+                    expires_at,
+                    preview,
+                )
+                .await
             }
 
             MqttMessage::PublishConfigResponse {
@@ -177,8 +201,12 @@ impl MqttPublisher {
                 aggregation_interval_ms,
                 report_interval_ms,
             } => {
-                self.publish_interval_config(sample_interval_ms, aggregation_interval_ms, report_interval_ms)
-                    .await
+                self.publish_interval_config(
+                    sample_interval_ms,
+                    aggregation_interval_ms,
+                    report_interval_ms,
+                )
+                .await
             }
 
             MqttMessage::PublishConfigState {
@@ -260,9 +288,7 @@ impl MqttPublisher {
                 self.publish_sticker_info(dev_eui, info).await
             }
 
-            MqttMessage::ClearStickerInfo { dev_eui } => {
-                self.clear_sticker_info(&dev_eui).await
-            }
+            MqttMessage::ClearStickerInfo { dev_eui } => self.clear_sticker_info(&dev_eui).await,
 
             MqttMessage::PublishStickerCommandResult {
                 dev_eui,
@@ -285,24 +311,26 @@ impl MqttPublisher {
                 frame_count,
                 records,
             } => {
-                self.publish_sticker_history(dev_eui, frame_index, frame_count, records).await
+                self.publish_sticker_history(dev_eui, frame_index, frame_count, records)
+                    .await
             }
 
-            MqttMessage::PublishEyeSensorData { tags } => {
-                self.publish_eye_sensors(tags).await
-            }
+            MqttMessage::PublishEyeSensorData { tags } => self.publish_eye_sensors(tags).await,
 
-            MqttMessage::PublishEyeDetectResult { mac, is_en12830, status } => {
-                self.publish_eye_detect_result(&mac, is_en12830, &status).await
+            MqttMessage::PublishEyeDetectResult {
+                mac,
+                is_en12830,
+                status,
+            } => {
+                self.publish_eye_detect_result(&mac, is_en12830, &status)
+                    .await
             }
 
             MqttMessage::PublishPairingResponse(response) => {
                 self.publish_pairing_response(&response).await
             }
 
-            MqttMessage::PublishPairingError(error) => {
-                self.publish_pairing_error(&error).await
-            }
+            MqttMessage::PublishPairingError(error) => self.publish_pairing_error(&error).await,
 
             // Internal messages, not published
             MqttMessage::SetConnectionState(_) | MqttMessage::Shutdown => Ok(()),
@@ -500,10 +528,8 @@ impl MqttPublisher {
         };
 
         // Format last AC loss timestamp
-        let last_dc_loss = last_dc_loss_time.and_then(|ts| {
-            DateTime::<Utc>::from_timestamp(ts as i64, 0)
-                .map(|dt| dt.to_rfc3339())
-        });
+        let last_dc_loss = last_dc_loss_time
+            .and_then(|ts| DateTime::<Utc>::from_timestamp(ts as i64, 0).map(|dt| dt.to_rfc3339()));
 
         let firmware_version_str = if cfg!(feature = "dev-platform") {
             format!("{}-dev", version)
@@ -579,7 +605,12 @@ impl MqttPublisher {
     }
 
     /// Publish error message
-    pub async fn publish_error(&self, command: &str, error: &str, message: &str) -> Result<(), String> {
+    pub async fn publish_error(
+        &self,
+        command: &str,
+        error: &str,
+        message: &str,
+    ) -> Result<(), String> {
         let payload = json!({
             "timestamp": Self::timestamp(),
             "command": command,
@@ -642,21 +673,17 @@ impl MqttPublisher {
         // Add applied_at if present
         if let Some(ts) = applied_at {
             payload["applied_at"] = json!(ts);
-            payload["applied_at_iso"] = json!(
-                DateTime::<Utc>::from_timestamp(ts, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default()
-            );
+            payload["applied_at_iso"] = json!(DateTime::<Utc>::from_timestamp(ts, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default());
         }
 
         // Add effective_at if present
         if let Some(ts) = effective_at {
             payload["effective_at"] = json!(ts);
-            payload["effective_at_iso"] = json!(
-                DateTime::<Utc>::from_timestamp(ts, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default()
-            );
+            payload["effective_at_iso"] = json!(DateTime::<Utc>::from_timestamp(ts, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default());
         }
 
         let topic = self.topics.config_response();
@@ -938,8 +965,11 @@ impl MqttPublisher {
         // with no command in flight was handed a snapshot stamped four hours
         // earlier, which the viewer would render as the live config. The empty
         // retained payload is the standard tombstone, same as `clear_sticker_info`.
-        let _ = self.publish(topic.clone(), String::new(), QoS::AtLeastOnce, true).await;
-        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+        let _ = self
+            .publish(topic.clone(), String::new(), QoS::AtLeastOnce, true)
+            .await;
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false)
+            .await
     }
 
     /// Publish the full non-secret config read-back. `chunks_done`/`chunks_total`
@@ -969,7 +999,8 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.lorawan_sensor_full_config(&dev_eui);
-        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false)
+            .await
     }
 
     /// Publish a STICKER's fPort-85 device info to
@@ -990,14 +1021,16 @@ impl MqttPublisher {
         info: serde_json::Value,
     ) -> Result<(), String> {
         let topic = self.topics.lorawan_sensor_info(&dev_eui);
-        self.publish(topic, info.to_string(), QoS::AtLeastOnce, true).await
+        self.publish(topic, info.to_string(), QoS::AtLeastOnce, true)
+            .await
     }
 
     /// Clear the retained device-info for a decommissioned sticker. Without this a
     /// removed device's info would be replayed to new subscribers forever.
     async fn clear_sticker_info(&self, dev_eui: &str) -> Result<(), String> {
         let topic = self.topics.lorawan_sensor_info(dev_eui);
-        self.publish(topic, String::new(), QoS::AtLeastOnce, true).await
+        self.publish(topic, String::new(), QoS::AtLeastOnce, true)
+            .await
     }
 
     /// Publish the outcome of a STICKER control command (#71) to
@@ -1031,7 +1064,8 @@ impl MqttPublisher {
             "ts": Self::timestamp(),
         });
         let topic = self.topics.lorawan_sensor_command(&dev_eui);
-        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false)
+            .await
     }
 
     /// Publish one page of a STICKER's on-device history to
@@ -1051,7 +1085,8 @@ impl MqttPublisher {
         });
 
         let topic = self.topics.lorawan_sensor_history(&dev_eui);
-        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false).await
+        self.publish(topic, payload.to_string(), QoS::AtLeastOnce, false)
+            .await
     }
 
     /// Publish the result of a detect_eye_tag probe on `eye/detect`.
@@ -1101,7 +1136,6 @@ impl MqttPublisher {
 
         self.publish(topic, payload, qos, false).await
     }
-
 }
 
 #[cfg(test)]
@@ -1118,17 +1152,8 @@ mod tests {
 
     #[test]
     fn test_qos_conversion() {
-        assert!(matches!(
-            MqttPublisher::qos_from_u8(0),
-            QoS::AtMostOnce
-        ));
-        assert!(matches!(
-            MqttPublisher::qos_from_u8(1),
-            QoS::AtLeastOnce
-        ));
-        assert!(matches!(
-            MqttPublisher::qos_from_u8(2),
-            QoS::ExactlyOnce
-        ));
+        assert!(matches!(MqttPublisher::qos_from_u8(0), QoS::AtMostOnce));
+        assert!(matches!(MqttPublisher::qos_from_u8(1), QoS::AtLeastOnce));
+        assert!(matches!(MqttPublisher::qos_from_u8(2), QoS::ExactlyOnce));
     }
 }

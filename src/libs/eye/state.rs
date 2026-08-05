@@ -130,8 +130,10 @@ impl EyeTagState {
                 .get("battery")
                 .cloned()
                 .unwrap_or(LoRaWANAlarmState::Normal);
-            self.field_alarm_states
-                .insert("battery".to_string(), cur.worst(&LoRaWANAlarmState::Warning));
+            self.field_alarm_states.insert(
+                "battery".to_string(),
+                cur.worst(&LoRaWANAlarmState::Warning),
+            );
         }
         self.alarm_state = self
             .field_alarm_states
@@ -423,7 +425,10 @@ mod tests {
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
 
         // no thresholds → cleared to Normal
-        let empty = EyeTagConfig { field_thresholds: vec![], ..cfg.clone() };
+        let empty = EyeTagConfig {
+            field_thresholds: vec![],
+            ..cfg.clone()
+        };
         tag.evaluate_alarms(&empty);
         assert!(tag.field_alarm_states.is_empty());
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
@@ -465,7 +470,10 @@ mod tests {
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
 
         // The hardware low_battery flag alarms even with NO battery threshold set.
-        let no_thr = EyeTagConfig { field_thresholds: vec![], ..cfg.clone() };
+        let no_thr = EyeTagConfig {
+            field_thresholds: vec![],
+            ..cfg.clone()
+        };
         let mut t2 = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         t2.battery_mv = Some(3000);
         t2.low_battery = true;

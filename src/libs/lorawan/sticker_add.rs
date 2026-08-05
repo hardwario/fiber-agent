@@ -48,22 +48,39 @@ pub fn add_lorawan_sticker(
         ActivationMode::Otaa { .. } => "OTAA",
         ActivationMode::Abp { .. } => "ABP",
     };
-    eprintln!("[sticker_add] Provisioning sticker {} in ChirpStack ({})...", dev_eui, mode_label);
+    eprintln!(
+        "[sticker_add] Provisioning sticker {} in ChirpStack ({})...",
+        dev_eui, mode_label
+    );
     let provision_result = match &activation {
         ActivationMode::Otaa { app_key, join_eui } => {
             crate::libs::lorawan::provisioning::provision_sticker_otaa(
-                &dev_eui, &name, &serial_number, app_key, join_eui,
+                &dev_eui,
+                &name,
+                &serial_number,
+                app_key,
+                join_eui,
             )
         }
-        ActivationMode::Abp { devaddr, nwkskey, appskey } => {
-            crate::libs::lorawan::provisioning::provision_sticker(
-                &dev_eui, &name, &serial_number, devaddr, nwkskey, appskey,
-            )
-        }
+        ActivationMode::Abp {
+            devaddr,
+            nwkskey,
+            appskey,
+        } => crate::libs::lorawan::provisioning::provision_sticker(
+            &dev_eui,
+            &name,
+            &serial_number,
+            devaddr,
+            nwkskey,
+            appskey,
+        ),
     };
     match provision_result {
         Ok(()) => {
-            eprintln!("[sticker_add] ✓ Sticker {} provisioned in ChirpStack", dev_eui);
+            eprintln!(
+                "[sticker_add] ✓ Sticker {} provisioned in ChirpStack",
+                dev_eui
+            );
 
             // Save-and-feed: bump the provisioning epoch only when this
             // dev_eui was previously absent OR its most recent event was
@@ -96,7 +113,10 @@ pub fn add_lorawan_sticker(
         }
         Err(e) => {
             // Log but continue - ChirpStack may be down or device may already exist
-            eprintln!("[sticker_add] ⚠ ChirpStack provisioning for {}: {}", dev_eui, e);
+            eprintln!(
+                "[sticker_add] ⚠ ChirpStack provisioning for {}: {}",
+                dev_eui, e
+            );
         }
     }
 
@@ -129,27 +149,31 @@ pub fn add_lorawan_sticker(
             // optimistic entry stale and drop it.
             if let Some(state) = deps.lorawan_state.as_ref() {
                 if let Ok(mut s) = state.write() {
-                    s.sensors.entry(dev_eui.clone()).or_insert_with(|| LoRaWANSensorState {
-                        dev_eui: dev_eui.clone(),
-                        name: name.clone(),
-                        serial_number: Some(serial_number.clone()),
-                        location: None,
-                        fields: HashMap::new(),
-                        field_alarm_states: HashMap::new(),
-                        field_thresholds: Vec::new(),
-                        counters: HashMap::new(),
-                        recent_events: VecDeque::new(),
-                        rssi: None,
-                        snr: None,
-                        last_seen: None,
-                        alarm_state: LoRaWANAlarmState::Disconnected,
-                    });
+                    s.sensors
+                        .entry(dev_eui.clone())
+                        .or_insert_with(|| LoRaWANSensorState {
+                            dev_eui: dev_eui.clone(),
+                            name: name.clone(),
+                            serial_number: Some(serial_number.clone()),
+                            location: None,
+                            fields: HashMap::new(),
+                            field_alarm_states: HashMap::new(),
+                            field_thresholds: Vec::new(),
+                            counters: HashMap::new(),
+                            recent_events: VecDeque::new(),
+                            rssi: None,
+                            snr: None,
+                            last_seen: None,
+                            alarm_state: LoRaWANAlarmState::Disconnected,
+                        });
                 }
             }
             eprintln!("[sticker_add] ✓ LoRaWAN sticker {} config saved", dev_eui);
             Ok(())
         } else {
-            Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "Unknown error".to_string()))
         }
     } else {
         Err("Config applier not initialized".to_string())
