@@ -207,6 +207,13 @@ impl PowerMonitor {
 
         // State tracking for buzzer alerts
         let mut previous_vin_status = false; // Was on AC power?
+
+        // The first reading has nothing real to compare against — without this,
+        // a device that was on DC power the whole time looks like it "just
+        // reconnected" on every process start (e.g. the EYE watchdog's restart),
+        // firing a false Power Supply CRITICAL->NORMAL alarm and buzzer chime.
+        let mut first_vin_reading = true;
+
         let mut previous_critical_status = false; // Was battery critical?
         let mut last_battery_beep = Instant::now(); // When was the last battery mode beep?
         let battery_beep_interval = Duration::from_secs(10); // Beep every 10 seconds in battery mode
@@ -354,7 +361,11 @@ impl PowerMonitor {
                     }
 
                     // Handle VIN connection/disconnection transitions
-                    if current_vin_status && !previous_vin_status {
+                    if first_vin_reading {
+                        // Establish the baseline silently — there is no prior
+                        // state yet, so this can't be a real edge.
+                        first_vin_reading = false;
+                    } else if current_vin_status && !previous_vin_status {
                         // VIN just connected (DC power detected)
                         eprintln!(
                             "[{}] [PowerMonitor] DC power detected - VIN connected",
