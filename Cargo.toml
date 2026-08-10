@@ -16,7 +16,15 @@ rusqlite = { version = "0.30", features = ["bundled-sqlcipher", "chrono"] }
 crossbeam = "0.8"
 
 # MQTT dependencies
-rumqttc = "0.24"
+# Uses native-tls (OpenSSL) instead of rustls: rumqttc 0.25.1 pins
+# rustls-webpki 0.102.8 and rustls-pemfile 2.2.0 directly in its own Cargo.toml
+# (confirmed unchanged even on rumqttc's unreleased main branch), which carry
+# RUSTSEC advisories no version bump on our side can clear. native-tls avoids
+# rustls entirely. "vendored" builds OpenSSL from source (same approach as
+# rusqlite's bundled-sqlcipher below) so the target sysroot doesn't need
+# OpenSSL dev headers.
+rumqttc = { version = "0.25", default-features = false, features = ["use-native-tls"] }
+openssl = { version = "0.10", features = ["vendored"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util", "process", "fs"] }
@@ -32,7 +40,7 @@ hex = "0.4"
 uuid = { version = "1.6", features = ["v4", "fast-rng", "serde"] }
 
 # Replay protection (LRU cache for nonce tracking)
-lru = "0.12"
+lru = "0.16"
 
 # Pairing protocol encryption
 aes-gcm = "0.10"

@@ -255,9 +255,8 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
                             // Set a TLS transport with empty/invalid config — connection will
                             // fail at handshake rather than silently falling back to plaintext
                             mqttoptions.set_transport(Transport::tls_with_config(
-                                TlsConfiguration::Simple {
+                                TlsConfiguration::SimpleNative {
                                     ca: vec![],
-                                    alpn: None,
                                     client_auth: None,
                                 },
                             ));
@@ -303,8 +302,10 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
 
 /// Build a TLS [`Transport`] from the application's [`TlsConfig`].
 ///
-/// Uses `TlsConfiguration::Simple` which accepts PEM-encoded CA cert bytes
-/// and optional PEM-encoded client cert + key for mutual TLS.
+/// Builds a native-tls `TlsConnector` directly (rather than using rumqttc's
+/// `TlsConfiguration::SimpleNative` convenience path, which only accepts a
+/// PKCS#12 client identity) so mutual TLS can keep using the existing
+/// PEM-encoded cert + key files via `Identity::from_pkcs8`.
 fn configure_tls_transport(tls: &crate::libs::config::TlsConfig) -> Result<Transport, String> {
     // Load CA certificate (PEM-encoded)
     let ca = std::fs::read(&tls.ca_cert_path).map_err(|e| {
@@ -369,92 +370,38 @@ fn configure_tls_transport(tls: &crate::libs::config::TlsConfig) -> Result<Trans
         }
     };
 
-    let transport = if tls.insecure_skip_verify {
+    use rumqttc::tokio_native_tls::native_tls::{Certificate, Identity, TlsConnector};
+
+    let mut builder = TlsConnector::builder();
+
+    // Trust only the configured CA, not the OS's built-in root store — this
+    // is a private medical-device network, not a public-internet client.
+    builder.disable_built_in_roots(true);
+    let ca_cert =
+        Certificate::from_pem(&ca).map_err(|e| format!("Invalid CA certificate: {}", e))?;
+    builder.add_root_certificate(ca_cert);
+
+    if let Some((cert_pem, key_pem)) = &client_auth {
+        let identity = Identity::from_pkcs8(cert_pem, key_pem)
+            .map_err(|e| format!("Invalid client certificate/key: {}", e))?;
+        builder.identity(identity);
+    }
+
+    if tls.insecure_skip_verify {
         eprintln!(
             "[MQTT TLS] WARNING: insecure_skip_verify=true — skipping certificate validation"
         );
-        // Build a rustls ClientConfig that skips cert verification
-        use rumqttc::tokio_rustls::rustls;
-
-        let config = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
-            .with_no_client_auth();
-
-        transport_from_rustls_config(config)
-    } else {
-        Transport::tls_with_config(TlsConfiguration::Simple {
-            ca,
-            alpn: None,
-            client_auth,
-        })
-    };
-
-    Ok(transport)
-}
-
-/// Certificate verifier that accepts any certificate (insecure_skip_verify mode)
-/// Used for device-to-device TLS on local medical networks with self-signed certs
-#[derive(Debug)]
-struct NoCertVerifier;
-
-impl rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerifier for NoCertVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rumqttc::tokio_rustls::rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rumqttc::tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<
-        rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified,
-        rumqttc::tokio_rustls::rustls::Error,
-    > {
-        Ok(rumqttc::tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        builder.danger_accept_invalid_certs(true);
+        builder.danger_accept_invalid_hostnames(true);
     }
 
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        rumqttc::tokio_rustls::rustls::Error,
-    > {
-        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
+    let connector = builder
+        .build()
+        .map_err(|e| format!("Failed to build TLS connector: {}", e))?;
 
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rumqttc::tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &rumqttc::tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        rumqttc::tokio_rustls::rustls::Error,
-    > {
-        Ok(rumqttc::tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rumqttc::tokio_rustls::rustls::SignatureScheme> {
-        use rumqttc::tokio_rustls::rustls::SignatureScheme;
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ED25519,
-        ]
-    }
-}
-
-fn transport_from_rustls_config(config: rumqttc::tokio_rustls::rustls::ClientConfig) -> Transport {
-    Transport::tls_with_config(TlsConfiguration::Rustls(Arc::new(config)))
+    Ok(Transport::tls_with_config(
+        TlsConfiguration::NativeConnector(connector),
+    ))
 }
 
 /// MQTT monitor handle for sending messages
@@ -4570,6 +4517,31 @@ mod tests {
         PublishIntervals, QosOverrides, SubscribeConfig, TlsConfig,
     };
 
+    /// A real (if minimal) self-signed EC cert + PKCS#8 key, generated with
+    /// `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes
+    /// -keyout client.key -out client.crt -days 3650 -subj "/CN=test-ca"`.
+    /// native-tls (OpenSSL) parses certs eagerly in `configure_tls_transport`,
+    /// unlike the old rustls path which only parsed lazily at connect time —
+    /// so these tests need cert/key bytes that actually parse, not just
+    /// readable placeholder bytes.
+    const TEST_CERT_PEM: &[u8] = b"-----BEGIN CERTIFICATE-----\n\
+        MIIBeDCCAR+gAwIBAgIUDqERgDyrXiAn4TmRg4BCLjplUXAwCgYIKoZIzj0EAwIw\n\
+        EjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNjA4MTAxMTQ0MTVaFw0zNjA4MDcxMTQ0\n\
+        MTVaMBIxEDAOBgNVBAMMB3Rlc3QtY2EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC\n\
+        AASstCEzKS48I9HdjALNpj15aYee/0Z2Z1Ua5cFDEUTh0thOvLdvel6VaprXndvZ\n\
+        TuxZS3kuZoKQKB2Lq3XC4rAuo1MwUTAdBgNVHQ4EFgQU7+wYZ5Z2G4UIA8neLekq\n\
+        QHXc+9YwHwYDVR0jBBgwFoAU7+wYZ5Z2G4UIA8neLekqQHXc+9YwDwYDVR0TAQH/\n\
+        BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBzoNL/WWuustUfmczgH04LqyMSFSMX\n\
+        ptdzt7JIzQjk5wIgaRcADc9eQR03gCtblxK+oFDjxhAzbjiiRJAQHEE6n/s=\n\
+        -----END CERTIFICATE-----\n";
+
+    /// PKCS#8 private key matching [`TEST_CERT_PEM`].
+    const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgalCRvP+JKO9Dds0n\n\
+        FOYAHf1uxXGUF/tDP1ZNfs98KsehRANCAASstCEzKS48I9HdjALNpj15aYee/0Z2\n\
+        Z1Ua5cFDEUTh0thOvLdvel6VaprXndvZTuxZS3kuZoKQKB2Lq3XC4rAu\n\
+        -----END PRIVATE KEY-----\n";
+
     /// Build a minimal MqttConfig for testing.
     fn test_mqtt_config(tls: Option<TlsConfig>, port: u16) -> MqttConfig {
         MqttConfig {
@@ -4655,14 +4627,12 @@ mod tests {
     #[test]
     fn test_create_mqtt_options_tls_enabled_default_port_override() {
         // The port override only happens when configure_tls_transport()
-        // succeeds, and that requires a readable, non-empty cert file (no
-        // real PEM parsing happens at this layer -- see
-        // test_configure_tls_transport_valid_ca_file). Use the same
-        // throwaway-file pattern so this test exercises the success path
-        // instead of the missing-cert fallback-to-plaintext path.
+        // succeeds, and native-tls (OpenSSL) parses the CA cert eagerly, so
+        // this needs a real cert rather than a readable placeholder -- see
+        // test_configure_tls_transport_valid_ca_file.
         let dir = tempfile::tempdir().expect("Failed to create temp dir");
         let ca_path = dir.path().join("ca.crt");
-        std::fs::write(&ca_path, b"placeholder").expect("Failed to write CA file");
+        std::fs::write(&ca_path, TEST_CERT_PEM).expect("Failed to write CA file");
 
         let tls = TlsConfig {
             enabled: true,
@@ -4722,21 +4692,11 @@ mod tests {
 
     #[test]
     fn test_configure_tls_transport_valid_ca_file() {
-        // Create a temporary PEM file with a self-signed CA cert
+        // Create a temporary PEM file with a real self-signed CA cert --
+        // native-tls parses it eagerly, so it must actually be valid PEM/DER.
         let dir = tempfile::tempdir().expect("Failed to create temp dir");
         let ca_path = dir.path().join("ca.crt");
-
-        // Write a minimal PEM-encoded certificate (not a real cert, but enough
-        // to test the file-loading path -- the actual TLS handshake will fail at
-        // runtime, but we just want to verify the Transport gets configured).
-        let fake_pem = b"-----BEGIN CERTIFICATE-----\n\
-            MIIBkTCB+wIJALRiMLAh2wG7MA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl\n\
-            c3RjYTAeFw0yNDA0MjEwMDAwMDBaFw0yNTA0MjEwMDAwMDBaMBExDzANBgNVBAMM\n\
-            BnRlc3RjYTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o96Gahm8KzEGRE+HAWKL\n\
-            hJJmbnRqH3UbMYvsIjmAtWBbJdU7FE4WBMhHc9cCq7YTEPHRROAKJ7mMEy0+SCCB\n\
-            AgMBAAEwDQYJKoZIhvcNAQELBQADQQBR0sMEBcZykPk6DfbEbuCHuqSGgkDE\n\
-            -----END CERTIFICATE-----\n";
-        std::fs::write(&ca_path, fake_pem).expect("Failed to write CA file");
+        std::fs::write(&ca_path, TEST_CERT_PEM).expect("Failed to write CA file");
 
         let tls = TlsConfig {
             enabled: true,
@@ -4827,21 +4787,11 @@ mod tests {
         let cert_path = dir.path().join("client.crt");
         let key_path = dir.path().join("client.key");
 
-        // Write minimal PEM content (not real certs, but file-reading will succeed)
-        let fake_pem = b"-----BEGIN CERTIFICATE-----\n\
-            MIIBkTCB+wIJALRiMLAh2wG7MA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl\n\
-            c3RjYTAeFw0yNDA0MjEwMDAwMDBaFw0yNTA0MjEwMDAwMDBaMBExDzANBgNVBAMM\n\
-            BnRlc3RjYTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o96Gahm8KzEGRE+HAWKL\n\
-            hJJmbnRqH3UbMYvsIjmAtWBbJdU7FE4WBMhHc9cCq7YTEPHRROAKJ7mMEy0+SCCB\n\
-            AgMBAAEwDQYJKoZIhvcNAQELBQADQQBR0sMEBcZykPk6DfbEbuCHuqSGgkDE\n\
-            -----END CERTIFICATE-----\n";
-        let fake_key = b"-----BEGIN PRIVATE KEY-----\n\
-            MIIEvAIBADANBgkqhkiG9w0BAQEFAASC\n\
-            -----END PRIVATE KEY-----\n";
-
-        std::fs::write(&ca_path, fake_pem).unwrap();
-        std::fs::write(&cert_path, fake_pem).unwrap();
-        std::fs::write(&key_path, fake_key).unwrap();
+        // native-tls parses both the CA and the client identity eagerly, so
+        // these need to be real cert/key PEM, not placeholder content.
+        std::fs::write(&ca_path, TEST_CERT_PEM).unwrap();
+        std::fs::write(&cert_path, TEST_CERT_PEM).unwrap();
+        std::fs::write(&key_path, TEST_KEY_PEM).unwrap();
 
         let tls = TlsConfig {
             enabled: true,
