@@ -41,7 +41,9 @@ test:unit:
   before_script:
     - !reference [.mr_rust_base, before_script]
     - mkdir -p "${CARGO_HOME}/bin"
-    - command -v cargo-nextest || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME}/bin"
+    # Same PATH-vs-CARGO_HOME mismatch as audit:deps below: check the actual
+    # binary path, not `command -v`, or the cache never gets used.
+    - test -x "${CARGO_HOME}/bin/cargo-nextest" || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME}/bin"
   script:
     - cargo nextest run --locked --profile ci --test-threads 1
   artifacts:
@@ -67,7 +69,11 @@ audit:deps:
   allow_failure: true
   before_script:
     - !reference [.mr_rust_base, before_script]
-    - command -v cargo-audit || cargo install cargo-audit --locked
+    # CARGO_HOME is overridden above (for caching) to a path outside the
+    # image's default PATH, so `command -v cargo-audit` never finds the
+    # cached binary and always re-triggers install -- which then fails
+    # because the binary is already sitting there. Check the actual path.
+    - test -x "${CARGO_HOME}/bin/cargo-audit" || cargo install cargo-audit --locked
   script:
     - cargo audit
 

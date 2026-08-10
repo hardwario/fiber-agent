@@ -43,12 +43,20 @@ impl RumqttcDestination {
         if cfg.tls.enabled {
             let ca = std::fs::read(&cfg.tls.ca_cert_path)
                 .map_err(|e| format!("read CA cert {}: {}", cfg.tls.ca_cert_path, e))?;
-            let tls_cfg = rumqttc::TlsConfiguration::Simple {
-                ca,
-                alpn: None,
-                client_auth: None,
-            };
-            opts.set_transport(Transport::Tls(tls_cfg));
+            // Built manually (rather than TlsConfiguration::SimpleNative) so we can
+            // disable the OS root store — trust only the configured CA.
+            use rumqttc::tokio_native_tls::native_tls::{Certificate, TlsConnector};
+            let mut builder = TlsConnector::builder();
+            builder.disable_built_in_roots(true);
+            let ca_cert = Certificate::from_pem(&ca)
+                .map_err(|e| format!("invalid CA cert {}: {}", cfg.tls.ca_cert_path, e))?;
+            builder.add_root_certificate(ca_cert);
+            let connector = builder
+                .build()
+                .map_err(|e| format!("failed to build TLS connector: {}", e))?;
+            opts.set_transport(Transport::tls_with_config(
+                rumqttc::TlsConfiguration::NativeConnector(connector),
+            ));
         }
         let (client, eventloop) = AsyncClient::new(opts, 100);
 
