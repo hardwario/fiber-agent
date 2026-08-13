@@ -1280,6 +1280,93 @@ pub fn render_pairing_screen(display: &mut St7920, code: &str) -> anyhow::Result
     display.flush()
 }
 
+/// Draw one row of the local action menu / confirm dialog: a `>` cursor and
+/// inverted row when selected, plain text otherwise. Mirrors
+/// [`draw_sensor_row`]'s cursor idiom, minus the temp/status columns a menu
+/// row doesn't have.
+fn draw_menu_row(
+    display: &mut St7920,
+    y: i32,
+    is_selected: bool,
+    label: &str,
+    text_style: &MonoTextStyle<'_, BinaryColor>,
+) {
+    if is_selected {
+        invert_row(display, y);
+        let inverted_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::Off);
+        Text::new(">", Point::new(1, y), inverted_style)
+            .draw(display)
+            .ok();
+        Text::new(label, Point::new(12, y), inverted_style)
+            .draw(display)
+            .ok();
+    } else {
+        Text::new(label, Point::new(12, y), *text_style)
+            .draw(display)
+            .ok();
+    }
+}
+
+/// Render the UP-hold local action menu: Pairing code / Reboot / Shutdown.
+pub fn render_menu_screen(display: &mut St7920, selected: usize) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    Text::with_alignment("MENU", Point::new(64, 9), text_style, Alignment::Center)
+        .draw(display)
+        .ok();
+
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    for (row, label) in crate::libs::display::MENU_ITEMS.iter().enumerate() {
+        draw_menu_row(
+            display,
+            row_baseline(row),
+            row == selected,
+            label,
+            &text_style,
+        );
+    }
+
+    display.flush()
+}
+
+/// Render the Yes/No confirmation shown before a local Reboot/Shutdown.
+/// "No" is listed first (top), matching the safe default cursor position.
+pub fn render_confirm_screen(
+    display: &mut St7920,
+    action: crate::libs::display::LocalAction,
+    yes_selected: bool,
+) -> anyhow::Result<()> {
+    display.clear_buffer();
+
+    let text_style = MonoTextStyle::new(&PROFONT_9_POINT, BinaryColor::On);
+    let line_style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    let title = match action {
+        crate::libs::display::LocalAction::Reboot => "Reboot device?",
+        crate::libs::display::LocalAction::Shutdown => "Shut down device?",
+    };
+    Text::with_alignment(title, Point::new(64, 9), text_style, Alignment::Center)
+        .draw(display)
+        .ok();
+
+    Line::new(Point::new(0, 11), Point::new(127, 11))
+        .into_styled(line_style)
+        .draw(display)
+        .ok();
+
+    draw_menu_row(display, row_baseline(0), !yes_selected, "No", &text_style);
+    draw_menu_row(display, row_baseline(1), yes_selected, "Yes", &text_style);
+
+    display.flush()
+}
+
 /// Render the sensor detail screen showing thresholds and current reading
 pub fn render_sensor_detail(
     display: &mut St7920,

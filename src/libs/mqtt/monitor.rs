@@ -629,23 +629,6 @@ fn sticker_command_timeout(
     out
 }
 
-/// How long to wait for the encrypted audit row of a teardown command (reboot
-/// or power-off) to reach disk. Bounded on purpose: the operator's signed intent
-/// outranks a perfect audit trail, so a wedged storage thread degrades to a WARN
-/// instead of leaving the device up forever.
-const TEARDOWN_AUDIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Grace window between returning from a teardown executor and actually going
-/// down, so the queued SUCCESS ack gets on the wire. See `execute_teardown` for
-/// why this cannot be replaced by waiting on the child process.
-const TEARDOWN_GRACE: Duration = Duration::from_millis(1500);
-
-/// How long to wait for the display thread to confirm the panel is dark. Fits
-/// inside [`TEARDOWN_GRACE`] and is an order of magnitude above the display
-/// loop's 50 ms tick, so a running display always makes it; an absent or wedged
-/// one degrades to a WARN rather than holding the device up.
-const DISPLAY_BLANK_TIMEOUT: Duration = Duration::from_millis(500);
-
 pub struct MqttMonitor {
     thread_handle: Option<JoinHandle<()>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -3468,55 +3451,6 @@ impl MqttMonitor {
         }
     }
 
-    /// Take the device down — the shared body of reboot and power-off.
-    ///
-    /// Both lose the authorization record: it lives in `/tmp/fiber_audit.db` and
-    /// the unit runs with `PrivateTmp=true`, so a reboot wipes it exactly as a
-    /// power-off does. The row in the encrypted, hash-chained `audit_log` is
-    /// therefore the only surviving evidence that the gap in monitoring was
-    /// authorized and by whom, which is why this waits for it to land.
-    ///
-    /// Write the authorization record for a command that interrupts monitoring,
-    /// and block until it is durable.
-    ///
-    /// Shared by reboot and standby. `label` is only used for log prefixes.
-    ///
-    /// Never fails the caller: an unaudited teardown is bad, but refusing to act
-    /// on a signed command because the audit database is unhappy would leave a
-    /// device that cannot be stopped at all.
-    fn audit_and_flush(
-        label: &str,
-        audit_event: &'static str,
-        reason: &str,
-        requested_by: &str,
-        storage_handle: &Option<crate::libs::storage::StorageHandle>,
-    ) {
-        let Some(storage) = storage_handle else {
-            eprintln!("[MQTT Monitor] WARN: no storage handle — {label} will not be audited");
-            return;
-        };
-
-        let details = format!(
-            r#"{{"reason":{},"requested_by":{}}}"#,
-            serde_json::Value::String(reason.to_string()),
-            serde_json::Value::String(requested_by.to_string()),
-        );
-        if let Err(e) = storage.log_audit_event(
-            audit_event.to_string(),
-            Some("audit_log".to_string()),
-            Some(details),
-        ) {
-            eprintln!("[MQTT Monitor] WARN: failed to queue {label} audit row: {e}");
-        }
-        // The storage worker is a single thread draining one FIFO channel,
-        // so a FlushSync reply also proves the audit row queued above was
-        // committed and checkpointed. It is also what keeps unwritten
-        // temperature samples from being lost across the restart.
-        if let Err(e) = storage.flush_sync(TEARDOWN_AUDIT_FLUSH_TIMEOUT) {
-            eprintln!("[MQTT Monitor] WARN: {label} audit row may not be durable: {e}");
-        }
-    }
-
     /// Put the device into deep standby — what a Viewer power-off now does.
     ///
     /// It used to run `systemctl poweroff`. That halts the BCM2711 while the
@@ -3563,7 +3497,7 @@ impl MqttMonitor {
             )
         })?;
 
-        Self::audit_and_flush(
+        crate::libs::system_control::audit_and_flush(
             "standby",
             "POWER_OFF",
             &reason,
@@ -3592,7 +3526,9 @@ impl MqttMonitor {
         }
 
         crate::libs::display::blank::request_blank();
-        if !crate::libs::display::blank::wait_until_blank(DISPLAY_BLANK_TIMEOUT) {
+        if !crate::libs::display::blank::wait_until_blank(
+            crate::libs::system_control::DISPLAY_BLANK_TIMEOUT,
+        ) {
             eprintln!("[standby] WARN: display did not confirm blank — continuing anyway");
         }
 
@@ -3602,69 +3538,6 @@ impl MqttMonitor {
             "[standby] Device is in standby; waiting for PoE (resume_on_dc={})",
             standby::config().resume_on_dc
         );
-        Ok(())
-    }
-
-    /// `verb` is the systemctl subcommand ("reboot"/"poweroff") and doubles as
-    /// the worker-thread name and log prefix.
-    fn execute_teardown(
-        verb: &'static str,
-        audit_event: &'static str,
-        reason: String,
-        requested_by: String,
-        storage_handle: &Option<crate::libs::storage::StorageHandle>,
-    ) -> Result<(), String> {
-        eprintln!(
-            "[MQTT Monitor] Device {} requested by {}: {}",
-            verb, requested_by, reason
-        );
-
-        Self::audit_and_flush(verb, audit_event, &reason, &requested_by, storage_handle);
-
-        // Spawn and return immediately; do NOT wait on the child here. The
-        // SUCCESS ack for a teardown command is only *queued* at this point:
-        // `AsyncClient::publish` hands the packet to rumqttc's channel and it
-        // reaches the socket the next time `eventloop.poll()` runs — which
-        // cannot happen until this function returns, because the whole
-        // ConfigConfirm branch runs inside the poll arm of a `tokio::select!`.
-        // Blocking here would mean the signer never learns the command worked.
-        // `--no-block` for the same reason inside the thread: without it,
-        // systemctl waits for the job to finish and may never return.
-        std::thread::Builder::new()
-            .name(verb.to_string())
-            .spawn(move || {
-                // Blank inside the grace window rather than extending it: the
-                // panel goes dark while the ack is still on its way out, so the
-                // device stops showing readings it is no longer taking. The
-                // deadline keeps the ack's full window intact no matter how fast
-                // the display confirms.
-                let deadline = std::time::Instant::now() + TEARDOWN_GRACE;
-                crate::libs::display::blank::request_blank();
-                if !crate::libs::display::blank::wait_until_blank(DISPLAY_BLANK_TIMEOUT) {
-                    eprintln!("[{verb}] WARN: display did not confirm blank — continuing anyway");
-                }
-                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
-                match std::process::Command::new("systemctl")
-                    .args([verb, "--no-block"])
-                    .status()
-                {
-                    Ok(status) if status.success() => {}
-                    Ok(status) => {
-                        // A device that stays up must not stay dark.
-                        crate::libs::display::blank::cancel_blank();
-                        eprintln!(
-                            "[{verb}] systemctl {verb} exited with {status} — device stays up"
-                        );
-                    }
-                    Err(e) => {
-                        crate::libs::display::blank::cancel_blank();
-                        eprintln!(
-                            "[{verb}] failed to execute systemctl {verb}: {e} — device stays up"
-                        );
-                    }
-                }
-            })
-            .map_err(|e| format!("Failed to spawn {verb} thread: {e}"))?;
         Ok(())
     }
 
@@ -3762,7 +3635,13 @@ impl MqttMonitor {
             MqttCommand::RestartApplication {
                 reason,
                 requested_by,
-            } => Self::execute_teardown("reboot", "REBOOT", reason, requested_by, storage_handle),
+            } => crate::libs::system_control::execute_teardown(
+                "reboot",
+                "REBOOT",
+                reason,
+                requested_by,
+                storage_handle,
+            ),
             MqttCommand::PowerOffDevice {
                 reason,
                 requested_by,
