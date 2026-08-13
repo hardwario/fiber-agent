@@ -71,7 +71,17 @@ fn handle(ev: &BleEvent, display: &SharedDisplayStateHandle, pairing: Option<&Pa
                 p.set_ble_active(true);
             }
             if let Ok(mut d) = display.lock() {
-                d.show_ble_connected(addr);
+                // A client connecting is a notification, not a navigation. If the
+                // operator is reading something they opened at the panel, leave it
+                // alone — the connection is logged either way.
+                if d.current_screen.is_operator_owned() {
+                    eprintln!(
+                        "[BleEventRouter] Client connected ({}) — leaving the operator's screen up",
+                        addr
+                    );
+                } else {
+                    d.show_ble_connected(addr);
+                }
             }
         }
         BleEvent::ClientDisconnected => {
@@ -79,7 +89,11 @@ fn handle(ev: &BleEvent, display: &SharedDisplayStateHandle, pairing: Option<&Pa
                 p.set_ble_active(false);
             }
             if let Ok(mut d) = display.lock() {
-                d.show_sensor_overview();
+                // Only dismiss our own screen. Returning to the overview from
+                // anything else would close a screen this router never opened.
+                if d.current_screen.is_ble_screen() {
+                    d.show_sensor_overview();
+                }
             }
         }
         BleEvent::AuthSuccess | BleEvent::AuthFailed => {
@@ -107,5 +121,105 @@ fn handle(ev: &BleEvent, display: &SharedDisplayStateHandle, pairing: Option<&Pa
         BleEvent::LanFailed { error } => {
             eprintln!("[BleEventRouter] LAN configuration failed: {}", error);
         }
+    }
+}
+
+#[cfg(test)]
+mod screen_ownership_tests {
+    use super::*;
+    use crate::libs::display::{DisplayState, Screen};
+    use std::sync::Mutex;
+
+    fn display_showing(f: impl FnOnce(&mut DisplayState)) -> SharedDisplayStateHandle {
+        let handle = Arc::new(Mutex::new(DisplayState::new()));
+        f(&mut handle.lock().unwrap());
+        handle
+    }
+
+    #[test]
+    fn a_client_connect_does_not_steal_the_system_info_screen() {
+        // An operator held DOWN for 2s to read system info. A BLE client
+        // connecting is not a reason to take that away.
+        let display = display_showing(|d| d.show_system_info());
+
+        handle(
+            &BleEvent::ClientConnected {
+                addr: "AA:BB:CC:DD:EE:01".to_string(),
+            },
+            &display,
+            None,
+        );
+
+        assert!(matches!(
+            display.lock().unwrap().current_screen,
+            Screen::SystemInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn a_client_connect_does_not_steal_the_local_action_menu() {
+        let display = display_showing(|d| d.show_menu());
+
+        handle(
+            &BleEvent::ClientConnected {
+                addr: "AA:BB:CC:DD:EE:01".to_string(),
+            },
+            &display,
+            None,
+        );
+
+        assert!(matches!(
+            display.lock().unwrap().current_screen,
+            Screen::Menu { .. }
+        ));
+    }
+
+    #[test]
+    fn a_client_connect_over_the_idle_overview_still_shows_the_ble_screen() {
+        // The useful half of the behaviour must survive the fix.
+        let display = display_showing(|d| d.show_sensor_overview());
+
+        handle(
+            &BleEvent::ClientConnected {
+                addr: "AA:BB:CC:DD:EE:01".to_string(),
+            },
+            &display,
+            None,
+        );
+
+        assert!(matches!(
+            display.lock().unwrap().current_screen,
+            Screen::BleConnected { .. }
+        ));
+    }
+
+    #[test]
+    fn a_disconnect_returns_to_the_overview_from_a_ble_screen() {
+        let display = display_showing(|d| d.show_ble_connected("AA:BB:CC:DD:EE:01"));
+
+        handle(&BleEvent::ClientDisconnected, &display, None);
+
+        assert!(matches!(
+            display.lock().unwrap().current_screen,
+            Screen::SensorOverview { .. }
+        ));
+    }
+
+    #[test]
+    fn a_disconnect_does_not_close_the_operators_system_info_screen() {
+        // The reported defect: a device ageing out of the scan cache closed a
+        // screen the button thread has no timeout for, so it looked like the
+        // panel exited by itself.
+        let display = display_showing(|d| d.show_system_info());
+
+        handle(&BleEvent::ClientDisconnected, &display, None);
+
+        assert!(
+            matches!(
+                display.lock().unwrap().current_screen,
+                Screen::SystemInfo { .. }
+            ),
+            "a BLE disconnect must only dismiss a BLE screen"
+        );
     }
 }
