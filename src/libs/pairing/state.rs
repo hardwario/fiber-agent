@@ -141,11 +141,19 @@ impl PairingStateMachine {
         eprintln!("[PairingState] Pairing completed, returned to inactive");
     }
 
-    /// Cancel pairing mode
-    pub fn cancel(&mut self) {
+    /// Cancel pairing mode.
+    ///
+    /// Returns whether anything was actually cancelled. Callers use that to
+    /// decide whether to touch the LCD: `cancel_pairing()` is sent
+    /// unconditionally from the BLE event router, so a cancel that cancelled
+    /// nothing must not be allowed to wipe a screen the operator opened.
+    pub fn cancel(&mut self) -> bool {
         if self.is_active() {
             eprintln!("[PairingState] Pairing cancelled");
             self.state = PairingState::Inactive;
+            true
+        } else {
+            false
         }
     }
 
@@ -300,5 +308,21 @@ mod tests {
         // Both flags coexist; no cross-pollination.
         assert!(sm.ble_active());
         assert!(sm.is_waiting());
+    }
+
+    #[test]
+    fn cancelling_an_active_session_reports_a_change() {
+        let mut sm = PairingStateMachine::new();
+        sm.start_pairing("CODE12".to_string());
+        assert!(sm.cancel(), "cancelling a live session is a state change");
+        assert!(!sm.is_active());
+    }
+
+    #[test]
+    fn cancelling_when_inactive_reports_no_change() {
+        // The caller uses this to decide whether to touch the LCD: a cancel that
+        // cancelled nothing must not be allowed to wipe the operator's screen.
+        let mut sm = PairingStateMachine::new();
+        assert!(!sm.cancel(), "there was nothing to cancel");
     }
 }

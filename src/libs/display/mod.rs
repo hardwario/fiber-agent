@@ -90,6 +90,7 @@ pub enum LocalAction {
 }
 
 pub mod blank;
+pub mod button_fsm;
 pub mod buttons;
 pub mod font;
 pub mod icons;
@@ -185,6 +186,47 @@ impl Screen {
                 | Screen::Menu { .. }
                 | Screen::Confirm { .. }
         )
+    }
+
+    /// One of the BLE provisioning-feedback screens.
+    ///
+    /// These are owned by the BLE event router: it put them up, so it is the only
+    /// thing entitled to take them down again.
+    pub fn is_ble_screen(&self) -> bool {
+        matches!(
+            self,
+            Screen::BleConnected { .. }
+                | Screen::BleProvisioning { .. }
+                | Screen::BleWifiOk { .. }
+                | Screen::BleWifiFail { .. }
+        )
+    }
+
+    /// A screen the operator deliberately navigated to at the front panel.
+    ///
+    /// Unsolicited notifications from other threads must not replace one of
+    /// these: a passing BLE device is not a reason to close the system-info page
+    /// or the Reboot/Shutdown menu somebody is reading. Written out variant by
+    /// variant rather than with a wildcard, so a new screen has to make an
+    /// explicit choice here instead of silently defaulting to "stealable".
+    pub fn is_operator_owned(&self) -> bool {
+        match self {
+            // Selection mode is a deliberate navigation; the idle overview is not.
+            Screen::SensorOverview {
+                selected_sensor, ..
+            } => selected_sensor.is_some(),
+            Screen::SensorDetail { .. }
+            | Screen::LoRaWANSensorDetail { .. }
+            | Screen::QrCodeConfig
+            | Screen::SystemInfo { .. }
+            | Screen::Pairing { .. }
+            | Screen::Menu { .. }
+            | Screen::Confirm { .. } => true,
+            Screen::BleConnected { .. }
+            | Screen::BleProvisioning { .. }
+            | Screen::BleWifiOk { .. }
+            | Screen::BleWifiFail { .. } => false,
+        }
     }
 
     /// Check if this is a pairing screen
@@ -1572,5 +1614,34 @@ mod menu_tests {
             yes_selected: true
         }
         .is_special_screen());
+    }
+
+    #[test]
+    fn the_idle_overview_is_not_operator_owned() {
+        // Nothing is being read, so a BLE notification is free to take the panel.
+        assert!(!Screen::SensorOverview {
+            page: 0,
+            selected_sensor: None
+        }
+        .is_operator_owned());
+    }
+
+    #[test]
+    fn selection_mode_is_operator_owned() {
+        // Same variant as the idle overview, but a cursor is up: somebody is
+        // mid-navigation and must not be interrupted.
+        assert!(Screen::SensorOverview {
+            page: 0,
+            selected_sensor: Some(2)
+        }
+        .is_operator_owned());
+    }
+
+    #[test]
+    fn ble_screens_are_not_operator_owned() {
+        assert!(!Screen::BleConnected {
+            addr: "AA:BB:CC:DD:EE:01".to_string()
+        }
+        .is_operator_owned());
     }
 }

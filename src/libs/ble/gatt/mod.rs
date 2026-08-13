@@ -186,6 +186,29 @@ impl Drop for BleMonitor {
     }
 }
 
+/// Whether a `DeviceAdded` event is one of *our* GATT clients connecting.
+///
+/// `adapter.events()` fires `DeviceAdded` for every Device1 object BlueZ creates,
+/// which includes everything discovery merely sees — and the EYE monitor scans
+/// continuously on this same adapter. So a device counts as a client only if
+/// BlueZ reports it actually connected, and only on the transition (a repeat
+/// event for the address we already track is not a new session).
+fn should_accept_connect(
+    is_connected: bool,
+    tracked: Option<bluer::Address>,
+    addr: bluer::Address,
+) -> bool {
+    is_connected && tracked != Some(addr)
+}
+
+/// Whether a `DeviceRemoved` event is our client disconnecting.
+///
+/// Only the address confirmed connected may end the session; anything else is a
+/// device ageing out of the scan cache, which must not tear down a live client.
+fn should_accept_disconnect(tracked: Option<bluer::Address>, addr: bluer::Address) -> bool {
+    tracked == Some(addr)
+}
+
 /// Async GATT server entry point — analogue of run_server() in ble-fiber.
 #[allow(clippy::too_many_arguments)]
 async fn run_server(
@@ -342,6 +365,17 @@ async fn run_server(
     let events = adapter.events().await?;
     pin_mut!(events);
 
+    // `adapter.events()` reports every `DeviceAdded`/`DeviceRemoved` on this
+    // adapter — including devices the EYE monitor's independent scan merely
+    // discovers on the same physical radio (see libs/eye/monitor.rs). Those
+    // are never connected to *our* GATT server, so treating every such event
+    // as a client connect/disconnect (as this loop used to) fires spurious
+    // pairing cancellations and, worse, resets an actually-connected client's
+    // session (shell, sticker/eye-tag enrollment) whenever an unrelated
+    // nearby phone appears or ages out of BlueZ's scan cache. Track the one
+    // address that is genuinely connected to us and scope handling to it.
+    let mut connected_addr: Option<bluer::Address> = None;
+
     loop {
         if shutdown_flag.load(Ordering::Relaxed) {
             break;
@@ -365,6 +399,18 @@ async fn run_server(
                 use bluer::AdapterEvent;
                 match event {
                     AdapterEvent::DeviceAdded(addr) => {
+                        // Discovery (ours or the EYE monitor's, sharing this
+                        // adapter) also creates Device1 objects, so confirm
+                        // this one is actually connected to our GATT server
+                        // before treating it as a client.
+                        let is_connected = match adapter.device(addr) {
+                            Ok(d) => d.is_connected().await.unwrap_or(false),
+                            Err(_) => false,
+                        };
+                        if !should_accept_connect(is_connected, connected_addr, addr) {
+                            continue;
+                        }
+                        connected_addr = Some(addr);
                         let addr_str = addr.to_string();
                         eprintln!("[BleMonitor] Client connected: {}", addr_str);
                         {
@@ -374,6 +420,14 @@ async fn run_server(
                         let _ = event_tx_xbeam.send(BleEvent::ClientConnected { addr: addr_str });
                     }
                     AdapterEvent::DeviceRemoved(addr) => {
+                        // Only the address we confirmed as connected above may
+                        // trigger a disconnect — otherwise an unrelated device
+                        // aging out of the EYE monitor's scan cache would reset
+                        // (or outright cancel) a session that is still live.
+                        if !should_accept_disconnect(connected_addr, addr) {
+                            continue;
+                        }
+                        connected_addr = None;
                         eprintln!("[BleMonitor] Client disconnected: {}", addr);
                         let mut st = state.lock().await;
                         st.authenticated.store(false, Ordering::SeqCst);
@@ -408,4 +462,53 @@ async fn run_server(
     drop(adv_handle);
     drop(app_handle);
     Ok(())
+}
+
+#[cfg(test)]
+mod client_scoping_tests {
+    use super::{should_accept_connect, should_accept_disconnect};
+    use bluer::Address;
+
+    const CLIENT: Address = Address::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01]);
+    const OTHER: Address = Address::new([0x7C, 0xD9, 0xF4, 0x13, 0x10, 0xDE]);
+
+    #[test]
+    fn a_merely_discovered_device_is_not_a_client() {
+        // The EYE monitor scans on the same adapter, so BlueZ creates a Device1
+        // object — and therefore a DeviceAdded event — for every tag and phone
+        // in range. None of them is connected to our GATT server.
+        assert!(!should_accept_connect(false, None, OTHER));
+    }
+
+    #[test]
+    fn a_connected_device_is_a_client() {
+        assert!(should_accept_connect(true, None, CLIENT));
+    }
+
+    #[test]
+    fn a_repeat_event_for_the_tracked_client_is_not_a_new_connection() {
+        assert!(!should_accept_connect(true, Some(CLIENT), CLIENT));
+    }
+
+    #[test]
+    fn another_genuinely_connected_device_replaces_the_tracked_client() {
+        assert!(should_accept_connect(true, Some(CLIENT), OTHER));
+    }
+
+    #[test]
+    fn an_unrelated_device_ageing_out_of_the_scan_cache_is_not_a_disconnect() {
+        // The defect this closes: an unrelated DeviceRemoved used to tear down a
+        // live session and, via the BLE event router, wipe the front panel.
+        assert!(!should_accept_disconnect(Some(CLIENT), OTHER));
+    }
+
+    #[test]
+    fn the_tracked_client_going_away_is_a_disconnect() {
+        assert!(should_accept_disconnect(Some(CLIENT), CLIENT));
+    }
+
+    #[test]
+    fn a_removal_with_no_client_tracked_is_not_a_disconnect() {
+        assert!(!should_accept_disconnect(None, CLIENT));
+    }
 }

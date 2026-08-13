@@ -267,13 +267,22 @@ impl PairingMonitor {
         state: &SharedPairingStateHandle,
         display_state: &SharedDisplayStateHandle,
     ) {
-        eprintln!("[PairingMonitor] Cancelling pairing mode");
-
         // Update state machine
-        {
+        let was_active = {
             let mut state_lock = state.lock().unwrap_or_else(|e| e.into_inner());
-            state_lock.cancel();
+            state_lock.cancel()
+        };
+
+        if !was_active {
+            // Nothing to cancel. Say so and leave the panel alone: this arrives
+            // unconditionally from the BLE event router's ClientConnected arm, and
+            // wiping the screen here would close a system-info or menu screen the
+            // operator had just opened by holding a button.
+            eprintln!("[PairingMonitor] Cancel ignored: no pairing was active");
+            return;
         }
+
+        eprintln!("[PairingMonitor] Cancelling pairing mode");
 
         // Return to sensor overview
         if let Ok(mut display) = display_state.lock() {
@@ -388,3 +397,49 @@ impl Drop for PairingMonitor {
 
 // Re-exports for convenience
 pub use messages::{PairingError, PairingRequest, PairingResponse};
+
+#[cfg(test)]
+mod cancel_screen_tests {
+    use super::*;
+    use crate::libs::display::{DisplayState, Screen};
+
+    fn handles() -> (SharedPairingStateHandle, SharedDisplayStateHandle) {
+        (
+            Arc::new(Mutex::new(PairingStateMachine::new())),
+            Arc::new(Mutex::new(DisplayState::new())),
+        )
+    }
+
+    #[test]
+    fn a_cancel_with_nothing_to_cancel_leaves_the_operators_screen_alone() {
+        // BleEvent::ClientConnected calls cancel_pairing() unconditionally, so a
+        // phantom connect used to wipe whatever the operator was reading — even
+        // though no pairing was ever active.
+        let (pairing, display) = handles();
+        display.lock().unwrap().show_system_info();
+
+        PairingMonitor::handle_cancel_pairing(&pairing, &display);
+
+        assert!(
+            matches!(
+                display.lock().unwrap().current_screen,
+                Screen::SystemInfo { .. }
+            ),
+            "a no-op cancel must not touch the screen"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_live_pairing_returns_to_the_overview() {
+        let (pairing, display) = handles();
+        pairing.lock().unwrap().start_pairing("CODE12".to_string());
+        display.lock().unwrap().show_pairing("CODE12".to_string());
+
+        PairingMonitor::handle_cancel_pairing(&pairing, &display);
+
+        assert!(matches!(
+            display.lock().unwrap().current_screen,
+            Screen::SensorOverview { .. }
+        ));
+    }
+}
