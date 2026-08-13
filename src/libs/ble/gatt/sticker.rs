@@ -37,6 +37,12 @@ fn default_join_eui() -> String {
 #[serde(deny_unknown_fields)]
 pub struct StickerAddRequest {
     pub deveui: String,
+    /// Vendor device-profile number off the sticker's label. The manager app
+    /// does not send one today (it reads the credentials over NFC, not off the
+    /// QR), so this stays optional — `deny_unknown_fields` above means a field
+    /// the firmware does not declare would reject the whole enrolment.
+    #[serde(default)]
+    pub profile_id: Option<u32>,
     #[serde(default = "default_join_eui")]
     pub joineui: String,
     pub appkey: String,
@@ -160,7 +166,11 @@ pub fn prepare(req: &StickerAddRequest) -> Result<PreparedAdd, String> {
         dev_eui,
         name,
         serial_number,
-        activation: ActivationMode::Otaa { app_key, join_eui },
+        activation: ActivationMode::Otaa {
+            app_key,
+            join_eui,
+            profile_id: req.profile_id,
+        },
     })
 }
 
@@ -188,6 +198,7 @@ mod tests {
             appkey: "00112233445566778899AABBCCDDEEFF".to_string(),
             name: "Fridge 1".to_string(),
             serial_number: "SN-001".to_string(),
+            profile_id: None,
         }
     }
 
@@ -198,7 +209,9 @@ mod tests {
         assert_eq!(p.name, "Fridge 1");
         assert_eq!(p.serial_number, "SN-001");
         match p.activation {
-            ActivationMode::Otaa { app_key, join_eui } => {
+            ActivationMode::Otaa {
+                app_key, join_eui, ..
+            } => {
                 assert_eq!(app_key, "00112233445566778899aabbccddeeff");
                 assert_eq!(join_eui, "8899aabbccddeeff");
             }

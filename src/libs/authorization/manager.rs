@@ -490,11 +490,22 @@ impl AuthorizationManager {
             "remove_lorawan_sticker" => "set_lorawan_sensor_config", // reuse same permission
             "add_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
             "remove_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
-            "set_eye_recording" => "set_lorawan_sensor_config",   // reuse: sensor config change
+            // system#7. Reuses the sticker-management permission — a signer
+            // certificate embeds a fixed permission list at issuance, so a new
+            // one would invalidate every certificate already provisioned across
+            // the fleet, and it raises no real bar: whoever can already register
+            // an external gateway can already decide which radios feed this
+            // device's ChirpStack. The viewer's CommandSigner maps it the same
+            // way.
+            "set_lorawan_cluster" => "set_lorawan_sensor_config",
+            // Switching the subsystem on/off is a gateway-scoped config change, so
+            // it takes the same permission as the tag operations it gates.
+            "set_eye_enabled" => "set_lorawan_sensor_config",
+            "set_eye_recording" => "set_lorawan_sensor_config", // reuse: sensor config change
             "download_eye_history" => "set_lorawan_sensor_config", // reuse: sensor data op
-            "add_eye_tag" => "set_lorawan_sensor_config",         // reuse: sensor config change
-            "remove_eye_tag" => "set_lorawan_sensor_config",      // reuse: sensor config change
-            "detect_eye_tag" => "set_lorawan_sensor_config",      // reuse: sensor data op
+            "add_eye_tag" => "set_lorawan_sensor_config",       // reuse: sensor config change
+            "remove_eye_tag" => "set_lorawan_sensor_config",    // reuse: sensor config change
+            "detect_eye_tag" => "set_lorawan_sensor_config",    // reuse: sensor data op
             // system#6. Not a registration — it only widens what this gateway
             // listens for — but it is still a fleet-scoped write, so it takes the
             // same permission as adding a tag rather than a read permission.
@@ -705,6 +716,13 @@ impl AuthorizationManager {
                         dev_eui
                     ),
                 }
+            }
+            "set_eye_enabled" => {
+                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                format!(
+                    "{} the EYE BLE tag subsystem",
+                    if enabled { "Enable" } else { "Disable" }
+                )
             }
             "set_eye_recording" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -1130,6 +1148,13 @@ impl AuthorizationManager {
                     .params
                     .get("critical_high")
                     .and_then(|v| v.as_f64());
+                // Absent means armed: an older viewer does not send the flag and
+                // must keep the behaviour it has always had.
+                let enabled = challenge
+                    .params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 Ok(MqttCommand::SetLoRaWANFieldThreshold {
                     dev_eui,
                     field,
@@ -1137,6 +1162,7 @@ impl AuthorizationManager {
                     warning_low,
                     warning_high,
                     critical_high,
+                    enabled,
                 })
             }
             "delete_lorawan_field_threshold" => {
@@ -1285,7 +1311,30 @@ impl AuthorizationManager {
                                 "join_eui must be exactly 16 hex characters".to_string(),
                             ));
                         }
-                        crate::libs::mqtt::messages::ActivationMode::Otaa { app_key, join_eui }
+                        // Vendor profile from the QR label, when the viewer read
+                        // one. Absent for manual entry — the operator never sees
+                        // a profile number, so there is nothing to type.
+                        let profile_id = match challenge.params.get("profile_id") {
+                            None | Some(serde_json::Value::Null) => None,
+                            Some(v) => {
+                                let n = v.as_u64().ok_or_else(|| {
+                                    AuthError::InvalidCommand(
+                                        "profile_id must be a number".to_string(),
+                                    )
+                                })?;
+                                if !(1..=99).contains(&n) {
+                                    return Err(AuthError::InvalidCommand(
+                                        "profile_id must be between 1 and 99".to_string(),
+                                    ));
+                                }
+                                Some(n as u32)
+                            }
+                        };
+                        crate::libs::mqtt::messages::ActivationMode::Otaa {
+                            app_key,
+                            join_eui,
+                            profile_id,
+                        }
                     }
                     "abp" => {
                         let devaddr = challenge
@@ -1381,6 +1430,60 @@ impl AuthorizationManager {
                     .map_err(AuthError::InvalidCommand)?;
 
                 Ok(MqttCommand::RemoveExternalGateway { gateway_eui })
+            }
+            "set_lorawan_cluster" => {
+                // system#7 Goal 2. Validation belongs here because this is the
+                // only place an MqttCommand is constructed from a challenge, so
+                // the dispatch can treat the fields as already checked — the
+                // same split AddExternalGateway uses for its EUI.
+                let role = challenge
+                    .params
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing role".to_string()))?;
+
+                let str_param = |k: &str| challenge.params.get(k).and_then(|v| v.as_str());
+                let port = match challenge.params.get("leader_port") {
+                    None => None,
+                    Some(v) => Some(v.as_u64().filter(|p| *p <= u16::MAX as u64).ok_or_else(
+                        || {
+                            AuthError::InvalidCommand(
+                                "leader_port must be a port number".to_string(),
+                            )
+                        },
+                    )? as u16),
+                };
+
+                let arm = crate::libs::lorawan::cluster::validate_arm(
+                    role,
+                    str_param("leader_host"),
+                    port,
+                    str_param("leader_ca"),
+                    str_param("leader_ca_fingerprint"),
+                    str_param("peer_username"),
+                    str_param("peer_password"),
+                    str_param("peer_gateway_eui"),
+                )
+                .map_err(AuthError::InvalidCommand)?;
+
+                Ok(MqttCommand::SetLorawanCluster {
+                    role: arm.role.as_str().to_string(),
+                    leader_host: arm.leader_host,
+                    leader_port: arm.leader_port,
+                    leader_ca: arm.leader_ca_pem,
+                    leader_ca_fingerprint: arm.leader_ca_fingerprint,
+                    peer_username: arm.peer_username,
+                    peer_password: arm.peer_password,
+                    peer_gateway_eui: arm.peer_gateway_eui,
+                })
+            }
+            "set_eye_enabled" => {
+                let enabled = challenge
+                    .params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .ok_or_else(|| AuthError::InvalidCommand("Missing enabled".to_string()))?;
+                Ok(MqttCommand::SetEyeEnabled { enabled })
             }
             "set_eye_recording" => {
                 let mac = challenge
@@ -1630,6 +1733,110 @@ mod tests {
         );
 
         assert!(manager.command_type_to_permission("unknown").is_err());
+    }
+
+    /// Every command `build_command_from_challenge` knows how to build must also
+    /// have a permission, because `process_config_request` asks for the permission
+    /// **first** — step 2, before the signature is even verified. A command missing
+    /// from that table is rejected with "Unknown command type" and no challenge is
+    /// ever created, which makes its handler, and its whole feature, unreachable.
+    ///
+    /// That is exactly what happened to `set_lorawan_cluster` (system#7): the
+    /// handler, the dispatch, the persistent state and the UI all shipped, and the
+    /// device refused the request before any of it ran. Nothing caught it because
+    /// every existing test entered through `build_command_from_challenge`, which
+    /// sits downstream of the check.
+    ///
+    /// Keep this list in step with the match arms of
+    /// `build_command_from_challenge`. Adding an arm there without adding it here
+    /// is the bug this test exists to catch — so extend the list, never delete
+    /// from it to make the test pass.
+    #[test]
+    fn every_buildable_command_has_a_permission() {
+        let manager = create_test_manager();
+
+        // The command_type values `build_command_from_challenge` matches on.
+        // "otaa"/"abp" are deliberately absent: they are the nested activation
+        // arms inside `add_lorawan_sticker`, not command types of their own.
+        const BUILDABLE: &[&str] = &[
+            "set_threshold",
+            "set_sensor_name",
+            "set_sensor_location",
+            "restart_application",
+            "power_off",
+            "set_interval",
+            "set_system_info_interval",
+            "add_signer",
+            "remove_signer",
+            "update_signer",
+            "set_device_label",
+            "set_led_brightness",
+            "set_screen_brightness",
+            "set_screen_timeout",
+            "set_display_lines",
+            "set_buzzer_volume",
+            "set_network_config",
+            "set_lorawan_sensor_config",
+            "set_lorawan_field_threshold",
+            "delete_lorawan_field_threshold",
+            "set_sticker_config",
+            "send_sticker_raw",
+            "set_eye_field_threshold",
+            "delete_eye_field_threshold",
+            "sticker_reboot",
+            "sticker_device_reset",
+            "sticker_reset_counters",
+            "sticker_clock_sync",
+            "add_lorawan_sticker",
+            "remove_lorawan_sticker",
+            "add_external_gateway",
+            "remove_external_gateway",
+            "set_lorawan_cluster",
+            "set_eye_enabled",
+            "set_eye_recording",
+            "download_eye_history",
+            "add_eye_tag",
+            "set_eye_known_tags",
+            "remove_eye_tag",
+            "detect_eye_tag",
+        ];
+
+        let missing: Vec<&str> = BUILDABLE
+            .iter()
+            .copied()
+            .filter(|cmd| manager.command_type_to_permission(cmd).is_err())
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these commands can be built from a challenge but have no permission, \
+             so process_config_request rejects them before a challenge exists: {:?}",
+            missing
+        );
+    }
+
+    #[test]
+    fn cluster_command_reuses_the_sticker_management_permission() {
+        // Not its own permission: a signer certificate embeds a fixed permission
+        // list at issuance, so a new one would invalidate every certificate
+        // already provisioned across the fleet. The viewer's CommandSigner maps
+        // it to Permission.SET_LORAWAN_SENSOR_CONFIG for the same reason; the two
+        // sides must agree or the device denies a correctly signed command.
+        let manager = create_test_manager();
+        assert_eq!(
+            manager
+                .command_type_to_permission("set_lorawan_cluster")
+                .unwrap(),
+            "set_lorawan_sensor_config"
+        );
+        assert_eq!(
+            manager
+                .command_type_to_permission("set_lorawan_cluster")
+                .unwrap(),
+            manager
+                .command_type_to_permission("add_external_gateway")
+                .unwrap()
+        );
     }
 
     #[test]

@@ -94,6 +94,13 @@ pub enum StorageMessage {
         dev_eui: String,
         reply: Sender<StorageResult<i64>>,
     },
+    /// Recent stored uplink timestamps for a sticker, for deriving its cadence
+    /// across a restart.
+    GetRecentStickerUplinks {
+        dev_eui: String,
+        limit: usize,
+        reply: Sender<StorageResult<Vec<i64>>>,
+    },
     /// Advance the export cursor for a `(broker_id, stream)` pair.
     AdvanceExportCursor {
         broker_id: String,
@@ -308,6 +315,29 @@ impl StorageHandle {
         rx.recv().map_err(|e| {
             crate::libs::storage::error::StorageError::ChannelError(format!(
                 "Failed to receive bump_provisioning_epoch reply: {}",
+                e
+            ))
+        })?
+    }
+
+    /// The most recent stored uplink timestamps for `dev_eui`, newest first.
+    pub fn recent_sticker_uplinks(&self, dev_eui: String, limit: usize) -> StorageResult<Vec<i64>> {
+        let (tx, rx) = bounded(1);
+        self.sender
+            .send(StorageMessage::GetRecentStickerUplinks {
+                dev_eui,
+                limit,
+                reply: tx,
+            })
+            .map_err(|e| {
+                crate::libs::storage::error::StorageError::ChannelError(format!(
+                    "Failed to send get_recent_sticker_uplinks: {}",
+                    e
+                ))
+            })?;
+        rx.recv().map_err(|e| {
+            crate::libs::storage::error::StorageError::ChannelError(format!(
+                "Failed to receive get_recent_sticker_uplinks reply: {}",
                 e
             ))
         })?
@@ -1005,6 +1035,18 @@ impl StorageThread {
 
                     StorageMessage::GetProvisioningEpoch { dev_eui, reply } => {
                         let _ = reply.send(StorageWriter::get_provisioning_epoch(&conn, &dev_eui));
+                    }
+
+                    StorageMessage::GetRecentStickerUplinks {
+                        dev_eui,
+                        limit,
+                        reply,
+                    } => {
+                        let _ = reply.send(
+                            crate::libs::storage::reader::StorageReader::recent_sticker_uplink_times(
+                                &conn, &dev_eui, limit,
+                            ),
+                        );
                     }
 
                     StorageMessage::AdvanceExportCursor {

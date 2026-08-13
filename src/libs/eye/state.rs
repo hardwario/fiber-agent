@@ -99,14 +99,20 @@ impl EyeTagState {
     /// Evaluate the current temperature/humidity against the tag's configured
     /// field thresholds, producing per-field + aggregate alarm state. Reuses the
     /// LoRaWAN sticker classifier so behaviour matches sticker field alarms.
+    ///
+    /// Only the measured quantities are threshold-driven (phase 1). `battery` and
+    /// `movement` are deliberately absent from the match, so a stored threshold row
+    /// for either is ignored rather than silently alarming:
+    ///   * battery has the tag's own hardware low-battery assertion below, which is
+    ///     the real signal — a numeric mV band on top of it is a duplicate;
+    ///   * `movement` is `movement_count`, a monotonically increasing counter, so a
+    ///     `[lo, hi]` band on it alarms once and then stays alarmed forever.
     pub fn evaluate_alarms(&mut self, cfg: &EyeTagConfig) {
         self.field_alarm_states.clear();
         for t in &cfg.field_thresholds {
             let value: Option<f64> = match t.field.as_str() {
                 "temperature" => self.temperature_c.map(|v| v as f64),
                 "humidity" => self.humidity_pct.map(|v| v as f64),
-                "battery" => self.battery_mv.map(|v| v as f64),
-                "movement" => self.movement_count.map(|v| v as f64),
                 _ => None,
             };
             if let Some(v) = value {
@@ -319,6 +325,48 @@ pub fn eye_state_handle() -> Option<SharedEyeState> {
     EYE_STATE.get().cloned()
 }
 
+/// Copy of `tag` whose aggregate `alarm_state` is escalated to `Disconnected`
+/// when the tag has not been heard from within `tag_timeout_s`.
+///
+/// [`EyeTagState::alarm_state`] itself only ever holds the threshold verdict —
+/// staleness is a function of the clock, so it is applied at read time. This is
+/// the same escalation `eye::monitor::publish_eye_snapshot` applies before
+/// publishing, factored out so the LCD overview and MQTT cannot disagree about
+/// whether a tag is lost.
+pub fn escalate_if_stale(tag: &EyeTagState, now_ts: i64, tag_timeout_s: i64) -> EyeTagState {
+    let mut out = tag.clone();
+    if tag.is_stale(now_ts, tag_timeout_s) {
+        out.alarm_state = tag.alarm_state.worst(&LoRaWANAlarmState::Disconnected);
+    }
+    out
+}
+
+/// Tags for the configurable LCD overview: sorted by MAC for a stable row order,
+/// with staleness already escalated (see [`escalate_if_stale`]).
+///
+/// Empty when the EYE monitor is not running — the display then renders the
+/// configured BLE rows as "never seen" placeholders rather than dropping them,
+/// which is the same thing an unprovisioned MAC produces.
+pub fn display_snapshot(tag_timeout_s: i64) -> Vec<EyeTagState> {
+    let Some(state) = EYE_STATE.get() else {
+        return Vec::new();
+    };
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let Ok(snapshot) = state.read() else {
+        return Vec::new();
+    };
+    let mut tags: Vec<EyeTagState> = snapshot
+        .tags
+        .values()
+        .map(|t| escalate_if_stale(t, now_ts, tag_timeout_s))
+        .collect();
+    tags.sort_by(|a, b| a.mac.cmp(&b.mac));
+    tags
+}
+
 /// Enqueue an external command for the monitor to run. Returns `false` if the
 /// EYE monitor is not running (state never registered).
 pub fn queue_eye_command(cmd: EyeCommand) -> bool {
@@ -435,8 +483,12 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_alarms_battery_threshold_and_low_battery_flag() {
+    fn evaluate_alarms_ignores_a_stored_battery_threshold_but_keeps_the_hardware_flag() {
         use crate::libs::config::FieldThreshold;
+        // Phase 1 withdrew the configurable battery band — a threshold row left over
+        // from before must not alarm. The tag's own hardware low-battery assertion is
+        // a different thing and must survive: it is the real signal, the analogue of
+        // the sticker's native fPort-3 battery alarm.
         let cfg = EyeTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,
@@ -454,22 +506,17 @@ mod tests {
         };
         let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
 
-        tag.battery_mv = Some(3000); // healthy
+        // Well under both stored bounds — would have been Critical before.
+        tag.battery_mv = Some(2300);
         tag.evaluate_alarms(&cfg);
+        assert!(
+            tag.field_alarm_states.get("battery").is_none(),
+            "a stored battery threshold must be ignored, got {:?}",
+            tag.field_alarm_states.get("battery")
+        );
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
 
-        tag.battery_mv = Some(2600); // < warning_low
-        tag.evaluate_alarms(&cfg);
-        assert_eq!(
-            tag.field_alarm_states.get("battery"),
-            Some(&LoRaWANAlarmState::Warning)
-        );
-
-        tag.battery_mv = Some(2300); // < critical_low
-        tag.evaluate_alarms(&cfg);
-        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
-
-        // The hardware low_battery flag alarms even with NO battery threshold set.
+        // The hardware flag still alarms, with or without a stored threshold.
         let no_thr = EyeTagConfig {
             field_thresholds: vec![],
             ..cfg.clone()
@@ -486,8 +533,11 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_alarms_movement_count_threshold() {
+    fn evaluate_alarms_ignores_a_stored_movement_threshold() {
         use crate::libs::config::FieldThreshold;
+        // `movement` is movement_count — monotonically increasing — so a [lo, hi]
+        // band alarms once and then stays alarmed for the life of the tag. Phase 1
+        // withdrew it; a leftover threshold row must be inert.
         let cfg = EyeTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,
@@ -504,17 +554,71 @@ mod tests {
             provisioned: None,
         };
         let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
-        tag.movement_count = Some(5);
-        tag.evaluate_alarms(&cfg);
-        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
-        tag.movement_count = Some(20); // > warning_high
-        tag.evaluate_alarms(&cfg);
+        for count in [5u16, 20, 80] {
+            tag.movement_count = Some(count);
+            tag.evaluate_alarms(&cfg);
+            assert!(
+                tag.field_alarm_states.get("movement").is_none(),
+                "movement must not alarm at count {count}"
+            );
+            assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
+        }
+    }
+
+    // ---- staleness escalation for the LCD overview ------------------------
+
+    const NOW: i64 = 1_700_000_000;
+    const TIMEOUT: i64 = 600;
+
+    #[test]
+    fn escalate_leaves_a_fresh_tag_alone() {
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        tag.last_seen_ts = Some(NOW - 10);
+        tag.alarm_state = LoRaWANAlarmState::Warning;
+        let out = escalate_if_stale(&tag, NOW, TIMEOUT);
+        assert_eq!(out.alarm_state, LoRaWANAlarmState::Warning);
+    }
+
+    #[test]
+    fn escalate_marks_a_tag_past_the_timeout_as_disconnected() {
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        tag.last_seen_ts = Some(NOW - TIMEOUT - 1);
+        tag.alarm_state = LoRaWANAlarmState::Critical;
+        let out = escalate_if_stale(&tag, NOW, TIMEOUT);
         assert_eq!(
-            tag.field_alarm_states.get("movement"),
-            Some(&LoRaWANAlarmState::Warning)
+            out.alarm_state,
+            LoRaWANAlarmState::Disconnected,
+            "Disconnected outranks Critical — a lost tag is not a hot tag"
         );
-        tag.movement_count = Some(80); // > critical_high
-        tag.evaluate_alarms(&cfg);
-        assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
+    }
+
+    #[test]
+    fn escalate_marks_a_never_seen_tag_as_disconnected() {
+        let tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        assert_eq!(tag.last_seen_ts, None);
+        let out = escalate_if_stale(&tag, NOW, TIMEOUT);
+        assert_eq!(out.alarm_state, LoRaWANAlarmState::Disconnected);
+    }
+
+    #[test]
+    fn escalate_does_not_mutate_the_source_tag() {
+        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        tag.alarm_state = LoRaWANAlarmState::Normal;
+        let _ = escalate_if_stale(&tag, NOW, TIMEOUT);
+        assert_eq!(
+            tag.alarm_state,
+            LoRaWANAlarmState::Normal,
+            "the live state must keep the threshold verdict; staleness is applied at read time"
+        );
+    }
+
+    /// The monitor may not be running (EYE disabled, or not yet started). The
+    /// display then renders configured `ble` rows as placeholders rather than
+    /// dropping them, so an empty list is the correct answer, not a panic.
+    #[test]
+    fn display_snapshot_is_empty_when_the_monitor_never_registered() {
+        if EYE_STATE.get().is_none() {
+            assert!(display_snapshot(TIMEOUT).is_empty());
+        }
     }
 }

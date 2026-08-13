@@ -1473,6 +1473,145 @@ impl ConfigApplier {
         }
     }
 
+    /// Flip `lorawan.enabled` — the enforcement point for the site-local
+    /// cluster's one-publisher invariant (system#7 Goal 2).
+    ///
+    /// A follower contributes its **radio**, not its reports: its frames reach
+    /// the leader's ChirpStack, and only the leader's `fiber_app` may publish a
+    /// sticker's telemetry. If a follower's LoRaWAN monitor also subscribed, the
+    /// viewer would see two sources for one sticker and history would
+    /// double-count, so arming a follower disables its monitor here and clearing
+    /// the cluster re-enables it.
+    ///
+    /// Unlike the cluster's own state (which lives in `/data/fiber/cluster` so it
+    /// survives a RAUC slot switch), this genuinely belongs in the YAML: it is
+    /// the flag the firmware itself reads at startup, not a second copy of the
+    /// cluster role.
+    pub fn apply_lorawan_enabled(&self, enabled: bool) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+
+        {
+            let config_map = match config.as_mapping_mut() {
+                Some(m) => m,
+                None => {
+                    return ApplyResult {
+                        success: false,
+                        file_path: config_file.to_string_lossy().to_string(),
+                        backup_path: backup_path_str,
+                        error_message: Some("Config root is not a mapping".to_string()),
+                        applied_at,
+                    }
+                }
+            };
+            let lorawan_key = Value::String("lorawan".to_string());
+            if !config_map.contains_key(&lorawan_key) {
+                config_map.insert(lorawan_key.clone(), Value::Mapping(Mapping::new()));
+            }
+            match config_map
+                .get_mut(&lorawan_key)
+                .and_then(|v| v.as_mapping_mut())
+            {
+                Some(lorawan) => {
+                    lorawan.insert(Value::String("enabled".to_string()), Value::Bool(enabled));
+                }
+                None => {
+                    return ApplyResult {
+                        success: false,
+                        file_path: config_file.to_string_lossy().to_string(),
+                        backup_path: backup_path_str,
+                        error_message: Some("Failed to get 'lorawan' section".to_string()),
+                        applied_at,
+                    }
+                }
+            }
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!("[ConfigApplier] ✓ lorawan.enabled set to {}", enabled);
+        self.log_audit(
+            "SET_LORAWAN_ENABLED",
+            format!(r#"{{"enabled":{}}}"#, enabled),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
     /// Remove an external LoRaWAN gateway from the main config by gateway_eui.
     /// Mirrors `remove_lorawan_sensor_config` (no sticker_removed marker — a
     /// gateway is not a save-and-feed sticker).
@@ -1857,6 +1996,138 @@ impl ConfigApplier {
             error_message: None,
             applied_at,
         }
+    }
+
+    /// Switch the EYE BLE tag subsystem on or off (`eye.enabled`).
+    ///
+    /// The subsystem had no command at all: `set_eye_recording`, `add_eye_tag`
+    /// and friends all operate on tags, so once `eye.enabled` was false the only
+    /// way back was SSH. Creates the `eye:` section if it is missing — serde
+    /// fills the rest from `EyeConfig`.
+    ///
+    /// Takes effect on the next start of the `fiber` service: the EYE monitor
+    /// thread is spawned once at boot, so flipping the flag cannot start it.
+    pub fn apply_eye_enabled(&self, enabled: bool) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = Self::update_eye_enabled_config(&mut config, enabled) {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] \u{2713} EYE subsystem {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+        self.log_audit("SET_EYE_ENABLED", format!(r#"{{"enabled":{}}}"#, enabled));
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Set `eye.enabled`, creating the section when absent.
+    fn update_eye_enabled_config(config: &mut Value, enabled: bool) -> Result<(), String> {
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+        let eye_key = Value::String("eye".to_string());
+        let enabled_key = Value::String("enabled".to_string());
+
+        match config_map
+            .get_mut(&eye_key)
+            .and_then(|v| v.as_mapping_mut())
+        {
+            Some(eye) => {
+                eye.insert(enabled_key, Value::Bool(enabled));
+            }
+            None => {
+                let mut eye = serde_yaml::Mapping::new();
+                eye.insert(enabled_key, Value::Bool(enabled));
+                config_map.insert(eye_key, Value::Mapping(eye));
+            }
+        }
+        Ok(())
     }
 
     /// Remove an EYE BLE tag from the main config (`eye.tags[]`) by MAC.
@@ -2761,6 +3032,10 @@ impl ConfigApplier {
         warning_low: Option<f64>,
         warning_high: Option<f64>,
         critical_high: Option<f64>,
+        // False switches the alarm OFF for this field, recorded separately from
+        // the bounds in `disarmed_fields` — an omitted bound inherits the YAML
+        // default, so clearing the numbers cannot express "off".
+        enabled: bool,
     ) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2813,6 +3088,7 @@ impl ConfigApplier {
             warning_low,
             warning_high,
             critical_high,
+            enabled,
         ) {
             return ApplyResult {
                 success: false,
@@ -2854,8 +3130,8 @@ impl ConfigApplier {
         self.log_audit(
             "SET_LORAWAN_FIELD_THRESHOLD",
             format!(
-                r#"{{"dev_eui":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?}}}"#,
-                dev_eui, field, critical_low, warning_low, warning_high, critical_high,
+                r#"{{"dev_eui":{:?},"field":{:?},"critical_low":{:?},"warning_low":{:?},"warning_high":{:?},"critical_high":{:?},"enabled":{}}}"#,
+                dev_eui, field, critical_low, warning_low, warning_high, critical_high, enabled,
             ),
         );
         ApplyResult {
@@ -2964,6 +3240,7 @@ impl ConfigApplier {
         warning_low: Option<f64>,
         warning_high: Option<f64>,
         critical_high: Option<f64>,
+        enabled: bool,
     ) -> Result<(), String> {
         let lorawan_key = Value::String("lorawan".to_string());
         let sensors_key = Value::String("sensors".to_string());
@@ -3006,6 +3283,32 @@ impl ConfigApplier {
             sensors.push(Value::Mapping(m));
             sensors.last_mut().unwrap().as_mapping_mut().unwrap()
         };
+
+        // The on/off flag lives beside the bounds, not inside them: a field can be
+        // switched off while having no bounds of its own (the default-armed case
+        // this exists for), and the key stays absent entirely while nothing is off,
+        // so an untouched config is byte-identical to before.
+        {
+            let df_key = Value::String("disarmed_fields".to_string());
+            let mut list: Vec<Value> = sensor_map
+                .get(&df_key)
+                .and_then(|v| v.as_sequence())
+                .map(|s| {
+                    s.iter()
+                        .filter(|v| v.as_str() != Some(field))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !enabled {
+                list.push(Value::String(field.to_string()));
+            }
+            if list.is_empty() {
+                sensor_map.remove(&df_key);
+            } else {
+                sensor_map.insert(df_key, Value::Sequence(list));
+            }
+        }
 
         let thresholds = sensor_map
             .entry(ft_key.clone())
@@ -3625,6 +3928,57 @@ mod tests {
     }
 
     #[test]
+    fn apply_eye_enabled_flips_an_existing_section() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "eye:\n  enabled: false\n  publish_interval_s: 30\n  tags:\n    - mac: 'AA:BB:CC:DD:EE:FF'\n",
+        )
+        .unwrap();
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        assert!(applier.apply_eye_enabled(true).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed["eye"]["enabled"].as_bool(), Some(true));
+        // The rest of the section survives.
+        assert_eq!(parsed["eye"]["publish_interval_s"].as_u64(), Some(30));
+        assert_eq!(
+            parsed["eye"]["tags"].as_sequence().map(|s| s.len()),
+            Some(1)
+        );
+
+        // ...and back off again, which is the point of having the command.
+        assert!(applier.apply_eye_enabled(false).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed["eye"]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn apply_eye_enabled_creates_a_missing_section() {
+        let tmp_config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp_config_dir.path().join("fiber.config.yaml"),
+            "mqtt:\n  enabled: true\n",
+        )
+        .unwrap();
+        let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
+
+        assert!(applier.apply_eye_enabled(true).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed["eye"]["enabled"].as_bool(), Some(true));
+        assert_eq!(parsed["mqtt"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
     fn apply_eye_recording_persists_off_and_interval() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -3973,6 +4327,7 @@ mod display_lines_tests {
             source: DisplayLineSource::Ds18b20,
             line: Some(idx),
             dev_eui: None,
+            mac: None,
             field: "temperature".to_string(),
             label: None,
             format: DisplayLineFormat::default(),
@@ -3984,6 +4339,7 @@ mod display_lines_tests {
             source: DisplayLineSource::Sticker,
             line: None,
             dev_eui: Some(EUI.to_string()),
+            mac: None,
             field: field.to_string(),
             label: Some("Chiller".to_string()),
             format: DisplayLineFormat::default(),

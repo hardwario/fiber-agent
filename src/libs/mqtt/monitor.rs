@@ -15,6 +15,11 @@ use crate::libs::network::status::{get_network_status, NetworkStatus};
 
 use super::connection::{create_shared_connection_state, ConnectionState, SharedConnectionState};
 use super::messages::{MqttCommand, MqttMessage};
+
+/// Depth of rumqttc's request channel — how many publishes may be in flight to the
+/// eventloop before `client.publish()` starts failing and the message is lost.
+/// See the call site for the measurement that motivated raising it from 10.
+const MQTT_REQUEST_CHANNEL_CAPACITY: usize = 256;
 use super::publisher::MqttPublisher;
 use super::subscriber::MqttSubscriber;
 use super::topics::TopicBuilder;
@@ -165,6 +170,29 @@ fn wait_for_network(timeout_sec: u64) -> bool {
         timeout_sec
     );
     false
+}
+
+/// Set when something changed that `system/info` reports and an operator is
+/// waiting to see it — today, a cluster arm.
+///
+/// `system/info` is retained and published on its own schedule (60 s by
+/// default), which is the right cadence for telemetry and the wrong one for
+/// feedback: the viewer's cluster card would keep showing the old role for up to
+/// a minute after the change had already taken effect, which reads as a failed
+/// command. A flag rather than a channel because the status block is not a
+/// `select!` arm — it is a branch in the connected loop, and this is the same
+/// shape as the interval check beside it.
+static SYSTEM_INFO_PUBLISH_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Ask the status loop to publish `system/info` on its next pass.
+pub fn request_system_info_publish() {
+    SYSTEM_INFO_PUBLISH_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Consume a pending request. Clearing it here means a burst of changes
+/// collapses into one publish rather than one per change.
+fn take_system_info_publish_request() -> bool {
+    SYSTEM_INFO_PUBLISH_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
 /// Check if MQTT broker is reachable
@@ -511,11 +539,95 @@ impl MqttHandle {
 }
 
 /// MQTT monitor thread
-/// fPort-85 command round-trip timeout. A round-trip needs at least two
+/// Floor for an fPort-85 command round-trip. A round-trip needs at least two
 /// sticker uplinks, which on a Class-A sticker is bounded by its report
 /// interval, so this is deliberately longer than the fiberctl ControlContext
 /// default of 30 s.
+///
+/// This is only the FLOOR — see `sticker_command_timeout`. As a fixed value it
+/// silently broke every sticker reporting slower than ~90 s: a config read is
+/// chunked six fields at a time and each chunk waits for the device's next RX
+/// window, so at `interval_report = 900 s` every chunk expired at 180 s and the
+/// read returned nothing at all.
 const STICKER_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Cap for a derived fPort-85 timeout.
+///
+/// `application.interval_report` accepts up to 86400 s, so the derivation has to
+/// keep scaling well past any single "expected" interval — a cap that is too low
+/// silently recreates the original bug for slow stickers. Waiting is cheap here:
+/// responses are correlated by seq (1..=250) rather than queued per device, so a
+/// pending command holds one task and one map entry and blocks nothing else. The
+/// only real bound is seq reuse, which needs 250 further commands while one is
+/// outstanding — far beyond any read. Six hours covers cadences up to ~2.4 h; a
+/// sticker slower than that makes a full read take days, which is a decision for
+/// the operator (the UI states the estimate) rather than something a timeout
+/// should paper over. Clamping is logged so it is never silent.
+const STICKER_COMMAND_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+/// Timeout used while the sticker's cadence is still unknown.
+///
+/// Deliberately NOT the 180 s floor. "Unknown" means we cannot rule out a slow
+/// sticker, so assuming a fast one is the wrong default — it is what made the
+/// first read after a restart the most likely to fail. A sticker that has never
+/// uplinked at all does not wait this long: `send_command` fails immediately,
+/// because without an uplink the gateway has no ChirpStack application id to
+/// address a downlink to.
+const STICKER_COMMAND_TIMEOUT_UNKNOWN: std::time::Duration =
+    std::time::Duration::from_secs(20 * 60);
+
+/// Multiple of the sticker's reporting cadence to allow for one round trip.
+/// A request rides the RX window after an uplink and the answer comes with a
+/// later uplink, so two cadences is the floor for a healthy exchange; 2.5 leaves
+/// room for one retry without doubling the wait.
+const STICKER_COMMAND_CADENCE_FACTOR: f64 = 2.5;
+
+/// Timeout for one fPort-85 round trip with `dev_eui`, derived from that
+/// sticker's own observed reporting cadence.
+///
+/// Applies to writes as well as reads: a write is also only delivered in the
+/// window after an uplink, so it has exactly the same lower bound.
+///
+/// Falls back to the floor while the cadence is still unknown (fewer than two
+/// uplinks seen since start-up), which is the previous behaviour. Reads the
+/// cadence off the handle's shared state, so no call site has to thread it in.
+fn sticker_command_timeout(
+    handle: &crate::libs::lorawan::LoRaWANHandle,
+    dev_eui: &str,
+) -> std::time::Duration {
+    let cadence = handle
+        .state
+        .read()
+        .ok()
+        .and_then(|s| s.cadence_secs(&dev_eui.to_lowercase()));
+    let out = match cadence {
+        Some(secs) if secs > 0 => {
+            let want =
+                std::time::Duration::from_secs_f64(secs as f64 * STICKER_COMMAND_CADENCE_FACTOR);
+            let clamped = want.clamp(STICKER_COMMAND_TIMEOUT, STICKER_COMMAND_TIMEOUT_CAP);
+            if want > STICKER_COMMAND_TIMEOUT_CAP {
+                eprintln!(
+                    "[sticker] {dev_eui}: cadence {}s wants {}s but the cap is {}s — a full \
+                     config read will not complete; shorten interval_report first",
+                    secs,
+                    want.as_secs(),
+                    STICKER_COMMAND_TIMEOUT_CAP.as_secs()
+                );
+            }
+            clamped
+        }
+        _ => STICKER_COMMAND_TIMEOUT_UNKNOWN,
+    };
+    // Logged unconditionally, including the fallback: when a read comes back empty
+    // the first question is always "how long did we actually wait, and did we know
+    // the cadence?", and answering it from the journal beats guessing.
+    eprintln!(
+        "[sticker] {dev_eui}: fPort-85 timeout {}s (observed cadence {})",
+        out.as_secs(),
+        cadence.map_or_else(|| "unknown".to_string(), |s| format!("{s}s")),
+    );
+    out
+}
 
 /// How long to wait for the encrypted audit row of a teardown command (reboot
 /// or power-off) to reach disk. Bounded on purpose: the operator's signed intent
@@ -919,7 +1031,11 @@ impl MqttMonitor {
                         .map(|()| None)
                 } else {
                     handle
-                        .send_command(&dev_eui_blocking, proto, STICKER_COMMAND_TIMEOUT)
+                        .send_command(
+                            &dev_eui_blocking,
+                            proto,
+                            sticker_command_timeout(&handle, &dev_eui_blocking),
+                        )
                         .map(Some)
                 }
             })
@@ -993,7 +1109,7 @@ impl MqttMonitor {
                 crate::libs::lorawan::sticker_config::read_info(
                     &handle,
                     &dev_eui_blocking,
-                    STICKER_COMMAND_TIMEOUT,
+                    sticker_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1056,7 +1172,7 @@ impl MqttMonitor {
                     &handle,
                     &dev_eui_blocking,
                     &key_refs,
-                    STICKER_COMMAND_TIMEOUT,
+                    sticker_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1134,7 +1250,7 @@ impl MqttMonitor {
                     &handle,
                     &dev_eui_blocking,
                     &keys,
-                    STICKER_COMMAND_TIMEOUT,
+                    sticker_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1224,7 +1340,7 @@ impl MqttMonitor {
                     &dev_eui_blocking,
                     &config,
                     save,
-                    STICKER_COMMAND_TIMEOUT,
+                    sticker_command_timeout(&handle, &dev_eui_blocking),
                 )
                 .map_err(|errs| {
                     errs.iter()
@@ -1240,7 +1356,7 @@ impl MqttMonitor {
                         &handle,
                         &dev_eui_blocking,
                         &[],
-                        STICKER_COMMAND_TIMEOUT,
+                        sticker_command_timeout(&handle, &dev_eui_blocking),
                     )
                     .ok()
                 };
@@ -1313,7 +1429,7 @@ impl MqttMonitor {
                     &dev_eui_blocking,
                     from_unix,
                     to_unix,
-                    STICKER_COMMAND_TIMEOUT,
+                    sticker_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1641,9 +1757,22 @@ impl MqttMonitor {
                     state.set_state(ConnectionState::Connecting);
                 }
 
-                // Create fresh MQTT client options and client
+                // Create fresh MQTT client options and client.
+                //
+                // The request channel used to hold 10. That is far too small for this
+                // publish rate — the export streams alone put out one message per stream
+                // per aggregation tick — so a burst filled it and `client.publish()`
+                // returned "Failed to send mqtt requests to eventloop" and the message was
+                // simply lost. Measured on fiber-ce3d59f8: 6 drops in 30 minutes, on
+                // .../command, .../config and — the one that actually cost something —
+                // .../history, where losing the frame stalled a backfill job until the
+                // reconciler retried it.
+                //
+                // A deeper queue costs a little memory and turns a silent drop into a
+                // short wait, which is the right trade for a device whose publishes carry
+                // alarm and history data.
                 let mqttoptions = create_mqtt_options(&config, &hostname, &client_id);
-                let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+                let (client, mut eventloop) = AsyncClient::new(mqttoptions, MQTT_REQUEST_CHANNEL_CAPACITY);
 
                 eprintln!("[MQTT Monitor] Fresh MQTT client created, waiting for CONNACK...");
 
@@ -1772,9 +1901,22 @@ impl MqttMonitor {
                 // value was already parsed and echoed into config/state, but the
                 // publish loop never read it, so set_system_info_interval could
                 // not take effect.
-                let mut status_tick = interval_of(Duration::from_secs(
+                //
+                // The tick is a fixed 100 ms poll and the cadence is enforced by
+                // `last_status_publish` below, rather than being the interval's own
+                // period. Two things need that: a `set_system_info_interval` change
+                // has to take effect without waiting out the old period (let alone a
+                // reconnect), and a cluster arm has to be able to ask for one
+                // immediately — and an already-created `Interval` cannot be reset
+                // from a different `select!` arm, because `status_tick.tick()` holds
+                // it borrowed for the whole statement.
+                let mut status_interval = Duration::from_secs(
                     config.publish.intervals.system_info_sec.max(1),
-                ));
+                );
+                let mut status_tick = interval_of(Duration::from_millis(100));
+                // Publish once as soon as the loop starts, as an immediate interval
+                // used to.
+                let mut last_status_publish = Instant::now() - status_interval;
                 let mut challenge_cleanup_tick = interval_of(Duration::from_secs(30));
                 let mut pairing_poll_tick = interval_of(Duration::from_millis(100));
 
@@ -2577,15 +2719,25 @@ impl MqttMonitor {
                         }
                     }
 
-                    // Periodic status reporting — publishes system/info
+                    // Periodic status reporting — publishes system/info, on the
+                    // configured cadence or on demand after a change an operator is
+                    // waiting to see (a cluster arm).
                     _ = status_tick.tick() => {
                         // Not in standby: nothing is being measured, so there is no
                         // status worth reporting, and the retained power/standby
                         // topic already explains the silence. The connection itself
                         // stays up — this loop still has to carry commands and the
                         // resume event.
-                        if !crate::libs::power::standby::is_standby()
+                        //
+                        // The request is only consumed when it can actually be acted
+                        // on, so one raised during standby still fires on resume
+                        // instead of being swallowed by a tick nobody publishes for.
+                        let standby = crate::libs::power::standby::is_standby();
+                        let on_demand = !standby && take_system_info_publish_request();
+                        if !standby
+                            && (on_demand || last_status_publish.elapsed() >= status_interval)
                         {
+                            last_status_publish = Instant::now();
                             if let Ok(state) = connection_state.lock() {
                                 eprintln!("[MQTT Monitor] === STATUS REPORT ===");
                                 eprintln!("[MQTT Monitor]   State: {:?}", state.state());
@@ -2645,6 +2797,16 @@ impl MqttMonitor {
                                 .and_then(|c| c.lorawan.as_ref())
                                 .map(|l| l.sensors.len())
                                 .unwrap_or(0);
+                            // Pick up a set_system_info_interval change for the next
+                            // round. Reusing the config just loaded above rather than
+                            // re-reading it: the command writes the file, so the value
+                            // is already here, and the cadence follows on the next
+                            // publish without a reconnect.
+                            status_interval = cfg
+                                .as_ref()
+                                .and_then(|c| c.mqtt.as_ref())
+                                .map(|m| Duration::from_secs(m.publish.intervals.system_info_sec.max(1)))
+                                .unwrap_or(status_interval);
 
                             // Check LoRaWAN gateway status (checks running services, not just installed)
                             let lorawan_detection = crate::libs::lorawan::detector::detect_gateway();
@@ -3000,6 +3162,13 @@ impl MqttMonitor {
             }),
             "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
             "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
+            "set_eye_enabled" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .ok_or("Missing enabled")?;
+                MqttCommand::SetEyeEnabled { enabled }
+            }
             "set_eye_recording" => {
                 let mac = params
                     .get("mac")
@@ -3808,6 +3977,7 @@ impl MqttMonitor {
                                         location: location.clone(),
                                         enabled: true,
                                         field_thresholds: Vec::new(),
+                                        disarmed_fields: Vec::new(),
                                     });
                                 }
                             }
@@ -3823,12 +3993,12 @@ impl MqttMonitor {
             }
             MqttCommand::SetLoRaWANFieldThreshold {
                 dev_eui, field,
-                critical_low, warning_low, warning_high, critical_high,
+                critical_low, warning_low, warning_high, critical_high, enabled,
             } => {
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_field_threshold(
                         dev_eui.clone(), field.clone(),
-                        critical_low, warning_low, warning_high, critical_high,
+                        critical_low, warning_low, warning_high, critical_high, enabled,
                     );
                     if result.success {
                         if let Some(cfgs) = lorawan_configs.as_ref() {
@@ -3839,7 +4009,7 @@ impl MqttMonitor {
                                         v.push(crate::libs::config::LoRaWANSensorConfig {
                                             dev_eui: dev_eui.clone(),
                                             name: None, serial_number: None, location: None,
-                                            enabled: true, field_thresholds: Vec::new(),
+                                            enabled: true, field_thresholds: Vec::new(), disarmed_fields: Vec::new(),
                                         });
                                         v.last_mut().unwrap()
                                     }
@@ -3853,9 +4023,19 @@ impl MqttMonitor {
                                 } else {
                                     entry.field_thresholds.push(new_t);
                                 }
+                                // Mirror the on/off flag into the in-memory config so the
+                                // next alarm evaluation sees it without waiting for a
+                                // config reload from disk.
+                                entry.disarmed_fields.retain(|f| f != &field);
+                                if !enabled {
+                                    entry.disarmed_fields.push(field.clone());
+                                }
                             }
                         }
-                        eprintln!("[MQTT Monitor] ✓ Field threshold {}/{} applied", dev_eui, field);
+                        eprintln!(
+                            "[MQTT Monitor] ✓ Field threshold {}/{} applied ({})",
+                            dev_eui, field, if enabled { "alarm on" } else { "alarm OFF" }
+                        );
                         Ok(())
                     } else {
                         Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
@@ -3968,6 +4148,127 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetLorawanCluster {
+                role,
+                leader_host,
+                leader_port,
+                leader_ca,
+                leader_ca_fingerprint,
+                peer_username,
+                peer_password,
+                peer_gateway_eui,
+            } => {
+                // Every field was validated in build_command_from_challenge (the
+                // only construction site): the host is site-local, the port is
+                // not the anonymous loopback listener, the fingerprint matches
+                // the CA, and the account is a dedicated peer-*.
+                use crate::libs::lorawan::cluster::{ClusterArm, ClusterRole, ClusterState};
+
+                let parsed_role = ClusterRole::parse(&role)?;
+                eprintln!("[MQTT Monitor] Setting LoRaWAN cluster role to {}...", parsed_role.as_str());
+
+                let arm = ClusterArm {
+                    role: parsed_role,
+                    leader_host: leader_host.clone(),
+                    leader_port,
+                    leader_ca_pem: leader_ca.clone(),
+                    leader_ca_fingerprint: leader_ca_fingerprint.clone(),
+                    peer_username: peer_username.clone(),
+                    peer_password: peer_password.clone(),
+                    peer_gateway_eui: peer_gateway_eui.clone(),
+                };
+
+                // What this unit registered while it was leading, read before the
+                // state that records it is cleared. Withdrawing it is the other
+                // half of the arm that added it: a peer radio left in ChirpStack
+                // keeps a disbanded cluster's gateway in the leader's device list.
+                let previously_registered_peer =
+                    ClusterState::at_default().peer_gateway_eui();
+
+                // Step 1: persist the operator's intent to /data first. This is
+                // the inverse of AddExternalGateway's order, and deliberately so:
+                // there the remote call is the point and the YAML is the record,
+                // whereas here the persisted state *is* what the boot-time
+                // renderer acts on. Writing it first means a failed activation
+                // below still leaves the cluster correctly configured for the
+                // next boot instead of discarding what the operator asked for.
+                let state = ClusterState::at_default();
+                if let Err(e) = state.write(&arm) {
+                    return Err(format!("Failed to persist cluster state: {}", e));
+                }
+                eprintln!("[MQTT Monitor] ✓ Cluster state persisted to /data");
+
+                // Step 2: the one-publisher invariant. A follower contributes its
+                // radio, not its reports — only the leader's fiber_app may
+                // publish a sticker's telemetry, or the viewer sees two sources
+                // for one sticker and history double-counts.
+                let want_lorawan = parsed_role != ClusterRole::Follower;
+                if let Some(applier) = config_applier {
+                    let result = applier.apply_lorawan_enabled(want_lorawan);
+                    if !result.success {
+                        return Err(result
+                            .error_message
+                            .unwrap_or_else(|| "Failed to set lorawan.enabled".to_string()));
+                    }
+                } else {
+                    return Err("Config applier not initialized".to_string());
+                }
+
+                // Step 3: best-effort activation. The renderer and the peer-account
+                // mint are shipped by meta-fiber and re-run on every boot anyway,
+                // so a failure here delays the cluster until the next reboot
+                // rather than losing it.
+                match crate::libs::lorawan::cluster::activate(&arm) {
+                    Ok(msg) => eprintln!("[MQTT Monitor] ✓ Cluster activation: {}", msg),
+                    Err(e) => eprintln!(
+                        "[MQTT Monitor] ⚠ Cluster activation deferred to next boot: {}",
+                        e
+                    ),
+                }
+
+                // Step 4: the peer's radio in this unit's ChirpStack. Uplinks
+                // from a gateway ChirpStack does not know are discarded, so
+                // without this a follower's frames arrive on the leader's broker
+                // and go nowhere — the failure mode looks like a working forward
+                // and a silent sticker. Idempotent both ways, and best-effort:
+                // it can be redone from the UI, whereas losing the arm cannot.
+                if parsed_role == ClusterRole::Leader {
+                    if let Some(eui) = arm.peer_gateway_eui.as_deref() {
+                        match crate::libs::lorawan::provisioning::provision_external_gateway(
+                            eui,
+                            &format!("FIBER cluster peer {}", eui),
+                        ) {
+                            Ok(()) => eprintln!(
+                                "[MQTT Monitor] ✓ Peer radio {} registered in ChirpStack",
+                                eui
+                            ),
+                            Err(e) => eprintln!(
+                                "[MQTT Monitor] ⚠ Peer radio {} not registered: {}",
+                                eui, e
+                            ),
+                        }
+                    }
+                } else if let Some(eui) = previously_registered_peer.as_deref() {
+                    match crate::libs::lorawan::provisioning::deprovision_external_gateway(eui) {
+                        Ok(()) => eprintln!(
+                            "[MQTT Monitor] ✓ Peer radio {} removed from ChirpStack",
+                            eui
+                        ),
+                        Err(e) => eprintln!(
+                            "[MQTT Monitor] ⚠ Peer radio {} not removed: {}",
+                            eui, e
+                        ),
+                    }
+                }
+
+                // The card an operator is watching reads `system/info`, which is
+                // otherwise republished on its own schedule — up to a minute of
+                // staring at the old role after a change that already took
+                // effect. Ask for a fresh one now.
+                request_system_info_publish();
+
+                Ok(())
+            }
             MqttCommand::RemoveExternalGateway { gateway_eui } => {
                 eprintln!("[MQTT Monitor] Removing external gateway {} ...", gateway_eui);
                 if let Some(applier) = config_applier {
@@ -3995,6 +4296,31 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
+            MqttCommand::SetEyeEnabled { enabled } => {
+                let Some(applier) = config_applier else {
+                    return Err("Config applier not initialized".to_string());
+                };
+                let result = applier.apply_eye_enabled(enabled);
+                if !result.success {
+                    return Err(result
+                        .error_message
+                        .unwrap_or_else(|| "Unknown error".to_string()));
+                }
+                // Mirror into the live config so config_state echoes the new
+                // value immediately, even though the monitor thread itself is
+                // only spawned at startup.
+                if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                    if let Ok(mut c) = cfg.write() {
+                        c.enabled = enabled;
+                    }
+                }
+                eprintln!(
+                    "[MQTT Monitor] EYE subsystem {} (takes effect when the fiber service restarts)",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+                Ok(())
+            }
+
             MqttCommand::SetEyeRecording { mac, interval_min } => {
                 // Hand off to the EYE monitor, which runs recorder ops with the
                 // BLE scan paused (raw L2CAP and an active scan must not overlap).
@@ -4319,6 +4645,10 @@ impl MqttMonitor {
             })
             .unwrap_or_default();
 
+        // EYE subsystem flags, so the viewer's auto-provision / auto-discover
+        // toggles reflect the device's real state (None => disabled defaults).
+        let eye_cfg = main_config.eye.clone().unwrap_or_default();
+
         Some(MqttMessage::PublishConfigState {
             led_brightness,
             screen_brightness: screen_br,
@@ -4331,6 +4661,11 @@ impl MqttMonitor {
             sample_interval_ms: main_config.sensors.sample_interval_ms,
             aggregation_interval_ms: main_config.sensors.aggregation_interval_ms,
             report_interval_ms: main_config.sensors.report_interval_ms,
+            eye_enabled: eye_cfg.enabled,
+            eye_auto_provision: eye_cfg.auto_provision,
+            // Option<bool> on this branch (it is round-tripped rather than
+            // owned — see EyeConfig::auto_discover), so absent reads as off.
+            eye_auto_discover: eye_cfg.auto_discover.unwrap_or(false),
         })
     }
 
@@ -4987,6 +5322,68 @@ mod tests {
             }
             _ => panic!("expected PublishConfigResponse"),
         }
+    }
+
+    /// The derivation under test, isolated from the handle so a unit test does not
+    /// need a live monitor: mirrors `sticker_command_timeout`'s clamp.
+    fn derive(cadence: Option<u64>) -> std::time::Duration {
+        match cadence {
+            Some(secs) if secs > 0 => {
+                std::time::Duration::from_secs_f64(secs as f64 * STICKER_COMMAND_CADENCE_FACTOR)
+                    .clamp(STICKER_COMMAND_TIMEOUT, STICKER_COMMAND_TIMEOUT_CAP)
+            }
+            _ => STICKER_COMMAND_TIMEOUT_UNKNOWN,
+        }
+    }
+
+    #[test]
+    fn fport85_timeout_is_patient_when_the_cadence_is_unknown() {
+        // Not the floor: "unknown" cannot rule out a slow sticker, and assuming a
+        // fast one is what made the first read after a restart the likeliest to fail.
+        assert_eq!(derive(None), STICKER_COMMAND_TIMEOUT_UNKNOWN);
+        assert_eq!(derive(Some(0)), STICKER_COMMAND_TIMEOUT_UNKNOWN);
+        assert!(STICKER_COMMAND_TIMEOUT_UNKNOWN > STICKER_COMMAND_TIMEOUT);
+    }
+
+    #[test]
+    fn fport85_timeout_keeps_the_floor_for_fast_stickers() {
+        // A 60 s sticker needs 150 s by the factor, which is under the floor — the
+        // previous behaviour must be preserved for everything that already worked.
+        assert_eq!(derive(Some(60)), STICKER_COMMAND_TIMEOUT);
+    }
+
+    #[test]
+    fn fport85_timeout_covers_a_900s_sticker() {
+        // The reported case. Every chunk of a config read used to expire at the fixed
+        // 180 s — before the sticker's next RX window — so the read returned nothing.
+        let t = derive(Some(900));
+        assert!(
+            t.as_secs() >= 2 * 900,
+            "must allow at least two reporting cycles, got {}s",
+            t.as_secs()
+        );
+        assert_eq!(t.as_secs(), 2250);
+    }
+
+    #[test]
+    fn fport85_timeout_keeps_scaling_well_past_900s() {
+        // interval_report accepts up to 86400 s, so the derivation must not stop
+        // being useful just past the interval someone happened to test with.
+        for cadence in [900u64, 1800, 3600, 7200] {
+            assert_eq!(
+                derive(Some(cadence)).as_secs(),
+                (cadence as f64 * STICKER_COMMAND_CADENCE_FACTOR) as u64,
+                "cadence {cadence}s must derive exactly, not hit a cap"
+            );
+        }
+    }
+
+    #[test]
+    fn fport85_timeout_is_capped_for_an_absurd_cadence() {
+        // A ceiling still exists, but only where a full read is hopeless anyway —
+        // and the derivation logs when it bites, so it is never silent.
+        assert_eq!(derive(Some(24 * 3600)), STICKER_COMMAND_TIMEOUT_CAP);
+        assert!(STICKER_COMMAND_TIMEOUT_CAP.as_secs() >= 6 * 3600);
     }
 }
 

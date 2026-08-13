@@ -517,15 +517,105 @@ pub fn provision_sticker(
     Ok(())
 }
 
+/// Pick the ChirpStack OTAA device profile for a sticker.
+///
+/// The factory QR label carries a vendor `profile_id` (1-99) that says which
+/// profile the sticker was built for — which is what fixes its region, and
+/// therefore whether it can talk to this gateway at all. Until now that number
+/// was decoded and thrown away, so a US915 sticker registered cleanly against an
+/// EU868 gateway and then simply never joined, with nothing anywhere saying why.
+///
+/// Resolution, in order:
+///
+/// 1. **No `profile_id`** (manual entry, an older viewer, the mobile app) —
+///    `device_profile_id_otaa`, exactly as before.
+/// 2. **`device_profile_ids_otaa` maps it** — that profile.
+/// 3. **The map exists and does NOT list it** — refuse. This is the whole point:
+///    a sticker built for a profile this gateway has no answer for is a mistake
+///    worth stopping at registration rather than discovering as silence.
+/// 4. **No map configured at all** — `device_profile_id_otaa`, so every gateway
+///    already in the field keeps working untouched.
+fn resolve_otaa_profile(
+    config: &serde_json::Value,
+    profile_id: Option<u32>,
+) -> Result<&str, String> {
+    let default = || {
+        config
+            .get("device_profile_id_otaa")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Missing device_profile_id_otaa in {} — re-run lorawan-setup to provision the OTAA profile",
+                    LORAWAN_CONFIG_PATH
+                )
+            })
+    };
+
+    let Some(id) = profile_id else {
+        return default();
+    };
+    let Some(map) = config
+        .get("device_profile_ids_otaa")
+        .and_then(|v| v.as_object())
+    else {
+        return default();
+    };
+    if let Some(uuid) = map.get(&id.to_string()).and_then(|v| v.as_str()) {
+        return Ok(uuid);
+    }
+    let mut known: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+    known.sort();
+    Err(format!(
+        "This sensor is built for device profile {} and this gateway has no such profile \
+         (it knows: {}). Registering it would create a device that never joins — check the \
+         sensor's region, or add profile {} to device_profile_ids_otaa in {}.",
+        id,
+        if known.is_empty() {
+            "none".to_string()
+        } else {
+            known.join(", ")
+        },
+        id,
+        LORAWAN_CONFIG_PATH
+    ))
+}
+
+/// Can this gateway serve a sticker built for `profile_id`?
+///
+/// Split out from provisioning so the answer is known **before** anything is
+/// written. A profile this gateway has no answer for is a permanent refusal, not
+/// a transient one: unlike "ChirpStack is down", retrying will never make it
+/// work, so the caller must stop rather than save a sensor that can never join.
+pub fn check_otaa_profile(profile_id: Option<u32>) -> Result<(), String> {
+    // Nothing to check, and nothing to read the config for.
+    if profile_id.is_none() {
+        return Ok(());
+    }
+    // An unreadable or unparsable config is NOT this function's problem to
+    // report. Provisioning itself is about to fail on it with a better message,
+    // and refusing here would newly reject adds on a gateway whose ChirpStack
+    // was never provisioned — which today still saves the sensor config. Only a
+    // genuine profile mismatch is a permanent refusal.
+    let Ok(config_str) = std::fs::read_to_string(LORAWAN_CONFIG_PATH) else {
+        return Ok(());
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) else {
+        return Ok(());
+    };
+    resolve_otaa_profile(&config, profile_id).map(|_| ())
+}
+
 /// Provision a HARDWARIO STICKER in ChirpStack via OTAA: login + create device + set keys.
 ///
-/// Reads application_id and device_profile_id_otaa from /data/lorawan/config.json.
+/// Reads application_id and the device profile from /data/lorawan/config.json;
+/// see `resolve_otaa_profile` for how `profile_id` selects between profiles.
 pub fn provision_sticker_otaa(
     dev_eui: &str,
     name: &str,
     serial_number: &str,
     app_key: &str,
     join_eui: &str,
+    profile_id: Option<u32>,
 ) -> Result<(), String> {
     let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH).map_err(|e| {
         format!(
@@ -542,12 +632,7 @@ pub fn provision_sticker_otaa(
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
 
-    let device_profile_id = config.get("device_profile_id_otaa")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!(
-            "Missing device_profile_id_otaa in {} — re-run lorawan-setup to provision the OTAA profile",
-            LORAWAN_CONFIG_PATH
-        ))?;
+    let device_profile_id = resolve_otaa_profile(&config, profile_id)?;
 
     let token = login()?;
 
@@ -895,5 +980,86 @@ mod tests {
         let s = epoch_to_rfc3339(1_700_000_000).unwrap();
         assert!(s.starts_with("2023-11-14T22:13:20"), "got {s}");
         assert!(s.ends_with("+00:00"), "got {s}");
+    }
+
+    /// `resolve_otaa_profile` is the whole point of carrying profile_id: it has
+    /// to keep every existing gateway working while making a region mismatch
+    /// impossible to register silently.
+    mod otaa_profile {
+        use super::super::resolve_otaa_profile;
+
+        fn cfg(json: &str) -> serde_json::Value {
+            serde_json::from_str(json).unwrap()
+        }
+
+        const PLAIN: &str = r#"{"device_profile_id_otaa":"uuid-eu868"}"#;
+        const MAPPED: &str = r#"{
+            "device_profile_id_otaa":"uuid-eu868",
+            "device_profile_ids_otaa":{"1":"uuid-eu868","2":"uuid-us915"}
+        }"#;
+
+        #[test]
+        fn no_profile_id_uses_the_single_configured_profile() {
+            // Manual entry, an older viewer, and the mobile app all land here.
+            assert_eq!(
+                resolve_otaa_profile(&cfg(PLAIN), None).unwrap(),
+                "uuid-eu868"
+            );
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), None).unwrap(),
+                "uuid-eu868"
+            );
+        }
+
+        #[test]
+        fn an_unmapped_gateway_ignores_the_profile_id() {
+            // Every unit in the field today has no map. Refusing there would
+            // break registration everywhere for no safety gain.
+            assert_eq!(
+                resolve_otaa_profile(&cfg(PLAIN), Some(7)).unwrap(),
+                "uuid-eu868"
+            );
+        }
+
+        #[test]
+        fn a_mapped_profile_id_selects_its_own_profile() {
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), Some(1)).unwrap(),
+                "uuid-eu868"
+            );
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), Some(2)).unwrap(),
+                "uuid-us915"
+            );
+        }
+
+        #[test]
+        fn a_profile_the_gateway_does_not_have_is_refused() {
+            // The failure this exists to prevent: a US915 sticker registering
+            // cleanly against an EU868 gateway and then never joining.
+            let err = resolve_otaa_profile(&cfg(MAPPED), Some(9)).unwrap_err();
+            assert!(err.contains("device profile 9"), "{err}");
+            assert!(err.contains("1, 2"), "must list what it does have: {err}");
+            assert!(
+                err.contains("never joins"),
+                "must say why it matters: {err}"
+            );
+        }
+
+        #[test]
+        fn an_unreadable_config_is_not_a_profile_refusal() {
+            // The path exists to catch a mismatch, not to newly reject adds on a
+            // gateway whose ChirpStack was never provisioned — provisioning
+            // itself reports that, with a better message.
+            assert!(super::super::check_otaa_profile(Some(3)).is_ok());
+            assert!(super::super::check_otaa_profile(None).is_ok());
+        }
+
+        #[test]
+        fn a_missing_profile_config_still_explains_itself() {
+            let err = resolve_otaa_profile(&cfg("{}"), None).unwrap_err();
+            assert!(err.contains("device_profile_id_otaa"), "{err}");
+            assert!(err.contains("lorawan-setup"), "{err}");
+        }
     }
 }

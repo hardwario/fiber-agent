@@ -238,6 +238,9 @@ impl MqttPublisher {
                 sample_interval_ms,
                 aggregation_interval_ms,
                 report_interval_ms,
+                eye_enabled,
+                eye_auto_provision,
+                eye_auto_discover,
             } => {
                 self.publish_config_state(
                     led_brightness,
@@ -251,6 +254,9 @@ impl MqttPublisher {
                     sample_interval_ms,
                     aggregation_interval_ms,
                     report_interval_ms,
+                    eye_enabled,
+                    eye_auto_provision,
+                    eye_auto_discover,
                 )
                 .await
             }
@@ -632,6 +638,19 @@ impl MqttPublisher {
                 "concentratord_running": lorawan_concentratord_running,
                 "chirpstack_running": lorawan_chirpstack_running,
                 "sensor_count": lorawan_sensor_count,
+                // Both derived here rather than threaded through this function's
+                // already-long positional signature: they are read from the local
+                // journal and from /data, not from any caller's state.
+                //
+                // The unit's own radio EUI (system#7): registering a follower's
+                // radio in a leader's ChirpStack needs it, and until now it was
+                // only recoverable by shelling into the device. `null` on a unit
+                // with no working concentrator.
+                "gateway_eui": crate::libs::lorawan::cluster::own_gateway_eui(),
+                // Cluster role, and for a follower its leader and the CA
+                // fingerprint pinning it. Never the peer credential — this topic
+                // is retained on the broker and read by every viewer.
+                "cluster": crate::libs::lorawan::cluster::ClusterState::at_default().describe(),
             },
         });
 
@@ -817,6 +836,9 @@ impl MqttPublisher {
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
+        eye_enabled: bool,
+        eye_auto_provision: bool,
+        eye_auto_discover: bool,
     ) -> Result<(), String> {
         let sensors_data: Vec<serde_json::Value> = sensors
             .iter()
@@ -868,6 +890,11 @@ impl MqttPublisher {
                 "aggregation_interval_ms": aggregation_interval_ms,
                 "report_interval_ms": report_interval_ms,
             },
+            "eye": {
+                "enabled": eye_enabled,
+                "auto_provision": eye_auto_provision,
+                "auto_discover": eye_auto_discover,
+            },
         });
 
         let topic = self.topics.config_state();
@@ -894,6 +921,15 @@ impl MqttPublisher {
                     "field_thresholds": s.field_thresholds,
                     "counters": s.counters,
                     "events": s.events,
+                    // Additive per-gateway reception detail. `rssi`/`snr` stay the
+                    // strongest receiver so existing consumers are unaffected;
+                    // `gateways[]` is what tells you WHICH gateway heard the frame.
+                    // `fcnt` is lifted out of `counters` to a top-level field so a
+                    // consumer does not have to know it lives under a counter name.
+                    "gateways": s.gateways,
+                    "fcnt": s.counters.get("fCnt").copied(),
+                    "dr": s.dr,
+                    "downlink_gateway_id": s.downlink_gateway_id,
                     "rssi": s.rssi,
                     "snr": s.snr,
                     "last_seen": s.last_seen,

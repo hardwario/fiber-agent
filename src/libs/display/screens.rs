@@ -1526,8 +1526,12 @@ mod ordering_tests {
             field_thresholds: Vec::new(),
             counters: std::collections::HashMap::new(),
             recent_events: std::collections::VecDeque::new(),
+            gateways: Vec::new(),
+            dr: None,
             rssi: None,
             snr: None,
+            downlink_gateway_id: None,
+            uplink_ring: Default::default(),
             last_seen: None,
             alarm_state: alarm,
         }

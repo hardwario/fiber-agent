@@ -208,6 +208,43 @@ const STICKER_PSEUDO_FIELDS: &[&str] = &["rssi", "snr", "status"];
 /// RSSI or humidity — only a temperature and an alarm state.
 const DS18B20_FIELDS: &[&str] = &["temperature", "status"];
 
+/// Fields available for an EYE BLE tag.
+///
+/// Deliberately the same canonical names the rest of the EYE stack already uses
+/// (`temperature`, `humidity`, `battery`, `movement` are the tag's threshold
+/// field names) rather than the `EyeTagState` struct-field names
+/// (`temperature_c`, `humidity_pct`, `battery_mv`, `movement_count`). That way
+/// `unit_for_field` / `default_decimals` already do the right thing for
+/// `temperature`, `humidity`, `rssi` and `status` without a second table.
+///
+/// The tag's booleans (`magnet_detected`, `low_battery`) are deliberately absent:
+/// a row renders either a number or the four-character alarm text, and a boolean
+/// would need a third formatting mode.
+pub const BLE_FIELDS: &[&str] = &[
+    "temperature",
+    "humidity",
+    "battery",
+    "rssi",
+    "status",
+    "movement",
+    "pitch",
+    "roll",
+];
+
+/// A BLE MAC as the EYE subsystem writes it: six uppercase hex octets, colons.
+/// Case is checked by the caller-facing normalisation (config load / command
+/// validation uppercase first), so this only has to police the shape.
+fn is_mac_shaped(mac: &str) -> bool {
+    let mut octets = 0;
+    for part in mac.split(':') {
+        if part.len() != 2 || !part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return false;
+        }
+        octets += 1;
+    }
+    octets == 6
+}
+
 /// Validate one configured display line.
 ///
 /// Rejects cross-source field/address mixes (e.g. a `ds18b20` line carrying a
@@ -228,6 +265,9 @@ pub fn validate_display_line(line: &DisplayLine) -> Result<(), String> {
             }
             if line.dev_eui.is_some() {
                 return Err("ds18b20 display line must not set 'dev_eui'".to_string());
+            }
+            if line.mac.is_some() {
+                return Err("ds18b20 display line must not set 'mac'".to_string());
             }
             if !DS18B20_FIELDS.contains(&line.field.as_str()) {
                 return Err(format!(
@@ -251,6 +291,9 @@ pub fn validate_display_line(line: &DisplayLine) -> Result<(), String> {
             if line.line.is_some() {
                 return Err("sticker display line must not set 'line'".to_string());
             }
+            if line.mac.is_some() {
+                return Err("sticker display line must not set 'mac'".to_string());
+            }
             let known = crate::libs::lorawan::registry::lookup(&line.field).is_some()
                 || STICKER_PSEUDO_FIELDS.contains(&line.field.as_str());
             if !known {
@@ -258,6 +301,31 @@ pub fn validate_display_line(line: &DisplayLine) -> Result<(), String> {
                     "unknown sticker field {:?} (not in the LoRaWAN field registry, and not one of: {})",
                     line.field,
                     STICKER_PSEUDO_FIELDS.join(", "),
+                ));
+            }
+        }
+        DisplayLineSource::Ble => {
+            let mac = line
+                .mac
+                .as_deref()
+                .ok_or_else(|| "ble display line requires 'mac'".to_string())?;
+            if !is_mac_shaped(mac) {
+                return Err(format!(
+                    "ble mac must be six colon-separated hex octets (got {:?})",
+                    mac,
+                ));
+            }
+            if line.line.is_some() {
+                return Err("ble display line must not set 'line'".to_string());
+            }
+            if line.dev_eui.is_some() {
+                return Err("ble display line must not set 'dev_eui'".to_string());
+            }
+            if !BLE_FIELDS.contains(&line.field.as_str()) {
+                return Err(format!(
+                    "unknown ble field {:?} (available: {})",
+                    line.field,
+                    BLE_FIELDS.join(", "),
                 ));
             }
         }
@@ -424,6 +492,7 @@ mod display_line_tests {
             source: DisplayLineSource::Ds18b20,
             line,
             dev_eui: None,
+            mac: None,
             field: field.to_string(),
             label: None,
             format: DisplayLineFormat::default(),
@@ -435,6 +504,19 @@ mod display_line_tests {
             source: DisplayLineSource::Sticker,
             line: None,
             dev_eui: Some(dev_eui.to_string()),
+            mac: None,
+            field: field.to_string(),
+            label: None,
+            format: DisplayLineFormat::default(),
+        }
+    }
+
+    fn ble(mac: &str, field: &str) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Ble,
+            line: None,
+            dev_eui: None,
+            mac: Some(mac.to_string()),
             field: field.to_string(),
             label: None,
             format: DisplayLineFormat::default(),
@@ -442,6 +524,7 @@ mod display_line_tests {
     }
 
     const EUI: &str = "70b3d57ed0051f2a";
+    const MAC: &str = "7C:D9:F4:13:10:DE";
 
     #[test]
     fn accepts_valid_ds18b20_and_sticker_lines() {
@@ -526,6 +609,87 @@ mod display_line_tests {
         let mut line = sticker(EUI, "temperature");
         line.dev_eui = None;
         assert!(validate_display_line(&line).is_err());
+    }
+
+    // ---- ble source ------------------------------------------------------
+
+    #[test]
+    fn accepts_every_ble_field() {
+        for name in BLE_FIELDS {
+            assert!(
+                validate_display_line(&ble(MAC, name)).is_ok(),
+                "ble field {} should be selectable",
+                name,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_ble_field() {
+        // Real EyeTagState members, but not ones a row can render: the first is
+        // a boolean, the second is the struct-field name rather than the
+        // canonical one the catalog offers.
+        for bad in ["magnet_detected", "temperature_c", "snr"] {
+            let err = validate_display_line(&ble(MAC, bad)).unwrap_err();
+            assert!(err.contains("unknown ble field"), "for {:?} got: {}", bad, err);
+        }
+    }
+
+    #[test]
+    fn rejects_ble_without_mac() {
+        let mut line = ble(MAC, "temperature");
+        line.mac = None;
+        let err = validate_display_line(&line).unwrap_err();
+        assert!(err.contains("requires 'mac'"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_bad_ble_mac() {
+        for bad in [
+            "7C:D9:F4:13:10",       // five octets
+            "7C:D9:F4:13:10:DE:AB", // seven
+            "7C:D9:F4:13:10:ZZ",    // not hex
+            "7CD9F41310DE",         // no separators
+            "",
+        ] {
+            let err = validate_display_line(&ble(bad, "temperature")).unwrap_err();
+            assert!(err.contains("hex octets"), "for {:?} got: {}", bad, err);
+        }
+    }
+
+    /// A lowercase MAC is *shape*-valid here on purpose: config load and the
+    /// command validator both uppercase before this runs, so rejecting case
+    /// would only fire on a path that cannot occur.
+    #[test]
+    fn accepts_a_lowercase_mac_shape() {
+        assert!(validate_display_line(&ble("7c:d9:f4:13:10:de", "temperature")).is_ok());
+    }
+
+    #[test]
+    fn rejects_cross_source_address_mixes() {
+        let mut ble_with_eui = ble(MAC, "temperature");
+        ble_with_eui.dev_eui = Some(EUI.to_string());
+        assert!(validate_display_line(&ble_with_eui)
+            .unwrap_err()
+            .contains("must not set 'dev_eui'"));
+
+        let mut ble_with_line = ble(MAC, "temperature");
+        ble_with_line.line = Some(0);
+        assert!(validate_display_line(&ble_with_line)
+            .unwrap_err()
+            .contains("must not set 'line'"));
+
+        let mut sticker_with_mac = sticker(EUI, "temperature");
+        sticker_with_mac.mac = Some(MAC.to_string());
+        assert!(validate_display_line(&sticker_with_mac)
+            .unwrap_err()
+            .contains("must not set 'mac'"));
+
+        let mut ds_with_mac = ds(Some(0), "temperature");
+        ds_with_mac.mac = Some(MAC.to_string());
+        assert!(validate_display_line(&ds_with_mac)
+            .unwrap_err()
+            .contains("must not set 'mac'"));
     }
 
     #[test]

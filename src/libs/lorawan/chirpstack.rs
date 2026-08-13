@@ -32,6 +32,28 @@ pub fn extract_fport_data(payload: &[u8]) -> Option<(u64, Vec<u8>)> {
     Some((fport, data))
 }
 
+/// Parse a ChirpStack v4 `event/txack` (TxAckEvent) into `(dev_eui, gateway_id)`.
+///
+/// The gateway id is the one ChirpStack **actually used to transmit** the
+/// downlink — its own best-signal pick from the receiving gateways of the last
+/// uplink. We surface it for display so an admin can see the real downlink
+/// gateway alongside the uplink "primary" (strongest-RSSI) shown for the sticker.
+/// `dev_eui` is lower-cased to match `parse_uplink`. Returns `None` if the event
+/// lacks a device EUI or a non-empty gateway id.
+pub fn parse_txack(payload: &[u8]) -> Option<(String, String)> {
+    let v: Value = serde_json::from_slice(payload).ok()?;
+    let dev_eui = v
+        .get("deviceInfo")
+        .and_then(|d| d.get("devEui"))
+        .and_then(|x| x.as_str())?
+        .to_lowercase();
+    let gateway_id = v.get("gatewayId").and_then(|x| x.as_str())?.to_string();
+    if dev_eui.is_empty() || gateway_id.is_empty() {
+        return None;
+    }
+    Some((dev_eui, gateway_id))
+}
+
 /// Strip the leading protocol-version byte from an fPort 2/3/85 payload. Mirrors
 /// `ttn.js`: an unexpected version is logged but still stripped (forward-compat).
 pub fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8], String> {
@@ -58,6 +80,17 @@ pub struct StickerEvent {
     pub extra: serde_json::Value,
 }
 
+/// One gateway's reception of a single uplink. A Sticker frame is broadcast and
+/// typically heard by several gateways at once; ChirpStack v4 aggregates them
+/// into the uplink event's `rxInfo[]` (camelCase `gatewayId`/`rssi`/`snr`).
+/// Serialized snake_case to match FIBER's own MQTT schema (`dev_eui`, …).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GatewayRx {
+    pub gateway_id: String,
+    pub rssi: Option<i32>,
+    pub snr: Option<f32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct StickerReading {
     pub dev_eui: String,
@@ -65,6 +98,13 @@ pub struct StickerReading {
     pub fields: HashMap<String, f64>,
     pub counters: HashMap<String, u64>,
     pub events: Vec<StickerEvent>,
+    /// Every gateway that received this uplink (ChirpStack `rxInfo[]`). Order is
+    /// not guaranteed to be by strength — the consumer sorts. Empty if `rxInfo`
+    /// was absent.
+    pub gateways: Vec<GatewayRx>,
+    /// LoRaWAN data-rate index for this uplink (`dr`), carried for context.
+    pub dr: Option<i64>,
+    /// Back-compat scalar signal = the BEST (max-RSSI) gateway of `gateways`.
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
     pub received_at: String,
@@ -106,18 +146,38 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
         .unwrap_or("")
         .to_string();
 
-    let rx_info = v
+    // A Sticker uplink is broadcast and usually heard by several gateways;
+    // ChirpStack v4 marshals each receiver in rxInfo[] (camelCase
+    // gatewayId/rssi/snr). Collect them ALL (previously only rxInfo[0] survived,
+    // and its gatewayId was dropped, so nothing downstream could tell which
+    // gateway a frame came through).
+    let gateways: Vec<GatewayRx> = v
         .get("rxInfo")
         .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first());
-    let rssi = rx_info
-        .and_then(|r| r.get("rssi"))
-        .and_then(|v| v.as_i64())
-        .map(|v| v as i32);
-    let snr = rx_info
-        .and_then(|r| r.get("snr"))
-        .and_then(|v| v.as_f64())
-        .map(|v| v as f32);
+        .map(|arr| {
+            arr.iter()
+                .map(|r| GatewayRx {
+                    gateway_id: r
+                        .get("gatewayId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    rssi: r.get("rssi").and_then(|v| v.as_i64()).map(|v| v as i32),
+                    snr: r.get("snr").and_then(|v| v.as_f64()).map(|v| v as f32),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Back-compat scalar rssi/snr: previously rxInfo[0]; now the BEST (max-RSSI,
+    // i.e. strongest) receiver. Single-gateway uplinks are unchanged. Gateways
+    // reporting no rssi sort last (treated as i32::MIN).
+    let best = gateways.iter().max_by_key(|g| g.rssi.unwrap_or(i32::MIN));
+    let rssi = best.and_then(|g| g.rssi);
+    let snr = best.and_then(|g| g.snr);
+
+    // Event-level LoRaWAN data-rate index, carried for context.
+    let dr = v.get("dr").and_then(|v| v.as_i64());
 
     let mut fields = HashMap::new();
     let mut counters = HashMap::new();
@@ -186,6 +246,8 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
         fields,
         counters,
         events,
+        gateways,
+        dr,
         rssi,
         snr,
         received_at,
@@ -357,7 +419,7 @@ mod tests {
             "fPort": fport,
             "fCnt": fcnt,
             "data": data,
-            "rxInfo": [{ "rssi": -85, "snr": 7.5 }],
+            "rxInfo": [{ "gatewayId": "gw-single", "rssi": -85, "snr": 7.5 }],
             "time": "2026-06-19T10:30:00Z",
         })
         .to_string()
@@ -513,6 +575,140 @@ mod tests {
         assert!(!r.fields.contains_key("pressure"));
         assert!(!r.fields.contains_key("illuminance"));
         assert_eq!(r.rssi, Some(-41));
+        // The captured frame names the real external gateway, so the per-gateway
+        // list must carry it — this is the EUI a gateway detail view matches
+        // uplinks against.
+        assert_eq!(r.gateways.len(), 1);
+        assert_eq!(r.gateways[0].gateway_id, "24e124fffefd3bda");
+        assert_eq!(r.gateways[0].rssi, Some(-41));
+    }
+
+    #[test]
+    fn multi_gateway_rxinfo_collects_all_and_picks_best() {
+        // One Sticker uplink heard by TWO gateways. parse_uplink keeps the full
+        // rxInfo[] list AND sets the back-compat scalar rssi/snr to the BEST
+        // (strongest = max-rssi) receiver — here gw-b at -60 dBm, not the first
+        // element gw-a at -85 dBm.
+        let t = Telemetry {
+            temperature: Some(2300),
+            ..Default::default()
+        };
+        let raw: Vec<u8> = std::iter::once(APP_PROTO_VERSION)
+            .chain(t.encode_to_vec())
+            .collect();
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "fPort": 2, "fCnt": 42, "dr": 3, "data": BASE64.encode(&raw),
+            "rxInfo": [
+                { "gatewayId": "gw-a", "rssi": -85, "snr": 7.5 },
+                { "gatewayId": "gw-b", "rssi": -60, "snr": 9.5 },
+            ],
+            "time": "2026-07-01T10:30:00Z",
+        })
+        .to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+
+        // Full receiving-gateway list preserved in ChirpStack order.
+        assert_eq!(r.gateways.len(), 2);
+        assert_eq!(r.gateways[0].gateway_id, "gw-a");
+        assert_eq!(r.gateways[0].rssi, Some(-85));
+        assert_eq!(r.gateways[1].gateway_id, "gw-b");
+        assert_eq!(r.gateways[1].rssi, Some(-60));
+        // Back-compat scalars = BEST gateway (gw-b), not the first (gw-a).
+        assert_eq!(r.rssi, Some(-60));
+        assert_eq!(r.snr, Some(9.5));
+        // Frame counter + data rate captured.
+        assert_eq!(r.counters.get("fCnt").copied(), Some(42));
+        assert_eq!(r.dr, Some(3));
+    }
+
+    #[test]
+    fn single_gateway_uplink_exposes_gateway_id_and_scalar() {
+        // The single-gateway path still yields one gateway (with its id), and the
+        // scalar equals that gateway (first == best).
+        let t = Telemetry {
+            temperature: Some(2300),
+            ..Default::default()
+        };
+        let payload = chirpstack_uplink("70B3D57ED0060ABC", 2, 5, &t.encode_to_vec());
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        assert_eq!(r.gateways.len(), 1);
+        assert_eq!(r.gateways[0].gateway_id, "gw-single");
+        assert_eq!(r.rssi, Some(-85));
+        assert_eq!(r.snr, Some(7.5));
+    }
+
+    #[test]
+    fn uplink_without_rxinfo_has_no_gateways_and_no_scalar_signal() {
+        // Older/odd events can omit rxInfo entirely. That must degrade to an empty
+        // list and None scalars rather than panicking on `max_by_key` of nothing.
+        let t = Telemetry {
+            temperature: Some(2300),
+            ..Default::default()
+        };
+        let raw: Vec<u8> = std::iter::once(APP_PROTO_VERSION)
+            .chain(t.encode_to_vec())
+            .collect();
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "fPort": 2, "fCnt": 1, "data": BASE64.encode(&raw),
+            "time": "2026-07-01T10:30:00Z",
+        })
+        .to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        assert!(r.gateways.is_empty());
+        assert_eq!(r.rssi, None);
+        assert_eq!(r.snr, None);
+        assert_eq!(r.dr, None);
+    }
+
+    #[test]
+    fn gateway_without_rssi_never_wins_the_best_pick() {
+        // A receiver that reports no rssi must not be chosen as "strongest" —
+        // it sorts as i32::MIN, so the one real measurement wins.
+        let t = Telemetry {
+            temperature: Some(2300),
+            ..Default::default()
+        };
+        let raw: Vec<u8> = std::iter::once(APP_PROTO_VERSION)
+            .chain(t.encode_to_vec())
+            .collect();
+        let payload = serde_json::json!({
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "fPort": 2, "fCnt": 7, "data": BASE64.encode(&raw),
+            "rxInfo": [
+                { "gatewayId": "gw-noisy" },
+                { "gatewayId": "gw-real", "rssi": -92, "snr": 2.0 },
+            ],
+            "time": "2026-07-01T10:30:00Z",
+        })
+        .to_string();
+        let r = parse_uplink(payload.as_bytes()).unwrap().expect("reading");
+        assert_eq!(r.gateways.len(), 2);
+        assert_eq!(r.rssi, Some(-92));
+        assert_eq!(r.snr, Some(2.0));
+    }
+
+    #[test]
+    fn parse_txack_extracts_dev_eui_and_downlink_gateway() {
+        // Live event/txack captured from the on-device ChirpStack (a fPort-85
+        // downlink to the bench sticker). Confirms the exact field names
+        // parse_txack relies on: top-level `gatewayId` + `deviceInfo.devEui`
+        // (lower-cased to match parse_uplink).
+        let payload = r#"{"downlinkId":893069247,"time":"2026-07-22T21:02:57Z","deviceInfo":{"deviceName":"sticker-bench","devEui":"D7653371A0EF363F","deviceClassEnabled":"CLASS_A"},"queueItemId":"c6779998","fCntDown":3,"gatewayId":"24e124fffefd3bda","txInfo":{"frequency":867500000}}"#;
+        let (dev_eui, gw) = parse_txack(payload.as_bytes()).expect("txack parsed");
+        assert_eq!(dev_eui, "d7653371a0ef363f");
+        assert_eq!(gw, "24e124fffefd3bda");
+    }
+
+    #[test]
+    fn parse_txack_none_without_gateway_or_eui() {
+        // No gatewayId → nothing to display.
+        let no_gw = r#"{"deviceInfo":{"devEui":"D7653371A0EF363F"},"fCntDown":1}"#;
+        assert!(parse_txack(no_gw.as_bytes()).is_none());
+        // No deviceInfo.devEui → cannot attribute the downlink.
+        let no_eui = r#"{"gatewayId":"24e124fffefd3bda"}"#;
+        assert!(parse_txack(no_eui.as_bytes()).is_none());
     }
 
     #[test]
@@ -607,6 +803,8 @@ mod tests {
             fields: Default::default(),
             counters: Default::default(),
             events: vec![],
+            gateways: vec![],
+            dr: None,
             rssi: None,
             snr: None,
             received_at: "2026-05-19T12:00:00Z".into(),

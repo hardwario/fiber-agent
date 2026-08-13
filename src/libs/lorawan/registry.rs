@@ -113,13 +113,17 @@ pub const REGISTRY: &[FieldDef] = &[
         thresholdable: true,
         threshold_kind: Some(ThresholdKind::Range),
     },
-    // Battery — low_only (no alarm on "too high")
+    // Battery — reported and displayed, but NOT thresholdable: the sticker
+    // evaluates its own low-battery condition and reports it as a native alarm on
+    // fPort 3, so a threshold here is a duplicate of an alarm the device already
+    // raises. It was armed by default via `common_lorawan_field_thresholds`, so
+    // every sticker had one without anyone configuring it.
     FieldDef {
         name: "voltage",
         kind: FieldKind::Continuous,
         group: FieldGroup::Battery,
-        thresholdable: true,
-        threshold_kind: Some(ThresholdKind::LowOnly),
+        thresholdable: false,
+        threshold_kind: None,
     },
     // Counters
     FieldDef {
@@ -168,10 +172,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn voltage_is_thresholdable_low_only() {
+    fn voltage_is_reported_but_not_thresholdable() {
+        // Phase 1: the sticker raises its own low-battery alarm on fPort 3, so the
+        // viewer must not offer (or auto-arm) a second one. The field itself stays
+        // in the registry because the value is still reported and displayed.
         let v = lookup("voltage").expect("voltage in registry");
-        assert!(v.thresholdable);
-        assert_eq!(v.threshold_kind, Some(ThresholdKind::LowOnly));
+        assert!(!v.thresholdable);
+        assert_eq!(v.threshold_kind, None);
     }
 
     #[test]

@@ -147,6 +147,11 @@ pub enum MqttMessage {
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
+        /// EYE subsystem flags, so the viewer can reflect the real state of the
+        /// auto-provision / auto-discover toggles.
+        eye_enabled: bool,
+        eye_auto_provision: bool,
+        eye_auto_discover: bool,
     },
 
     /// Publish LoRaWAN sensor data
@@ -319,6 +324,12 @@ pub struct LoRaWANSensorPayload {
     pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
     pub counters: std::collections::HashMap<String, u64>,
     pub events: Vec<crate::libs::lorawan::chirpstack::StickerEvent>,
+    /// Every gateway that received the latest uplink, with its own RSSI/SNR.
+    pub gateways: Vec<crate::libs::lorawan::chirpstack::GatewayRx>,
+    /// LoRaWAN data-rate index of the latest uplink.
+    pub dr: Option<i64>,
+    /// Gateway ChirpStack used to transmit the last downlink (from `event/txack`).
+    pub downlink_gateway_id: Option<String>,
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
     pub last_seen: Option<String>,
@@ -362,6 +373,11 @@ pub enum ActivationMode {
         /// that pre-date the configurable JoinEUI field.
         #[serde(default = "default_join_eui")]
         join_eui: String,
+        /// Vendor device-profile number (1-99) off the sticker's QR label, which
+        /// is what fixes its region. Absent for manual entry and for viewers
+        /// that pre-date it; see `resolve_otaa_profile`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<u32>,
     },
     /// ABP: device pre-personalised with session keys.
     Abp {
@@ -515,7 +531,13 @@ pub enum MqttCommand {
         location: Option<String>,
     },
 
-    /// Set a single per-field threshold for a LoRaWAN sensor
+    /// Set a single per-field threshold for a LoRaWAN sensor.
+    ///
+    /// `enabled: false` switches the alarm OFF for this field and is the only
+    /// way to do so: an omitted bound inherits the YAML default, and the
+    /// defaults arm temperature, humidity and the probe fields on every paired
+    /// sticker. Absent from the request means `true`, so an older viewer keeps
+    /// behaving exactly as before.
     SetLoRaWANFieldThreshold {
         dev_eui: String,
         field: String,
@@ -523,6 +545,7 @@ pub enum MqttCommand {
         warning_low: Option<f64>,
         warning_high: Option<f64>,
         critical_high: Option<f64>,
+        enabled: bool,
     },
 
     /// Remove a per-field threshold for a LoRaWAN sensor
@@ -658,6 +681,14 @@ pub enum MqttCommand {
         fport: u8,
     },
 
+    /// Switch the whole EYE BLE tag subsystem on or off (`eye.enabled`).
+    ///
+    /// Every other EYE command operates on a tag, so once the subsystem was off
+    /// there was no way back except SSH — and the subsystem shipped off.
+    SetEyeEnabled {
+        enabled: bool,
+    },
+
     /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
     SetEyeRecording {
         mac: String,
@@ -715,6 +746,35 @@ pub enum MqttCommand {
     /// Remove external LoRaWAN gateway: remove gateway config + deregister from ChirpStack (signed via ConfigRequest)
     RemoveExternalGateway {
         gateway_eui: String,
+    },
+
+    /// Set or clear this unit's role in a site-local LoRaWAN cluster
+    /// (PROXIMOS system#7 Goal 2). `role` is "leader", "follower" or
+    /// "standalone"; "standalone" clears the cluster and restores the shipped
+    /// standalone behaviour.
+    ///
+    /// Every field is validated in
+    /// `AuthorizationManager::build_command_from_challenge` — the only
+    /// construction site — so the dispatch may rely on them. In particular
+    /// `leader_host` is known to be site-local, `leader_port` is known not to be
+    /// the anonymous loopback listener, `leader_ca_fingerprint` is known to match
+    /// `leader_ca`, and `peer_username` is known to be a dedicated `peer-*`
+    /// account rather than the leader's own shared credential.
+    ///
+    /// `MqttCommand` derives only `Debug`/`Clone` and is never serialised, so
+    /// `peer_password` does not reach the broker or the logs.
+    SetLorawanCluster {
+        role: String,
+        leader_host: Option<String>,
+        leader_port: u16,
+        leader_ca: Option<String>,
+        leader_ca_fingerprint: Option<String>,
+        peer_username: Option<String>,
+        peer_password: Option<String>,
+        /// Leader only: the follower's radio EUI, registered in this unit's
+        /// ChirpStack so the peer's frames are accepted rather than dropped as
+        /// coming from an unknown gateway.
+        peer_gateway_eui: Option<String>,
     },
 
     /// On-demand replay of `sensor_readings_minute` for a historical window.
@@ -809,6 +869,7 @@ impl MqttCommand {
             MqttCommand::SetEyeFieldThreshold { .. } => "set_eye_field_threshold",
             MqttCommand::DeleteEyeFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
+            MqttCommand::SetEyeEnabled { .. } => "set_eye_enabled",
             MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
             MqttCommand::SetEyeKnownTags { .. } => "set_eye_known_tags",
@@ -830,6 +891,7 @@ impl MqttCommand {
             MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
             MqttCommand::AddExternalGateway { .. } => "add_external_gateway",
             MqttCommand::RemoveExternalGateway { .. } => "remove_external_gateway",
+            MqttCommand::SetLorawanCluster { .. } => "set_lorawan_cluster",
             MqttCommand::HistoryRequest { .. } => "history_request",
             MqttCommand::AddSigner { .. } => "add_signer",
             MqttCommand::RemoveSigner { .. } => "remove_signer",
@@ -1380,6 +1442,7 @@ mod tests {
         let v = ActivationMode::Otaa {
             app_key: app_key.clone(),
             join_eui: join_eui.clone(),
+            profile_id: None,
         };
         let s = serde_json::to_value(&v).unwrap();
         assert_eq!(

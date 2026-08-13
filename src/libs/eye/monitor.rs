@@ -204,6 +204,23 @@ enum EyeJob {
     StopRecording,
 }
 
+impl EyeJob {
+    /// Lower runs first. `Detect` is the only job an operator is sitting in
+    /// front of — the viewer gives it a 90 s deadline — while `Download` is an
+    /// unattended back-fill that routinely runs for minutes. Draining a HashMap
+    /// put them in arbitrary order, so a detect queued behind one archive
+    /// download for an unrelated tag missed its window: measured at 5 min 43 s
+    /// from queue to result, 3.8x the deadline, with the operator shown a
+    /// timeout blaming the BLE environment.
+    fn priority(&self) -> u8 {
+        match self {
+            EyeJob::Detect => 0,
+            EyeJob::EnableRecording { .. } | EyeJob::StopRecording => 1,
+            EyeJob::Download { .. } => 2,
+        }
+    }
+}
+
 /// Read-only handle to the EYE monitor state.
 #[derive(Clone)]
 pub struct EyeHandle {
@@ -355,11 +372,24 @@ fn eye_loop(
             let entry = s.entry(&mac_key, tag.name.clone());
             entry.last_archived_ts = seed_archived.get(&mac_key).copied();
             // Resume provisioning state from the config, so a restart does not
-            // re-provision a tag whose flash already has the profile. Only the
-            // positive case is seeded: `Some(false)`/`None` stay
-            // `PendingProvisioning`, which is the safe default.
-            if tag.provisioned == Some(true) {
-                entry.provisioning = ProvisioningStatus::Provisioned;
+            // re-provision a tag whose flash already has the profile. `None` —
+            // never attempted, or written by a build predating the field —
+            // stays `PendingProvisioning`, which is the safe default.
+            //
+            // `Some(false)` means provisioning was attempted MAX_PROVISION_ATTEMPTS
+            // times and gave up. Without seeding that, `provision_attempts` (which
+            // lives only in memory) reset to 0 on every restart and the unit
+            // re-ran the whole 3 x ~20 s burst against a tag already known to
+            // refuse it — with the scan stopped and the job queue blocked
+            // throughout, which is long enough to kill any detect an operator
+            // starts in that window.
+            match tag.provisioned {
+                Some(true) => entry.provisioning = ProvisioningStatus::Provisioned,
+                Some(false) => {
+                    entry.provisioning = ProvisioningStatus::Failed;
+                    entry.provision_attempts = MAX_PROVISION_ATTEMPTS;
+                }
+                None => {}
             }
         }
     }
@@ -399,7 +429,10 @@ fn eye_loop(
             // L2CAP (recorder) and an active LE scan must not overlap on the same
             // adapter, so this deliberately runs before discovery is (re)started. ---
             if !pending.is_empty() {
-                let jobs: Vec<(String, EyeJob)> = pending.drain().collect();
+                let mut jobs: Vec<(String, EyeJob)> = pending.drain().collect();
+                // Interactive first — see EyeJob::priority. `sort_by_key` is
+                // stable, so same-priority jobs keep the drain's order.
+                jobs.sort_by_key(|(_, job)| job.priority());
                 let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
                 for (mac, job) in jobs {
                     run_recorder_job(&mac, job, &state, &storage, sync_fallback_secs, &mqtt_tx).await;
@@ -662,8 +695,19 @@ fn eye_loop(
                                         let prev_seen = entry.last_seen_ts;
                                         entry.apply_reading(&reading, rssi, now_ts);
                                         entry.evaluate_alarms(tag);
+                                        // `== Some(true)`, not `!= Some(false)`:
+                                        // an unprobed tag is `None`, and on
+                                        // first sight that scheduled a full
+                                        // archive download against hardware
+                                        // that might have no recorder at all.
+                                        // Measured: four minutes burnt on a
+                                        // black tag before it failed with
+                                        // 'recorder characteristic not found',
+                                        // blocking the queue the whole time.
+                                        // Detect resolves the variant first;
+                                        // the download follows on a later tick.
                                         if config.recording_on_for(tag)
-                                            && entry.is_en12830 != Some(false)
+                                            && entry.is_en12830 == Some(true)
                                         {
                                             let gap = prev_seen.map_or(false, |p| {
                                                 now_ts.saturating_sub(p) > 5 * interval_s
@@ -783,9 +827,9 @@ fn eye_loop(
                                         }
                                         Err(ref e) => {
                                             t.provision_attempts += 1;
-                                            t.provisioning = if t.provision_attempts
-                                                >= MAX_PROVISION_ATTEMPTS
-                                            {
+                                            let gave_up =
+                                                t.provision_attempts >= MAX_PROVISION_ATTEMPTS;
+                                            t.provisioning = if gave_up {
                                                 ProvisioningStatus::Failed
                                             } else {
                                                 ProvisioningStatus::PendingProvisioning
@@ -794,6 +838,16 @@ fn eye_loop(
                                                 "[EYE Monitor] Provisioning {mac_key} failed (attempt {}): {e}",
                                                 t.provision_attempts
                                             );
+                                            // Persist the give-up, mirroring the
+                                            // success path. `provision_attempts`
+                                            // is in-memory only, so without this
+                                            // the next restart replays the whole
+                                            // burst against the same tag.
+                                            if gave_up {
+                                                if let Ok(mut c) = shared_config.write() {
+                                                    c.set_provisioned(&mac_key, false);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -819,7 +873,9 @@ fn eye_loop(
                                     > config.sync_fallback_hours as i64 * 3600;
                                 let rate_ok =
                                     now_ts.saturating_sub(last_dl) >= interval_s.max(60);
-                                if t.is_en12830 != Some(false) && in_range && due && rate_ok {
+                                // See the gap-detection site: an unprobed
+                                // tag must not be downloaded from.
+                                if t.is_en12830 == Some(true) && in_range && due && rate_ok {
                                     Some(t.last_archived_ts.unwrap_or(0))
                                 } else {
                                     None
@@ -1435,6 +1491,54 @@ mod tests {
             "re-added as borrowed, not as owned"
         );
         assert!(out[0].name.is_none());
+    }
+
+    #[test]
+    fn detect_runs_before_an_archive_download() {
+        // The queue is a HashMap and used to be drained in arbitrary order, so
+        // an operator's detect could land behind a multi-minute archive
+        // download for an unrelated tag and miss the viewer's 90 s deadline.
+        let mut jobs = vec![
+            (
+                "AA".to_string(),
+                EyeJob::Download {
+                    since_ts: 0,
+                    interval_s: 300,
+                },
+            ),
+            (
+                "BB".to_string(),
+                EyeJob::EnableRecording { interval_s: 300 },
+            ),
+            ("CC".to_string(), EyeJob::Detect),
+        ];
+        jobs.sort_by_key(|(_, job)| job.priority());
+        let order: Vec<&str> = jobs.iter().map(|(mac, _)| mac.as_str()).collect();
+        assert_eq!(order, vec!["CC", "BB", "AA"]);
+    }
+
+    #[test]
+    fn same_priority_jobs_keep_their_order() {
+        // sort_by_key is stable; two downloads must not be reshuffled.
+        let mut jobs = vec![
+            (
+                "AA".to_string(),
+                EyeJob::Download {
+                    since_ts: 0,
+                    interval_s: 300,
+                },
+            ),
+            (
+                "BB".to_string(),
+                EyeJob::Download {
+                    since_ts: 0,
+                    interval_s: 300,
+                },
+            ),
+        ];
+        jobs.sort_by_key(|(_, job)| job.priority());
+        let order: Vec<&str> = jobs.iter().map(|(mac, _)| mac.as_str()).collect();
+        assert_eq!(order, vec!["AA", "BB"]);
     }
 
     #[test]

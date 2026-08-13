@@ -110,6 +110,7 @@ fn req(deveui: &str) -> StickerAddRequest {
         appkey: "00112233445566778899AABBCCDDEEFF".to_string(),
         name: "Fridge 1".to_string(),
         serial_number: "SN-001".to_string(),
+        profile_id: None,
     }
 }
 

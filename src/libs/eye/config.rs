@@ -5,10 +5,25 @@ use serde::{Deserialize, Serialize};
 use crate::libs::config::FieldThreshold;
 
 /// Top-level EYE subsystem configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// `Default` is written out by hand rather than derived. A derived `Default`
+/// ignores every `#[serde(default = "...")]` on the fields below, so
+/// `EyeConfig::default()` — which is what `config.eye.clone().unwrap_or_default()`
+/// hands the monitor when the YAML has no `eye:` section at all — produced a
+/// struct with `publish_interval_s: 0`, `tag_timeout_s: 0` and
+/// `scan_stall_secs: 0`. That is a broken configuration, not merely a disabled
+/// one, and it would have started misbehaving the moment the subsystem was
+/// switched on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EyeConfig {
     /// Enable the EYE BLE tag monitor.
-    #[serde(default)]
+    ///
+    /// On by default: BLE tag support is a shipped feature of the product, and
+    /// every unit that had it off carried the value from the shipped template
+    /// rather than from a decision — there has never been a way to turn it off
+    /// deliberately, so there was nothing to respect. `set_eye_enabled` is that
+    /// way; see the v2 -> v3 config migration for existing units.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// How often to publish the tag snapshot to MQTT, seconds.
@@ -79,6 +94,28 @@ pub struct EyeConfig {
     pub tags: Vec<EyeTagConfig>,
 }
 
+impl Default for EyeConfig {
+    /// Mirrors the `#[serde(default = "...")]` on each field, so a config with
+    /// no `eye:` section behaves exactly like one that spells out the defaults.
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            publish_interval_s: default_publish_interval_s(),
+            tag_timeout_s: default_tag_timeout_s(),
+            auto_provision: false,
+            recording_enabled: default_true(),
+            default_logging_interval_min: default_logging_interval_min(),
+            sync_fallback_hours: default_sync_fallback_hours(),
+            scan_stall_recovery: default_true(),
+            scan_stall_secs: default_scan_stall_secs(),
+            auto_discover: None,
+            auto_discover_max: None,
+            adapter: None,
+            tags: Vec::new(),
+        }
+    }
+}
+
 impl EyeConfig {
     /// Effective logging interval (minutes) for a tag: per-tag override, else
     /// the subsystem default. Clamped to the tag-supported set {1, 5, 15}.
@@ -103,7 +140,13 @@ impl EyeConfig {
     /// Overwrites the name only when `name` is `Some`. Mirrors the YAML upsert in
     /// `ConfigApplier::update_eye_tag_config` so the monitor's live view stays in
     /// sync with disk after an `add_eye_tag` command.
+    ///
+    /// Also switches the subsystem on. Adding a tag to a disabled subsystem is
+    /// not a state anyone asks for: it is what produced units carrying
+    /// `enabled: false` with `tags: [{enabled: true}]`, where the operator's
+    /// tag was accepted and then never scanned for.
     pub fn upsert_tag(&mut self, mac: &str, name: Option<&str>) {
+        self.enabled = true;
         let up = mac.to_uppercase();
         if let Some(t) = self.tags.iter_mut().find(|t| t.mac.to_uppercase() == up) {
             if let Some(n) = name {
