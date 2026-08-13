@@ -328,6 +328,10 @@ impl ButtonFsm {
             }
         }
 
+        // Whether the QR screen was already up before this tick's events, which is
+        // what the session-expiry check below is allowed to act on.
+        let was_showing_qr = self.state == ButtonMonitorState::ShowingQr;
+
         for event in input.events {
             match event {
                 // Any button PRESS counts as user activity: wake the backlight
@@ -612,7 +616,17 @@ impl ButtonFsm {
 
         // Expire the provisioning session once it has sat idle (no BLE GATT
         // activity from the phone), dropping the user back to the overview.
-        if self.state == ButtonMonitorState::ShowingQr && input.provisioning_expired {
+        //
+        // Only for a QR screen that was already up when this tick began.
+        // `provisioning_expired` is sampled by the caller before the tick runs, so
+        // on the tick that emits `OpenQrSession` it still describes the empty slot
+        // from *before* the session was minted — and an absent session counts as
+        // expired. Acting on that would tear the screen down in the same tick that
+        // opened it, which is exactly what it did on hardware.
+        if was_showing_qr
+            && self.state == ButtonMonitorState::ShowingQr
+            && input.provisioning_expired
+        {
             effects.push(Effect::ExpireQrSession);
             self.state = ButtonMonitorState::Idle;
         }
@@ -1280,6 +1294,52 @@ mod tests {
             out.effects,
             vec![Effect::ShowMenu],
             "a notification screen must not make the panel deaf"
+        );
+    }
+
+    #[test]
+    fn a_second_hold_works_after_the_first_menu_times_out() {
+        // Observed on hardware: the first UP hold opened the menu, and every hold
+        // after it did nothing at all.
+        let t0 = Instant::now();
+        let (mut h, opened) = Harness::with_menu_open(t0);
+
+        let timed_out = opened + SELECTION_TIMEOUT;
+        let out = h.idle(timed_out);
+        assert_eq!(
+            out.effects,
+            vec![Effect::ShowSensorOverview],
+            "menu timed out"
+        );
+
+        let t1 = timed_out + Duration::from_secs(1);
+        h.press(t1, Button::Up);
+        let out = h.idle(t1 + COUNTDOWN_DURATION);
+
+        assert_eq!(
+            out.effects,
+            vec![Effect::ShowMenu],
+            "a second hold must behave exactly like the first"
+        );
+    }
+
+    #[test]
+    fn opening_the_qr_screen_does_not_immediately_expire_it() {
+        // Observed on hardware: "session opened" / "transitioning to QR" /
+        // "session idle for 5min - tearing down" all in one tick. The caller reads
+        // the session slot before the tick, so on the tick that opens the screen the
+        // slot is still empty — and an absent session counts as expired.
+        let t0 = Instant::now();
+        let mut h = Harness::new();
+        h.provisioning_expired = true; // no session exists yet, so: "expired"
+        h.press(t0, Button::Enter);
+
+        let out = h.idle(t0 + COUNTDOWN_DURATION);
+
+        assert_eq!(
+            out.effects,
+            vec![Effect::OpenQrSession],
+            "the QR screen must not be torn down on the tick that opened it"
         );
     }
 

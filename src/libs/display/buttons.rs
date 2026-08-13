@@ -309,6 +309,14 @@ impl ButtonMonitor {
 
         let mut fsm = ButtonFsm::new();
 
+        /// How long a button may read pressed before it is reported as a fault.
+        /// Longer than any legitimate gesture (the longest is a 2s hold) with room
+        /// to spare, so a deliberate lean on the panel is not flagged.
+        const STUCK_WARN_AFTER: Duration = Duration::from_secs(30);
+        // Per button, indexed Up/Down/Enter.
+        let mut held_since: [Option<Instant>; 3] = [None; 3];
+        let mut stuck_warned = [false; 3];
+
         loop {
             if shutdown_flag.load(Ordering::Relaxed) {
                 eprintln!("[ButtonMonitor] Shutdown signal received, exiting button thread");
@@ -347,6 +355,49 @@ impl ButtonMonitor {
                 .ok()
                 .map(|g| g.as_ref().map(|s| s.is_expired()).unwrap_or(true))
                 .unwrap_or(false);
+
+            // One line per edge, with the levels and the state/screen it landed on.
+            // The pre-refactor loop logged every press; keeping that is what makes a
+            // field report ("the buttons did nothing") diagnosable at all, and the
+            // levels distinguish a button that was never seen from one the machine
+            // believes is still held.
+            for event in &events {
+                eprintln!(
+                    "[ButtonMonitor] {:?} levels=up:{} down:{} enter:{} state={:?} screen={:?}",
+                    event,
+                    levels.up as u8,
+                    levels.down as u8,
+                    levels.enter as u8,
+                    fsm.state(),
+                    screen,
+                );
+            }
+
+            // A line that reads pressed for this long is a fault, not a gesture: a
+            // stuck switch, a broken panel harness, or a line left floating. It is
+            // also invisible from the outside — no edge is ever emitted again, so
+            // the button simply stops working. Say so, once per episode.
+            for (idx, button) in [Button::Up, Button::Down, Button::Enter]
+                .into_iter()
+                .enumerate()
+            {
+                if levels.get(button) {
+                    let since = *held_since[idx].get_or_insert(now);
+                    if !stuck_warned[idx]
+                        && now.saturating_duration_since(since) >= STUCK_WARN_AFTER
+                    {
+                        stuck_warned[idx] = true;
+                        eprintln!(
+                            "[ButtonMonitor] WARN: {:?} has read pressed for {:?} — stuck switch \
+                             or floating line? No further edges will be reported for it.",
+                            button, STUCK_WARN_AFTER,
+                        );
+                    }
+                } else {
+                    held_since[idx] = None;
+                    stuck_warned[idx] = false;
+                }
+            }
 
             let outcome = fsm.tick(Inputs {
                 now,
