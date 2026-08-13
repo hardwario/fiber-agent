@@ -175,6 +175,44 @@ impl StorageReader {
         })
     }
 
+    /// The `limit` most recent stored uplink timestamps for one sticker, newest
+    /// first.
+    ///
+    /// Exists so the sticker's reporting cadence survives a restart. The cadence
+    /// bounds every fPort-85 round trip (a Class-A device answers only in the
+    /// window after its own uplink), and the in-memory view starts empty — which
+    /// is exactly when an operator opens the drawer and hits "Read from device".
+    pub fn recent_sticker_uplink_times(
+        conn: &Connection,
+        dev_eui: &str,
+        limit: usize,
+    ) -> StorageResult<Vec<i64>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT ts FROM sticker_readings
+                 WHERE dev_eui = ? AND event_type = 'uplink'
+                 ORDER BY id DESC
+                 LIMIT ?",
+            )
+            .map_err(|e| {
+                StorageError::QueryError(format!("prepare recent_sticker_uplink_times: {}", e))
+            })?;
+        let rows = stmt
+            .query_map(rusqlite::params![dev_eui, limit as i64], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(|e| {
+                StorageError::QueryError(format!("query recent_sticker_uplink_times: {}", e))
+            })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| {
+                StorageError::QueryError(format!("row recent_sticker_uplink_times: {}", e))
+            })?);
+        }
+        Ok(out)
+    }
+
     /// Fetch sticker readings with `id > last_id`, ordered by id ascending,
     /// up to `limit` rows. Used by the export drain loop to consume rows
     /// past the per-(broker, stream) cursor.

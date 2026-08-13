@@ -351,6 +351,8 @@ mod tests {
             fields: fields.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             counters: c,
             events: Vec::new(),
+            gateways: Vec::new(),
+            dr: None,
             rssi: Some(-70),
             snr: Some(9.0),
             received_at: "2026-07-28T19:00:00Z".to_string(),

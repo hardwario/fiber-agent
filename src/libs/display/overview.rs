@@ -8,6 +8,7 @@
 use super::screens::truncate_chars;
 use crate::libs::alarms::AlarmState;
 use crate::libs::config::{DisplayLine, DisplayLineFormat, DisplayLineSource};
+use crate::libs::eye::state::EyeTagState;
 use crate::libs::lorawan::registry::{self, FieldKind};
 use crate::libs::lorawan::state::{LoRaWANAlarmState, LoRaWANSensorState};
 use crate::libs::sensors::state::SensorReading;
@@ -46,6 +47,12 @@ pub fn unit_for_field(field: &str) -> &'static str {
         "rssi" => "dBm",
         "snr" => "dB",
         "status" => "",
+        // EYE tag fields. `battery` is the tag's raw millivolts (EyeTagState
+        // carries `battery_mv`, not a percentage), and pitch/roll are degrees.
+        "battery" => "mV",
+        "pitch" | "roll" => "°",
+        // `movement` is EyeTagState::movement_count — a bare counter.
+        "movement" => "",
         // Covers temperature, ext_temperature_N and machine_probe_temperature_N.
         f if f.contains("temperature") => "°C",
         // Covers humidity and machine_probe_humidity_N.
@@ -60,6 +67,10 @@ pub fn default_decimals(field: &str) -> u8 {
         "voltage" => 2,
         "snr" => 1,
         "humidity" | "pressure" | "illuminance" | "altitude" | "rssi" => 0,
+        // EYE integers: millivolts, a counter, and whole degrees of tilt. All
+        // are reported as integers by the tag, so a decimal point would invent
+        // precision the advertisement never carried.
+        "battery" | "movement" | "pitch" | "roll" => 0,
         f if f.contains("humidity") => 0,
         f if matches!(
             registry::lookup(f).map(|d| d.kind),
@@ -167,6 +178,7 @@ pub fn default_label(
     line: &DisplayLine,
     ds_names: &[String; 8],
     lorawan: &[LoRaWANSensorState],
+    tags: &[EyeTagState],
 ) -> String {
     match line.source {
         DisplayLineSource::Ds18b20 => match line.line.map(usize::from) {
@@ -179,14 +191,30 @@ pub fn default_label(
                 Some(sensor) => sensor.name.clone(),
                 // Last 4 hex digits, so an unprovisioned row is still
                 // traceable back to the sticker the user meant.
-                None => {
-                    let count = dev_eui.chars().count();
-                    let tail: String = dev_eui.chars().skip(count.saturating_sub(4)).collect();
-                    format!("?{}", tail)
-                }
+                None => unknown_tail(dev_eui),
+            }
+        }
+        DisplayLineSource::Ble => {
+            let mac = line.mac.as_deref().unwrap_or_default();
+            match find_tag(tags, mac) {
+                // A tag's name is optional (the gateway may only know its MAC),
+                // so fall back to the same `?tail` form rather than a blank row.
+                Some(tag) => tag
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| unknown_tail(&mac.replace(':', ""))),
+                None => unknown_tail(&mac.replace(':', "")),
             }
         }
     }
+}
+
+/// `?` plus the last four characters of an address, so a row pointing at a
+/// sensor this device has never seen is still traceable to what was meant.
+fn unknown_tail(address: &str) -> String {
+    let count = address.chars().count();
+    let tail: String = address.chars().skip(count.saturating_sub(4)).collect();
+    format!("?{}", tail)
 }
 
 /// Fit a label and value onto one row, truncating the label as needed.
@@ -209,6 +237,13 @@ fn find_sticker<'a>(
     dev_eui: &str,
 ) -> Option<&'a LoRaWANSensorState> {
     lorawan.iter().find(|s| s.dev_eui == dev_eui)
+}
+
+/// Find an EYE tag by MAC. Both sides are uppercased — the config on load, the
+/// tag map by construction — so this is a plain comparison, same as
+/// [`find_sticker`].
+fn find_tag<'a>(tags: &'a [EyeTagState], mac: &str) -> Option<&'a EyeTagState> {
+    tags.iter().find(|t| t.mac == mac)
 }
 
 /// Resolve one DS18B20 line against live state.
@@ -296,6 +331,66 @@ fn build_sticker_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (St
     )
 }
 
+/// Resolve one EYE BLE tag line against live state.
+///
+/// Mirrors [`build_sticker_line`], including the rule that a tag we have lost
+/// shows the placeholder rather than its last-known reading.
+///
+/// `tags` is expected to carry an `alarm_state` already escalated to
+/// `Disconnected` for a stale tag — the same escalation
+/// `eye::monitor::publish_eye_snapshot` applies — because staleness is a function
+/// of the clock and this module is deliberately clock-free so it stays testable
+/// on the host.
+fn build_ble_line(line: &DisplayLine, tags: &[EyeTagState]) -> (String, char, bool) {
+    let mac = line.mac.as_deref().unwrap_or_default();
+    let Some(tag) = find_tag(tags, mac) else {
+        // Configured but never seen: placeholder, not a dropped row.
+        return (placeholder_for(&line.field, &line.format), '?', false);
+    };
+
+    // Per-field state first, so a humidity row can read NORM while the
+    // temperature row on the same tag reads CRIT.
+    let field_state = tag
+        .field_alarm_states
+        .get(&line.field)
+        .cloned()
+        .unwrap_or_else(|| tag.alarm_state.clone());
+    let disconnected = tag.alarm_state == LoRaWANAlarmState::Disconnected
+        || field_state == LoRaWANAlarmState::Disconnected;
+    let effective = if disconnected {
+        LoRaWANAlarmState::Disconnected
+    } else {
+        field_state
+    };
+
+    let value = if line.field == "status" {
+        alarm_text_lora(&effective).to_string()
+    } else if disconnected {
+        // `EyeTagState`'s readings are never cleared, so the last advertisement's
+        // value would otherwise sit on the panel looking live. A tag that has
+        // dropped out must not display a plausible temperature.
+        placeholder_for(&line.field, &line.format)
+    } else {
+        let raw: Option<f64> = match line.field.as_str() {
+            "temperature" => tag.temperature_c.map(f64::from),
+            "humidity" => tag.humidity_pct.map(f64::from),
+            "battery" => tag.battery_mv.map(f64::from),
+            "rssi" => tag.rssi.map(f64::from),
+            "movement" => tag.movement_count.map(f64::from),
+            "pitch" => tag.pitch_deg.map(f64::from),
+            "roll" => tag.roll_deg.map(f64::from),
+            _ => return (UNKNOWN_FIELD_VALUE.to_string(), '?', false),
+        };
+        format_field_value(&line.field, raw, &line.format)
+    };
+
+    (
+        value,
+        status_char_lora(&effective),
+        effective == LoRaWANAlarmState::Critical,
+    )
+}
+
 /// Turn the configured lines plus live sensor state into drawable rows.
 ///
 /// Every configured line yields exactly one row, in order — never skipped,
@@ -306,6 +401,7 @@ pub fn build_custom_lines(
     ds_readings: &[Option<SensorReading>; 8],
     ds_names: &[String; 8],
     lorawan: &[LoRaWANSensorState],
+    tags: &[EyeTagState],
 ) -> Vec<RenderedLine> {
     lines
         .iter()
@@ -313,11 +409,12 @@ pub fn build_custom_lines(
             let (value, status, is_alarm) = match line.source {
                 DisplayLineSource::Ds18b20 => build_ds18b20_line(line, ds_readings),
                 DisplayLineSource::Sticker => build_sticker_line(line, lorawan),
+                DisplayLineSource::Ble => build_ble_line(line, tags),
             };
 
             let raw_label = match line.label.as_deref() {
                 Some(label) => label.to_string(),
-                None => default_label(line, ds_names, lorawan),
+                None => default_label(line, ds_names, lorawan, tags),
             };
 
             let show_status = line.format.status_char;
@@ -386,6 +483,7 @@ mod tests {
             source: DisplayLineSource::Ds18b20,
             line: Some(idx),
             dev_eui: None,
+            mac: None,
             field: field.to_string(),
             label: None,
             format: fmt(),
@@ -397,6 +495,19 @@ mod tests {
             source: DisplayLineSource::Sticker,
             line: None,
             dev_eui: Some(dev_eui.to_string()),
+            mac: None,
+            field: field.to_string(),
+            label: None,
+            format: fmt(),
+        }
+    }
+
+    fn ble_line(mac: &str, field: &str) -> DisplayLine {
+        DisplayLine {
+            source: DisplayLineSource::Ble,
+            line: None,
+            dev_eui: None,
+            mac: Some(mac.to_string()),
             field: field.to_string(),
             label: None,
             format: fmt(),
@@ -405,6 +516,39 @@ mod tests {
 
     fn no_readings() -> [Option<SensorReading>; 8] {
         Default::default()
+    }
+
+    /// No EYE tags, for the probe/sticker tests that predate the `ble` source.
+    fn no_tags() -> Vec<EyeTagState> {
+        Vec::new()
+    }
+
+    /// [`build_custom_lines`] with no EYE tags — the four-argument shape every
+    /// probe/sticker test used before the `ble` source existed. Those tests are
+    /// about probes and stickers, so spelling `&[]` for tags in each of them
+    /// would be noise.
+    fn rows_of(
+        lines: &[DisplayLine],
+        ds_readings: &[Option<SensorReading>; 8],
+        ds_names: &[String; 8],
+        lorawan: &[LoRaWANSensorState],
+    ) -> Vec<RenderedLine> {
+        build_custom_lines(lines, ds_readings, ds_names, lorawan, &no_tags())
+    }
+
+    /// An EYE tag with the readings a Proximos-provisioned tag advertises.
+    fn tag(mac: &str) -> EyeTagState {
+        let mut t = EyeTagState::new(mac.to_string(), Some("Freezer tag".to_string()));
+        t.temperature_c = Some(4.25);
+        t.humidity_pct = Some(63);
+        t.battery_mv = Some(3050);
+        t.rssi = Some(-71);
+        t.movement_count = Some(12);
+        t.pitch_deg = Some(-4);
+        t.roll_deg = Some(178);
+        t.last_seen_ts = Some(1_700_000_000);
+        t.alarm_state = LoRaWANAlarmState::Normal;
+        t
     }
 
     fn names() -> [String; 8] {
@@ -432,8 +576,12 @@ mod tests {
             field_thresholds: Vec::new(),
             counters: HashMap::new(),
             recent_events: Default::default(),
+            gateways: Vec::new(),
+            dr: None,
             rssi: None,
             snr: None,
+            downlink_gateway_id: None,
+            uplink_ring: Default::default(),
             last_seen: None,
             alarm_state: alarm,
         }
@@ -583,7 +731,7 @@ mod tests {
     fn build_lines_ds18b20_default_label_is_sensor_name() {
         let mut readings = no_readings();
         readings[2] = reading(4.5, true, AlarmState::Normal);
-        let rows = build_custom_lines(&[ds_line(2, "temperature")], &readings, &names(), &[]);
+        let rows = rows_of(&[ds_line(2, "temperature")], &readings, &names(), &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "Probe3");
         assert_eq!(rows[0].value, "4.5°C");
@@ -595,13 +743,13 @@ mod tests {
     fn build_lines_custom_label_overrides_default() {
         let mut line = ds_line(0, "temperature");
         line.label = Some("Freezer".to_string());
-        let rows = build_custom_lines(&[line], &no_readings(), &names(), &[]);
+        let rows = rows_of(&[line], &no_readings(), &names(), &[]);
         assert_eq!(rows[0].label, "Freezer");
     }
 
     #[test]
     fn build_lines_ds18b20_never_reported_shows_question_status() {
-        let rows = build_custom_lines(&[ds_line(0, "temperature")], &no_readings(), &names(), &[]);
+        let rows = rows_of(&[ds_line(0, "temperature")], &no_readings(), &names(), &[]);
         assert_eq!(rows[0].value, "--.-°C");
         assert_eq!(rows[0].status_char, Some('?'));
     }
@@ -610,7 +758,7 @@ mod tests {
     fn build_lines_ds18b20_disconnected_hides_temperature() {
         let mut readings = no_readings();
         readings[0] = reading(4.5, false, AlarmState::Disconnected);
-        let rows = build_custom_lines(&[ds_line(0, "temperature")], &readings, &names(), &[]);
+        let rows = rows_of(&[ds_line(0, "temperature")], &readings, &names(), &[]);
         assert_eq!(rows[0].value, "--.-°C");
         assert_eq!(rows[0].status_char, Some('E'));
     }
@@ -619,7 +767,7 @@ mod tests {
     fn build_lines_ds18b20_critical_sets_is_alarm() {
         let mut readings = no_readings();
         readings[1] = reading(45.0, true, AlarmState::Critical);
-        let rows = build_custom_lines(&[ds_line(1, "temperature")], &readings, &names(), &[]);
+        let rows = rows_of(&[ds_line(1, "temperature")], &readings, &names(), &[]);
         assert_eq!(rows[0].status_char, Some('C'));
         assert!(rows[0].is_alarm);
     }
@@ -628,7 +776,7 @@ mod tests {
     fn build_lines_ds18b20_status_field_renders_state_text() {
         let mut readings = no_readings();
         readings[0] = reading(45.0, true, AlarmState::Critical);
-        let rows = build_custom_lines(&[ds_line(0, "status")], &readings, &names(), &[]);
+        let rows = rows_of(&[ds_line(0, "status")], &readings, &names(), &[]);
         assert_eq!(rows[0].value, "CRIT");
     }
 
@@ -638,7 +786,7 @@ mod tests {
     fn build_lines_sticker_ext_temperature_1_resolves_from_fields_map() {
         let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.fields.insert("ext_temperature_1".to_string(), -18.26);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "ext_temperature_1")],
             &no_readings(),
             &names(),
@@ -652,7 +800,7 @@ mod tests {
     fn build_lines_sticker_voltage_two_decimals_volt_unit() {
         let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.fields.insert("voltage".to_string(), 3.02);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "voltage")],
             &no_readings(),
             &names(),
@@ -667,7 +815,7 @@ mod tests {
         s.counters.insert("motion_count".to_string(), 417);
         // A stray same-named entry in `fields` must not win.
         s.fields.insert("motion_count".to_string(), 1.0);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "motion_count")],
             &no_readings(),
             &names(),
@@ -683,7 +831,7 @@ mod tests {
         // Not 9.25 — that's an exact tie and rounds to 9.2, which would make
         // this test about float rounding rather than about field lookup.
         s.snr = Some(9.26);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "rssi"), sticker_line(EUI1, "snr")],
             &no_readings(),
             &names(),
@@ -695,7 +843,7 @@ mod tests {
 
     #[test]
     fn build_lines_unknown_dev_eui_renders_placeholder_and_question_status() {
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI2, "temperature")],
             &no_readings(),
             &names(),
@@ -712,7 +860,7 @@ mod tests {
     fn build_lines_missing_field_on_known_sticker_renders_placeholder() {
         // Registry field, but this sticker has no external probe attached.
         let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "ext_temperature_1")],
             &no_readings(),
             &names(),
@@ -727,7 +875,7 @@ mod tests {
         // a plausible 22.0°C for a sticker that stopped reporting days ago.
         let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
         s.fields.insert("temperature".to_string(), 22.0);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "temperature")],
             &no_readings(),
             &names(),
@@ -745,7 +893,7 @@ mod tests {
         s.fields.insert("humidity".to_string(), 48.0);
         s.field_alarm_states
             .insert("humidity".to_string(), LoRaWANAlarmState::Normal);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "humidity")],
             &no_readings(),
             &names(),
@@ -762,7 +910,7 @@ mod tests {
         s.fields.insert("temperature".to_string(), 41.0);
         s.field_alarm_states
             .insert("temperature".to_string(), LoRaWANAlarmState::Critical);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "temperature")],
             &no_readings(),
             &names(),
@@ -775,7 +923,7 @@ mod tests {
     #[test]
     fn build_lines_sticker_status_field_renders_state_text() {
         let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Warning);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[sticker_line(EUI1, "status")],
             &no_readings(),
             &names(),
@@ -788,7 +936,7 @@ mod tests {
     fn build_lines_unknown_field_reads_as_misconfigured() {
         // Only reachable from a hand-edited config; the command path rejects it.
         let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[
                 sticker_line(EUI1, "battery_percent"),
                 ds_line(0, "humidity"),
@@ -821,7 +969,7 @@ mod tests {
             sticker_line(EUI2, "humidity"),
             sticker_line(EUI1, "voltage"),
         ];
-        let rows = build_custom_lines(&lines, &readings, &names(), &[s1, s2]);
+        let rows = rows_of(&lines, &readings, &names(), &[s1, s2]);
 
         assert_eq!(
             rows.len(),
@@ -838,20 +986,20 @@ mod tests {
     fn build_lines_status_char_can_be_disabled_per_line() {
         let mut line = ds_line(0, "temperature");
         line.format.status_char = false;
-        let rows = build_custom_lines(&[line], &no_readings(), &names(), &[]);
+        let rows = rows_of(&[line], &no_readings(), &names(), &[]);
         assert_eq!(rows[0].status_char, None);
     }
 
     #[test]
     fn build_lines_empty_config_yields_no_rows() {
-        assert!(build_custom_lines(&[], &no_readings(), &names(), &[]).is_empty());
+        assert!(rows_of(&[], &no_readings(), &names(), &[]).is_empty());
     }
 
     #[test]
     fn build_lines_out_of_range_probe_index_does_not_panic() {
         // Validation rejects this on the command path, but a hand-edited file
         // can still carry it and must not take the display thread down.
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[ds_line(200, "temperature")],
             &no_readings(),
             &names(),
@@ -885,7 +1033,7 @@ mod tests {
         let mut hum = sticker_line(EUI2, "humidity");
         hum.label = Some("Stkr2 RH".to_string());
 
-        let rows = build_custom_lines(&[ext, probe, hum, battery], &readings, &names(), &[s1, s2]);
+        let rows = rows_of(&[ext, probe, hum, battery], &readings, &names(), &[s1, s2]);
 
         // 21 columns: label left, value right-aligned before the status column.
         let expected = "\
@@ -901,7 +1049,7 @@ Stkr1 bat       3.02V";
         let mut stale = sticker(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
         stale.fields.insert("temperature".to_string(), 22.0);
 
-        let rows = build_custom_lines(
+        let rows = rows_of(
             &[
                 sticker_line(EUI1, "temperature"),
                 sticker_line(EUI2, "temperature"),
@@ -916,6 +1064,188 @@ Stkr1 bat       3.02V";
 Chiller      --.-°C E\n\
 ?1f31        --.-°C ?\n\
 Probe4       --.-°C ?";
+        assert_eq!(render_ascii(&rows), expected, "\n{}", render_ascii(&rows));
+    }
+
+    // ---- ble source -------------------------------------------------------
+
+    const MAC1: &str = "7C:D9:F4:13:10:DE";
+    const MAC2: &str = "7C:D9:F4:13:10:AB";
+
+    #[test]
+    fn ble_line_renders_each_field_with_its_own_unit_and_precision() {
+        let tags = vec![tag(MAC1)];
+        for (field, expected) in [
+            ("temperature", "4.2°C"),
+            ("humidity", "63%"),
+            ("battery", "3050mV"),
+            ("rssi", "-71dBm"),
+            ("movement", "12"),
+            ("pitch", "-4°"),
+            ("roll", "178°"),
+            ("status", "NORM"),
+        ] {
+            let rows = build_custom_lines(
+                &[ble_line(MAC1, field)],
+                &no_readings(),
+                &names(),
+                &[],
+                &tags,
+            );
+            assert_eq!(rows[0].value, expected, "field {}", field);
+        }
+    }
+
+    #[test]
+    fn ble_line_labels_from_the_tag_name() {
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "temperature")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[tag(MAC1)],
+        );
+        assert_eq!(rows[0].label, "Freezer tag");
+    }
+
+    /// A tag the gateway only knows by MAC still gets a traceable row label
+    /// rather than a blank one.
+    #[test]
+    fn ble_line_labels_an_unnamed_tag_from_its_mac_tail() {
+        let mut unnamed = tag(MAC1);
+        unnamed.name = None;
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "temperature")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[unnamed],
+        );
+        assert_eq!(rows[0].label, "?10DE");
+    }
+
+    #[test]
+    fn ble_line_for_a_tag_never_seen_shows_a_placeholder_not_a_dropped_row() {
+        let rows = build_custom_lines(
+            &[ble_line(MAC2, "temperature")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[tag(MAC1)],
+        );
+        assert_eq!(rows.len(), 1, "the row must never be dropped");
+        assert_eq!(rows[0].value, "--.-°C");
+        assert_eq!(rows[0].status_char, Some('?'));
+        assert_eq!(rows[0].label, "?10AB");
+    }
+
+    /// The whole point of escalating staleness before we get here: a tag that
+    /// dropped out must not keep showing its last plausible reading.
+    #[test]
+    fn ble_line_for_a_lost_tag_shows_the_placeholder_not_the_last_reading() {
+        let mut lost = tag(MAC1);
+        lost.alarm_state = LoRaWANAlarmState::Disconnected;
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "temperature"), ble_line(MAC1, "status")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[lost],
+        );
+        assert_eq!(rows[0].value, "--.-°C");
+        assert_eq!(rows[0].status_char, Some('E'));
+        assert_eq!(rows[1].value, "DISC");
+    }
+
+    #[test]
+    fn ble_line_prefers_the_per_field_alarm_state() {
+        let mut t = tag(MAC1);
+        t.field_alarm_states
+            .insert("temperature".to_string(), LoRaWANAlarmState::Critical);
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "temperature"), ble_line(MAC1, "humidity")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[t],
+        );
+        assert_eq!(rows[0].status_char, Some('C'));
+        assert!(rows[0].is_alarm, "a critical row is drawn inverted");
+        assert_eq!(rows[1].status_char, Some('N'));
+        assert!(!rows[1].is_alarm);
+    }
+
+    #[test]
+    fn ble_line_with_a_field_the_tag_has_not_reported_shows_the_placeholder() {
+        let mut t = tag(MAC1);
+        t.humidity_pct = None;
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "humidity")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[t],
+        );
+        assert_eq!(rows[0].value, "--%");
+        // Still NORM: the tag is alive, it just doesn't advertise humidity.
+        assert_eq!(rows[0].status_char, Some('N'));
+    }
+
+    /// Validation rejects this on the command path, but a hand-edited file can
+    /// carry it and must not take the display thread down.
+    #[test]
+    fn ble_line_with_an_unknown_field_does_not_panic() {
+        let rows = build_custom_lines(
+            &[ble_line(MAC1, "magnet_detected")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[tag(MAC1)],
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, UNKNOWN_FIELD_VALUE);
+    }
+
+    #[test]
+    fn ble_line_lookup_is_case_sensitive_so_the_uppercase_contract_matters() {
+        // Config load uppercases, so this is the shape that reaches us. A
+        // lowercase MAC finding nothing is exactly why that normalization
+        // exists — assert it rather than leave it implicit.
+        let rows = build_custom_lines(
+            &[ble_line("7c:d9:f4:13:10:de", "temperature")],
+            &no_readings(),
+            &names(),
+            &[],
+            &[tag(MAC1)],
+        );
+        assert_eq!(rows[0].value, "--.-°C", "lowercase must not match");
+    }
+
+    #[test]
+    fn ascii_snapshot_mixes_probe_sticker_and_ble_rows() {
+        let mut readings = no_readings();
+        readings[0] = reading(4.5, true, AlarmState::Normal);
+        let mut s1 = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        s1.fields.insert("temperature".to_string(), -18.25);
+
+        let rows = build_custom_lines(
+            &[
+                ds_line(0, "temperature"),
+                sticker_line(EUI1, "temperature"),
+                ble_line(MAC1, "temperature"),
+                ble_line(MAC1, "battery"),
+            ],
+            &readings,
+            &names(),
+            &[s1],
+            &[tag(MAC1)],
+        );
+
+        let expected = "\
+Probe1        4.5°C N\n\
+Chiller     -18.2°C N\n\
+Freezer tag   4.2°C N\n\
+Freezer tag  3050mV N";
         assert_eq!(render_ascii(&rows), expected, "\n{}", render_ascii(&rows));
     }
 }

@@ -118,11 +118,12 @@ common_lorawan_field_thresholds:
     warning_low: 25.0
     warning_high: 75.0
     critical_high: 85.0
-  # Battery (2x AA): warn at ~half capacity, critical near depletion.
-  # low_only — no high thresholds.
-  voltage:
-    critical_low: 2.4
-    warning_low: 2.5
+  # No battery (voltage) default. The sticker evaluates its own low-battery
+  # condition and reports it as a native alarm on fPort 3, so a threshold here
+  # raised a second, duplicate battery alarm on every sticker — armed by this
+  # default even though nobody had configured it. `voltage` is no longer
+  # thresholdable in the registry either, so a leftover entry in a deployed
+  # config file is ignored rather than honoured.
   # No global defaults for illuminance, pressure, altitude — too context-dependent.
 
 lines:

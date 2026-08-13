@@ -662,6 +662,8 @@ pub enum DisplayLineSource {
     Ds18b20,
     /// A STICKER / LoRaWAN sensor, addressed by DevEUI.
     Sticker,
+    /// An EYE BLE tag, addressed by MAC.
+    Ble,
 }
 
 /// One configured row of the sensor overview screen.
@@ -685,10 +687,24 @@ pub struct DisplayLine {
     /// a different physical probe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_eui: Option<String>,
+
+    /// EYE BLE tag MAC (`AA:BB:CC:DD:EE:FF`, **uppercased** on load). Required
+    /// when `source` is `ble`, and must be absent otherwise.
+    ///
+    /// Not an ordinal, for the same reason `dev_eui` isn't. Uppercase rather
+    /// than lowercase because that is the EYE subsystem's canonical form —
+    /// [`crate::libs::eye::state::EyeSensorState::tags`] is keyed by uppercase
+    /// MAC and the `add_eye_tag` / `remove_eye_tag` commands uppercase theirs.
+    /// Each subsystem keeps its own canonical case; normalizing both to the
+    /// same one would break one of the two lookups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+
     /// Field selector. For `ds18b20`: `temperature` or `status`. For
     /// `sticker`: any name in [`crate::libs::lorawan::registry::REGISTRY`],
     /// plus the pseudo-fields `rssi`, `snr` and `status` which live on the
-    /// sensor state rather than in its field map.
+    /// sensor state rather than in its field map. For `ble`: one of
+    /// [`crate::libs::config_applier::validation::BLE_FIELDS`].
     pub field: String,
 
     /// Row label. When absent, derived from the source sensor's configured
@@ -872,7 +888,15 @@ pub fn resolve_field_threshold(
 
 /// Compute the full list of effective thresholds for a sticker, considering
 /// both the per-sensor `field_thresholds` and the YAML defaults map. Every
-/// field that has at least one bound from either source is included.
+/// *thresholdable* field that has at least one bound from either source is
+/// included.
+///
+/// The registry is the authority on which fields may alarm at all. Without that
+/// check this function was purely data-driven, so a field the product has
+/// withdrawn from alarming — battery, whose low-battery condition the sticker
+/// already reports natively on fPort 3 — kept alarming from a stale per-sensor
+/// override or an older YAML that still listed it. Filtering here (rather than
+/// only in the UI) means the withdrawal holds for config written before it.
 pub fn effective_field_thresholds(
     sensor: Option<&LoRaWANSensorConfig>,
     defaults: &HashMap<String, FieldThresholdBounds>,
@@ -885,6 +909,15 @@ pub fn effective_field_thresholds(
     }
     fields
         .into_iter()
+        // An unknown field is kept: the registry and the firmware ship together, so
+        // a name it does not recognise is more likely a newer config than a
+        // withdrawn field, and dropping it would silently disarm a real alarm.
+        .filter(|f| crate::libs::lorawan::registry::lookup(f).is_none_or(|d| d.thresholdable))
+        // An explicitly switched-off alarm beats everything, including the YAML
+        // default. This is the only way to silence a quantity: an omitted bound
+        // inherits the default instead of clearing it, so without this a
+        // default-armed field could never be turned off.
+        .filter(|f| !sensor.is_some_and(|s| s.disarmed_fields.iter().any(|d| d == f)))
         .filter_map(|f| {
             let override_ = sensor.and_then(|s| s.field_thresholds.iter().find(|t| t.field == f));
             let default = defaults.get(&f);
@@ -918,6 +951,26 @@ pub struct LoRaWANSensorConfig {
     /// Per-field thresholds (replaces temp_*/humidity_* fixed columns)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_thresholds: Vec<FieldThreshold>,
+
+    /// Fields whose alarm the operator has explicitly switched OFF.
+    ///
+    /// Needed because clearing the bounds cannot express it: an omitted bound
+    /// inherits the YAML default (see [`resolve_field_threshold`]), and the
+    /// defaults arm temperature, humidity and the probe fields on every sticker
+    /// the moment it is paired. So there was no way to silence a quantity —
+    /// emptying the inputs and "reset to default" both landed back on the armed
+    /// default.
+    ///
+    /// A separate list rather than a flag on `FieldThreshold` for two reasons: a
+    /// field can be disarmed while having no override of its own at all (exactly
+    /// the default-armed case this exists for), and switching the alarm off is
+    /// then independent of resetting the bounds, so one cannot silently undo the
+    /// other.
+    ///
+    /// Absent from the YAML unless something is actually off, so an untouched
+    /// deployment reads and behaves exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disarmed_fields: Vec<String>,
 }
 
 /// External LoRaWAN gateway registered in the on-device ChirpStack.
@@ -939,8 +992,15 @@ pub struct ExternalGatewayConfig {
 /// LoRaWAN gateway configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANConfig {
-    /// Enable LoRaWAN gateway integration
-    #[serde(default)]
+    /// Enable LoRaWAN gateway integration.
+    ///
+    /// Defaults to **true** when the key is absent, because that is what every
+    /// deployed unit with a `lorawan:` block already does: the monitor used to
+    /// start purely on hardware detection and nothing read this flag, so a
+    /// config that never mentioned it would otherwise go silent on upgrade.
+    /// Only an explicit `enabled: false` stops the monitor — which is how a
+    /// cluster follower stops reporting stickers the leader now owns.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// ChirpStack local MQTT broker host
@@ -1367,9 +1427,16 @@ impl Config {
         // Same canonicalization for display lines: an uppercase DevEUI here
         // would never match the lowercased dev_eui in LoRaWANSensorState, so
         // the row would render as "unknown sensor" forever with no hint why.
+        //
+        // BLE MACs go the other way, to uppercase: EyeSensorState::tags is keyed
+        // by uppercase MAC. Same failure mode, opposite direction — normalizing
+        // both to one case would fix one lookup and break the other.
         for line in config.display.custom_lines.iter_mut() {
             if let Some(dev_eui) = line.dev_eui.as_mut() {
                 *dev_eui = dev_eui.to_lowercase();
+            }
+            if let Some(mac) = line.mac.as_mut() {
+                *mac = mac.to_uppercase();
             }
         }
 
@@ -1448,7 +1515,10 @@ impl Config {
             mqtt: None,                        // MQTT disabled by default
             lorawan: None,                     // LoRaWAN disabled by default
             ble: crate::libs::ble::BleConfig::default(),
-            eye: None, // EYE BLE tags disabled by default
+            // EYE BLE tags are on by default; see EyeConfig::default(). `None`
+            // here would hand the monitor a struct that never sees a serde
+            // default, which is how this ended up disabled everywhere.
+            eye: Some(crate::libs::eye::EyeConfig::default()),
         }
     }
 }
@@ -1482,26 +1552,40 @@ mod tests {
     }
 
     #[test]
-    fn shipped_sensors_yaml_has_voltage_low_only_defaults() {
+    fn lorawan_is_enabled_unless_a_config_says_otherwise() {
+        // Until the cluster needed it, nothing read `lorawan.enabled` — the
+        // monitor started on hardware detection alone. Every deployed config
+        // that omits the key must therefore keep reporting, or an upgrade would
+        // silence units that never opted out of anything.
+        let implied: LoRaWANConfig = serde_yaml::from_str("chirpstack_mqtt_port: 1883").unwrap();
+        assert!(implied.enabled, "an absent key must not disable LoRaWAN");
+
+        let off: LoRaWANConfig = serde_yaml::from_str("enabled: false").unwrap();
+        assert!(
+            !off.enabled,
+            "an explicit false is how a cluster follower stops publishing"
+        );
+
+        let on: LoRaWANConfig = serde_yaml::from_str("enabled: true").unwrap();
+        assert!(on.enabled);
+    }
+
+    #[test]
+    fn shipped_sensors_yaml_has_no_battery_default() {
+        // Replaces `shipped_sensors_yaml_has_voltage_low_only_defaults`, which
+        // asserted the opposite. That test was quarantined for drifting from the
+        // shipped values and was un-quarantined on dev by 7fea467 (application#19);
+        // it is deleted here rather than repaired, because the value it pinned is
+        // gone on purpose. Battery must NOT be auto-armed: the sticker raises its
+        // own low-battery alarm on fPort 3, so a default here gave every sticker a
+        // duplicate alarm nobody had configured.
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
         let cfg = SensorFileConfig::from_file(&path)
             .expect("shipped fiber.sensors.config.yaml must parse");
-        let v = cfg
-            .common_lorawan_field_thresholds
-            .get("voltage")
-            .expect("voltage default present");
-        assert_eq!(v.warning_low, Some(2.5));
-        // Raised from 2.2 to 2.4 (commit 1d7bd47): more runway on 2xAA
-        // stickers before the critical alarm fires.
-        assert_eq!(v.critical_low, Some(2.4));
         assert!(
-            v.warning_high.is_none(),
-            "low_only field should not have warning_high"
-        );
-        assert!(
-            v.critical_high.is_none(),
-            "low_only field should not have critical_high"
+            cfg.common_lorawan_field_thresholds.get("voltage").is_none(),
+            "voltage must have no global default — the sticker alarms on it natively"
         );
     }
 
@@ -1529,6 +1613,78 @@ mod tests {
             assert_eq!(other.warning_high, temp.warning_high, "{}", name);
             assert_eq!(other.critical_high, temp.critical_high, "{}", name);
         }
+    }
+
+    #[test]
+    fn effective_thresholds_drop_a_field_the_registry_no_longer_alarms() {
+        // The withdrawal has to hold for config written BEFORE it: a deployed YAML
+        // default and a per-sensor override both used to keep battery alarming,
+        // because this function was purely data-driven.
+        let mut defaults = HashMap::new();
+        defaults.insert(
+            "voltage".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(2.4),
+                warning_low: Some(2.5),
+                warning_high: None,
+                critical_high: None,
+            },
+        );
+        defaults.insert(
+            "temperature".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(0.0),
+                warning_low: Some(5.0),
+                warning_high: Some(30.0),
+                critical_high: Some(40.0),
+            },
+        );
+
+        let sensor = LoRaWANSensorConfig {
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: vec![FieldThreshold {
+                field: "voltage".into(),
+                critical_low: Some(2.0),
+                warning_low: Some(2.1),
+                warning_high: None,
+                critical_high: None,
+            }],
+            disarmed_fields: Vec::new(),
+        };
+
+        let out = effective_field_thresholds(Some(&sensor), &defaults);
+        let fields: Vec<&str> = out.iter().map(|t| t.field.as_str()).collect();
+        assert!(
+            !fields.contains(&"voltage"),
+            "battery must not alarm: {fields:?}"
+        );
+        assert!(
+            fields.contains(&"temperature"),
+            "other fields unaffected: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn effective_thresholds_keep_a_field_the_registry_does_not_know() {
+        // A name the registry has never heard of is more likely a newer config than
+        // a withdrawn field, so it must NOT be silently disarmed.
+        let mut defaults = HashMap::new();
+        defaults.insert(
+            "future_quantity".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(1.0),
+                warning_low: Some(2.0),
+                warning_high: Some(8.0),
+                critical_high: Some(9.0),
+            },
+        );
+        let out = effective_field_thresholds(None, &defaults);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].field, "future_quantity");
     }
 
     #[test]
@@ -1571,6 +1727,121 @@ name: "Fridge"
         assert_eq!(cfg.location, None);
     }
 
+    /// Switching an alarm off has to beat the shipped default, because nothing
+    /// else can.
+    ///
+    /// The YAML defaults arm temperature, humidity and the probe fields on every
+    /// sticker the moment it is paired — measured on a bench unit with no
+    /// `field_thresholds` of its own at all, which still reported eight armed
+    /// bands. Clearing the numbers does not help: an omitted bound inherits the
+    /// default (see `resolve_field_threshold`), so before this there was no way
+    /// to silence a quantity from anywhere in the product.
+    #[test]
+    fn a_disarmed_field_beats_the_shipped_default() {
+        let mut defaults = HashMap::new();
+        defaults.insert(
+            "temperature".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(0.0),
+                warning_low: Some(5.0),
+                warning_high: Some(30.0),
+                critical_high: Some(40.0),
+            },
+        );
+        defaults.insert(
+            "humidity".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(15.0),
+                warning_low: Some(25.0),
+                warning_high: Some(75.0),
+                critical_high: Some(85.0),
+            },
+        );
+
+        let armed = LoRaWANSensorConfig {
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: Vec::new(),
+            disarmed_fields: Vec::new(),
+        };
+        let before = effective_field_thresholds(Some(&armed), &defaults);
+        assert_eq!(
+            before.len(),
+            2,
+            "both defaults arm the sticker to begin with"
+        );
+
+        let mut off = armed.clone();
+        off.disarmed_fields = vec!["temperature".to_string()];
+        let after = effective_field_thresholds(Some(&off), &defaults);
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].field, "humidity",
+            "only temperature was switched off"
+        );
+    }
+
+    /// Off must also survive the bounds being reset — the two controls are
+    /// independent, so clearing the numbers cannot quietly re-arm the alarm.
+    #[test]
+    fn a_disarmed_field_stays_off_even_with_its_own_bounds_set() {
+        let mut defaults = HashMap::new();
+        defaults.insert(
+            "temperature".to_string(),
+            FieldThresholdBounds {
+                critical_low: Some(0.0),
+                warning_low: Some(5.0),
+                warning_high: Some(30.0),
+                critical_high: Some(40.0),
+            },
+        );
+        let cfg = LoRaWANSensorConfig {
+            dev_eui: "aabb".into(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: vec![FieldThreshold {
+                field: "temperature".into(),
+                critical_low: Some(1.0),
+                warning_low: Some(6.0),
+                warning_high: Some(31.0),
+                critical_high: Some(41.0),
+            }],
+            disarmed_fields: vec!["temperature".to_string()],
+        };
+        assert!(effective_field_thresholds(Some(&cfg), &defaults).is_empty());
+    }
+
+    /// Untouched deployments must serialise byte-identically, or every device
+    /// would rewrite its config on the next save for no reason.
+    #[test]
+    fn an_empty_disarmed_list_is_absent_from_the_yaml() {
+        let cfg = LoRaWANSensorConfig {
+            dev_eui: "x".to_string(),
+            name: None,
+            serial_number: None,
+            location: None,
+            enabled: true,
+            field_thresholds: Vec::new(),
+            disarmed_fields: Vec::new(),
+        };
+        assert!(!serde_yaml::to_string(&cfg)
+            .unwrap()
+            .contains("disarmed_fields"));
+    }
+
+    /// And an old config without the key still loads.
+    #[test]
+    fn a_config_without_the_key_loads_as_fully_armed() {
+        let cfg: LoRaWANSensorConfig =
+            serde_yaml::from_str("dev_eui: aabb\nenabled: true\n").unwrap();
+        assert!(cfg.disarmed_fields.is_empty());
+    }
+
     #[test]
     fn lorawan_sensor_config_omits_location_when_none() {
         let cfg = LoRaWANSensorConfig {
@@ -1580,6 +1851,7 @@ name: "Fridge"
             location: None,
             enabled: true,
             field_thresholds: Vec::new(),
+            disarmed_fields: Vec::new(),
         };
         let out = serde_yaml::to_string(&cfg).unwrap();
         assert!(!out.contains("location"));
@@ -1716,6 +1988,7 @@ custom_lines:
                 source: DisplayLineSource::Ds18b20,
                 line: Some(1),
                 dev_eui: None,
+                mac: None,
                 field: "temperature".to_string(),
                 label: None,
                 format: DisplayLineFormat::default(),
@@ -1772,5 +2045,77 @@ custom_lines:
         assert_eq!(cfg.display.custom_lines.len(), 4);
         assert_eq!(cfg.display.custom_lines[3].field, "voltage");
         assert_eq!(cfg.display.custom_lines[3].format.decimals, Some(2));
+    }
+
+    #[test]
+    fn parse_ble_display_line_from_yaml() {
+        let cfg: DisplayConfig = serde_yaml::from_str(
+            "custom_lines:\n  - {source: ble, mac: \"7C:D9:F4:13:10:DE\", field: temperature}\n",
+        )
+        .unwrap();
+        let line = &cfg.custom_lines[0];
+        assert_eq!(line.source, DisplayLineSource::Ble);
+        assert_eq!(line.mac.as_deref(), Some("7C:D9:F4:13:10:DE"));
+        assert_eq!(line.field, "temperature");
+        assert_eq!(line.line, None);
+        assert_eq!(line.dev_eui, None);
+    }
+
+    /// Opposite direction to the DevEUI: `EyeSensorState::tags` is keyed by
+    /// uppercase MAC, so a lowercase one in the file would render as an unknown
+    /// sensor forever.
+    #[test]
+    fn display_line_mac_uppercased_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file_with_display(
+            dir.path(),
+            "custom_lines:\n  - {source: ble, mac: \"7c:d9:f4:13:10:de\", field: temperature}\n",
+        );
+        let cfg = Config::from_file(&path).expect("config must load");
+        assert_eq!(
+            cfg.display.custom_lines[0].mac.as_deref(),
+            Some("7C:D9:F4:13:10:DE")
+        );
+    }
+
+    /// The two normalizations are independent: one file may carry both sources,
+    /// and each must end up in its own subsystem's canonical case.
+    #[test]
+    fn sticker_and_ble_lines_normalize_in_opposite_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_file_with_display(
+            dir.path(),
+            "custom_lines:\n  \
+             - {source: sticker, dev_eui: \"70B3D57ED0051F2A\", field: temperature}\n  \
+             - {source: ble, mac: \"7c:d9:f4:13:10:de\", field: humidity}\n",
+        );
+        let cfg = Config::from_file(&path).expect("config must load");
+        assert_eq!(
+            cfg.display.custom_lines[0].dev_eui.as_deref(),
+            Some("70b3d57ed0051f2a")
+        );
+        assert_eq!(
+            cfg.display.custom_lines[1].mac.as_deref(),
+            Some("7C:D9:F4:13:10:DE")
+        );
+    }
+
+    /// `mac` is `skip_serializing_if = "Option::is_none"`, so a probe or sticker
+    /// row must not gain an empty key when the applier rewrites the file.
+    #[test]
+    fn mac_is_omitted_from_serialized_non_ble_lines() {
+        let cfg = DisplayConfig {
+            custom_lines: vec![DisplayLine {
+                source: DisplayLineSource::Ds18b20,
+                line: Some(1),
+                dev_eui: None,
+                mac: None,
+                field: "temperature".to_string(),
+                label: None,
+                format: DisplayLineFormat::default(),
+            }],
+        };
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(!out.contains("mac"), "got: {}", out);
     }
 }

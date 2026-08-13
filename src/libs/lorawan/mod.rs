@@ -4,6 +4,7 @@
 //! into the FIBER MQTT topic hierarchy.
 
 pub mod chirpstack;
+pub mod cluster;
 pub mod detector;
 pub mod monitor;
 pub mod provisioning;

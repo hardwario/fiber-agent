@@ -207,6 +207,19 @@ impl LoRaWANHandle {
     }
 }
 
+/// Does this unit report LoRaWAN sensors at all?
+///
+/// `enabled` is the cluster's one-publisher switch (system#7 Goal 2). A follower
+/// contributes its **radio**, not its reports: its frames are forwarded to the
+/// leader, whose `fiber_app` publishes them, so a follower that also published
+/// would deliver one sticker to the viewer from two hostnames. Hardware
+/// detection cannot express that — a follower keeps `chirpstack-concentratord`
+/// running precisely because it is lending its radio — which is why the flag is
+/// consulted here and wins over detection.
+fn should_run(enabled: bool, gateway_present: bool, has_external: bool) -> bool {
+    enabled && (gateway_present || has_external)
+}
+
 /// LoRaWAN monitor that bridges ChirpStack MQTT to FIBER MQTT
 pub struct LoRaWANMonitor {
     thread_handle: Option<JoinHandle<()>>,
@@ -235,7 +248,7 @@ impl LoRaWANMonitor {
         let detection = detector::detect_gateway();
         let gateway_present = detection.is_present();
         let has_external = detector::has_external_gateway();
-        let should_run = gateway_present || has_external;
+        let should_run = should_run(config.enabled, gateway_present, has_external);
 
         let state = create_shared_lorawan_state(gateway_present);
 
@@ -246,9 +259,18 @@ impl LoRaWANMonitor {
 
         if !should_run {
             eprintln!(
-                "[LoRaWAN Monitor] Not starting: concentratord={}, chirpstack={}, external_gateway={}",
-                detection.concentratord_running, detection.chirpstack_running, has_external
+                "[LoRaWAN Monitor] Not starting: enabled={}, concentratord={}, chirpstack={}, external_gateway={}",
+                config.enabled,
+                detection.concentratord_running,
+                detection.chirpstack_running,
+                has_external
             );
+            if !config.enabled {
+                eprintln!(
+                    "[LoRaWAN Monitor] lorawan.enabled is false — this unit reports no stickers \
+                     (a cluster follower forwards its radio to its leader instead)"
+                );
+            }
             // cmd_rx/raw_rx dropped → send_command/send_raw return "monitor not running".
             return Ok(Self {
                 thread_handle: None,
@@ -348,6 +370,56 @@ fn lorawan_loop(
     release_rx: Receiver<u32>,
     self_handle: LoRaWANHandle,
 ) {
+    // Seed each configured sticker's uplink ring from storage before anything can
+    // ask for its cadence.
+    //
+    // The ring is in memory, so without this it is empty after every restart — and
+    // that is exactly when an operator opens the config drawer and hits "Read from
+    // device". An unknown cadence used to mean the shortest possible fPort-85
+    // timeout, so the first read after a restart was the most likely one to fail on
+    // a slow sticker. The stored uplinks already answer the question.
+    //
+    // The same stored uplinks also answer a second question the operator asks
+    // first: has this sticker ever reported? A row is only created by an uplink,
+    // and the viewer's default for a missing row is `NeverConnected` — so until
+    // now a restart made every sticker, including ones reporting for months, read
+    // as never connected for a whole reporting interval. `seed_disconnected`
+    // gives those a `Disconnected` row carrying the real `last_seen`, and leaves a
+    // sticker with no stored uplinks alone so `NeverConnected` keeps its meaning.
+    {
+        let sensors: Vec<crate::libs::config::LoRaWANSensorConfig> = configs
+            .read()
+            .map(|c| c.iter().cloned().collect())
+            .unwrap_or_default();
+        for cfg in sensors {
+            let dev_eui = cfg.dev_eui.to_lowercase();
+            match storage.recent_sticker_uplinks(dev_eui.clone(), 6) {
+                Ok(times) if !times.is_empty() => {
+                    if let Ok(mut st) = state.write() {
+                        if let Some(last) = st.seed_disconnected(&cfg, &times) {
+                            eprintln!(
+                                "[LoRaWAN Monitor] {dev_eui}: disconnected since {last} \
+                                 (recovered from storage)"
+                            );
+                        }
+                        if times.len() >= 2 {
+                            if let Some(c) = st.seed_cadence_hint(&dev_eui, times) {
+                                eprintln!(
+                                    "[LoRaWAN Monitor] {dev_eui}: cadence {c}s recovered from storage"
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!(
+                    "[LoRaWAN Monitor] {dev_eui}: could not read stored uplinks ({e}); \
+                     cadence will be learned from the next two uplinks"
+                ),
+            }
+        }
+    }
+
     // Build a tokio runtime for the async MQTT client
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -431,6 +503,18 @@ fn lorawan_loop(
                 eprintln!("[LoRaWAN Monitor] Failed to subscribe: {}", e);
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 continue;
+            }
+
+            // Also subscribe to downlink transmit-ack events: ChirpStack emits
+            // event/txack when a gateway transmits a downlink, naming the gateway
+            // it selected (its best-signal pick) — surfaced for admin
+            // downlink-gateway visibility. Non-fatal: on failure the feature is
+            // simply absent, uplink processing is unaffected.
+            if let Err(e) = client
+                .subscribe("application/+/device/+/event/txack", QoS::AtMostOnce)
+                .await
+            {
+                eprintln!("[LoRaWAN Monitor] txack subscribe failed (downlink-gateway display off): {}", e);
             }
 
             eprintln!("[LoRaWAN Monitor] Connected to {}:{}, subscribed to uplinks",
@@ -552,6 +636,24 @@ fn lorawan_loop(
                         let topic_parts: Vec<&str> = topic.split('/').collect();
                         if topic_parts.len() >= 2 && topic_parts[0] == "application" {
                             last_app_id = Some(topic_parts[1].to_string());
+                        }
+
+                        // event/txack: ChirpStack transmitted a downlink and named
+                        // the gateway it used (its best-signal pick). Record it on
+                        // the sticker's state for downlink-gateway visibility, then
+                        // skip the (uplink) decode pipeline.
+                        if topic.ends_with("/event/txack") {
+                            if let Some((dev_eui, gateway_id)) = chirpstack::parse_txack(&payload) {
+                                if let Ok(mut s) = state.write() {
+                                    if s.set_downlink_gateway(&dev_eui, gateway_id.clone()) {
+                                        eprintln!(
+                                            "[LoRaWAN Monitor] txack: {} downlink via gateway {}",
+                                            dev_eui, gateway_id
+                                        );
+                                    }
+                                }
+                            }
+                            continue;
                         }
 
                         // fPort 85: command/response (#34) — decode and correlate by seq.
@@ -872,6 +974,31 @@ fn spawn_auto_backfill(
 }
 
 #[cfg(test)]
+mod should_run_tests {
+    use super::should_run;
+
+    #[test]
+    fn a_disabled_unit_stays_quiet_even_with_a_working_radio() {
+        // The case the cluster depends on: a follower keeps its concentrator
+        // running for the leader, so detection alone would start the monitor and
+        // the same sticker would reach the viewer from two hostnames.
+        assert!(!should_run(false, true, false));
+        assert!(!should_run(false, false, true));
+        assert!(!should_run(false, true, true));
+    }
+
+    #[test]
+    fn an_enabled_unit_still_needs_something_to_listen_to() {
+        assert!(should_run(true, true, false));
+        assert!(should_run(true, false, true));
+        assert!(
+            !should_run(true, false, false),
+            "no radio and no external gateway is nothing to do"
+        );
+    }
+}
+
+#[cfg(test)]
 mod auto_backfill_tests {
     use super::{auto_backfill_window, auto_backfill_window_if_enabled};
 
@@ -986,6 +1113,11 @@ fn handle_telemetry_reading(
         "fields":      reading.fields,
         "counters":    reading.counters,
         "events":      reading.events,
+        // Additive per-gateway reception detail; `stream_version` unchanged because
+        // a consumer that ignores these keys sees exactly the old payload.
+        "gateways":    reading.gateways,
+        "fcnt":        reading.counters.get("fCnt").copied(),
+        "dr":          reading.dr,
         "rssi":        reading.rssi,
         "snr":         reading.snr,
         "received_at": reading.received_at,
@@ -1100,6 +1232,9 @@ fn publish_lorawan_sensors(
                 field_thresholds: s.field_thresholds.clone(),
                 counters: s.counters.clone(),
                 events: s.recent_events.iter().cloned().collect(),
+                gateways: s.gateways.clone(),
+                dr: s.dr,
+                downlink_gateway_id: s.downlink_gateway_id.clone(),
                 rssi: s.rssi,
                 snr: s.snr,
                 last_seen: s.last_seen.clone(),

@@ -44,6 +44,16 @@ pub fn add_lorawan_sticker(
     serial_number: String,
     activation: ActivationMode,
 ) -> Result<(), String> {
+    // Refuse a profile this gateway cannot serve BEFORE anything is written.
+    // Step 2 below deliberately saves the sensor config even when ChirpStack
+    // provisioning fails, because that failure is usually transient (the server
+    // is down; a retry reconciles). A profile mismatch is not transient — saving
+    // it would leave a sensor in the list, and in the operator's mind, that can
+    // never join no matter how long they wait.
+    if let ActivationMode::Otaa { profile_id, .. } = &activation {
+        crate::libs::lorawan::provisioning::check_otaa_profile(*profile_id)?;
+    }
+
     let mode_label = match &activation {
         ActivationMode::Otaa { .. } => "OTAA",
         ActivationMode::Abp { .. } => "ABP",
@@ -53,15 +63,18 @@ pub fn add_lorawan_sticker(
         dev_eui, mode_label
     );
     let provision_result = match &activation {
-        ActivationMode::Otaa { app_key, join_eui } => {
-            crate::libs::lorawan::provisioning::provision_sticker_otaa(
-                &dev_eui,
-                &name,
-                &serial_number,
-                app_key,
-                join_eui,
-            )
-        }
+        ActivationMode::Otaa {
+            app_key,
+            join_eui,
+            profile_id,
+        } => crate::libs::lorawan::provisioning::provision_sticker_otaa(
+            &dev_eui,
+            &name,
+            &serial_number,
+            app_key,
+            join_eui,
+            *profile_id,
+        ),
         ActivationMode::Abp {
             devaddr,
             nwkskey,
@@ -139,6 +152,7 @@ pub fn add_lorawan_sticker(
                             location: None,
                             enabled: true,
                             field_thresholds: Vec::new(),
+                            disarmed_fields: Vec::new(),
                         });
                     }
                 }
@@ -161,8 +175,12 @@ pub fn add_lorawan_sticker(
                             field_thresholds: Vec::new(),
                             counters: HashMap::new(),
                             recent_events: VecDeque::new(),
+                            gateways: Vec::new(),
+                            dr: None,
                             rssi: None,
                             snr: None,
+                            downlink_gateway_id: None,
+                            uplink_ring: Default::default(),
                             last_seen: None,
                             alarm_state: LoRaWANAlarmState::Disconnected,
                         });

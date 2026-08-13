@@ -28,7 +28,7 @@ use serde_yaml::Value;
 
 /// Current target version for `fiber.config.yaml`. Increment when adding a
 /// new `migrate_vN_to_vN+1` function below.
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 
 /// Read `path`, migrate forward in place if needed, write back with a
 /// versioned backup of the original. Returns the migrated YAML as a string
@@ -90,11 +90,58 @@ fn migrate_chain(mut value: Value, from: u32, to: u32) -> Result<Value, Migratio
         value = match step {
             0 => migrate_v0_to_v1(value)?,
             1 => migrate_v1_to_v2(value)?,
+            2 => migrate_v2_to_v3(value)?,
             // Future:
-            //   2 => migrate_v2_to_v3(value)?,
+            //   3 => migrate_v3_to_v4(value)?,
             other => return Err(MigrationError::UnknownStep(other)),
         };
     }
+    Ok(value)
+}
+
+/// v2 -> v3: switch the EYE BLE tag subsystem on.
+///
+/// `eye.enabled` shipped as `false` in the config template, so every unit in the
+/// field has that value written out explicitly — which suppresses the serde
+/// default no matter what the struct says. The result is a gateway whose BLE
+/// hardware is up and whose tags are configured with `enabled: true`, while the
+/// monitor logs `[EYE Monitor] Disabled in config` once at boot and never runs.
+/// Nothing surfaces that: `queue_eye_command` returns false because the state
+/// was never registered, so an operator's "Add tag" is accepted, signed,
+/// confirmed, and then has nobody to hand it to. The viewer polls for 90 s and
+/// blames the BLE environment.
+///
+/// Set unconditionally, including over an explicit `false`. There has never been
+/// a way to turn the subsystem off on purpose — no command, no GUI toggle — so
+/// every `false` on disk traces to the template rather than to a decision, and
+/// there is nothing to preserve. `set_eye_enabled` is now that way, which is why
+/// a future v3 -> v4 step must NOT repeat this: from here on a `false` can mean
+/// something.
+fn migrate_v2_to_v3(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(3u32.into()),
+    );
+
+    let eye_key = Value::String("eye".into());
+    let enabled_key = Value::String("enabled".into());
+    match root.get_mut(&eye_key).and_then(|v| v.as_mapping_mut()) {
+        Some(eye) => {
+            eye.insert(enabled_key, Value::Bool(true));
+        }
+        None => {
+            // No `eye:` section at all, or one that is not a mapping. Write a
+            // minimal enabled block; serde fills the rest from EyeConfig.
+            let mut eye = serde_yaml::Mapping::new();
+            eye.insert(enabled_key, Value::Bool(true));
+            root.insert(eye_key, Value::Mapping(eye));
+        }
+    }
+
     Ok(value)
 }
 
@@ -418,6 +465,83 @@ mqtt:
             streams,
             vec!["sticker", "probe", "probe_1m", "alarm", "eye"]
         );
+    }
+
+    /// Read `eye.enabled` out of a migrated document.
+    fn eye_enabled(migrated: &Value) -> Option<bool> {
+        migrated
+            .as_mapping()?
+            .get(&Value::String("eye".into()))?
+            .as_mapping()?
+            .get(&Value::String("enabled".into()))?
+            .as_bool()
+    }
+
+    #[test]
+    fn v2_to_v3_turns_on_an_explicitly_disabled_eye_subsystem() {
+        // Exactly what a field unit looks like: the template's `false`, with a
+        // tag the operator added through the GUI sitting under it enabled.
+        let v2 = r#"
+config_version: 2
+eye:
+  enabled: false
+  publish_interval_s: 30
+  tags:
+    - mac: "7C:D9:F4:13:10:DE"
+      enabled: true
+"#;
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+
+        assert_eq!(
+            migrated
+                .as_mapping()
+                .unwrap()
+                .get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
+            Some(3),
+        );
+        assert_eq!(eye_enabled(&migrated), Some(true));
+    }
+
+    #[test]
+    fn v2_to_v3_keeps_the_rest_of_the_eye_section() {
+        let v2 = r#"
+config_version: 2
+eye:
+  enabled: false
+  publish_interval_s: 45
+  tags:
+    - mac: "7C:D9:F4:13:10:DE"
+"#;
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+        let eye = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("eye".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            eye.get(&Value::String("publish_interval_s".into()))
+                .and_then(|v| v.as_u64()),
+            Some(45),
+        );
+        assert_eq!(
+            eye.get(&Value::String("tags".into()))
+                .and_then(|v| v.as_sequence())
+                .map(|s| s.len()),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn v2_to_v3_creates_the_eye_section_when_it_is_missing() {
+        let v2 = "config_version: 2\nmqtt:\n  enabled: true\n";
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+        assert_eq!(eye_enabled(&migrated), Some(true));
     }
 
     #[test]
