@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 // --- UUID constants -----------------------------------------------------------
 
-pub const FIBER_SERVICE_UUID: uuid::Uuid =
+pub const HUB_SERVICE_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB00_0000_1000_8000_00805F9B34FB);
 
 const AUTH_CHAR_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x0000FB01_0000_1000_8000_00805F9B34FB);
@@ -1073,15 +1073,15 @@ pub async fn create_gatt_app(
         chars.push(terminal_rx_char);
     }
 
-    let fiber_service = Service {
-        uuid: FIBER_SERVICE_UUID.into(),
+    let hub_service = Service {
+        uuid: HUB_SERVICE_UUID.into(),
         primary: true,
         characteristics: chars,
         ..Default::default()
     };
 
     Ok(Application {
-        services: vec![fiber_service],
+        services: vec![hub_service],
         ..Default::default()
     })
 }
