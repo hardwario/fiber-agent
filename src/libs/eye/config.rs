@@ -54,16 +54,24 @@ pub struct EyeConfig {
     #[serde(default = "default_scan_stall_secs")]
     pub scan_stall_secs: u64,
 
-    /// Auto-register unregistered tags seen advertising, and the cap on how many.
+    /// Report EYE tags seen advertising that are not in `tags` yet, so the viewer
+    /// can offer them for adoption. Visibility only — an unregistered tag is
+    /// published in the `eye/sensors` snapshot with `provisioning: "pending"` and
+    /// is never written to `tags` by this flag alone. Registering one (manually,
+    /// or by `auto_provision`) removes it from the discovered set; deleting it
+    /// again makes it unknown, so it reappears.
     ///
-    /// **Not implemented on this branch** — carried so the applier's YAML rewrite
-    /// round-trips them instead of deleting them. A field absent from this struct
-    /// is silently dropped when `EyeConfig` is serialised back to
-    /// `fiber.config.yaml`, which would strip an operator's setting irreversibly:
-    /// rolling the binary back would not bring the key back, because the file was
-    /// already overwritten. FIBER-OFFICE-5 has `auto_discover: true` on disk today.
+    /// `Option` rather than a plain bool so an absent key round-trips as absent:
+    /// a field missing from this struct is dropped when `EyeConfig` is serialised
+    /// back to `fiber.config.yaml`, which would strip an operator's setting
+    /// irreversibly — rolling the binary back would not bring the key back,
+    /// because the file was already overwritten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_discover: Option<bool>,
+
+    /// Cap on how many unregistered tags to hold in the discovered set at once.
+    /// A busy site can have far more tags in earshot than an operator wants to
+    /// scroll, and each one costs a state entry and a slot in every snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_discover_max: Option<u32>,
 
@@ -97,6 +105,28 @@ impl EyeConfig {
     /// the subsystem master switch).
     pub fn recording_on_for(&self, tag: &EyeTagConfig) -> bool {
         self.recording_enabled && tag.recording.unwrap_or(true)
+    }
+
+    /// Report unregistered tags seen advertising. Off unless explicitly enabled.
+    pub fn auto_discover_on(&self) -> bool {
+        self.auto_discover.unwrap_or(false)
+    }
+
+    /// How many unregistered tags may be held at once. Zero is honoured as
+    /// "none" rather than being treated as unset, so the cap can be used to turn
+    /// the list off without clearing `auto_discover`.
+    pub fn auto_discover_limit(&self) -> usize {
+        self.auto_discover_max.unwrap_or(DEFAULT_AUTO_DISCOVER_MAX) as usize
+    }
+
+    /// Is this MAC already registered on this gateway? Case-insensitive.
+    ///
+    /// Drives both halves of discovery: a registered tag is never offered as a
+    /// discovery candidate, and `auto_provision` only adopts a MAC for which this
+    /// is false. Deleting a tag makes this false again, so it can be found anew.
+    pub fn owns_tag(&self, mac: &str) -> bool {
+        let up = mac.to_uppercase();
+        self.tags.iter().any(|t| t.mac.to_uppercase() == up)
     }
 
     /// Insert or update a tag by MAC (case-insensitive; stored uppercased).
@@ -234,6 +264,11 @@ pub struct EyeTagConfig {
     pub provisioned: Option<bool>,
 }
 
+/// Default ceiling on the discovered-tag set when `auto_discover_max` is unset.
+/// Well above a realistic room's worth of tags, low enough that a warehouse full
+/// of them cannot grow the snapshot without bound.
+pub const DEFAULT_AUTO_DISCOVER_MAX: u32 = 32;
+
 fn default_publish_interval_s() -> u64 {
     30
 }
@@ -256,6 +291,77 @@ fn default_scan_stall_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Discovery decides what an operator is offered, so the gate that keeps a
+    /// tag out of that list matters as much as the one that puts it in.
+    #[test]
+    fn auto_discover_is_off_unless_explicitly_enabled() {
+        let mut c = EyeConfig::default();
+        assert!(
+            !c.auto_discover_on(),
+            "absent key must not enable discovery"
+        );
+        c.auto_discover = Some(false);
+        assert!(!c.auto_discover_on());
+        c.auto_discover = Some(true);
+        assert!(c.auto_discover_on());
+    }
+
+    #[test]
+    fn auto_discover_limit_defaults_but_honours_zero() {
+        let mut c = EyeConfig::default();
+        assert_eq!(c.auto_discover_limit(), DEFAULT_AUTO_DISCOVER_MAX as usize);
+        // Zero is a real answer ("show none"), not an unset value — otherwise the
+        // cap could not be used to silence the list without also clearing the flag.
+        c.auto_discover_max = Some(0);
+        assert_eq!(c.auto_discover_limit(), 0);
+        c.auto_discover_max = Some(4);
+        assert_eq!(c.auto_discover_limit(), 4);
+    }
+
+    #[test]
+    fn owns_tag_is_case_insensitive_and_drives_discovery_exclusion() {
+        let mut c = EyeConfig::default();
+        c.upsert_tag("aa:bb:cc:dd:ee:01", Some("fridge"));
+        // The scan uppercases MACs; the config may have been hand-edited in either
+        // case. A mismatch here would offer an already-registered tag for adoption.
+        assert!(c.owns_tag("AA:BB:CC:DD:EE:01"));
+        assert!(c.owns_tag("aa:bb:cc:dd:ee:01"));
+        assert!(!c.owns_tag("AA:BB:CC:DD:EE:02"));
+    }
+
+    #[test]
+    fn a_removed_tag_becomes_discoverable_again() {
+        // Explicitly required: deleting a tag must let it be found anew, so the
+        // operator can re-add a tag they removed by mistake.
+        let mut c = EyeConfig::default();
+        c.upsert_tag("AA:BB:CC:DD:EE:01", None);
+        assert!(c.owns_tag("AA:BB:CC:DD:EE:01"));
+        assert!(c.remove_tag("AA:BB:CC:DD:EE:01"));
+        assert!(
+            !c.owns_tag("AA:BB:CC:DD:EE:01"),
+            "a deleted tag must be unknown again, or it can never be re-discovered"
+        );
+    }
+
+    #[test]
+    fn adopting_a_discovered_tag_is_a_plain_upsert() {
+        // Auto-provision adopts by the same path an operator add uses, so the tag
+        // it produces must be indistinguishable from a manually added one.
+        let mut c = EyeConfig::default();
+        c.upsert_tag("AA:BB:CC:DD:EE:09", None);
+        let t = c
+            .tags
+            .iter()
+            .find(|t| t.mac == "AA:BB:CC:DD:EE:09")
+            .unwrap();
+        assert!(t.enabled, "an adopted tag must be scanned for");
+        assert_eq!(
+            t.provisioned, None,
+            "provisioning is the monitor's to record"
+        );
+        assert!(t.field_thresholds.is_empty());
+    }
 
     #[test]
     fn upsert_tag_inserts_uppercased_with_defaults() {

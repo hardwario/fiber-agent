@@ -67,6 +67,12 @@ pub struct EyeTagState {
     pub field_alarm_states: HashMap<String, LoRaWANAlarmState>,
     /// Aggregate (worst-of-fields) alarm state.
     pub alarm_state: LoRaWANAlarmState,
+    /// Seen advertising but not in `eye.tags` — a discovery candidate rather than
+    /// a tag this gateway owns. Published like any other so the viewer can offer
+    /// it for adoption, but never alarm-evaluated (no thresholds exist for it)
+    /// and dropped again once it goes quiet. Adoption clears the flag; deleting
+    /// the tag lets it be re-discovered.
+    pub discovered: bool,
 }
 
 impl EyeTagState {
@@ -93,6 +99,7 @@ impl EyeTagState {
             last_download_ts: None,
             field_alarm_states: HashMap::new(),
             alarm_state: LoRaWANAlarmState::Normal,
+            discovered: false,
         }
     }
 

@@ -296,6 +296,15 @@ pub struct EyeTagPayload {
     /// Whether the tag has not been seen within the configured `tag_timeout_s`.
     pub stale: bool,
     pub provisioning: String,
+    /// Heard advertising but not registered in `eye.tags` — an adoption
+    /// candidate, surfaced by `auto_discover`.
+    ///
+    /// `provisioning` cannot answer this on its own: a registered tag that has
+    /// not been provisioned yet also reports `pending`, so a consumer filtering
+    /// on that alone would offer a tag the operator has already added. This flag
+    /// is the registered/not-registered axis, `provisioning` the profile-written
+    /// one, and they move independently.
+    pub discovered: bool,
     /// `Some(true)` = EN12830 recorder (white) variant, `Some(false)` = standard
     /// (black), `None` = not yet determined. Surfaced so the viewer can label
     /// the tag type and expose recorder controls.

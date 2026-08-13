@@ -967,6 +967,7 @@ impl MqttPublisher {
                     "last_seen_ts": t.last_seen_ts,
                     "stale": t.stale,
                     "provisioning": t.provisioning,
+                    "discovered": t.discovered,
                     "is_en12830": t.is_en12830,
                     "field_alarm_states": t.field_alarm_states,
                     "alarm_state": t.alarm_state,

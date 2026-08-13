@@ -1621,7 +1621,11 @@ impl MqttMonitor {
         ) {
             Ok(applier) => {
                 eprintln!("[MQTT Monitor] Configuration applier initialized");
-                Some(Arc::new(applier))
+                let applier = Arc::new(applier);
+                // Publish it process-wide so the EYE monitor can adopt a
+                // discovered tag through the same audited write path.
+                crate::libs::config_applier::register_config_applier(applier.clone());
+                Some(applier)
             }
             Err(e) => {
                 eprintln!(
