@@ -160,7 +160,7 @@ fn draw_overview_chrome(
     network_status: &NetworkStatus,
     device_label: &str,
     lorawan_gateway_present: bool,
-    sensor_silenced: bool,
+    beep_silenced: bool,
     page: usize,
     total_pages: usize,
     selection_mode: bool,
@@ -177,8 +177,9 @@ fn draw_overview_chrome(
         icons::draw_lorawan(display, 2 + net_icon_width as i32 + 1, 2);
     }
 
-    // Draw mute icon next to status icons when sensor silence is active
-    if sensor_silenced {
+    // Draw mute icon next to status icons when button silence is active
+    // (covers sensor/sticker and battery alarms alike)
+    if beep_silenced {
         let mute_x = if lorawan_gateway_present {
             2 + net_icon_width as i32 + 1 + 11 + 2
         } else {
@@ -254,7 +255,7 @@ pub fn render_sensor_overview(
     lorawan_sensors: &[LoRaWANSensorState],
     entries: &[OverviewEntry],
     total_pages: usize,
-    sensor_silenced: bool,
+    beep_silenced: bool,
     hold_bar_pixels: u8,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
@@ -266,7 +267,7 @@ pub fn render_sensor_overview(
         network_status,
         device_label,
         lorawan_gateway_present,
-        sensor_silenced,
+        beep_silenced,
         page,
         total_pages,
         selected_sensor.is_some(),
@@ -400,7 +401,7 @@ pub fn render_custom_overview(
     lorawan_gateway_present: bool,
     lines: &[RenderedLine],
     total_pages: usize,
-    sensor_silenced: bool,
+    beep_silenced: bool,
     hold_bar_pixels: u8,
 ) -> anyhow::Result<()> {
     display.clear_buffer();
@@ -412,7 +413,7 @@ pub fn render_custom_overview(
         network_status,
         device_label,
         lorawan_gateway_present,
-        sensor_silenced,
+        beep_silenced,
         page,
         total_pages,
         false,

@@ -42,8 +42,12 @@ struct BuzzerPriorityState {
     pattern_duration: Duration,
     /// Last pattern we set to avoid redundant updates
     last_set_pattern: Option<PatternSource>,
-    /// Button silence deadline (sensor only). None = not silenced by button.
-    sensor_silenced_until: Option<Instant>,
+    /// Button silence deadline (shared: sensor, sticker, battery-critical, and the
+    /// battery reminder chirp are all suppressed while this is in the future).
+    /// None = not silenced by button.
+    silenced_until: Option<Instant>,
+    /// Is the device currently on battery power (drives the periodic reminder chirp)?
+    battery_reminder_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,7 +68,8 @@ impl BuzzerPriorityState {
             pattern_switch_time: Instant::now(),
             pattern_duration: Duration::from_secs(2),
             last_set_pattern: None,
-            sensor_silenced_until: None,
+            silenced_until: None,
+            battery_reminder_active: false,
         }
     }
 }
@@ -105,6 +110,21 @@ impl BuzzerPriorityManager {
 
         // Update buzzer if pattern changed
         self.apply_pattern(pattern_to_set);
+    }
+
+    /// Record whether the device is currently running on battery power.
+    /// Drives `is_battery_beeping()` so the button knows the periodic
+    /// reminder chirp is (or isn't) currently applicable. The chirp itself is
+    /// played directly by the power monitor loop, gated by
+    /// `should_play_battery_reminder()` — it is not a continuous priority
+    /// pattern, so this does not touch `compute_pattern`/`apply_pattern`.
+    pub fn set_battery_reminder(&self, is_active: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.battery_reminder_active = is_active;
+        eprintln!(
+            "[BuzzerPriority] Battery reminder (on-battery): {}",
+            if is_active { "ON" } else { "OFF" }
+        );
     }
 
     /// Set sensor critical state
@@ -167,16 +187,16 @@ impl BuzzerPriorityManager {
         }
     }
 
-    /// Silence sensor beep for 30 minutes via physical button.
-    /// Only suppresses SensorCritical pattern; battery continues.
-    /// Cleared by timer expiry or `on_new_sensor_alarm()`.
-    pub fn silence_sensor_30min(&self) {
+    /// Silence whichever alarm is currently beeping for 30 minutes via the
+    /// physical button — sensor, sticker, battery-critical, and the battery
+    /// reminder chirp alike. Cleared by timer expiry or `on_new_sensor_alarm()`.
+    pub fn silence_beep_30min(&self) {
         let pattern_to_set = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let deadline = (self.clock)() + Duration::from_secs(30 * 60);
-            state.sensor_silenced_until = Some(deadline);
+            state.silenced_until = Some(deadline);
             state.last_set_pattern = None; // Force re-evaluation
-            eprintln!("[BuzzerPriority] Sensor buzzer silenced by button for 30 min");
+            eprintln!("[BuzzerPriority] Buzzer silenced by button for 30 min");
             self.compute_pattern(&state)
         };
         self.apply_pattern(pattern_to_set);
@@ -187,9 +207,9 @@ impl BuzzerPriorityManager {
     pub fn check_silence_expiry(&self) {
         let pattern_to_set = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(deadline) = state.sensor_silenced_until {
+            if let Some(deadline) = state.silenced_until {
                 if (self.clock)() >= deadline {
-                    state.sensor_silenced_until = None;
+                    state.silenced_until = None;
                     state.last_set_pattern = None; // Force re-evaluation
                     eprintln!("[BuzzerPriority] Button silence expired — resuming alarm");
                     self.compute_pattern(&state)
@@ -204,14 +224,15 @@ impl BuzzerPriorityManager {
     }
 
     /// Called when a specific sensor transitions into critical/disconnected.
-    /// Clears both button silence and ACK silence so the user hears the new alarm.
+    /// Clears both button silence (sensor+battery alike, since the timer is
+    /// shared) and ACK silence so the user hears the new alarm.
     pub fn on_new_sensor_alarm(&self) {
         let pattern_to_set = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let had_button_silence = state.sensor_silenced_until.is_some();
+            let had_button_silence = state.silenced_until.is_some();
             let had_ack_silence = state.silenced;
             if had_button_silence || had_ack_silence {
-                state.sensor_silenced_until = None;
+                state.silenced_until = None;
                 state.silenced = false;
                 state.last_set_pattern = None; // Force re-evaluation
                 eprintln!(
@@ -238,7 +259,7 @@ impl BuzzerPriorityManager {
         if state.silenced {
             return false;
         }
-        if let Some(deadline) = state.sensor_silenced_until {
+        if let Some(deadline) = state.silenced_until {
             if (self.clock)() < deadline {
                 return false;
             }
@@ -246,11 +267,47 @@ impl BuzzerPriorityManager {
         true
     }
 
-    /// Returns true if the button-triggered sensor silence is active.
+    /// Returns true if a battery notification (critical alarm OR the
+    /// on-battery reminder chirp) is currently audible/pending.
+    /// Used by the button handler to decide whether to consume a press.
+    pub fn is_battery_beeping(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.battery_critical_active && !state.battery_reminder_active {
+            return false;
+        }
+        if state.silenced {
+            return false;
+        }
+        if let Some(deadline) = state.silenced_until {
+            if (self.clock)() < deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns true if the periodic "on battery" reminder chirp should play
+    /// right now. Called by the power monitor loop before each chirp so the
+    /// MQTT ACK silence and the button silence both reach it, the same as
+    /// every other buzzer pattern.
+    pub fn should_play_battery_reminder(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.silenced {
+            return false;
+        }
+        if let Some(deadline) = state.silenced_until {
+            if (self.clock)() < deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns true if the button-triggered silence is currently active.
     /// Used by the display renderer to show the mute icon.
     pub fn is_button_silenced(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(deadline) = state.sensor_silenced_until {
+        if let Some(deadline) = state.silenced_until {
             (self.clock)() < deadline
         } else {
             false
@@ -269,7 +326,7 @@ impl BuzzerPriorityManager {
         // Both use the same CriticalBeep pattern, so we treat them as one source
         // for precedence purposes. The 30-min button silence suppresses both.
         let raw_critical = state.sensor_critical_active || state.sticker_critical_active;
-        let critical_active = if let Some(deadline) = state.sensor_silenced_until {
+        let critical_active = if let Some(deadline) = state.silenced_until {
             if (self.clock)() >= deadline {
                 raw_critical
             } else {
@@ -279,7 +336,20 @@ impl BuzzerPriorityManager {
             raw_critical
         };
 
-        let new_pattern_source = match (critical_active, state.battery_critical_active) {
+        // Battery-critical is suppressed by the same shared button-silence
+        // window (unified with sensor/sticker — a single press mutes
+        // whichever alarm is currently sounding).
+        let battery_active = if let Some(deadline) = state.silenced_until {
+            if (self.clock)() >= deadline {
+                state.battery_critical_active
+            } else {
+                false
+            }
+        } else {
+            state.battery_critical_active
+        };
+
+        let new_pattern_source = match (critical_active, battery_active) {
             // Only sensor critical: play sensor pattern
             (true, false) => {
                 //eprintln!("[BuzzerPriority] Decision: Sensor critical (priority)");
@@ -392,7 +462,7 @@ mod tests {
 
     /// Helper: evaluate sensor_active given state and clock (mirrors compute_pattern logic)
     fn eval_sensor_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
-        if let Some(deadline) = state.sensor_silenced_until {
+        if let Some(deadline) = state.silenced_until {
             if (clock)() >= deadline {
                 state.sensor_critical_active
             } else {
@@ -400,6 +470,19 @@ mod tests {
             }
         } else {
             state.sensor_critical_active
+        }
+    }
+
+    /// Helper: evaluate battery_active given state and clock (mirrors compute_pattern logic)
+    fn eval_battery_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        if let Some(deadline) = state.silenced_until {
+            if (clock)() >= deadline {
+                state.battery_critical_active
+            } else {
+                false
+            }
+        } else {
+            state.battery_critical_active
         }
     }
 
@@ -411,7 +494,36 @@ mod tests {
         if state.silenced {
             return false;
         }
-        if let Some(deadline) = state.sensor_silenced_until {
+        if let Some(deadline) = state.silenced_until {
+            if (clock)() < deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Helper: evaluate is_battery_beeping logic
+    fn eval_is_battery_beeping(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        if !state.battery_critical_active && !state.battery_reminder_active {
+            return false;
+        }
+        if state.silenced {
+            return false;
+        }
+        if let Some(deadline) = state.silenced_until {
+            if (clock)() < deadline {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Helper: evaluate should_play_battery_reminder logic
+    fn eval_should_play_battery_reminder(state: &BuzzerPriorityState, clock: &Clock) -> bool {
+        if state.silenced {
+            return false;
+        }
+        if let Some(deadline) = state.silenced_until {
             if (clock)() < deadline {
                 return false;
             }
@@ -430,36 +542,39 @@ mod tests {
     }
 
     #[test]
-    fn silence_sensor_30min_suppresses_sensor_only() {
+    fn silence_beep_30min_suppresses_sensor_and_battery() {
         let (clock, _advance) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.sensor_critical_active = true;
         state.battery_critical_active = true;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
         let sensor_active = eval_sensor_active(&state, &clock);
+        let battery_active = eval_battery_active(&state, &clock);
         assert!(
             !sensor_active,
             "sensor should be suppressed by button silence"
         );
         assert!(
-            state.battery_critical_active,
-            "battery should NOT be suppressed"
+            !battery_active,
+            "battery should also be suppressed by the unified button silence"
         );
 
-        let pattern = eval_pattern(sensor_active, state.battery_critical_active);
-        assert_eq!(pattern, PatternSource::BatteryCritical);
+        let pattern = eval_pattern(sensor_active, battery_active);
+        assert_eq!(pattern, PatternSource::None);
     }
 
     #[test]
-    fn silence_sensor_expires_after_30min() {
+    fn silence_expires_after_30min_for_sensor_and_battery() {
         let (clock, advance) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.sensor_critical_active = true;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        state.battery_critical_active = true;
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
         // Before expiry
         assert!(!eval_sensor_active(&state, &clock));
+        assert!(!eval_battery_active(&state, &clock));
 
         // Advance past 30 minutes
         advance(Duration::from_secs(31 * 60));
@@ -469,6 +584,10 @@ mod tests {
             eval_sensor_active(&state, &clock),
             "sensor should resume after 30min"
         );
+        assert!(
+            eval_battery_active(&state, &clock),
+            "battery should resume after 30min"
+        );
     }
 
     #[test]
@@ -476,10 +595,10 @@ mod tests {
         let (clock, _advance) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.sensor_critical_active = true;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
-        // Simulate on_new_sensor_alarm: clears sensor_silenced_until
-        state.sensor_silenced_until = None;
+        // Simulate on_new_sensor_alarm: clears silenced_until
+        state.silenced_until = None;
 
         assert!(
             eval_sensor_active(&state, &clock),
@@ -487,11 +606,97 @@ mod tests {
         );
     }
 
+    #[test]
+    fn on_new_sensor_alarm_also_clears_battery_button_silence() {
+        let (clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.battery_critical_active = true;
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        // Simulate on_new_sensor_alarm: clears the shared silence deadline
+        state.silenced_until = None;
+
+        assert!(
+            eval_is_battery_beeping(&state, &clock),
+            "a fresh sensor alarm re-arms battery beeping too, since the timer is shared"
+        );
+    }
+
+    #[test]
+    fn unified_button_silence_stops_both_sensor_and_battery_beeping() {
+        let (clock, _advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+        state.sensor_critical_active = true;
+        state.battery_critical_active = true;
+
+        assert!(eval_is_sensor_beeping(&state, &clock));
+        assert!(eval_is_battery_beeping(&state, &clock));
+
+        // A single button press silences whichever is beeping (unified)
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+
+        assert!(!eval_is_sensor_beeping(&state, &clock));
+        assert!(!eval_is_battery_beeping(&state, &clock));
+    }
+
+    #[test]
+    fn should_play_battery_reminder_respects_mqtt_and_button_silence() {
+        let (clock, advance) = mock_clock();
+        let mut state = BuzzerPriorityState::new();
+
+        // No silence -> should play
+        assert!(eval_should_play_battery_reminder(&state, &clock));
+
+        // MQTT ACK silence -> suppressed
+        state.silenced = true;
+        assert!(!eval_should_play_battery_reminder(&state, &clock));
+        state.silenced = false;
+
+        // Button silence -> suppressed until expiry
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        assert!(!eval_should_play_battery_reminder(&state, &clock));
+
+        advance(Duration::from_secs(31 * 60));
+        assert!(
+            eval_should_play_battery_reminder(&state, &clock),
+            "reminder resumes after 30min"
+        );
+    }
+
+    #[test]
+    fn is_battery_beeping_reflects_both_silences() {
+        let (clock, _advance) = mock_clock();
+
+        // Battery critical active, no silence -> beeping
+        let mut state = BuzzerPriorityState::new();
+        state.battery_critical_active = true;
+        assert!(eval_is_battery_beeping(&state, &clock));
+
+        // Battery reminder active (on-battery chirp), no silence -> beeping
+        let mut reminder_state = BuzzerPriorityState::new();
+        reminder_state.battery_reminder_active = true;
+        assert!(eval_is_battery_beeping(&reminder_state, &clock));
+
+        // Battery critical active, MQTT silenced -> not beeping
+        state.silenced = true;
+        assert!(!eval_is_battery_beeping(&state, &clock));
+
+        // Battery critical active, button silenced (not MQTT) -> not beeping
+        state.silenced = false;
+        state.silenced_until = Some((clock)() + Duration::from_secs(1800));
+        assert!(!eval_is_battery_beeping(&state, &clock));
+
+        // Neither battery source active -> not beeping
+        state.battery_critical_active = false;
+        state.silenced_until = None;
+        assert!(!eval_is_battery_beeping(&state, &clock));
+    }
+
     /// Helper: evaluate "any critical-sensor source is active" given silence state.
     /// Mirrors the updated compute_pattern OR-logic between sensor and sticker.
     fn eval_critical_active(state: &BuzzerPriorityState, clock: &Clock) -> bool {
         let raw = state.sensor_critical_active || state.sticker_critical_active;
-        if let Some(deadline) = state.sensor_silenced_until {
+        if let Some(deadline) = state.silenced_until {
             if (clock)() >= deadline {
                 raw
             } else {
@@ -551,7 +756,7 @@ mod tests {
         let (clock, _) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.sticker_critical_active = true;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
         assert!(
             !eval_critical_active(&state, &clock),
@@ -563,7 +768,7 @@ mod tests {
     fn set_sticker_critical_off_to_on_clears_ack_silence() {
         // Fallback: BuzzerController::new_for_test() doesn't exist, so we
         // model the state machine semantics of set_sticker_critical directly
-        // (mirrors style of silence_sensor_30min_suppresses_sensor_only).
+        // (mirrors style of silence_beep_30min_suppresses_sensor_and_battery).
         let mut state = BuzzerPriorityState::new();
         state.silenced = true; // prior ACK silence
 
@@ -608,7 +813,7 @@ mod tests {
 
         // Simulate on_new_sensor_alarm: clears both silences
         state.silenced = false;
-        state.sensor_silenced_until = None;
+        state.silenced_until = None;
 
         assert!(
             !state.silenced,
@@ -629,19 +834,20 @@ mod tests {
     }
 
     #[test]
-    fn button_silence_does_not_mute_battery() {
+    fn button_silence_mutes_battery_critical_too() {
         let (clock, _advance) = mock_clock();
         let mut state = BuzzerPriorityState::new();
         state.battery_critical_active = true;
         state.sensor_critical_active = false;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
+        state.silenced_until = Some((clock)() + Duration::from_secs(30 * 60));
 
         let sensor_active = eval_sensor_active(&state, &clock);
-        let pattern = eval_pattern(sensor_active, state.battery_critical_active);
+        let battery_active = eval_battery_active(&state, &clock);
+        let pattern = eval_pattern(sensor_active, battery_active);
         assert_eq!(
             pattern,
-            PatternSource::BatteryCritical,
-            "battery should still beep when only button silence is active"
+            PatternSource::None,
+            "battery should now be muted by the unified button silence"
         );
     }
 
@@ -660,19 +866,19 @@ mod tests {
 
         // Sensor active, button silenced (not MQTT) → not beeping
         state.silenced = false;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(1800));
+        state.silenced_until = Some((clock)() + Duration::from_secs(1800));
         assert!(!eval_is_sensor_beeping(&state, &clock));
 
         // Sensor inactive → not beeping
         state.sensor_critical_active = false;
-        state.sensor_silenced_until = None;
+        state.silenced_until = None;
         state.silenced = false;
         assert!(!eval_is_sensor_beeping(&state, &clock));
 
         // Sensor active, both silenced → not beeping
         state.sensor_critical_active = true;
         state.silenced = true;
-        state.sensor_silenced_until = Some((clock)() + Duration::from_secs(1800));
+        state.silenced_until = Some((clock)() + Duration::from_secs(1800));
         assert!(!eval_is_sensor_beeping(&state, &clock));
     }
 }

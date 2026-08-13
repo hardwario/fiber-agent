@@ -101,7 +101,9 @@ pub struct Inputs<'a> {
     /// Debounced level of each button, as of this poll.
     pub levels: Levels,
     pub in_standby: bool,
-    pub sensor_beeping: bool,
+    /// A sensor/sticker critical alarm OR a battery alarm/reminder is
+    /// currently audible. A button press silences whichever it is.
+    pub any_beeping: bool,
     /// A BLE client is connected, which blocks the MQTT pairing flow.
     pub ble_active: bool,
     /// Whether a pairing handle exists at all (MQTT may be disabled).
@@ -115,8 +117,9 @@ pub struct Inputs<'a> {
 pub enum Effect {
     /// Reset the backlight idle timeout.
     MarkActivity,
-    /// Mute the sensor buzzer for 30 minutes.
-    SilenceSensorBeep,
+    /// Mute whichever alarm is currently beeping (sensor, sticker, or
+    /// battery) for 30 minutes.
+    SilenceBeep,
     ShowSensorOverview,
     ShowSystemInfo,
     ShowMenu,
@@ -340,12 +343,12 @@ impl ButtonFsm {
                 ButtonEvent::Press(button) => {
                     effects.push(Effect::MarkActivity);
 
-                    // Any button PRESS silences the sensor beep, and that is all
-                    // it does: the gesture is spent. Remember it so the matching
-                    // release is spent too — otherwise a tap meaning "quiet
-                    // please" would still actuate whatever the release does.
-                    if input.sensor_beeping {
-                        effects.push(Effect::SilenceSensorBeep);
+                    // Any button PRESS silences whichever alarm is beeping, and
+                    // that is all it does: the gesture is spent. Remember it so
+                    // the matching release is spent too — otherwise a tap meaning
+                    // "quiet please" would still actuate whatever the release does.
+                    if input.any_beeping {
+                        effects.push(Effect::SilenceBeep);
                         self.swallowed.set(*button, true);
                         continue;
                     }
@@ -735,7 +738,7 @@ mod tests {
         levels: Levels,
         screen: Screen,
         in_standby: bool,
-        sensor_beeping: bool,
+        any_beeping: bool,
         ble_active: bool,
         pairing_available: bool,
         provisioning_expired: bool,
@@ -748,7 +751,7 @@ mod tests {
                 levels: Levels::default(),
                 screen: overview(),
                 in_standby: false,
-                sensor_beeping: false,
+                any_beeping: false,
                 ble_active: false,
                 pairing_available: true,
                 provisioning_expired: false,
@@ -762,7 +765,7 @@ mod tests {
                 screen: &self.screen,
                 levels: self.levels,
                 in_standby: self.in_standby,
-                sensor_beeping: self.sensor_beeping,
+                any_beeping: self.any_beeping,
                 ble_active: self.ble_active,
                 pairing_available: self.pairing_available,
                 provisioning_expired: self.provisioning_expired,
@@ -1189,12 +1192,12 @@ mod tests {
         // meant "quiet please" could still actuate whatever the release does.
         let t0 = Instant::now();
         let (mut h, t) = Harness::with_menu_open(t0);
-        h.sensor_beeping = true;
+        h.any_beeping = true;
 
         let press = h.press(t, Button::Enter);
         assert_eq!(
             press.effects,
-            vec![Effect::MarkActivity, Effect::SilenceSensorBeep]
+            vec![Effect::MarkActivity, Effect::SilenceBeep]
         );
 
         let release = h.release(t + Duration::from_millis(80), Button::Enter);
@@ -1203,6 +1206,29 @@ mod tests {
             release.effects.is_empty(),
             "the whole gesture was spent silencing the buzzer, so it must not \
              also select a menu item"
+        );
+    }
+
+    #[test]
+    fn a_battery_beep_is_silenced_by_a_button_press_just_like_a_sensor_beep() {
+        // The button used to only ever silence sensor/sticker alarms; battery
+        // alarms and the on-battery reminder chirp kept beeping regardless. The
+        // FSM itself is agnostic to the source — `any_beeping` unifies them — so
+        // this pins that a battery-only beep is silenced the same way.
+        let t0 = Instant::now();
+        let mut h = Harness::new();
+        h.any_beeping = true;
+
+        let press = h.press(t0, Button::Enter);
+        assert_eq!(
+            press.effects,
+            vec![Effect::MarkActivity, Effect::SilenceBeep]
+        );
+
+        let release = h.release(t0 + Duration::from_millis(80), Button::Enter);
+        assert!(
+            release.effects.is_empty(),
+            "the press was spent silencing the battery alarm, so release must not navigate"
         );
     }
 
