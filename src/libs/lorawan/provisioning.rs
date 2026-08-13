@@ -355,8 +355,58 @@ fn decode_chunked(data: &[u8]) -> Result<Vec<u8>, String> {
 
 // --- ChirpStack API Methods ---
 
+/// Load the ChirpStack API credentials from `fiber.config.yaml`.
+///
+/// Read from disk on each call rather than injected, matching what this module
+/// already does for the rest of its ChirpStack settings (every entry point
+/// re-reads [`LORAWAN_CONFIG_PATH`]) and what `detector::has_external_gateway` and
+/// `monitor::publish_lorawan_gateways` do for their own config. That matters
+/// here for a specific reason: provisioning is also reachable from the BLE
+/// Sticker-Add characteristic, which can fire on a device where
+/// `LoRaWANMonitor::new` never ran — so credentials cached at monitor init
+/// would be missing on exactly the path that needs them. It also means a
+/// re-provisioned password takes effect without restarting the agent.
+///
+/// A missing or blank credential is a hard error, never a fallback: a device
+/// whose credentials were not provisioned must fail visibly rather than quietly
+/// reaching ChirpStack as its factory `admin` account.
+fn chirpstack_credentials() -> Result<crate::libs::config::ChirpStackApiConfig, String> {
+    let config = crate::libs::config::Config::load_default()
+        .map_err(|e| format!("cannot read config for ChirpStack credentials: {}", e))?;
+    credentials_from(config)
+}
+
+/// The I/O-free half of [`chirpstack_credentials`], split out so the failure
+/// messages can be tested without a config file on disk.
+fn credentials_from(
+    config: crate::libs::config::Config,
+) -> Result<crate::libs::config::ChirpStackApiConfig, String> {
+    let creds = config
+        .lorawan
+        .map(|lorawan| lorawan.chirpstack)
+        .ok_or_else(|| {
+            "no `lorawan:` section in fiber.config.yaml — ChirpStack API credentials \
+             not provisioned"
+                .to_string()
+        })?;
+    creds.validate()?;
+    Ok(creds)
+}
+
+/// Build the `InternalService/Login` request body.
+///
+/// Split from [`login`] so the field numbering can be tested without a socket.
+/// Note that [`encode_string`] elides empty values, so a blank credential
+/// silently drops its field rather than sending an empty one — see
+/// `empty_password_drops_the_field_entirely`. That is why callers must run
+/// `validate()` first.
+fn login_request(username: &str, password: &str) -> Vec<u8> {
+    [encode_string(1, username), encode_string(2, password)].concat()
+}
+
 fn login() -> Result<String, String> {
-    let req = [encode_string(1, "admin"), encode_string(2, "admin")].concat();
+    let creds = chirpstack_credentials()?;
+    let req = login_request(&creds.username, &creds.password);
 
     let resp = grpc_web_call("api.InternalService/Login", &req, None)?
         .ok_or_else(|| "Login returned empty response".to_string())?;
@@ -849,6 +899,55 @@ pub fn get_gateways_status(gateway_euis: &[String]) -> Vec<GatewayStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_request_carries_the_configured_credentials() {
+        let req = login_request("operator", "s3cret");
+        assert_eq!(
+            req,
+            [encode_string(1, "operator"), encode_string(2, "s3cret")].concat()
+        );
+        assert!(
+            !req.windows(5).any(|w| w == b"admin"),
+            "no hardcoded credential may survive in the request"
+        );
+    }
+
+    /// Why `validate()` has to run before `login()`: `encode_string` elides an
+    /// empty value, so a blank password does not send a blank password — it
+    /// sends a login request with no field 2 at all, which ChirpStack rejects
+    /// with an opaque error that gives an operator nothing to act on.
+    #[test]
+    fn empty_password_drops_the_field_entirely() {
+        assert_eq!(login_request("admin", ""), encode_string(1, "admin"));
+    }
+
+    #[test]
+    fn credentials_from_names_the_missing_section() {
+        let mut config = crate::libs::config::Config::default_config();
+        // `default_config()` leaves `lorawan: None`.
+        let err = credentials_from(config.clone()).expect_err("None must not validate");
+        assert!(err.contains("lorawan"), "got: {err}");
+
+        // Present but unprovisioned: the message must name the exact key.
+        config.lorawan = Some(crate::libs::config::LoRaWANConfig::default());
+        let err = credentials_from(config).expect_err("blank password must not validate");
+        assert!(err.contains("lorawan.chirpstack.password"), "got: {err}");
+    }
+
+    #[test]
+    fn credentials_from_accepts_a_provisioned_config() {
+        let mut config = crate::libs::config::Config::default_config();
+        config.lorawan = Some(crate::libs::config::LoRaWANConfig {
+            chirpstack: crate::libs::config::ChirpStackApiConfig {
+                username: "operator".to_string(),
+                password: "s3cret".to_string(),
+            },
+            ..Default::default()
+        });
+        let creds = credentials_from(config).expect("provisioned config must validate");
+        assert_eq!(creds.username, "operator");
+    }
 
     #[test]
     fn varint_field_reads_scalar_by_number() {

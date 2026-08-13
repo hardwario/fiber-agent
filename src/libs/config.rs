@@ -936,12 +936,90 @@ pub struct ExternalGatewayConfig {
     pub enabled: bool,
 }
 
+/// Credentials for the on-device ChirpStack gRPC-web API.
+///
+/// The API URL is deliberately not configurable: ChirpStack always runs on the
+/// same system as the agent, so the loopback address in
+/// [`crate::libs::lorawan::provisioning`] is part of the deployment contract.
+/// Only the credentials vary per deployment.
+///
+/// `password` ships empty on purpose — it is populated at deployment time and
+/// must never be committed. An empty password fails LoRaWAN init loudly rather
+/// than falling back to ChirpStack's well-known factory account.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ChirpStackApiConfig {
+    /// ChirpStack API user. `admin` is the factory account name.
+    #[serde(default = "default_chirpstack_api_username")]
+    pub username: String,
+
+    /// ChirpStack API password. Empty means "not provisioned" — see
+    /// [`ChirpStackApiConfig::validate`].
+    #[serde(default)]
+    pub password: String,
+}
+
+impl Default for ChirpStackApiConfig {
+    fn default() -> Self {
+        Self {
+            username: default_chirpstack_api_username(),
+            password: String::new(),
+        }
+    }
+}
+
+/// Redacted by hand so the password cannot leak through a `{:?}` on this struct
+/// or on any struct that contains it — `LoRaWANConfig` derives `Debug` and is
+/// logged during startup diagnostics.
+impl std::fmt::Debug for ChirpStackApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChirpStackApiConfig")
+            .field("username", &self.username)
+            .field(
+                "password",
+                &if self.password.is_empty() {
+                    "<unset>"
+                } else {
+                    "***"
+                },
+            )
+            .finish()
+    }
+}
+
+impl ChirpStackApiConfig {
+    /// `Err` with an operator-actionable message when either half is blank.
+    ///
+    /// Callers surface this message in logs, so it must never contain the
+    /// password value itself.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.username.trim().is_empty() {
+            return Err(
+                "lorawan.chirpstack.username is empty — set it in fiber.config.yaml".to_string(),
+            );
+        }
+        if self.password.is_empty() {
+            return Err(
+                "lorawan.chirpstack.password is empty — provision it at deployment time \
+                 (see README, \"Provisioning ChirpStack credentials\")"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 /// LoRaWAN gateway configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoRaWANConfig {
     /// Enable LoRaWAN gateway integration
     #[serde(default)]
     pub enabled: bool,
+
+    /// ChirpStack gRPC-web API credentials. Distinct from the
+    /// `chirpstack_mqtt_*` fields below, which authenticate to the local MQTT
+    /// broker — this pair authenticates to ChirpStack's own API.
+    #[serde(default)]
+    pub chirpstack: ChirpStackApiConfig,
 
     /// ChirpStack local MQTT broker host
     #[serde(default = "default_chirpstack_mqtt_host")]
@@ -991,6 +1069,7 @@ impl Default for LoRaWANConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            chirpstack: ChirpStackApiConfig::default(),
             chirpstack_mqtt_host: "localhost".to_string(),
             chirpstack_mqtt_port: 1883,
             chirpstack_mqtt_username: None,
@@ -1002,6 +1081,13 @@ impl Default for LoRaWANConfig {
             gateways: Vec::new(),
         }
     }
+}
+
+/// ChirpStack's factory API account name. Only the username defaults — the
+/// password intentionally has no default, so an unprovisioned device fails
+/// rather than authenticating with a credential that is public knowledge.
+fn default_chirpstack_api_username() -> String {
+    "admin".to_string()
 }
 
 fn default_chirpstack_mqtt_host() -> String {
@@ -1772,5 +1858,98 @@ custom_lines:
         assert_eq!(cfg.display.custom_lines.len(), 4);
         assert_eq!(cfg.display.custom_lines[3].field, "voltage");
         assert_eq!(cfg.display.custom_lines[3].format.decimals, Some(2));
+    }
+}
+
+#[cfg(test)]
+mod chirpstack_api_config_tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_an_unprovisioned_password() {
+        let cfg = ChirpStackApiConfig::default();
+        let err = cfg.validate().expect_err("empty password must not validate");
+        assert!(
+            err.contains("lorawan.chirpstack.password"),
+            "message must name the key an operator has to fix: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_blank_username() {
+        let cfg = ChirpStackApiConfig {
+            username: "   ".to_string(),
+            password: "s3cret".to_string(),
+        };
+        let err = cfg.validate().expect_err("blank username must not validate");
+        assert!(err.contains("lorawan.chirpstack.username"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_accepts_a_populated_pair() {
+        let cfg = ChirpStackApiConfig {
+            username: "admin".to_string(),
+            password: "s3cret".to_string(),
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// The password must not reach a log through `{:?}` on this struct or on
+    /// `LoRaWANConfig`, which derives `Debug` and is printed during startup.
+    #[test]
+    fn debug_redacts_the_password() {
+        let cfg = ChirpStackApiConfig {
+            username: "admin".to_string(),
+            password: "hunter2".to_string(),
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("hunter2"), "leaked: {rendered}");
+        assert!(rendered.contains("***"), "got: {rendered}");
+
+        let lorawan = LoRaWANConfig {
+            chirpstack: cfg,
+            ..LoRaWANConfig::default()
+        };
+        let rendered = format!("{lorawan:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "leaked through LoRaWANConfig: {rendered}"
+        );
+    }
+
+    #[test]
+    fn debug_distinguishes_unset_from_set() {
+        let unset = format!("{:?}", ChirpStackApiConfig::default());
+        assert!(unset.contains("<unset>"), "got: {unset}");
+    }
+
+    /// A `lorawan:` block carrying only `chirpstack:` must deserialize — every
+    /// other field is `#[serde(default)]`. Guards the shape shipped in
+    /// `fiber.config.yaml`.
+    #[test]
+    fn deserializes_a_lorawan_block_with_only_chirpstack() {
+        let yaml = r#"
+chirpstack:
+  username: admin
+  password: ""
+"#;
+        let cfg: LoRaWANConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        assert_eq!(cfg.chirpstack.username, "admin");
+        assert_eq!(cfg.chirpstack.password, "");
+        assert!(cfg.chirpstack.validate().is_err());
+        // Untouched defaults.
+        assert_eq!(cfg.chirpstack_mqtt_host, "localhost");
+        assert!(cfg.sensors.is_empty());
+    }
+
+    /// An absent `chirpstack:` block yields the factory username and no
+    /// password — i.e. a deployed config that predates this field fails the
+    /// credential check rather than silently authenticating as admin/admin.
+    #[test]
+    fn absent_block_defaults_to_username_only() {
+        let cfg: LoRaWANConfig = serde_yaml::from_str("enabled: true\n").expect("must deserialize");
+        assert_eq!(cfg.chirpstack.username, "admin");
+        assert_eq!(cfg.chirpstack.password, "");
+        assert!(cfg.chirpstack.validate().is_err());
     }
 }

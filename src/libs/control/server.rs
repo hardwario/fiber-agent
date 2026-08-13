@@ -970,6 +970,27 @@ mod tests {
         assert_eq!(v["interval"], 600);
     }
 
+    /// `lorawan.chirpstack.password` is masked by `is_secret_key`'s substring
+    /// match on "password" — pinned here so renaming the field to something
+    /// like `api_secret_value` can't silently un-redact it in `fiberctl config
+    /// show` / `config get`.
+    #[test]
+    fn redact_helper_masks_the_chirpstack_api_password() {
+        let mut v = serde_json::json!({
+            "lorawan": {
+                "chirpstack": { "username": "admin", "password": "s3cret" },
+                "chirpstack_mqtt_password": "m0sq",
+                "chirpstack_mqtt_host": "localhost",
+            },
+        });
+        redact_secrets(&mut v);
+        assert_eq!(v["lorawan"]["chirpstack"]["password"], "***");
+        assert_eq!(v["lorawan"]["chirpstack_mqtt_password"], "***");
+        // Username and host are not secrets.
+        assert_eq!(v["lorawan"]["chirpstack"]["username"], "admin");
+        assert_eq!(v["lorawan"]["chirpstack_mqtt_host"], "localhost");
+    }
+
     #[test]
     fn observe_commands_not_enabled_when_absent() {
         let ctx = test_ctx(); // power/sensors all None
