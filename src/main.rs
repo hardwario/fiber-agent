@@ -439,6 +439,154 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Consume a factory-reset result file left by the `fiber-factory-reset`
+    // boot hook (phase 2 of the factory-reset feature), if it ran on the boot
+    // that just wiped /data. This is the earliest point in startup with a
+    // storage handle, which is why it sits here rather than next to the
+    // standby/boot-decision block above: the audit row below needs to be the
+    // first row of the fresh, post-wipe audit chain, and there is nowhere
+    // earlier to durably record it. The cost is that sensor power and the
+    // display have already come up by this point (a few hundred ms of
+    // flicker before standby drops them again) — accepted in exchange for
+    // never losing the audit row, since re-ordering around it would mean
+    // standing up a second, throwaway storage handle earlier just for this.
+    //
+    // The decision of *what* to do lives in `decide_post_reset_boot_action`,
+    // a pure function unit-tested in `factory_reset.rs`; only the actual
+    // audit write and standby entry happen here.
+    {
+        use fiber_app::libs::factory_reset::{
+            decide_post_reset_boot_action, PostResetBootAction, ResetOutcome, ResetPlan,
+        };
+
+        let result_path = ResetPlan::production().result_path();
+        let outcome = ResetOutcome::read(&result_path);
+        match decide_post_reset_boot_action(outcome.as_ref()) {
+            PostResetBootAction::None => {
+                // Three cases collapse to `None` here: no result file (the
+                // overwhelmingly common case — nothing to do), a file that
+                // is genuinely corrupt (unparseable JSON or an unrecognized
+                // schema_version — can never become readable, safe to
+                // clear), or a file that merely failed to *read* this once
+                // (a transient I/O error, a permission hiccup — NOT safe to
+                // clear: doing so would permanently destroy the one on-disk
+                // record of this reset's outcome, silently skipping the
+                // FACTORY_RESET_COMPLETED audit row and any requested
+                // standby entry, with no retry possible afterward).
+                // `ResetOutcome::is_corrupt` re-reads the file to tell these
+                // apart; only the first, unambiguous case is cleared here.
+                if ResetOutcome::is_corrupt(&result_path) {
+                    eprintln!(
+                        "[main] WARN: factory-reset result file at {} is corrupt (unparseable or unrecognized schema) — removing it",
+                        result_path.display()
+                    );
+                    ResetOutcome::clear(&result_path);
+                } else if result_path.exists() {
+                    eprintln!(
+                        "[main] WARN: factory-reset result file at {} exists but could not be read (transient I/O error?) — leaving it for a later boot to retry",
+                        result_path.display()
+                    );
+                }
+            }
+            PostResetBootAction::Consume { enter_standby } => {
+                // `decide_post_reset_boot_action` only ever returns `Consume`
+                // when it was given `Some(outcome)`, so this always matches
+                // today — but match rather than `.expect()` on that
+                // invariant, so a future change to that function's `None`
+                // handling cannot turn into a boot-time panic here.
+                if let Some(outcome) = outcome {
+                    eprintln!(
+                        "[main] Factory reset result found: {} (post_action={:?})",
+                        outcome.summary(),
+                        outcome.post_action
+                    );
+
+                    // Genesis row of the fresh, post-wipe audit chain. The
+                    // wipe destroyed the pre-wipe audit log that
+                    // `request_id`/`reason`/`requested_by` originally lived
+                    // in, so they are carried forward here — along with
+                    // `status` and the wipe counts — so an auditor can
+                    // stitch the two chains together across the reset.
+                    let details = serde_json::json!({
+                        "request_id": outcome.request_id,
+                        "reason": outcome.reason,
+                        "requested_by": outcome.requested_by,
+                        "status": outcome.status,
+                        "post_action": outcome.post_action,
+                        "removed": outcome.removed,
+                        "preserved": outcome.preserved,
+                        "recreated": outcome.recreated,
+                        "errors": outcome.errors,
+                    })
+                    .to_string();
+                    if let Err(e) = storage_handle.log_audit_event(
+                        "FACTORY_RESET_COMPLETED".to_string(),
+                        Some("audit_log".to_string()),
+                        Some(details),
+                    ) {
+                        eprintln!(
+                            "[main] WARN: failed to queue FACTORY_RESET_COMPLETED audit row: {e}"
+                        );
+                    }
+                    if let Err(e) = storage_handle
+                        .flush_sync(fiber_app::libs::system_control::TEARDOWN_AUDIT_FLUSH_TIMEOUT)
+                    {
+                        eprintln!(
+                            "[main] WARN: FACTORY_RESET_COMPLETED audit row may not be durable: {e}"
+                        );
+                    }
+
+                    if enter_standby {
+                        eprintln!(
+                            "[main] Factory reset requested power-off as its post-action — entering standby"
+                        );
+                        // This string is not just a log line: `execute_standby`
+                        // below stores it verbatim in the `StandbyMarker`,
+                        // which `PowerMonitor` republishes as `reason` on the
+                        // retained `power/standby` MQTT topic on the exact
+                        // standby edge this boot produces (see
+                        // `power::monitor`'s "no command handler sees this
+                        // transition" doc), and it is what `fiberctl power`
+                        // reports as `standby_reason`. There is no
+                        // audit-export MQTT stream in this codebase and the
+                        // result file is deleted right after this block, so
+                        // this is the ONLY signal an operator or the Viewer
+                        // ever receives about how the reset actually went —
+                        // it must never claim success ("completed") for a
+                        // `CompletedWithErrors` or `Failed` wipe. Spell out
+                        // the real status and error count instead of a fixed
+                        // word.
+                        if let Err(e) = fiber_app::MqttMonitor::execute_standby(
+                            format!(
+                                "factory reset {} finished status={:?} ({} errors): {}",
+                                outcome.request_id,
+                                outcome.status,
+                                outcome.errors.len(),
+                                outcome.reason
+                            ),
+                            outcome.requested_by.clone(),
+                            &Some(storage_handle.clone()),
+                            &Some(stm_guard.clone()),
+                        ) {
+                            eprintln!(
+                                "[main] WARN: could not enter standby after factory reset: {e} — device stays up"
+                            );
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "[main] WARN: factory-reset boot action was Consume with no outcome — ignoring"
+                    );
+                }
+
+                // Consumed exactly once: whatever happened above, this
+                // result must not be acted on again on a later, unrelated
+                // boot.
+                ResetOutcome::clear(&result_path);
+            }
+        }
+    }
+
     // Save-and-feed: spawn the multi-destination MQTT exporter when enabled.
     // The exporter drains rows past per-(broker, stream) cursors and ships
     // them to configured destinations at QoS 1. The thread owns its own
