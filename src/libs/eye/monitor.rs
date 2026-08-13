@@ -692,6 +692,10 @@ fn eye_loop(
                                     let interval_s = config.interval_min_for(tag) as i64 * 60;
                                     if let Ok(mut s) = state.write() {
                                         let entry = s.entry(&mac_key, tag.name.clone());
+                                        // Reaching this loop means the MAC is owned
+                                        // (or fleet-known), so it is no longer a
+                                        // discovery candidate.
+                                        entry.discovered = false;
                                         let prev_seen = entry.last_seen_ts;
                                         entry.apply_reading(&reading, rssi, now_ts);
                                         entry.evaluate_alarms(tag);
@@ -893,6 +897,118 @@ fn eye_loop(
                                 EyeJob::Download { since_ts: since, interval_s: interval_s as u16 },
                             );
                         }
+                    }
+                }
+
+                // ---- Discovery: EYE tags in earshot that we do not own -------
+                //
+                // The scan is already global: the DiscoveryFilter sets no MAC
+                // allowlist, so `fresh_macs` holds every advertiser BlueZ saw this
+                // tick and the loop above simply ignores the ones absent from the
+                // config. A MAC that is neither owned nor fleet-known is therefore a
+                // discovery candidate, costing one property read to confirm it is a
+                // Teltonika tag rather than a phone.
+                if config.auto_discover_on() || config.auto_provision {
+                    let owned_now: HashSet<String> = config
+                        .tags
+                        .iter()
+                        .map(|t| t.mac.to_uppercase())
+                        .chain(known_tags.iter().cloned())
+                        .collect();
+
+                    for fresh in fresh_macs.iter() {
+                        let mac_key = fresh.to_uppercase();
+                        if owned_now.contains(&mac_key) {
+                            continue;
+                        }
+                        let addr: bluer::Address = match mac_key.parse() {
+                            Ok(a) => a,
+                            Err(_) => continue,
+                        };
+                        let device = match adapter.device(addr) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+                        // Only Teltonika manufacturer data that parses as an EYE
+                        // frame counts. Everything else advertising nearby (phones,
+                        // beacons, the gateway peripherals) must never be offered as
+                        // a sensor.
+                        let md = device.manufacturer_data().await.ok().flatten();
+                        let value = match md.as_ref().and_then(|m| m.get(&TELTONIKA_COMPANY_ID)) {
+                            Some(v) => v.clone(),
+                            None => continue,
+                        };
+                        let reading = match parse_manufacturer_value(&value) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+                        let rssi = device.rssi().await.ok().flatten();
+
+                        if config.auto_provision {
+                            // Adopt outright: write it into eye.tags through the
+                            // applier, so the change gets the same backup, validation
+                            // and audit trail as an operator-issued add_eye_tag. The
+                            // existing first-sight provisioning then picks it up next
+                            // tick, since a freshly added tag is PendingProvisioning.
+                            match crate::libs::config_applier::config_applier_handle() {
+                                Some(applier) => {
+                                    let result =
+                                        applier.apply_eye_tag_config(mac_key.clone(), None);
+                                    if result.success {
+                                        if let Ok(mut c) = shared_config.write() {
+                                            c.upsert_tag(&mac_key, None);
+                                        }
+                                        if let Ok(mut st) = state.write() {
+                                            let entry = st.entry(&mac_key, None);
+                                            entry.discovered = false;
+                                            entry.apply_reading(&reading, rssi, now_ts);
+                                        }
+                                        eprintln!(
+                                            "[EYE Monitor] Adopted {mac_key} (auto-provision)"
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "[EYE Monitor] Could not adopt {mac_key}: {}",
+                                            result.error_message.as_deref().unwrap_or("unknown"),
+                                        );
+                                    }
+                                }
+                                None => eprintln!(
+                                    "[EYE Monitor] Cannot adopt {mac_key}: applier not ready"
+                                ),
+                            }
+                        } else {
+                            // Visibility only. Capped so a tag-dense site cannot grow
+                            // the snapshot without bound; an entry that already exists
+                            // is always refreshed, so the cap bounds the set rather
+                            // than freezing the first-seen tags at a stale reading.
+                            let (known, room) = state
+                                .read()
+                                .map(|st| {
+                                    (
+                                        st.tags.contains_key(&mac_key),
+                                        st.tags.values().filter(|t| t.discovered).count()
+                                            < config.auto_discover_limit(),
+                                    )
+                                })
+                                .unwrap_or((false, false));
+                            if known || room {
+                                if let Ok(mut st) = state.write() {
+                                    let entry = st.entry(&mac_key, None);
+                                    entry.discovered = true;
+                                    entry.apply_reading(&reading, rssi, now_ts);
+                                }
+                            }
+                        }
+                    }
+
+                    // Drop candidates that have gone quiet. An owned tag stays in
+                    // state when it goes stale (its history and alarm state matter);
+                    // a candidate is only interesting while it is in range, and
+                    // leaving it listed would offer a tag that is no longer there.
+                    if let Ok(mut st) = state.write() {
+                        st.tags
+                            .retain(|_, t| !t.discovered || !t.is_stale(now_ts, config.tag_timeout_s));
                     }
                 }
 
@@ -1255,7 +1371,10 @@ fn publish_snapshot(
     let tags: Vec<EyeTagPayload> = snapshot
         .tags
         .values()
-        .filter(|t| configured.contains(&t.mac))
+        // Candidates are exempt by definition: they are not in the config, and
+        // filtering them here would make auto-discover invisible. Detect targets
+        // stay pruned, since only the discovery pass sets that flag.
+        .filter(|t| configured.contains(&t.mac) || t.discovered)
         .map(|t| {
             let stale = t.is_stale(now_ts, tag_timeout_s);
             // A tag not seen within tag_timeout_s is offline: escalate the
@@ -1278,6 +1397,7 @@ fn publish_snapshot(
                 gateway: gateway.to_string(),
                 mac: t.mac.clone(),
                 name: t.name.clone(),
+                discovered: t.discovered,
                 temperature_c: t.temperature_c,
                 humidity_pct: t.humidity_pct,
                 battery_mv: t.battery_mv,
