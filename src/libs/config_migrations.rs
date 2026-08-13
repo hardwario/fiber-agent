@@ -106,7 +106,7 @@ fn migrate_chain(mut value: Value, from: u32, to: u32) -> Result<Value, Migratio
 /// default no matter what the struct says. The result is a gateway whose BLE
 /// hardware is up and whose tags are configured with `enabled: true`, while the
 /// monitor logs `[EYE Monitor] Disabled in config` once at boot and never runs.
-/// Nothing surfaces that: `queue_eye_command` returns false because the state
+/// Nothing surfaces that: `queue_beacon_command` returns false because the state
 /// was never registered, so an operator's "Add tag" is accepted, signed,
 /// confirmed, and then has nobody to hand it to. The viewer polls for 90 s and
 /// blames the BLE environment.
@@ -114,7 +114,7 @@ fn migrate_chain(mut value: Value, from: u32, to: u32) -> Result<Value, Migratio
 /// Set unconditionally, including over an explicit `false`. There has never been
 /// a way to turn the subsystem off on purpose — no command, no GUI toggle — so
 /// every `false` on disk traces to the template rather than to a decision, and
-/// there is nothing to preserve. `set_eye_enabled` is now that way, which is why
+/// there is nothing to preserve. `set_beacon_enabled` is now that way, which is why
 /// a future v3 -> v4 step must NOT repeat this: from here on a `false` can mean
 /// something.
 fn migrate_v2_to_v3(mut value: Value) -> Result<Value, MigrationError> {
@@ -135,7 +135,7 @@ fn migrate_v2_to_v3(mut value: Value) -> Result<Value, MigrationError> {
         }
         None => {
             // No `eye:` section at all, or one that is not a mapping. Write a
-            // minimal enabled block; serde fills the rest from EyeConfig.
+            // minimal enabled block; serde fills the rest from BeaconConfig.
             let mut eye = serde_yaml::Mapping::new();
             eye.insert(enabled_key, Value::Bool(true));
             root.insert(eye_key, Value::Mapping(eye));
@@ -468,7 +468,7 @@ mqtt:
     }
 
     /// Read `eye.enabled` out of a migrated document.
-    fn eye_enabled(migrated: &Value) -> Option<bool> {
+    fn beacon_enabled(migrated: &Value) -> Option<bool> {
         migrated
             .as_mapping()?
             .get(&Value::String("eye".into()))?
@@ -501,7 +501,7 @@ eye:
                 .and_then(|v| v.as_u64()),
             Some(3),
         );
-        assert_eq!(eye_enabled(&migrated), Some(true));
+        assert_eq!(beacon_enabled(&migrated), Some(true));
     }
 
     #[test]
@@ -541,7 +541,7 @@ eye:
         let v2 = "config_version: 2\nmqtt:\n  enabled: true\n";
         let raw: Value = serde_yaml::from_str(v2).unwrap();
         let migrated = migrate_v2_to_v3(raw).unwrap();
-        assert_eq!(eye_enabled(&migrated), Some(true));
+        assert_eq!(beacon_enabled(&migrated), Some(true));
     }
 
     #[test]

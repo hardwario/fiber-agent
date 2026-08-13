@@ -693,7 +693,7 @@ pub struct DisplayLine {
     ///
     /// Not an ordinal, for the same reason `dev_eui` isn't. Uppercase rather
     /// than lowercase because that is the EYE subsystem's canonical form —
-    /// [`crate::libs::eye::state::EyeSensorState::tags`] is keyed by uppercase
+    /// [`crate::libs::beacon::state::BeaconSensorState::tags`] is keyed by uppercase
     /// MAC and the `add_eye_tag` / `remove_eye_tag` commands uppercase theirs.
     /// Each subsystem keeps its own canonical case; normalizing both to the
     /// same one would break one of the two lookups.
@@ -1443,8 +1443,8 @@ pub struct Config {
     pub ble: crate::libs::ble::BleConfig,
 
     /// Teltonika EYE BLE sensor tag settings
-    #[serde(default)]
-    pub eye: Option<crate::libs::eye::EyeConfig>,
+    #[serde(default, rename = "eye")]
+    pub beacon: Option<crate::libs::beacon::BeaconConfig>,
 }
 
 impl Config {
@@ -1514,7 +1514,7 @@ impl Config {
         // would never match the lowercased dev_eui in LoRaWANSensorState, so
         // the row would render as "unknown sensor" forever with no hint why.
         //
-        // BLE MACs go the other way, to uppercase: EyeSensorState::tags is keyed
+        // BLE MACs go the other way, to uppercase: BeaconSensorState::tags is keyed
         // by uppercase MAC. Same failure mode, opposite direction — normalizing
         // both to one case would fix one lookup and break the other.
         for line in config.display.custom_lines.iter_mut() {
@@ -1601,10 +1601,10 @@ impl Config {
             mqtt: None,                        // MQTT disabled by default
             lorawan: None,                     // LoRaWAN disabled by default
             ble: crate::libs::ble::BleConfig::default(),
-            // EYE BLE tags are on by default; see EyeConfig::default(). `None`
+            // EYE BLE tags are on by default; see BeaconConfig::default(). `None`
             // here would hand the monitor a struct that never sees a serde
             // default, which is how this ended up disabled everywhere.
-            eye: Some(crate::libs::eye::EyeConfig::default()),
+            beacon: Some(crate::libs::beacon::BeaconConfig::default()),
         }
     }
 }
@@ -2147,7 +2147,7 @@ custom_lines:
         assert_eq!(line.dev_eui, None);
     }
 
-    /// Opposite direction to the DevEUI: `EyeSensorState::tags` is keyed by
+    /// Opposite direction to the DevEUI: `BeaconSensorState::tags` is keyed by
     /// uppercase MAC, so a lowercase one in the file would render as an unknown
     /// sensor forever.
     #[test]
@@ -2213,7 +2213,9 @@ mod chirpstack_api_config_tests {
     #[test]
     fn validate_rejects_an_unprovisioned_password() {
         let cfg = ChirpStackApiConfig::default();
-        let err = cfg.validate().expect_err("empty password must not validate");
+        let err = cfg
+            .validate()
+            .expect_err("empty password must not validate");
         assert!(
             err.contains("lorawan.chirpstack.password"),
             "message must name the key an operator has to fix: {err}"
@@ -2226,7 +2228,9 @@ mod chirpstack_api_config_tests {
             username: "   ".to_string(),
             password: "s3cret".to_string(),
         };
-        let err = cfg.validate().expect_err("blank username must not validate");
+        let err = cfg
+            .validate()
+            .expect_err("blank username must not validate");
         assert!(err.contains("lorawan.chirpstack.username"), "got: {err}");
     }
 

@@ -8,20 +8,20 @@ use crate::libs::config::FieldThreshold;
 ///
 /// `Default` is written out by hand rather than derived. A derived `Default`
 /// ignores every `#[serde(default = "...")]` on the fields below, so
-/// `EyeConfig::default()` — which is what `config.eye.clone().unwrap_or_default()`
+/// `BeaconConfig::default()` — which is what `config.beacon.clone().unwrap_or_default()`
 /// hands the monitor when the YAML has no `eye:` section at all — produced a
 /// struct with `publish_interval_s: 0`, `tag_timeout_s: 0` and
 /// `scan_stall_secs: 0`. That is a broken configuration, not merely a disabled
 /// one, and it would have started misbehaving the moment the subsystem was
 /// switched on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EyeConfig {
+pub struct BeaconConfig {
     /// Enable the EYE BLE tag monitor.
     ///
     /// On by default: BLE tag support is a shipped feature of the product, and
     /// every unit that had it off carried the value from the shipped template
     /// rather than from a decision — there has never been a way to turn it off
-    /// deliberately, so there was nothing to respect. `set_eye_enabled` is that
+    /// deliberately, so there was nothing to respect. `set_beacon_enabled` is that
     /// way; see the v2 -> v3 config migration for existing units.
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -77,7 +77,7 @@ pub struct EyeConfig {
     /// again makes it unknown, so it reappears.
     ///
     /// `Option` rather than a plain bool so an absent key round-trips as absent:
-    /// a field missing from this struct is dropped when `EyeConfig` is serialised
+    /// a field missing from this struct is dropped when `BeaconConfig` is serialised
     /// back to `fiber.config.yaml`, which would strip an operator's setting
     /// irreversibly — rolling the binary back would not bring the key back,
     /// because the file was already overwritten.
@@ -99,10 +99,10 @@ pub struct EyeConfig {
 
     /// Configured tags.
     #[serde(default)]
-    pub tags: Vec<EyeTagConfig>,
+    pub tags: Vec<BeaconTagConfig>,
 }
 
-impl Default for EyeConfig {
+impl Default for BeaconConfig {
     /// Mirrors the `#[serde(default = "...")]` on each field, so a config with
     /// no `eye:` section behaves exactly like one that spells out the defaults.
     fn default() -> Self {
@@ -124,10 +124,10 @@ impl Default for EyeConfig {
     }
 }
 
-impl EyeConfig {
+impl BeaconConfig {
     /// Effective logging interval (minutes) for a tag: per-tag override, else
     /// the subsystem default. Clamped to the tag-supported set {1, 5, 15}.
-    pub fn interval_min_for(&self, tag: &EyeTagConfig) -> u16 {
+    pub fn interval_min_for(&self, tag: &BeaconTagConfig) -> u16 {
         let raw = tag
             .logging_interval_min
             .unwrap_or(self.default_logging_interval_min);
@@ -140,7 +140,7 @@ impl EyeConfig {
 
     /// Whether the archive recording is active for a tag (per-tag override else
     /// the subsystem master switch).
-    pub fn recording_on_for(&self, tag: &EyeTagConfig) -> bool {
+    pub fn recording_on_for(&self, tag: &BeaconTagConfig) -> bool {
         self.recording_enabled && tag.recording.unwrap_or(true)
     }
 
@@ -168,7 +168,7 @@ impl EyeConfig {
 
     /// Insert or update a tag by MAC (case-insensitive; stored uppercased).
     /// Overwrites the name only when `name` is `Some`. Mirrors the YAML upsert in
-    /// `ConfigApplier::update_eye_tag_config` so the monitor's live view stays in
+    /// `ConfigApplier::update_beacon_tag_config` so the monitor's live view stays in
     /// sync with disk after an `add_eye_tag` command.
     ///
     /// Also switches the subsystem on. Adding a tag to a disabled subsystem is
@@ -183,7 +183,7 @@ impl EyeConfig {
                 t.name = Some(n.to_string());
             }
         } else {
-            self.tags.push(EyeTagConfig {
+            self.tags.push(BeaconTagConfig {
                 mac: up,
                 name: name.map(|s| s.to_string()),
                 enabled: true,
@@ -264,7 +264,7 @@ impl EyeConfig {
 
 /// A single configured EYE tag (identified by MAC).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EyeTagConfig {
+pub struct BeaconTagConfig {
     /// MAC address `AA:BB:CC:DD:EE:FF` (case-insensitive).
     pub mac: String,
 
@@ -277,12 +277,12 @@ pub struct EyeTagConfig {
     pub enabled: bool,
 
     /// Per-tag on-tag logging interval in minutes (1 / 5 / 15). `None` inherits
-    /// [`EyeConfig::default_logging_interval_min`].
+    /// [`BeaconConfig::default_logging_interval_min`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging_interval_min: Option<u16>,
 
     /// Per-tag archive recording override. `None` inherits
-    /// [`EyeConfig::recording_enabled`].
+    /// [`BeaconConfig::recording_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<bool>,
 
@@ -300,7 +300,7 @@ pub struct EyeTagConfig {
     /// avoids. Writing to the tag's flash is idempotent but not free.
     ///
     /// Also the reason this field exists rather than being inferred: the applier
-    /// serialises `EyeConfig` back to `fiber.config.yaml` on every tag change, so
+    /// serialises `BeaconConfig` back to `fiber.config.yaml` on every tag change, so
     /// a key the struct does not know about is silently dropped from the file.
     /// `None` means "never provisioned, or written by a build that predates this".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -339,7 +339,7 @@ mod tests {
     /// tag out of that list matters as much as the one that puts it in.
     #[test]
     fn auto_discover_is_off_unless_explicitly_enabled() {
-        let mut c = EyeConfig::default();
+        let mut c = BeaconConfig::default();
         assert!(
             !c.auto_discover_on(),
             "absent key must not enable discovery"
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn auto_discover_limit_defaults_but_honours_zero() {
-        let mut c = EyeConfig::default();
+        let mut c = BeaconConfig::default();
         assert_eq!(c.auto_discover_limit(), DEFAULT_AUTO_DISCOVER_MAX as usize);
         // Zero is a real answer ("show none"), not an unset value — otherwise the
         // cap could not be used to silence the list without also clearing the flag.
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn owns_tag_is_case_insensitive_and_drives_discovery_exclusion() {
-        let mut c = EyeConfig::default();
+        let mut c = BeaconConfig::default();
         c.upsert_tag("aa:bb:cc:dd:ee:01", Some("fridge"));
         // The scan uppercases MACs; the config may have been hand-edited in either
         // case. A mismatch here would offer an already-registered tag for adoption.
@@ -377,7 +377,7 @@ mod tests {
     fn a_removed_tag_becomes_discoverable_again() {
         // Explicitly required: deleting a tag must let it be found anew, so the
         // operator can re-add a tag they removed by mistake.
-        let mut c = EyeConfig::default();
+        let mut c = BeaconConfig::default();
         c.upsert_tag("AA:BB:CC:DD:EE:01", None);
         assert!(c.owns_tag("AA:BB:CC:DD:EE:01"));
         assert!(c.remove_tag("AA:BB:CC:DD:EE:01"));
@@ -391,7 +391,7 @@ mod tests {
     fn adopting_a_discovered_tag_is_a_plain_upsert() {
         // Auto-provision adopts by the same path an operator add uses, so the tag
         // it produces must be indistinguishable from a manually added one.
-        let mut c = EyeConfig::default();
+        let mut c = BeaconConfig::default();
         c.upsert_tag("AA:BB:CC:DD:EE:09", None);
         let t = c
             .tags
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn upsert_tag_inserts_uppercased_with_defaults() {
-        let mut cfg = EyeConfig::default();
+        let mut cfg = BeaconConfig::default();
         cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Freezer"));
         assert_eq!(cfg.tags.len(), 1);
         assert_eq!(cfg.tags[0].mac, "AA:BB:CC:DD:EE:FF");
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn upsert_tag_updates_in_place_and_keeps_name_when_none() {
-        let mut cfg = EyeConfig::default();
+        let mut cfg = BeaconConfig::default();
         cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
         // same MAC (lowercased) with a new name updates in place, no duplicate
         cfg.upsert_tag("aa:bb:cc:dd:ee:ff", Some("Fridge"));
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn remove_tag_is_case_insensitive_and_reports() {
-        let mut cfg = EyeConfig::default();
+        let mut cfg = BeaconConfig::default();
         cfg.upsert_tag("AA:BB:CC:DD:EE:FF", None);
         assert!(cfg.remove_tag("aa:bb:cc:dd:ee:ff"));
         assert!(cfg.tags.is_empty());
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn set_recording_off_makes_recording_on_for_false() {
-        let mut cfg = EyeConfig::default();
+        let mut cfg = BeaconConfig::default();
         cfg.recording_enabled = true;
         cfg.upsert_tag("AA:BB:CC:DD:EE:FF", Some("Freezer"));
         // interval 5 -> on

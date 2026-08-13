@@ -41,7 +41,7 @@ const TIME_SET_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0B_0000_1000_8000_00805F9B34FB);
 const STICKER_ADD_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0D_0000_1000_8000_00805F9B34FB);
-const EYE_TAG_ADD_CHAR_UUID: uuid::Uuid =
+const BEACON_ADD_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0E_0000_1000_8000_00805F9B34FB);
 const LAN_CONFIG_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB09_0000_1000_8000_00805F9B34FB);
@@ -625,12 +625,12 @@ pub async fn create_gatt_app(
     // --- EYE Tag Add characteristic (FB0E) ------------------------------------
     // Write {"mac","name"?} to pair a Teltonika EYE (BTSMP1) BLE sensor tag with
     // this FIBER: it is enrolled into eye.tags[] via the shared add_eye_tag path
-    // (same as MQTT's AddEyeTag) and the running scan starts tracking it without
+    // (same as MQTT's AddBeaconTag) and the running scan starts tracking it without
     // a restart. Read returns the structured result of the most recent write.
     // Auth-gated, mirrors FB0D — but enrollment is a synchronous local YAML write
     // (no ChirpStack), so there is no background task / pending poll. Issue #84.
-    let eye_tag_add_char = Characteristic {
-        uuid: EYE_TAG_ADD_CHAR_UUID.into(),
+    let beacon_add_char = Characteristic {
+        uuid: BEACON_ADD_CHAR_UUID.into(),
         write: Some(CharacteristicWrite {
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
@@ -638,10 +638,10 @@ pub async fn create_gatt_app(
                 move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
-                        use crate::libs::ble::gatt::eye_tag_add;
+                        use crate::libs::ble::gatt::beacon_add;
 
                         // Bound the request before any parsing work.
-                        if new_value.len() > eye_tag_add::MAX_PAYLOAD_BYTES {
+                        if new_value.len() > beacon_add::MAX_PAYLOAD_BYTES {
                             return Err(ReqError::InvalidValueLength);
                         }
 
@@ -650,15 +650,15 @@ pub async fn create_gatt_app(
                         if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
-                        let slot = state_guard.eye_tag_result.clone();
+                        let slot = state_guard.beacon_add_result.clone();
 
-                        let req: eye_tag_add::EyeTagAddRequest =
+                        let req: beacon_add::BeaconAddRequest =
                             match serde_json::from_slice(&new_value) {
                                 Ok(r) => r,
                                 Err(_) => {
-                                    eye_tag_add::store(
+                                    beacon_add::store(
                                         &slot,
-                                        eye_tag_add::EyeTagAddResponse {
+                                        beacon_add::BeaconAddResponse {
                                             success: false,
                                             message: "invalid json".to_string(),
                                         },
@@ -667,12 +667,12 @@ pub async fn create_gatt_app(
                                 }
                             };
 
-                        let prepared = match eye_tag_add::prepare(&req) {
+                        let prepared = match beacon_add::prepare(&req) {
                             Ok(p) => p,
                             Err(msg) => {
-                                eye_tag_add::store(
+                                beacon_add::store(
                                     &slot,
-                                    eye_tag_add::EyeTagAddResponse {
+                                    beacon_add::BeaconAddResponse {
                                         success: false,
                                         message: msg,
                                     },
@@ -684,9 +684,9 @@ pub async fn create_gatt_app(
                         let applier = match state_guard.config_applier.clone() {
                             Some(a) => a,
                             None => {
-                                eye_tag_add::store(
+                                beacon_add::store(
                                     &slot,
-                                    eye_tag_add::EyeTagAddResponse {
+                                    beacon_add::BeaconAddResponse {
                                         success: false,
                                         message: "config applier not initialized".to_string(),
                                     },
@@ -700,14 +700,14 @@ pub async fn create_gatt_app(
 
                         // Persist to eye.tags[] (atomic + rollback inside the applier).
                         let result = applier
-                            .apply_eye_tag_config(prepared.mac.clone(), prepared.name.clone());
+                            .apply_beacon_tag_config(prepared.mac.clone(), prepared.name.clone());
                         if !result.success {
                             let message = result
                                 .error_message
                                 .unwrap_or_else(|| "unknown error".to_string());
-                            eye_tag_add::store(
+                            beacon_add::store(
                                 &slot,
-                                eye_tag_add::EyeTagAddResponse {
+                                beacon_add::BeaconAddResponse {
                                     success: false,
                                     message,
                                 },
@@ -717,14 +717,14 @@ pub async fn create_gatt_app(
 
                         // Reflect into the running scan's live config + seed the
                         // in-memory state (uppercase MAC key), mirroring the
-                        // mqtt::monitor AddEyeTag arm so the monitor tracks the
+                        // mqtt::monitor AddBeaconTag arm so the monitor tracks the
                         // tag without a restart.
-                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                             if let Ok(mut c) = cfg.write() {
                                 c.upsert_tag(&prepared.mac, prepared.name.as_deref());
                             }
                         }
-                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                        if let Some(handle) = crate::libs::beacon::state::beacon_state_handle() {
                             if let Ok(mut s) = handle.write() {
                                 let entry = s.entry(&prepared.mac, prepared.name.clone());
                                 if let Some(n) = prepared.name.clone() {
@@ -734,12 +734,12 @@ pub async fn create_gatt_app(
                         }
 
                         eprintln!(
-                            "[gatt::eye_tag_add] ✓ EYE tag {} enrolled via FB0E",
+                            "[gatt::beacon_add] ✓ EYE tag {} enrolled via FB0E",
                             prepared.mac
                         );
-                        eye_tag_add::store(
+                        beacon_add::store(
                             &slot,
-                            eye_tag_add::EyeTagAddResponse {
+                            beacon_add::BeaconAddResponse {
                                 success: true,
                                 message: String::new(),
                             },
@@ -757,15 +757,15 @@ pub async fn create_gatt_app(
                 move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
-                        use crate::libs::ble::gatt::eye_tag_add;
+                        use crate::libs::ble::gatt::beacon_add;
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
-                        let slot = state_guard.eye_tag_result.clone();
+                        let slot = state_guard.beacon_add_result.clone();
                         drop(state_guard);
-                        let resp = eye_tag_add::read(&slot);
+                        let resp = beacon_add::read(&slot);
                         Ok(serde_json::to_vec(&resp).unwrap_or_default())
                     })
                 }
@@ -1063,7 +1063,7 @@ pub async fn create_gatt_app(
         device_label_char,
         time_set_char,
         sticker_add_char,
-        eye_tag_add_char,
+        beacon_add_char,
         lan_config_char,
         lan_status_char,
     ];

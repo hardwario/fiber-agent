@@ -3165,7 +3165,7 @@ impl MqttMonitor {
                     .get("enabled")
                     .and_then(|v| v.as_bool())
                     .ok_or("Missing enabled")?;
-                Ok(MqttCommand::SetEyeEnabled { enabled })
+                Ok(MqttCommand::SetBeaconEnabled { enabled })
             }
             "set_eye_recording" => {
                 let mac = params
@@ -3180,7 +3180,7 @@ impl MqttMonitor {
                 if !matches!(interval_min, 0 | 1 | 5 | 15) {
                     return Err("interval_min must be 0 (off), 1, 5 or 15".to_string());
                 }
-                Ok(MqttCommand::SetEyeRecording {
+                Ok(MqttCommand::SetBeaconRecording {
                     mac,
                     interval_min: interval_min as u16,
                 })
@@ -3191,7 +3191,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                Ok(MqttCommand::DownloadEyeHistory { mac })
+                Ok(MqttCommand::DownloadBeaconHistory { mac })
             }
             "add_eye_tag" => {
                 let mac = params
@@ -3199,7 +3199,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 let name = params
@@ -3207,7 +3207,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
-                Ok(MqttCommand::AddEyeTag { mac, name })
+                Ok(MqttCommand::AddBeaconTag { mac, name })
             }
             "set_eye_known_tags" => {
                 // An empty list is legal and meaningful: it means the fleet knows of
@@ -3222,9 +3222,9 @@ impl MqttMonitor {
                     .iter()
                     .filter_map(|v| v.as_str())
                     .map(|s| s.to_uppercase())
-                    .filter(|s| crate::libs::eye::state::is_valid_mac(s))
+                    .filter(|s| crate::libs::beacon::state::is_valid_mac(s))
                     .collect();
-                Ok(MqttCommand::SetEyeKnownTags { macs })
+                Ok(MqttCommand::SetBeaconKnownTags { macs })
             }
             "remove_eye_tag" => {
                 let mac = params
@@ -3232,10 +3232,10 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                Ok(MqttCommand::RemoveEyeTag { mac })
+                Ok(MqttCommand::RemoveBeaconTag { mac })
             }
             "detect_eye_tag" => {
                 let mac = params
@@ -3243,10 +3243,10 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                Ok(MqttCommand::DetectEyeTag { mac })
+                Ok(MqttCommand::DetectBeaconTag { mac })
             }
             "set_eye_field_threshold" => {
                 let mac = params
@@ -3254,7 +3254,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 let field = params
@@ -3262,7 +3262,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing field")?
                     .to_string();
-                Ok(MqttCommand::SetEyeFieldThreshold {
+                Ok(MqttCommand::SetBeaconFieldThreshold {
                     mac,
                     field,
                     critical_low: params.get("critical_low").and_then(|v| v.as_f64()),
@@ -3277,7 +3277,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing mac")?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 let field = params
@@ -3285,7 +3285,7 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .ok_or("Missing field")?
                     .to_string();
-                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+                Ok(MqttCommand::DeleteBeaconFieldThreshold { mac, field })
             }
             _ => Err(format!(
                 "Unsupported dev-platform command: {}",
@@ -4222,11 +4222,11 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::SetEyeEnabled { enabled } => {
+            MqttCommand::SetBeaconEnabled { enabled } => {
                 let Some(applier) = config_applier else {
                     return Err("Config applier not initialized".to_string());
                 };
-                let result = applier.apply_eye_enabled(enabled);
+                let result = applier.apply_beacon_enabled(enabled);
                 if !result.success {
                     return Err(result
                         .error_message
@@ -4235,7 +4235,7 @@ impl MqttMonitor {
                 // Mirror into the live config so config_state echoes the new
                 // value immediately, even though the monitor thread itself is
                 // only spawned at startup.
-                if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                     if let Ok(mut c) = cfg.write() {
                         c.enabled = enabled;
                     }
@@ -4247,23 +4247,23 @@ impl MqttMonitor {
                 Ok(())
             }
 
-            MqttCommand::SetEyeRecording { mac, interval_min } => {
+            MqttCommand::SetBeaconRecording { mac, interval_min } => {
                 // Hand off to the EYE monitor, which runs recorder ops with the
                 // BLE scan paused (raw L2CAP and an active scan must not overlap).
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 // Persist the recording on/off + interval FIRST, so interval 0 =
                 // off survives a restart and the gap/fallback sync stops queueing
                 // downloads (which would otherwise re-START_RECORD the tag) — H1.
                 if let Some(applier) = config_applier {
-                    let result = applier.apply_eye_recording(mac.clone(), interval_min);
+                    let result = applier.apply_beacon_recording(mac.clone(), interval_min);
                     if !result.success {
                         return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
                     }
                     // Reflect in the live config so the running loop's
                     // recording_on_for() updates without a restart.
-                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                    if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                         if let Ok(mut c) = cfg.write() {
                             c.set_recording(&mac, interval_min);
                         }
@@ -4271,8 +4271,8 @@ impl MqttMonitor {
                 } else {
                     return Err("Config applier not initialized".to_string());
                 }
-                if crate::libs::eye::state::queue_eye_command(
-                    crate::libs::eye::state::EyeCommand::SetRecording {
+                if crate::libs::beacon::state::queue_beacon_command(
+                    crate::libs::beacon::state::BeaconCommand::SetRecording {
                         mac: mac.clone(),
                         interval_min,
                     },
@@ -4283,12 +4283,12 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
-            MqttCommand::DownloadEyeHistory { mac } => {
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+            MqttCommand::DownloadBeaconHistory { mac } => {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                if crate::libs::eye::state::queue_eye_command(
-                    crate::libs::eye::state::EyeCommand::DownloadHistory { mac: mac.clone() },
+                if crate::libs::beacon::state::queue_beacon_command(
+                    crate::libs::beacon::state::BeaconCommand::DownloadHistory { mac: mac.clone() },
                 ) {
                     eprintln!("[MQTT Monitor] Queued EYE history download {mac}");
                     Ok(())
@@ -4296,27 +4296,27 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
-            MqttCommand::SetEyeKnownTags { macs } => {
+            MqttCommand::SetBeaconKnownTags { macs } => {
                 // Held in memory only, never written to fiber.config.yaml: the
                 // server re-pushes the union on every connect (the topic is
                 // retained), and persisting it would blur the line between "this
                 // gateway owns the tag" and "the fleet knows about it".
-                let n = crate::libs::eye::state::set_eye_known_tags(macs);
+                let n = crate::libs::beacon::state::set_beacon_known_tags(macs);
                 eprintln!("[MQTT Monitor] EYE fleet allowlist set: {n} MAC(s)");
                 Ok(())
             }
-            MqttCommand::AddEyeTag { mac, name } => {
+            MqttCommand::AddBeaconTag { mac, name } => {
                 // Persist the tag into `eye.tags[]` so it is tracked/named
                 // explicitly (auto-provisioning still discovers unknown tags).
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 if let Some(applier) = config_applier {
-                    let result = applier.apply_eye_tag_config(mac.clone(), name.clone());
+                    let result = applier.apply_beacon_tag_config(mac.clone(), name.clone());
                     if result.success {
                         // Reflect the change in the monitor's live config so the
                         // scan loop starts tracking the new tag without a restart.
-                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                             if let Ok(mut c) = cfg.write() {
                                 c.upsert_tag(&mac, name.as_deref());
                             }
@@ -4324,7 +4324,7 @@ impl MqttMonitor {
                         // Seed in-memory state so the tag shows up before its
                         // first advertisement is parsed (uppercase key, matching
                         // the scan loop and remove path).
-                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                        if let Some(handle) = crate::libs::beacon::state::beacon_state_handle() {
                             if let Ok(mut s) = handle.write() {
                                 let entry = s.entry(&mac.to_uppercase(), name.clone());
                                 // entry() ignores `name` for an existing tag, so a
@@ -4343,21 +4343,21 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::RemoveEyeTag { mac } => {
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+            MqttCommand::RemoveBeaconTag { mac } => {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 if let Some(applier) = config_applier {
-                    let result = applier.remove_eye_tag_config(mac.clone());
+                    let result = applier.remove_beacon_tag_config(mac.clone());
                     if result.success {
                         // Drop it from the live config too, so the scan loop stops
                         // tracking it and cannot resurrect it on the next advert.
-                        if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                        if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                             if let Ok(mut c) = cfg.write() {
                                 c.remove_tag(&mac);
                             }
                         }
-                        if let Some(handle) = crate::libs::eye::state::eye_state_handle() {
+                        if let Some(handle) = crate::libs::beacon::state::beacon_state_handle() {
                             if let Ok(mut s) = handle.write() {
                                 s.tags.remove(&mac.to_uppercase());
                             }
@@ -4371,14 +4371,14 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::DetectEyeTag { mac } => {
+            MqttCommand::DetectBeaconTag { mac } => {
                 // Detection runs over raw L2CAP GATT, which must not overlap the
                 // active BLE scan — hand off to the EYE monitor via the queue.
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
-                if crate::libs::eye::state::queue_eye_command(
-                    crate::libs::eye::state::EyeCommand::Detect { mac: mac.clone() },
+                if crate::libs::beacon::state::queue_beacon_command(
+                    crate::libs::beacon::state::BeaconCommand::Detect { mac: mac.clone() },
                 ) {
                     eprintln!("[MQTT Monitor] Queued EYE detect {mac}");
                     Ok(())
@@ -4386,14 +4386,14 @@ impl MqttMonitor {
                     Err("EYE monitor not running".to_string())
                 }
             }
-            MqttCommand::SetEyeFieldThreshold {
+            MqttCommand::SetBeaconFieldThreshold {
                 mac, field, critical_low, warning_low, warning_high, critical_high,
             } => {
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 if let Some(applier) = config_applier {
-                    let result = applier.apply_eye_field_threshold(
+                    let result = applier.apply_beacon_field_threshold(
                         mac.clone(), field.clone(),
                         critical_low, warning_low, warning_high, critical_high,
                     );
@@ -4401,7 +4401,7 @@ impl MqttMonitor {
                         return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
                     }
                     // Reflect in the live config so evaluate_alarms uses it next tick.
-                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                    if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                         if let Ok(mut c) = cfg.write() {
                             c.set_field_threshold(&mac, crate::libs::config::FieldThreshold {
                                 field: field.clone(),
@@ -4415,16 +4415,16 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::DeleteEyeFieldThreshold { mac, field } => {
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+            MqttCommand::DeleteBeaconFieldThreshold { mac, field } => {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
                 if let Some(applier) = config_applier {
-                    let result = applier.delete_eye_field_threshold(mac.clone(), field.clone());
+                    let result = applier.delete_beacon_field_threshold(mac.clone(), field.clone());
                     if !result.success {
                         return Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()));
                     }
-                    if let Some(cfg) = crate::libs::eye::state::eye_config_handle() {
+                    if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
                         if let Ok(mut c) = cfg.write() {
                             c.remove_field_threshold(&mac, &field);
                         }
@@ -4573,7 +4573,7 @@ impl MqttMonitor {
 
         // EYE subsystem flags, so the viewer's auto-provision / auto-discover
         // toggles reflect the device's real state (None => disabled defaults).
-        let eye_cfg = main_config.eye.clone().unwrap_or_default();
+        let beacon_cfg = main_config.beacon.clone().unwrap_or_default();
 
         Some(MqttMessage::PublishConfigState {
             led_brightness,
@@ -4587,11 +4587,11 @@ impl MqttMonitor {
             sample_interval_ms: main_config.sensors.sample_interval_ms,
             aggregation_interval_ms: main_config.sensors.aggregation_interval_ms,
             report_interval_ms: main_config.sensors.report_interval_ms,
-            eye_enabled: eye_cfg.enabled,
-            eye_auto_provision: eye_cfg.auto_provision,
+            beacon_enabled: beacon_cfg.enabled,
+            beacon_auto_provision: beacon_cfg.auto_provision,
             // Option<bool> on this branch (it is round-tripped rather than
-            // owned — see EyeConfig::auto_discover), so absent reads as off.
-            eye_auto_discover: eye_cfg.auto_discover.unwrap_or(false),
+            // owned — see BeaconConfig::auto_discover), so absent reads as off.
+            beacon_auto_discover: beacon_cfg.auto_discover.unwrap_or(false),
         })
     }
 
@@ -5071,7 +5071,7 @@ mod tests {
 
     #[cfg(feature = "dev-platform")]
     #[test]
-    fn test_build_dev_command_eye_arms() {
+    fn test_build_dev_command_beacon_arms() {
         use serde_json::json;
 
         // add_eye_tag: MAC uppercased, name preserved
@@ -5082,11 +5082,11 @@ mod tests {
         )
         .unwrap()
         {
-            MqttCommand::AddEyeTag { mac, name } => {
+            MqttCommand::AddBeaconTag { mac, name } => {
                 assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
                 assert_eq!(name.as_deref(), Some("Freezer"));
             }
-            other => panic!("expected AddEyeTag, got {other:?}"),
+            other => panic!("expected AddBeaconTag, got {other:?}"),
         }
 
         // add_eye_tag: empty name -> None
@@ -5097,17 +5097,17 @@ mod tests {
                 &None,
             )
             .unwrap(),
-            MqttCommand::AddEyeTag { name: None, .. }
+            MqttCommand::AddBeaconTag { name: None, .. }
         ));
 
         // remove_eye_tag / detect_eye_tag uppercase the MAC
         assert!(matches!(
             MqttMonitor::build_dev_command("remove_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
-            MqttCommand::RemoveEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+            MqttCommand::RemoveBeaconTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
         ));
         assert!(matches!(
             MqttMonitor::build_dev_command("detect_eye_tag", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
-            MqttCommand::DetectEyeTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
+            MqttCommand::DetectBeaconTag { mac } if mac == "AA:BB:CC:DD:EE:FF"
         ));
 
         // set_eye_recording: valid interval accepted, 0 = off accepted, invalid rejected
@@ -5118,7 +5118,7 @@ mod tests {
                 &None
             )
             .unwrap(),
-            MqttCommand::SetEyeRecording {
+            MqttCommand::SetBeaconRecording {
                 interval_min: 5,
                 ..
             }
@@ -5130,7 +5130,7 @@ mod tests {
                 &None
             )
             .unwrap(),
-            MqttCommand::SetEyeRecording {
+            MqttCommand::SetBeaconRecording {
                 interval_min: 0,
                 ..
             }
@@ -5145,10 +5145,10 @@ mod tests {
         // download_eye_history uppercases the MAC
         assert!(matches!(
             MqttMonitor::build_dev_command("download_eye_history", &json!({"mac": "aa:bb:cc:dd:ee:ff"}), &None).unwrap(),
-            MqttCommand::DownloadEyeHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
+            MqttCommand::DownloadBeaconHistory { mac } if mac == "AA:BB:CC:DD:EE:FF"
         ));
 
-        // set/delete_eye_field_threshold: MAC uppercased, field + bounds parsed
+        // set/delete_beacon_field_threshold: MAC uppercased, field + bounds parsed
         match MqttMonitor::build_dev_command(
             "set_eye_field_threshold",
             &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "battery", "warning_low": 2700.0, "critical_low": 2400.0}),
@@ -5156,17 +5156,17 @@ mod tests {
         )
         .unwrap()
         {
-            MqttCommand::SetEyeFieldThreshold { mac, field, warning_low, critical_low, .. } => {
+            MqttCommand::SetBeaconFieldThreshold { mac, field, warning_low, critical_low, .. } => {
                 assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
                 assert_eq!(field, "battery");
                 assert_eq!(warning_low, Some(2700.0));
                 assert_eq!(critical_low, Some(2400.0));
             }
-            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+            other => panic!("expected SetBeaconFieldThreshold, got {other:?}"),
         }
         assert!(matches!(
             MqttMonitor::build_dev_command("delete_eye_field_threshold", &json!({"mac": "aa:bb:cc:dd:ee:ff", "field": "movement"}), &None).unwrap(),
-            MqttCommand::DeleteEyeFieldThreshold { mac, field } if mac == "AA:BB:CC:DD:EE:FF" && field == "movement"
+            MqttCommand::DeleteBeaconFieldThreshold { mac, field } if mac == "AA:BB:CC:DD:EE:FF" && field == "movement"
         ));
 
         // malformed MAC rejected

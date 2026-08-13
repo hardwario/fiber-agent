@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::libs::config_applier::ConfigApplier;
 use crate::libs::network::SharedProvisioningSession;
 
-use super::eye_tag_add::SharedResult as EyeTagResultSlot;
+use super::beacon_add::SharedResult as BeaconAddResultSlot;
 use super::sticker::SharedResult as StickerResultSlot;
 use super::terminal::ShellProcess;
 
@@ -54,7 +54,7 @@ pub struct ServiceState {
     /// Result of the most recent FB0E EYE-tag-add write, scoped to this
     /// GATT-server instance. Cleared on BLE disconnect. Enrollment is a
     /// synchronous local YAML write, so (unlike FB0D) there is no task handle.
-    pub eye_tag_result: EyeTagResultSlot,
+    pub beacon_add_result: BeaconAddResultSlot,
     /// True while an FB09 `apply_lan_config` task is running. A concurrent
     /// FB09 write is rejected so a spammy peer cannot saturate the
     /// blocking-thread pool or trigger a NetworkManager modify+up race
@@ -88,7 +88,7 @@ impl ServiceState {
             shell_process: None,
             sticker_result: super::sticker::new_slot(),
             sticker_task: None,
-            eye_tag_result: super::eye_tag_add::new_slot(),
+            beacon_add_result: super::beacon_add::new_slot(),
             lan_apply_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }

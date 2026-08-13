@@ -27,7 +27,7 @@ pub enum Stream {
     Probe,
     Probe1m,
     Alarm,
-    Eye,
+    Beacon,
 }
 
 impl Stream {
@@ -37,7 +37,7 @@ impl Stream {
             Stream::Probe => "probe",
             Stream::Probe1m => "probe_1m",
             Stream::Alarm => "alarm",
-            Stream::Eye => "eye",
+            Stream::Beacon => "eye",
         }
     }
 
@@ -47,7 +47,7 @@ impl Stream {
             "probe" => Some(Stream::Probe),
             "probe_1m" => Some(Stream::Probe1m),
             "alarm" => Some(Stream::Alarm),
-            "eye" => Some(Stream::Eye),
+            "eye" => Some(Stream::Beacon),
             _ => None,
         }
     }
@@ -104,10 +104,10 @@ pub async fn drain_one_batch(
             }
             rows.len()
         }
-        Stream::Eye => {
-            let rows = StorageReader::fetch_eye_readings_after(conn, cursor_in, cfg.batch_size)?;
+        Stream::Beacon => {
+            let rows = StorageReader::fetch_beacon_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
-                let (topic, payload) = super::envelope::eye_envelope(row);
+                let (topic, payload) = super::envelope::beacon_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
                     eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
                     break;

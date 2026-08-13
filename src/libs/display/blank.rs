@@ -19,7 +19,7 @@
 //! ```
 //!
 //! Held in a process-wide static for the same reason as
-//! [`crate::libs::eye::state`]: the MQTT command executor is thirteen handles
+//! [`crate::libs::beacon::state`]: the MQTT command executor is thirteen handles
 //! deep already, and there is exactly one display in the process.
 
 use std::sync::atomic::{AtomicU8, Ordering};

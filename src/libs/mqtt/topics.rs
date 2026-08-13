@@ -234,11 +234,11 @@ impl TopicBuilder {
     }
 
     // EYE BLE tag topics
-    pub fn eye_sensors(&self) -> String {
+    pub fn beacon_sensors(&self) -> String {
         self.build(&["eye", "sensors"])
     }
 
-    pub fn eye_detect(&self) -> String {
+    pub fn beacon_detect(&self) -> String {
         self.build(&["eye", "detect"])
     }
 

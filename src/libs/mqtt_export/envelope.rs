@@ -7,7 +7,7 @@
 //! the natural per-record identifier (dev_eui, sensor line, or `sys`).
 
 use crate::libs::storage::models::{
-    AlarmEvent, EyeReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
+    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
 };
 
 pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
@@ -31,7 +31,7 @@ pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
     (topic, payload)
 }
 
-pub fn eye_envelope(row: &EyeReadingRow) -> (String, String) {
+pub fn beacon_envelope(row: &BeaconReadingRow) -> (String, String) {
     let topic = format!("export/eye/{}", row.mac);
     let payload = serde_json::to_string(&serde_json::json!({
         "message_id":     row.message_id,

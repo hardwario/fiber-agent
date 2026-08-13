@@ -21,9 +21,9 @@ use std::sync::{Arc, OnceLock};
 /// that write must go through the applier so it keeps the backup, validation and
 /// audit trail every other config change gets. The monitor is spawned before the
 /// MQTT thread that constructs the applier and has no reference to it, so rather
-/// than thread one through `EyeMonitor::new` (and every call site between), the
-/// applier registers itself here once — mirroring `eye_state_handle` /
-/// `eye_config_handle`, which exist for exactly this reason.
+/// than thread one through `BeaconMonitor::new` (and every call site between), the
+/// applier registers itself here once — mirroring `beacon_state_handle` /
+/// `beacon_config_handle`, which exist for exactly this reason.
 static CONFIG_APPLIER: OnceLock<Arc<ConfigApplier>> = OnceLock::new();
 
 /// Register the applier (called once, by the MQTT monitor that builds it).

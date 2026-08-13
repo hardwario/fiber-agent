@@ -34,7 +34,7 @@ pub const PROTOCOL_VERSION: u8 = 0x01;
 /// A decoded EYE sensor advertising frame. Fields are `Option` because the
 /// sensor only transmits the values whose flag bit is set (configurable).
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct EyeReading {
+pub struct BeaconReading {
     pub protocol_version: u8,
     pub flags: u8,
     /// Ambient temperature in °C.
@@ -102,7 +102,7 @@ fn bit(flags: u8, n: u8) -> bool {
 /// `value` of the `ManufacturerData` entry keyed by `0x089a`.
 ///
 /// `data` layout: `[version][flags][values...]`.
-pub fn parse_manufacturer_value(data: &[u8]) -> Result<EyeReading, ParseError> {
+pub fn parse_manufacturer_value(data: &[u8]) -> Result<BeaconReading, ParseError> {
     if data.len() < 2 {
         return Err(ParseError::TooShort);
     }
@@ -112,7 +112,7 @@ pub fn parse_manufacturer_value(data: &[u8]) -> Result<EyeReading, ParseError> {
     }
     let flags = data[1];
 
-    let mut r = EyeReading {
+    let mut r = BeaconReading {
         protocol_version: version,
         flags,
         magnet_present: bit(flags, F_MAGNET_PRESENT),

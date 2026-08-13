@@ -3,6 +3,7 @@
 pub mod accelerometer;
 pub mod alarms;
 pub mod authorization;
+pub mod beacon;
 pub mod ble;
 pub mod buzzer;
 pub mod config;
@@ -11,7 +12,6 @@ pub mod config_migrations;
 pub mod control;
 pub mod crypto;
 pub mod display;
-pub mod eye;
 pub mod factory_reset;
 pub mod leds;
 pub mod logging;

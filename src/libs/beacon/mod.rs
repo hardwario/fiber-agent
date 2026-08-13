@@ -7,7 +7,7 @@
 //!   connection: unlock with the PIN, write the profile, persist to flash
 //!   ([`provisioning`]).
 //!
-//! The [`monitor::EyeMonitor`] owns a dedicated BlueZ session that scans for
+//! The [`monitor::BeaconMonitor`] owns a dedicated BlueZ session that scans for
 //! configured tags, parses their advertising, auto-provisions a tag on first
 //! sight, and feeds readings into the telemetry pipeline — mirroring the
 //! structure of the `lorawan` module.
@@ -19,9 +19,9 @@ pub mod monitor;
 pub mod provisioning;
 pub mod state;
 
-pub use config::{EyeConfig, EyeTagConfig};
+pub use config::{BeaconConfig, BeaconTagConfig};
 
-pub use advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
-pub use monitor::{EyeHandle, EyeMonitor};
-pub use provisioning::{EyeProfile, ProvisionError};
-pub use state::{EyeSensorState, EyeTagState, SharedEyeState};
+pub use advertising::{parse_manufacturer_value, BeaconReading, TELTONIKA_COMPANY_ID};
+pub use monitor::{BeaconHandle, BeaconMonitor};
+pub use provisioning::{BeaconProfile, ProvisionError};
+pub use state::{BeaconSensorState, BeaconTagState, SharedBeaconState};

@@ -74,7 +74,7 @@ pub enum StorageMessage {
         payload_json: String,
     },
     /// Write an EYE BLE tag reading (fire-and-forget).
-    WriteEyeReading {
+    WriteBeaconReading {
         mac: String,
         ts: i64,
         received_at: i64,
@@ -263,7 +263,7 @@ impl StorageHandle {
     }
 
     /// Send an EYE BLE tag reading to be persisted (fire-and-forget).
-    pub fn write_eye_reading(
+    pub fn write_beacon_reading(
         &self,
         mac: String,
         ts: i64,
@@ -273,7 +273,7 @@ impl StorageHandle {
         payload_json: String,
     ) -> StorageResult<()> {
         self.sender
-            .send(StorageMessage::WriteEyeReading {
+            .send(StorageMessage::WriteBeaconReading {
                 mac,
                 ts,
                 received_at,
@@ -647,9 +647,9 @@ impl StorageThread {
         // days, mirroring the sticker_readings policy above. Without this
         // eye_readings grows unbounded for as long as configured tags keep
         // advertising, eventually filling /data.
-        const EYE_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
-        let eye_retention_interval = Duration::from_secs(3600);
-        let mut last_eye_retention_run = std::time::Instant::now();
+        const BEACON_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
+        let beacon_retention_interval = Duration::from_secs(3600);
+        let mut last_beacon_retention_run = std::time::Instant::now();
 
         eprintln!(
             "STORAGE THREAD: Started, database: {}, max size: {} MB",
@@ -750,17 +750,17 @@ impl StorageThread {
                         }
                         last_sticker_retention_run = std::time::Instant::now();
                     }
-                    if last_eye_retention_run.elapsed() >= eye_retention_interval
+                    if last_beacon_retention_run.elapsed() >= beacon_retention_interval
                         && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
                     {
                         match RetentionPolicy::default()
-                            .sweep_eye_readings(&mut conn, EYE_RETENTION_SECONDS)
+                            .sweep_beacon_readings(&mut conn, BEACON_RETENTION_SECONDS)
                         {
                             Ok(stats) if stats.purged > 0 => {
                                 eprintln!(
                                     "STORAGE THREAD: eye retention swept {} eye_readings rows older than {} days (unexported_dropped={})",
                                     stats.purged,
-                                    EYE_RETENTION_SECONDS / 86400,
+                                    BEACON_RETENTION_SECONDS / 86400,
                                     stats.unexported_dropped,
                                 );
                             }
@@ -769,7 +769,7 @@ impl StorageThread {
                                 eprintln!("STORAGE THREAD: eye retention sweep failed: {}", e);
                             }
                         }
-                        last_eye_retention_run = std::time::Instant::now();
+                        last_beacon_retention_run = std::time::Instant::now();
                     }
                     if consecutive_write_failures >= RECONNECT_FAILURE_THRESHOLD
                         && next_reconnect_attempt
@@ -986,7 +986,7 @@ impl StorageThread {
                         }
                     }
 
-                    StorageMessage::WriteEyeReading {
+                    StorageMessage::WriteBeaconReading {
                         mac,
                         ts,
                         received_at,
@@ -994,7 +994,7 @@ impl StorageThread {
                         event_type,
                         payload_json,
                     } => {
-                        match StorageWriter::write_eye_reading(
+                        match StorageWriter::write_beacon_reading(
                             &mut conn,
                             &mac,
                             ts,
@@ -1008,7 +1008,7 @@ impl StorageThread {
                                 message_count += 1;
                             }
                             Err(e) => {
-                                eprintln!("STORAGE THREAD: write_eye_reading failed: {}", e);
+                                eprintln!("STORAGE THREAD: write_beacon_reading failed: {}", e);
                             }
                         }
                     }

@@ -8,8 +8,8 @@
 //! in the event_router thread (see crate::libs::ble::event_router).
 
 pub mod auth;
+pub mod beacon_add;
 pub mod device_info;
-pub mod eye_tag_add;
 pub mod lan;
 pub mod net_error;
 pub mod service;
@@ -448,7 +448,7 @@ async fn run_server(
                         crate::libs::ble::gatt::sticker::reset(&st.sticker_result);
                         // Clear the FB0E EYE-tag-add result slot too (synchronous
                         // enrollment, so no task to abort — just the slot).
-                        crate::libs::ble::gatt::eye_tag_add::reset(&st.eye_tag_result);
+                        crate::libs::ble::gatt::beacon_add::reset(&st.beacon_add_result);
                         let _ = event_tx_xbeam.send(BleEvent::ClientDisconnected);
                     }
                     _ => {}

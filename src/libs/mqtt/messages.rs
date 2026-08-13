@@ -149,9 +149,9 @@ pub enum MqttMessage {
         report_interval_ms: u64,
         /// EYE subsystem flags, so the viewer can reflect the real state of the
         /// auto-provision / auto-discover toggles.
-        eye_enabled: bool,
-        eye_auto_provision: bool,
-        eye_auto_discover: bool,
+        beacon_enabled: bool,
+        beacon_auto_provision: bool,
+        beacon_auto_discover: bool,
     },
 
     /// Publish LoRaWAN sensor data
@@ -241,12 +241,12 @@ pub enum MqttMessage {
     },
 
     /// Publish EYE BLE tag sensor data
-    PublishEyeSensorData { tags: Vec<EyeTagPayload> },
+    PublishBeaconSensorData { tags: Vec<BeaconTagPayload> },
 
     /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
     /// `is_en12830` is `None` when the probe was inconclusive; `status` is
     /// "ok" | "unreachable" | "error".
-    PublishEyeDetectResult {
+    PublishBeaconDetectResult {
         mac: String,
         is_en12830: Option<bool>,
         status: String,
@@ -276,7 +276,7 @@ pub struct LoRaWANGatewayPayload {
 
 /// EYE BLE tag data payload for MQTT publishing.
 #[derive(Debug, Clone)]
-pub struct EyeTagPayload {
+pub struct BeaconTagPayload {
     /// Hostname of the gateway that heard this tag (system#6).
     ///
     /// A tag can be in range of several FIBERs, so a reading is only meaningful
@@ -595,7 +595,7 @@ pub enum MqttCommand {
     },
 
     /// Set a single per-field alarm threshold for an EYE tag.
-    SetEyeFieldThreshold {
+    SetBeaconFieldThreshold {
         mac: String,
         field: String,
         critical_low: Option<f64>,
@@ -605,7 +605,7 @@ pub enum MqttCommand {
     },
 
     /// Remove a per-field alarm threshold for an EYE tag.
-    DeleteEyeFieldThreshold {
+    DeleteBeaconFieldThreshold {
         mac: String,
         field: String,
     },
@@ -725,18 +725,18 @@ pub enum MqttCommand {
     ///
     /// Every other EYE command operates on a tag, so once the subsystem was off
     /// there was no way back except SSH — and the subsystem shipped off.
-    SetEyeEnabled {
+    SetBeaconEnabled {
         enabled: bool,
     },
 
     /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
-    SetEyeRecording {
+    SetBeaconRecording {
         mac: String,
         interval_min: u16,
     },
 
     /// Manually back-fill the EN12830 temperature archive for an EYE tag.
-    DownloadEyeHistory {
+    DownloadBeaconHistory {
         mac: String,
     },
 
@@ -746,17 +746,17 @@ pub enum MqttCommand {
     /// Replace the fleet allowlist of EYE MACs this gateway may listen for
     /// (system#6). Not a registration: ownership stays with whichever gateway has
     /// the tag in its own `eye.tags[]`.
-    SetEyeKnownTags {
+    SetBeaconKnownTags {
         macs: Vec<String>,
     },
-    AddEyeTag {
+    AddBeaconTag {
         mac: String,
         name: Option<String>,
     },
 
     /// Remove an EYE tag from the device config (`eye.tags[]`). Signed via
     /// ConfigRequest.
-    RemoveEyeTag {
+    RemoveBeaconTag {
         mac: String,
     },
 
@@ -764,7 +764,7 @@ pub enum MqttCommand {
     /// recorder (white) or a standard tag (black). Result surfaces
     /// asynchronously via `is_en12830` in the `eye/sensors` snapshot. Signed
     /// via ConfigRequest.
-    DetectEyeTag {
+    DetectBeaconTag {
         mac: String,
     },
 
@@ -907,16 +907,16 @@ impl MqttCommand {
             MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
             MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
             MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
-            MqttCommand::SetEyeFieldThreshold { .. } => "set_eye_field_threshold",
-            MqttCommand::DeleteEyeFieldThreshold { .. } => "delete_eye_field_threshold",
+            MqttCommand::SetBeaconFieldThreshold { .. } => "set_eye_field_threshold",
+            MqttCommand::DeleteBeaconFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANSticker { .. } => "add_lorawan_sticker",
-            MqttCommand::SetEyeEnabled { .. } => "set_eye_enabled",
-            MqttCommand::SetEyeRecording { .. } => "set_eye_recording",
-            MqttCommand::DownloadEyeHistory { .. } => "download_eye_history",
-            MqttCommand::SetEyeKnownTags { .. } => "set_eye_known_tags",
-            MqttCommand::AddEyeTag { .. } => "add_eye_tag",
-            MqttCommand::RemoveEyeTag { .. } => "remove_eye_tag",
-            MqttCommand::DetectEyeTag { .. } => "detect_eye_tag",
+            MqttCommand::SetBeaconEnabled { .. } => "set_eye_enabled",
+            MqttCommand::SetBeaconRecording { .. } => "set_eye_recording",
+            MqttCommand::DownloadBeaconHistory { .. } => "download_eye_history",
+            MqttCommand::SetBeaconKnownTags { .. } => "set_eye_known_tags",
+            MqttCommand::AddBeaconTag { .. } => "add_eye_tag",
+            MqttCommand::RemoveBeaconTag { .. } => "remove_eye_tag",
+            MqttCommand::DetectBeaconTag { .. } => "detect_eye_tag",
             MqttCommand::RemoveLoRaWANSticker { .. } => "remove_lorawan_sticker",
             MqttCommand::GetStickerConfig { .. } => "get_sticker_config",
             MqttCommand::GetStickerFullConfig { .. } => "get_sticker_full_config",
