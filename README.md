@@ -197,6 +197,65 @@ Runtime configuration is loaded from `/data/fiber/config/fiber.config.yaml`. See
 | `fiber.sensors.config.yaml` | Per-sensor thresholds, alarm patterns, names, locations |
 | `authorized_signers.yaml` | EU MDR authorized public keys for remote commands |
 
+### Provisioning ChirpStack credentials
+
+The agent authenticates to the on-device ChirpStack gRPC-web API to register STICKERs,
+add and remove external gateways, and poll gateway online state. Those credentials live in
+`fiber.config.yaml`:
+
+```yaml
+lorawan:
+  chirpstack:
+    username: admin
+    password: ""
+```
+
+The API address is **not** configurable. ChirpStack always runs on the same device as the
+agent, so loopback is part of the deployment contract rather than a setting.
+
+`password` ships empty on purpose — a password must never be committed. While it is empty
+the LoRaWAN bridge refuses to start rather than falling back to ChirpStack's public factory
+credentials. Populating it is a deployment step.
+
+**How it gets populated.** `meta-fiber` does it, in
+`recipes-core/fiber-firstboot/`: `fiber-firstboot.sh` reads the password from
+`/data/chirpstack/admin-password` (0600, on the persistent partition) and injects it into
+`/data/fiber/config/fiber.config.yaml` with `set-chirpstack-creds.py`. That runs in both the
+ALWAYS block, so a RAUC install that restores the bundled config is re-injected on the next
+boot, and the first-boot block, because on a true first boot the config does not exist yet
+when ALWAYS runs. The script is idempotent and refuses to write unless the result has exactly
+one `username:`/`password:` pair under `lorawan: → chirpstack:` — duplicate keys would make
+the agent's parser reject the whole config.
+
+This repo defines only the agent's side of that contract: read
+`lorawan.chirpstack.{username,password}` from `/data/fiber/config/fiber.config.yaml` on each
+API call, and refuse to start the bridge while the password is blank. Because the read happens
+per call rather than once at startup, a password written or rotated after the agent is already
+running takes effect without a restart.
+
+**Known limitation — this does not yet make the credential secret.** The injected value *is*
+ChirpStack v4's factory-seeded `admin` password; nothing in `meta-fiber` rotates the account
+yet, so a different value would simply fail to authenticate. Reading it from a file instead of
+hardcoding it means rotation only has to change what writes
+`/data/chirpstack/admin-password`. Rotating also means updating the other consumer of the same
+pair — `meta-fiber/recipes-connectivity/lorawan-setup/files/chirpstack-provision.py:419` calls
+`login(host, port, "admin", "admin")` — or first-boot LoRaWAN provisioning breaks. Taking the
+credential out of the agent's source is the first half; rotating the ChirpStack-side account
+is a separate change.
+
+**Diagnosing a missing credential.** All three symptoms have the same cause:
+
+- The bridge does not come up: `[main] ERROR: LoRaWAN monitor did not start: ChirpStack API
+  credentials not provisioned: ...`. Wired DS18B20 monitoring, MQTT and the LCD are
+  unaffected.
+- Every external gateway reports **offline**. `get_gateways_status` cannot express a login
+  failure in its return type, so it logs and reports all gateways down.
+- A sticker add still saves its sensor config but logs a ChirpStack provisioning failure —
+  registration there is best-effort by design, so the add itself does not fail.
+
+No log line prints the password. `ChirpStackApiConfig` implements `Debug` by hand so the
+value cannot leak through a `{:?}` on it or on the `LoRaWANConfig` that contains it.
+
 ### Configurable overview lines
 
 `display.custom_lines` replaces the built-in overview layout with rows you choose.

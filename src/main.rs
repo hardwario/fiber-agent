@@ -824,7 +824,10 @@ fn main() -> io::Result<()> {
                 Some(monitor)
             }
             Err(e) => {
-                eprintln!("[main] Warning: Failed to start LoRaWAN monitor: {}", e);
+                // Not fatal — wired sensors, MQTT and the LCD are unaffected — but
+                // not a warning either: on a unit with gateway hardware this means
+                // the LoRaWAN bridge is down until someone acts.
+                eprintln!("[main] ERROR: LoRaWAN monitor did not start: {}", e);
                 None
             }
         }

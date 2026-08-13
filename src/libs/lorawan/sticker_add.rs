@@ -7,9 +7,12 @@
 //! characteristic, so the two transports stay byte-for-byte identical.
 //!
 //! Extracted verbatim from the former inline match arm in `mqtt/monitor.rs` —
-//! callers pass their handles via [`StickerAddDeps`]; everything else (the
-//! ChirpStack credentials) is read from disk by the provisioning functions, so
-//! it is not a dependency here.
+//! callers pass their handles via [`StickerAddDeps`]; everything else is read
+//! from disk by the provisioning functions, so it is not a dependency here. That
+//! includes the ChirpStack API credentials, which
+//! `provisioning::chirpstack_credentials` reads from `lorawan.chirpstack` in
+//! `fiber.config.yaml` on each call — deliberately, because this path is also
+//! reachable from BLE on a device where the LoRaWAN monitor never started.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

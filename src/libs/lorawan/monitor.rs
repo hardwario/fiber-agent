@@ -283,6 +283,20 @@ impl LoRaWANMonitor {
             });
         }
 
+        // Fail here rather than at the first provisioning attempt, so an
+        // unprovisioned device announces itself at boot instead of silently
+        // waiting until someone tries to add a sticker. Checked after the
+        // `should_run` gate on purpose: a unit with no gateway hardware never
+        // talks to the ChirpStack API, so demanding credentials from it would be
+        // noise. `provisioning::login` re-validates on every call — this is the
+        // early warning, not the enforcement point.
+        if let Err(e) = config.chirpstack.validate() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("ChirpStack API credentials not provisioned: {}", e),
+            ));
+        }
+
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
         let state_clone = state.clone();
