@@ -238,9 +238,9 @@ impl MqttPublisher {
                 sample_interval_ms,
                 aggregation_interval_ms,
                 report_interval_ms,
-                eye_enabled,
-                eye_auto_provision,
-                eye_auto_discover,
+                beacon_enabled,
+                beacon_auto_provision,
+                beacon_auto_discover,
             } => {
                 self.publish_config_state(
                     led_brightness,
@@ -254,9 +254,9 @@ impl MqttPublisher {
                     sample_interval_ms,
                     aggregation_interval_ms,
                     report_interval_ms,
-                    eye_enabled,
-                    eye_auto_provision,
-                    eye_auto_discover,
+                    beacon_enabled,
+                    beacon_auto_provision,
+                    beacon_auto_discover,
                 )
                 .await
             }
@@ -338,14 +338,16 @@ impl MqttPublisher {
                     .await
             }
 
-            MqttMessage::PublishEyeSensorData { tags } => self.publish_eye_sensors(tags).await,
+            MqttMessage::PublishBeaconSensorData { tags } => {
+                self.publish_beacon_sensors(tags).await
+            }
 
-            MqttMessage::PublishEyeDetectResult {
+            MqttMessage::PublishBeaconDetectResult {
                 mac,
                 is_en12830,
                 status,
             } => {
-                self.publish_eye_detect_result(&mac, is_en12830, &status)
+                self.publish_beacon_detect_result(&mac, is_en12830, &status)
                     .await
             }
 
@@ -836,9 +838,9 @@ impl MqttPublisher {
         sample_interval_ms: u64,
         aggregation_interval_ms: u64,
         report_interval_ms: u64,
-        eye_enabled: bool,
-        eye_auto_provision: bool,
-        eye_auto_discover: bool,
+        beacon_enabled: bool,
+        beacon_auto_provision: bool,
+        beacon_auto_discover: bool,
     ) -> Result<(), String> {
         let sensors_data: Vec<serde_json::Value> = sensors
             .iter()
@@ -891,9 +893,9 @@ impl MqttPublisher {
                 "report_interval_ms": report_interval_ms,
             },
             "eye": {
-                "enabled": eye_enabled,
-                "auto_provision": eye_auto_provision,
-                "auto_discover": eye_auto_discover,
+                "enabled": beacon_enabled,
+                "auto_provision": beacon_auto_provision,
+                "auto_discover": beacon_auto_discover,
             },
         });
 
@@ -978,9 +980,9 @@ impl MqttPublisher {
     }
 
     /// Publish EYE BLE tag sensor data
-    async fn publish_eye_sensors(
+    async fn publish_beacon_sensors(
         &self,
-        tags: Vec<super::messages::EyeTagPayload>,
+        tags: Vec<super::messages::BeaconTagPayload>,
     ) -> Result<(), String> {
         let tags_data: Vec<serde_json::Value> = tags
             .iter()
@@ -1016,7 +1018,7 @@ impl MqttPublisher {
             "tags": tags_data,
         });
 
-        let topic = self.topics.eye_sensors();
+        let topic = self.topics.beacon_sensors();
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
 
         self.publish(topic, payload.to_string(), qos, false).await
@@ -1178,7 +1180,7 @@ impl MqttPublisher {
     }
 
     /// Publish the result of a detect_eye_tag probe on `eye/detect`.
-    async fn publish_eye_detect_result(
+    async fn publish_beacon_detect_result(
         &self,
         mac: &str,
         is_en12830: Option<bool>,
@@ -1191,7 +1193,7 @@ impl MqttPublisher {
             "status": status,
         });
 
-        let topic = self.topics.eye_detect();
+        let topic = self.topics.beacon_detect();
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
 
         self.publish(topic, payload.to_string(), qos, false).await

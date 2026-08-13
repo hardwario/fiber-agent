@@ -5,7 +5,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
 use crate::libs::storage::models::{
-    AlarmEvent, EyeReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow, StorageStats,
+    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
+    StorageStats,
 };
 
 /// Reader for querying sensor data
@@ -258,11 +259,11 @@ impl StorageReader {
     }
 
     /// Fetch EYE readings with `id > last_id`, ascending, for the export drain.
-    pub fn fetch_eye_readings_after(
+    pub fn fetch_beacon_readings_after(
         conn: &Connection,
         last_id: i64,
         limit: usize,
-    ) -> StorageResult<Vec<EyeReadingRow>> {
+    ) -> StorageResult<Vec<BeaconReadingRow>> {
         let mut stmt = conn
             .prepare(
                 "SELECT id, mac, ts, received_at, message_id,
@@ -276,7 +277,7 @@ impl StorageReader {
 
         let rows = stmt
             .query_map(rusqlite::params![last_id, limit as i64], |r| {
-                Ok(EyeReadingRow {
+                Ok(BeaconReadingRow {
                     id: r.get(0)?,
                     mac: r.get(1)?,
                     ts: r.get(2)?,
@@ -297,7 +298,7 @@ impl StorageReader {
     /// Newest archived (EN12830 recording) timestamp for `mac`, or `None` if the
     /// tag has no stored recording samples yet. Used to resume archive downloads
     /// from where the last one left off (filters out live `advertising` rows).
-    pub fn max_eye_reading_ts(conn: &Connection, mac: &str) -> StorageResult<Option<i64>> {
+    pub fn max_beacon_reading_ts(conn: &Connection, mac: &str) -> StorageResult<Option<i64>> {
         conn.query_row(
             "SELECT MAX(ts) FROM eye_readings WHERE mac = ? AND event_type = 'recording'",
             rusqlite::params![mac],

@@ -1,8 +1,8 @@
 // FIBER Medical Thermometer main application
 
+use fiber_app::libs::beacon::BeaconMonitor;
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::config::LoRaWANConfig;
-use fiber_app::libs::eye::EyeMonitor;
 use fiber_app::libs::sensors::create_shared_sensor_state;
 use fiber_app::libs::StorageThread;
 use fiber_app::{
@@ -1043,9 +1043,9 @@ fn main() -> io::Result<()> {
     }
 
     // Create and spawn the Teltonika EYE BLE tag monitor if MQTT is available.
-    let _eye_monitor = if let Some(ref handle) = mqtt_handle {
-        match EyeMonitor::new(
-            config.eye.clone().unwrap_or_default(),
+    let _beacon_monitor = if let Some(ref handle) = mqtt_handle {
+        match BeaconMonitor::new(
+            config.beacon.clone().unwrap_or_default(),
             handle.sender(),
             hostname.clone(),
             storage_handle.clone(),

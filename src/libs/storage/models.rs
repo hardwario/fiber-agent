@@ -340,7 +340,7 @@ pub struct StickerReadingRow {
 /// One persisted EYE BLE tag reading. Like [`StickerReadingRow`] but keyed by
 /// the tag MAC and without an OTAA provisioning epoch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EyeReadingRow {
+pub struct BeaconReadingRow {
     pub id: i64,
     pub mac: String,
     pub ts: i64,

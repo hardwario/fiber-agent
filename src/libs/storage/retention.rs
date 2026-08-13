@@ -356,11 +356,11 @@ impl RetentionPolicy {
     /// had `id > min(last_exported_id across all destinations for the "eye"
     /// stream)`; those are data losses for at least one destination and are
     /// logged at WARN level. Mirrors `sweep_sticker_readings`.
-    pub fn sweep_eye_readings(
+    pub fn sweep_beacon_readings(
         &self,
         conn: &mut Connection,
         retention_seconds: i64,
-    ) -> StorageResult<EyeRetentionResult> {
+    ) -> StorageResult<BeaconRetentionResult> {
         let cutoff = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -409,16 +409,16 @@ impl RetentionPolicy {
             );
         }
 
-        Ok(EyeRetentionResult {
+        Ok(BeaconRetentionResult {
             purged,
             unexported_dropped,
         })
     }
 }
 
-/// Result of a `sweep_eye_readings` pass.
+/// Result of a `sweep_beacon_readings` pass.
 #[derive(Debug, Clone, Default)]
-pub struct EyeRetentionResult {
+pub struct BeaconRetentionResult {
     /// Total rows deleted from `eye_readings`.
     pub purged: i64,
     /// Of those deleted, how many had `id > min(cursor)` — i.e. were dropped
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn eye_retention_purges_old_rows_and_warns_when_unexported() {
+    fn beacon_retention_purges_old_rows_and_warns_when_unexported() {
         use crate::libs::storage::writer::StorageWriter;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -551,7 +551,7 @@ mod tests {
         let day = 86400i64;
 
         // Old row (35 days ago)
-        StorageWriter::write_eye_reading(
+        StorageWriter::write_beacon_reading(
             &mut conn,
             "AA:BB:CC:DD:EE:FF",
             now - 35 * day,
@@ -562,7 +562,7 @@ mod tests {
         )
         .unwrap();
         // Fresh row (1 day ago)
-        StorageWriter::write_eye_reading(
+        StorageWriter::write_beacon_reading(
             &mut conn,
             "AA:BB:CC:DD:EE:FF",
             now - day,
@@ -576,7 +576,7 @@ mod tests {
         // Cursor is at 0 (no destinations have exported anything) → both
         // un-exported. Sweep should drop the old row and warn.
         let policy = RetentionPolicy::default();
-        let dropped = policy.sweep_eye_readings(&mut conn, 30 * day).unwrap();
+        let dropped = policy.sweep_beacon_readings(&mut conn, 30 * day).unwrap();
         assert_eq!(dropped.purged, 1);
         assert_eq!(dropped.unexported_dropped, 1);
 

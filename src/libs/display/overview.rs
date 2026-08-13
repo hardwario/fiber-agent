@@ -7,8 +7,8 @@
 
 use super::screens::truncate_chars;
 use crate::libs::alarms::AlarmState;
+use crate::libs::beacon::state::BeaconTagState;
 use crate::libs::config::{DisplayLine, DisplayLineFormat, DisplayLineSource};
-use crate::libs::eye::state::EyeTagState;
 use crate::libs::lorawan::registry::{self, FieldKind};
 use crate::libs::lorawan::state::{LoRaWANAlarmState, LoRaWANSensorState};
 use crate::libs::sensors::state::SensorReading;
@@ -47,11 +47,11 @@ pub fn unit_for_field(field: &str) -> &'static str {
         "rssi" => "dBm",
         "snr" => "dB",
         "status" => "",
-        // EYE tag fields. `battery` is the tag's raw millivolts (EyeTagState
+        // EYE tag fields. `battery` is the tag's raw millivolts (BeaconTagState
         // carries `battery_mv`, not a percentage), and pitch/roll are degrees.
         "battery" => "mV",
         "pitch" | "roll" => "°",
-        // `movement` is EyeTagState::movement_count — a bare counter.
+        // `movement` is BeaconTagState::movement_count — a bare counter.
         "movement" => "",
         // Covers temperature, ext_temperature_N and machine_probe_temperature_N.
         f if f.contains("temperature") => "°C",
@@ -178,7 +178,7 @@ pub fn default_label(
     line: &DisplayLine,
     ds_names: &[String; 8],
     lorawan: &[LoRaWANSensorState],
-    tags: &[EyeTagState],
+    tags: &[BeaconTagState],
 ) -> String {
     match line.source {
         DisplayLineSource::Ds18b20 => match line.line.map(usize::from) {
@@ -242,7 +242,7 @@ fn find_sticker<'a>(
 /// Find an EYE tag by MAC. Both sides are uppercased — the config on load, the
 /// tag map by construction — so this is a plain comparison, same as
 /// [`find_sticker`].
-fn find_tag<'a>(tags: &'a [EyeTagState], mac: &str) -> Option<&'a EyeTagState> {
+fn find_tag<'a>(tags: &'a [BeaconTagState], mac: &str) -> Option<&'a BeaconTagState> {
     tags.iter().find(|t| t.mac == mac)
 }
 
@@ -338,10 +338,10 @@ fn build_sticker_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (St
 ///
 /// `tags` is expected to carry an `alarm_state` already escalated to
 /// `Disconnected` for a stale tag — the same escalation
-/// `eye::monitor::publish_eye_snapshot` applies — because staleness is a function
+/// `beacon::monitor::publish_snapshot` applies — because staleness is a function
 /// of the clock and this module is deliberately clock-free so it stays testable
 /// on the host.
-fn build_ble_line(line: &DisplayLine, tags: &[EyeTagState]) -> (String, char, bool) {
+fn build_ble_line(line: &DisplayLine, tags: &[BeaconTagState]) -> (String, char, bool) {
     let mac = line.mac.as_deref().unwrap_or_default();
     let Some(tag) = find_tag(tags, mac) else {
         // Configured but never seen: placeholder, not a dropped row.
@@ -366,7 +366,7 @@ fn build_ble_line(line: &DisplayLine, tags: &[EyeTagState]) -> (String, char, bo
     let value = if line.field == "status" {
         alarm_text_lora(&effective).to_string()
     } else if disconnected {
-        // `EyeTagState`'s readings are never cleared, so the last advertisement's
+        // `BeaconTagState`'s readings are never cleared, so the last advertisement's
         // value would otherwise sit on the panel looking live. A tag that has
         // dropped out must not display a plausible temperature.
         placeholder_for(&line.field, &line.format)
@@ -401,7 +401,7 @@ pub fn build_custom_lines(
     ds_readings: &[Option<SensorReading>; 8],
     ds_names: &[String; 8],
     lorawan: &[LoRaWANSensorState],
-    tags: &[EyeTagState],
+    tags: &[BeaconTagState],
 ) -> Vec<RenderedLine> {
     lines
         .iter()
@@ -519,7 +519,7 @@ mod tests {
     }
 
     /// No EYE tags, for the probe/sticker tests that predate the `ble` source.
-    fn no_tags() -> Vec<EyeTagState> {
+    fn no_tags() -> Vec<BeaconTagState> {
         Vec::new()
     }
 
@@ -537,8 +537,8 @@ mod tests {
     }
 
     /// An EYE tag with the readings a Proximos-provisioned tag advertises.
-    fn tag(mac: &str) -> EyeTagState {
-        let mut t = EyeTagState::new(mac.to_string(), Some("Freezer tag".to_string()));
+    fn tag(mac: &str) -> BeaconTagState {
+        let mut t = BeaconTagState::new(mac.to_string(), Some("Freezer tag".to_string()));
         t.temperature_c = Some(4.25);
         t.humidity_pct = Some(63);
         t.battery_mv = Some(3050);

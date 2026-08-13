@@ -30,7 +30,7 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// plus an optional cosmetic name.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct EyeTagAddRequest {
+pub struct BeaconAddRequest {
     pub mac: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -39,7 +39,7 @@ pub struct EyeTagAddRequest {
 /// FB0E read payload — the result of the most recent enrollment. Matches the
 /// issue #84 contract (`{ "success": true, "message": "" }`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EyeTagAddResponse {
+pub struct BeaconAddResponse {
     pub success: bool,
     pub message: String,
 }
@@ -47,19 +47,19 @@ pub struct EyeTagAddResponse {
 /// Per-`ServiceState` slot holding the most recent FB0E result. Scoped to a
 /// single GATT-server instance (not process-global) so it can be reset on BLE
 /// disconnect and one client cannot read another's result.
-pub type SharedResult = Arc<Mutex<EyeTagAddResponse>>;
+pub type SharedResult = Arc<Mutex<BeaconAddResponse>>;
 
 pub fn new_slot() -> SharedResult {
-    Arc::new(Mutex::new(EyeTagAddResponse::default()))
+    Arc::new(Mutex::new(BeaconAddResponse::default()))
 }
 
 /// Read the current slot. Returns the default response if the lock is poisoned.
-pub fn read(slot: &SharedResult) -> EyeTagAddResponse {
+pub fn read(slot: &SharedResult) -> BeaconAddResponse {
     slot.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
 /// Overwrite the slot, recovering from a poisoned lock.
-pub fn store(slot: &SharedResult, resp: EyeTagAddResponse) {
+pub fn store(slot: &SharedResult, resp: BeaconAddResponse) {
     let mut g = match slot.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -69,12 +69,12 @@ pub fn store(slot: &SharedResult, resp: EyeTagAddResponse) {
 
 /// Reset the slot to the default (no result). Called on BLE disconnect.
 pub fn reset(slot: &SharedResult) {
-    store(slot, EyeTagAddResponse::default());
+    store(slot, BeaconAddResponse::default());
 }
 
 /// Validated, normalized enrollment request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreparedEyeAdd {
+pub struct PreparedBeaconAdd {
     /// Uppercase `AA:BB:CC:DD:EE:FF`.
     pub mac: String,
     /// Cleaned optional label (`None` if omitted or blank).
@@ -84,16 +84,16 @@ pub struct PreparedEyeAdd {
 /// Validate + normalize the request.
 ///
 /// The MAC is trimmed, uppercased, and checked with the same
-/// [`crate::libs::eye::state::is_valid_mac`] used at every EYE MQTT choke point,
+/// [`crate::libs::beacon::state::is_valid_mac`] used at every EYE MQTT choke point,
 /// so the FB0E path cannot slip a malformed MAC past (`parse_mac` in the
 /// recorder path would otherwise coerce bad hex to `00:..`). `name`, if present,
 /// is trimmed; a blank name becomes `None`; otherwise it must be
 /// `<= MAX_NAME_CHARS` and free of ASCII control characters (which would break
 /// YAML quoting or inject into log lines). Returns a human-readable reason on
 /// failure (surfaced in the FB0E response `message`).
-pub fn prepare(req: &EyeTagAddRequest) -> Result<PreparedEyeAdd, String> {
+pub fn prepare(req: &BeaconAddRequest) -> Result<PreparedBeaconAdd, String> {
     let mac = req.mac.trim().to_uppercase();
-    if !crate::libs::eye::state::is_valid_mac(&mac) {
+    if !crate::libs::beacon::state::is_valid_mac(&mac) {
         return Err(format!("invalid MAC address: {mac}"));
     }
     let name = match req
@@ -113,7 +113,7 @@ pub fn prepare(req: &EyeTagAddRequest) -> Result<PreparedEyeAdd, String> {
             Some(n.to_string())
         }
     };
-    Ok(PreparedEyeAdd { mac, name })
+    Ok(PreparedBeaconAdd { mac, name })
 }
 
 #[cfg(test)]
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn prepare_ok_uppercases_mac_and_keeps_name() {
-        let p = prepare(&EyeTagAddRequest {
+        let p = prepare(&BeaconAddRequest {
             mac: "7c:d9:f4:10:00:00".to_string(),
             name: Some("Lobby sensor".to_string()),
         })
@@ -133,14 +133,14 @@ mod tests {
 
     #[test]
     fn prepare_blank_name_becomes_none() {
-        let p = prepare(&EyeTagAddRequest {
+        let p = prepare(&BeaconAddRequest {
             mac: "AA:BB:CC:DD:EE:FF".to_string(),
             name: Some("   ".to_string()),
         })
         .unwrap();
         assert_eq!(p.name, None);
         // A missing name field also yields None.
-        let p2 = prepare(&EyeTagAddRequest {
+        let p2 = prepare(&BeaconAddRequest {
             mac: "AA:BB:CC:DD:EE:FF".to_string(),
             name: None,
         })
@@ -156,7 +156,7 @@ mod tests {
             "AABBCCDDEEFF",
             "GG:BB:CC:DD:EE:FF",
         ] {
-            let r = prepare(&EyeTagAddRequest {
+            let r = prepare(&BeaconAddRequest {
                 mac: bad.to_string(),
                 name: None,
             });
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn prepare_rejects_oversized_name() {
-        let r = prepare(&EyeTagAddRequest {
+        let r = prepare(&BeaconAddRequest {
             mac: "AA:BB:CC:DD:EE:FF".to_string(),
             name: Some("a".repeat(MAX_NAME_CHARS + 1)),
         });
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn prepare_rejects_control_chars_in_name() {
-        let r = prepare(&EyeTagAddRequest {
+        let r = prepare(&BeaconAddRequest {
             mac: "AA:BB:CC:DD:EE:FF".to_string(),
             name: Some("Lobby\nsensor".to_string()),
         });
@@ -185,9 +185,9 @@ mod tests {
 
     #[test]
     fn deserialize_defaults_name_and_rejects_unknown_fields() {
-        let ok: EyeTagAddRequest = serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF"}"#).unwrap();
+        let ok: BeaconAddRequest = serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF"}"#).unwrap();
         assert_eq!(ok.name, None);
-        let bad: Result<EyeTagAddRequest, _> =
+        let bad: Result<BeaconAddRequest, _> =
             serde_json::from_str(r#"{"mac":"AA:BB:CC:DD:EE:FF","sneaky":1}"#);
         assert!(bad.is_err(), "unknown fields must be rejected");
     }
@@ -195,17 +195,17 @@ mod tests {
     #[test]
     fn slot_store_read_reset_roundtrip() {
         let slot = new_slot();
-        assert_eq!(read(&slot), EyeTagAddResponse::default());
+        assert_eq!(read(&slot), BeaconAddResponse::default());
         store(
             &slot,
-            EyeTagAddResponse {
+            BeaconAddResponse {
                 success: true,
                 message: "ok".into(),
             },
         );
         assert_eq!(
             read(&slot),
-            EyeTagAddResponse {
+            BeaconAddResponse {
                 success: true,
                 message: "ok".into()
             }

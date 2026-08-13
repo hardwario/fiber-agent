@@ -397,7 +397,7 @@ impl StorageWriter {
     /// Persist one EYE BLE tag reading. Idempotent on `message_id`
     /// (`INSERT OR IGNORE`); returns the new row id, or `None` if it was a
     /// duplicate. No provisioning epoch (unlike sticker readings).
-    pub fn write_eye_reading(
+    pub fn write_beacon_reading(
         conn: &mut Connection,
         mac: &str,
         ts: i64,

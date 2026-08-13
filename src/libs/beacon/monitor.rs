@@ -13,22 +13,22 @@ use std::time::{Duration, Instant};
 
 use std::collections::{HashMap, HashSet};
 
-use super::config::EyeTagConfig;
+use super::config::BeaconTagConfig;
 
 use crossbeam::channel::Sender;
 use futures::{FutureExt, StreamExt};
 
-use crate::libs::eye::config::EyeConfig;
-use crate::libs::mqtt::messages::{EyeTagPayload, MqttMessage};
+use crate::libs::beacon::config::BeaconConfig;
+use crate::libs::mqtt::messages::{BeaconTagPayload, MqttMessage};
 use crate::libs::storage::db::Database;
 use crate::libs::storage::{StorageHandle, StorageReader};
 
-use super::advertising::{parse_manufacturer_value, EyeReading, TELTONIKA_COMPANY_ID};
+use super::advertising::{parse_manufacturer_value, BeaconReading, TELTONIKA_COMPANY_ID};
 use super::en12830;
-use super::provisioning::{provision, EyeProfile, ProvisionError};
+use super::provisioning::{provision, BeaconProfile, ProvisionError};
 use super::state::{
-    create_shared_eye_state, register_eye_config, register_eye_state, ProvisioningStatus,
-    SharedEyeConfig, SharedEyeState,
+    create_shared_beacon_state, register_beacon_config, register_beacon_state, ProvisioningStatus,
+    SharedBeaconConfig, SharedBeaconState,
 };
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
@@ -192,7 +192,7 @@ async fn run_scan_recovery(rung: u8, adapter: &str) {
 
 /// A pending EN12830 recorder operation, run at the top of the outer loop while
 /// the BlueZ scan is stopped (raw L2CAP and an active scan must not overlap).
-enum EyeJob {
+enum BeaconJob {
     /// Sync clock + start recording at `interval_s` (after provisioning).
     EnableRecording { interval_s: u16 },
     /// Back-fill archived samples with `ts >= since_ts`, then restart recording.
@@ -204,7 +204,7 @@ enum EyeJob {
     StopRecording,
 }
 
-impl EyeJob {
+impl BeaconJob {
     /// Lower runs first. `Detect` is the only job an operator is sitting in
     /// front of — the viewer gives it a 90 s deadline — while `Download` is an
     /// unattended back-fill that routinely runs for minutes. Draining a HashMap
@@ -214,37 +214,37 @@ impl EyeJob {
     /// timeout blaming the BLE environment.
     fn priority(&self) -> u8 {
         match self {
-            EyeJob::Detect => 0,
-            EyeJob::EnableRecording { .. } | EyeJob::StopRecording => 1,
-            EyeJob::Download { .. } => 2,
+            BeaconJob::Detect => 0,
+            BeaconJob::EnableRecording { .. } | BeaconJob::StopRecording => 1,
+            BeaconJob::Download { .. } => 2,
         }
     }
 }
 
 /// Read-only handle to the EYE monitor state.
 #[derive(Clone)]
-pub struct EyeHandle {
-    pub state: SharedEyeState,
+pub struct BeaconHandle {
+    pub state: SharedBeaconState,
 }
 
 /// EYE BLE tag monitor.
-pub struct EyeMonitor {
+pub struct BeaconMonitor {
     thread_handle: Option<JoinHandle<()>>,
     shutdown_flag: Arc<AtomicBool>,
-    pub state: SharedEyeState,
+    pub state: SharedBeaconState,
 }
 
-impl EyeMonitor {
+impl BeaconMonitor {
     /// Create and spawn the EYE monitor. Inert (no thread) when `config.enabled`
     /// is false.
     pub fn new(
-        config: EyeConfig,
+        config: BeaconConfig,
         mqtt_tx: Sender<MqttMessage>,
         hostname: String,
         storage: StorageHandle,
         db_path: String,
     ) -> io::Result<Self> {
-        let state = create_shared_eye_state(false);
+        let state = create_shared_beacon_state(false);
 
         if !config.enabled {
             eprintln!("[EYE Monitor] Disabled in config");
@@ -260,16 +260,16 @@ impl EyeMonitor {
         let state_clone = state.clone();
 
         // Expose the state so the MQTT command handler can enqueue commands.
-        register_eye_state(state.clone());
+        register_beacon_state(state.clone());
 
         // Expose the config so add/remove command handlers can mutate the tag set
         // the scan loop reads (the loop re-reads this each poll cycle).
-        let shared_config: SharedEyeConfig = Arc::new(RwLock::new(config));
-        register_eye_config(shared_config.clone());
+        let shared_config: SharedBeaconConfig = Arc::new(RwLock::new(config));
+        register_beacon_config(shared_config.clone());
         let config_clone = shared_config.clone();
 
         let thread_handle = thread::spawn(move || {
-            eye_loop(
+            beacon_loop(
                 shutdown_clone,
                 state_clone,
                 config_clone,
@@ -289,14 +289,14 @@ impl EyeMonitor {
         })
     }
 
-    pub fn handle(&self) -> EyeHandle {
-        EyeHandle {
+    pub fn handle(&self) -> BeaconHandle {
+        BeaconHandle {
             state: self.state.clone(),
         }
     }
 }
 
-impl Drop for EyeMonitor {
+impl Drop for BeaconMonitor {
     fn drop(&mut self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread_handle.take() {
@@ -316,10 +316,10 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-fn eye_loop(
+fn beacon_loop(
     shutdown: Arc<AtomicBool>,
-    state: SharedEyeState,
-    shared_config: SharedEyeConfig,
+    state: SharedBeaconState,
+    shared_config: SharedBeaconConfig,
     mqtt_tx: Sender<MqttMessage>,
     hostname: String,
     storage: StorageHandle,
@@ -358,7 +358,7 @@ fn eye_loop(
             if let Ok(conn) = db.connect() {
                 for tag in config.tags.iter().filter(|t| t.enabled) {
                     let mac_key = tag.mac.to_uppercase();
-                    if let Ok(Some(ts)) = StorageReader::max_eye_reading_ts(&conn, &mac_key) {
+                    if let Ok(Some(ts)) = StorageReader::max_beacon_reading_ts(&conn, &mac_key) {
                         m.insert(mac_key, ts);
                     }
                 }
@@ -407,7 +407,7 @@ fn eye_loop(
         let mut start_discovery_failures: u32 = 0;
         // EN12830 recorder jobs queued by the inner poll loop; drained here at the
         // top of the outer loop while no scan is running.
-        let mut pending: HashMap<String, EyeJob> = HashMap::new();
+        let mut pending: HashMap<String, BeaconJob> = HashMap::new();
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -429,8 +429,8 @@ fn eye_loop(
             // L2CAP (recorder) and an active LE scan must not overlap on the same
             // adapter, so this deliberately runs before discovery is (re)started. ---
             if !pending.is_empty() {
-                let mut jobs: Vec<(String, EyeJob)> = pending.drain().collect();
-                // Interactive first — see EyeJob::priority. `sort_by_key` is
+                let mut jobs: Vec<(String, BeaconJob)> = pending.drain().collect();
+                // Interactive first — see BeaconJob::priority. `sort_by_key` is
                 // stable, so same-priority jobs keep the drain's order.
                 jobs.sort_by_key(|(_, job)| job.priority());
                 let sync_fallback_secs = config.sync_fallback_hours as i64 * 3600;
@@ -606,28 +606,28 @@ fn eye_loop(
 
                 // Drain externally-queued commands (from the MQTT handler) into
                 // recorder jobs, which the outer loop runs with the scan paused.
-                let external: Vec<super::state::EyeCommand> = state
+                let external: Vec<super::state::BeaconCommand> = state
                     .write()
                     .ok()
                     .map(|mut s| std::mem::take(&mut s.command_queue))
                     .unwrap_or_default();
                 for cmd in external {
                     match cmd {
-                        super::state::EyeCommand::SetRecording { mac, interval_min } => {
+                        super::state::BeaconCommand::SetRecording { mac, interval_min } => {
                             let job = if interval_min == 0 {
                                 // interval 0 = turn recording off
-                                EyeJob::StopRecording
+                                BeaconJob::StopRecording
                             } else {
                                 let interval_s = match interval_min {
                                     1 => 60,
                                     15 => 900,
                                     _ => 300,
                                 };
-                                EyeJob::EnableRecording { interval_s }
+                                BeaconJob::EnableRecording { interval_s }
                             };
                             pending.insert(mac.to_uppercase(), job);
                         }
-                        super::state::EyeCommand::DownloadHistory { mac } => {
+                        super::state::BeaconCommand::DownloadHistory { mac } => {
                             let mac_key = mac.to_uppercase();
                             let interval_s = config
                                 .tags
@@ -642,11 +642,11 @@ fn eye_loop(
                                 .unwrap_or(0);
                             pending.insert(
                                 mac_key,
-                                EyeJob::Download { since_ts: since, interval_s },
+                                BeaconJob::Download { since_ts: since, interval_s },
                             );
                         }
-                        super::state::EyeCommand::Detect { mac } => {
-                            pending.insert(mac.to_uppercase(), EyeJob::Detect);
+                        super::state::BeaconCommand::Detect { mac } => {
+                            pending.insert(mac.to_uppercase(), BeaconJob::Detect);
                         }
                     }
                 }
@@ -728,7 +728,7 @@ fn eye_loop(
                                                 entry.last_download_ts = Some(now_ts); // optimistic
                                                 pending.insert(
                                                     mac_key.clone(),
-                                                    EyeJob::Download {
+                                                    BeaconJob::Download {
                                                         since_ts: since,
                                                         interval_s: interval_s as u16,
                                                     },
@@ -753,7 +753,7 @@ fn eye_loop(
                                             std::hash::Hasher::finish(&hasher);
                                         let message_id =
                                             format!("{}-{:016x}", mac_key, value_hash);
-                                        let _ = storage.write_eye_reading(
+                                        let _ = storage.write_beacon_reading(
                                             mac_key.clone(),
                                             now_ts,
                                             now_ts,
@@ -793,8 +793,8 @@ fn eye_loop(
                             // connect()/services() cannot freeze the single-thread
                             // runtime (scan + command queue) indefinitely.
                             let result = match tokio::time::timeout(
-                                crate::libs::eye::provisioning::SERVICE_RESOLVE_TIMEOUT,
-                                provision(&device, &EyeProfile::default()),
+                                crate::libs::beacon::provisioning::SERVICE_RESOLVE_TIMEOUT,
+                                provision(&device, &BeaconProfile::default()),
                             )
                             .await
                             {
@@ -820,7 +820,7 @@ fn eye_loop(
                                             if config.recording_on_for(tag) {
                                                 pending.insert(
                                                     mac_key.clone(),
-                                                    EyeJob::EnableRecording {
+                                                    BeaconJob::EnableRecording {
                                                         interval_s: config
                                                             .interval_min_for(tag)
                                                             as u16
@@ -894,7 +894,7 @@ fn eye_loop(
                             }
                             pending.insert(
                                 mac_key.clone(),
-                                EyeJob::Download { since_ts: since, interval_s: interval_s as u16 },
+                                BeaconJob::Download { since_ts: since, interval_s: interval_s as u16 },
                             );
                         }
                     }
@@ -953,7 +953,7 @@ fn eye_loop(
                             match crate::libs::config_applier::config_applier_handle() {
                                 Some(applier) => {
                                     let result =
-                                        applier.apply_eye_tag_config(mac_key.clone(), None);
+                                        applier.apply_beacon_tag_config(mac_key.clone(), None);
                                     if result.success {
                                         if let Ok(mut c) = shared_config.write() {
                                             c.upsert_tag(&mac_key, None);
@@ -1068,8 +1068,8 @@ fn eye_loop(
 /// `{mac}-rec-{ts}` message_id → `INSERT OR IGNORE`).
 async fn run_recorder_job(
     mac: &str,
-    job: EyeJob,
-    state: &SharedEyeState,
+    job: BeaconJob,
+    state: &SharedBeaconState,
     storage: &StorageHandle,
     sync_fallback_secs: i64,
     mqtt_tx: &Sender<MqttMessage>,
@@ -1077,7 +1077,7 @@ async fn run_recorder_job(
     let now = now_secs();
     let now_u32 = now as u32;
     match job {
-        EyeJob::EnableRecording { interval_s } => {
+        BeaconJob::EnableRecording { interval_s } => {
             let m = mac.to_string();
             let res = tokio::task::spawn_blocking(move || {
                 en12830::enable_recording(&m, interval_s, now_u32)
@@ -1099,7 +1099,7 @@ async fn run_recorder_job(
                 Err(e) => eprintln!("[EYE Monitor] enable_recording {mac} task error: {e}"),
             }
         }
-        EyeJob::StopRecording => {
+        BeaconJob::StopRecording => {
             let m = mac.to_string();
             let res = tokio::task::spawn_blocking(move || en12830::stop_recording(&m)).await;
             match res {
@@ -1120,7 +1120,7 @@ async fn run_recorder_job(
                 Err(e) => eprintln!("[EYE Monitor] stop_recording {mac} task error: {e}"),
             }
         }
-        EyeJob::Download {
+        BeaconJob::Download {
             since_ts,
             interval_s,
         } => {
@@ -1144,7 +1144,7 @@ async fn run_recorder_job(
                             "source": "en12830",
                         })
                         .to_string();
-                        let _ = storage.write_eye_reading(
+                        let _ = storage.write_beacon_reading(
                             mac.to_string(),
                             ts,
                             now,
@@ -1207,7 +1207,7 @@ async fn run_recorder_job(
                 }
             }
         }
-        EyeJob::Detect => {
+        BeaconJob::Detect => {
             // Do NOT seed a state.tags entry: the result is always published on
             // eye/detect below, and seeding a MAC that isn't in eye.tags would
             // leave a phantom in the periodic eye/sensors snapshot forever (M2).
@@ -1246,7 +1246,7 @@ async fn run_recorder_job(
             }
             // Always report an explicit result — the periodic snapshot alone
             // cannot distinguish "still detecting" from "unreachable".
-            let _ = mqtt_tx.try_send(MqttMessage::PublishEyeDetectResult {
+            let _ = mqtt_tx.try_send(MqttMessage::PublishBeaconDetectResult {
                 mac: mac.to_string(),
                 is_en12830,
                 status: status.to_string(),
@@ -1258,7 +1258,7 @@ async fn run_recorder_job(
 /// If the recorder characteristics were absent, the tag is not an EN12830 model
 /// (e.g. a black standard tag) — remember that so we stop attempting downloads.
 /// Other errors (connect timeout, out of range) leave the flag unknown to retry.
-fn mark_not_en12830_if_absent(state: &SharedEyeState, mac: &str, e: &io::Error) {
+fn mark_not_en12830_if_absent(state: &SharedBeaconState, mac: &str, e: &io::Error) {
     if e.kind() == io::ErrorKind::NotFound {
         if let Ok(mut s) = state.write() {
             if let Some(t) = s.tags.get_mut(mac) {
@@ -1291,14 +1291,14 @@ fn classify_detect(
 /// thresholds, recording untouched — because this gateway is only *listening* for
 /// it. Ownership stays with whichever gateway has it in `fiber.config.yaml`, and
 /// ownership is what decides who downloads the archive and who raises the alarms.
-fn audible_tags(config: &EyeConfig, known: &HashSet<String>) -> Vec<EyeTagConfig> {
-    let mut out: Vec<EyeTagConfig> = config.tags.iter().filter(|t| t.enabled).cloned().collect();
+fn audible_tags(config: &BeaconConfig, known: &HashSet<String>) -> Vec<BeaconTagConfig> {
+    let mut out: Vec<BeaconTagConfig> = config.tags.iter().filter(|t| t.enabled).cloned().collect();
     let owned: HashSet<String> = out.iter().map(|t| t.mac.to_uppercase()).collect();
     for mac in known {
         if owned.contains(mac) {
             continue;
         }
-        out.push(EyeTagConfig {
+        out.push(BeaconTagConfig {
             mac: mac.clone(),
             name: None,
             enabled: true,
@@ -1317,7 +1317,7 @@ fn audible_tags(config: &EyeConfig, known: &HashSet<String>) -> Vec<EyeTagConfig
 }
 
 /// Slim JSON payload persisted per reading (omits absent fields).
-fn reading_payload_json(r: &EyeReading, rssi: Option<i16>) -> String {
+fn reading_payload_json(r: &BeaconReading, rssi: Option<i16>) -> String {
     let mut o = serde_json::Map::new();
     if let Some(t) = r.temperature_c {
         o.insert("temperature_c".into(), serde_json::json!(t));
@@ -1354,7 +1354,7 @@ fn reading_payload_json(r: &EyeReading, rssi: Option<i16>) -> String {
 
 /// Build the payload from current state and hand it to the MQTT publisher.
 fn publish_snapshot(
-    state: &SharedEyeState,
+    state: &SharedBeaconState,
     mqtt_tx: &Sender<MqttMessage>,
     now_ts: i64,
     tag_timeout_s: i64,
@@ -1368,7 +1368,7 @@ fn publish_snapshot(
     // Only publish tags still in the live config: this prunes a just-removed tag
     // that a sub-second scan race may have re-materialised in state.tags (M1) and
     // any non-configured detect target (M2).
-    let tags: Vec<EyeTagPayload> = snapshot
+    let tags: Vec<BeaconTagPayload> = snapshot
         .tags
         .values()
         // Candidates are exempt by definition: they are not in the config, and
@@ -1388,7 +1388,7 @@ fn publish_snapshot(
             } else {
                 t.alarm_state.clone()
             };
-            EyeTagPayload {
+            BeaconTagPayload {
                 // Which gateway heard this (system#6). The topic also carries the
                 // hostname, but only when `mqtt.include_hostname` is on — that is an
                 // operator setting, so a consumer cannot rely on it. Naming the
@@ -1425,7 +1425,7 @@ fn publish_snapshot(
     if tags.is_empty() {
         return;
     }
-    let _ = mqtt_tx.try_send(MqttMessage::PublishEyeSensorData { tags });
+    let _ = mqtt_tx.try_send(MqttMessage::PublishBeaconSensorData { tags });
 }
 
 #[cfg(test)]
@@ -1534,9 +1534,9 @@ mod tests {
         // but must not inherit ownership — no thresholds (its owner raises the
         // alarms) and recording explicitly off (only the owner may open the tag's
         // single GATT connection).
-        let mut config = EyeConfig::default();
+        let mut config = BeaconConfig::default();
         config.recording_enabled = true;
-        config.tags.push(EyeTagConfig {
+        config.tags.push(BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:01".into(),
             name: Some("mine".into()),
             enabled: true,
@@ -1583,8 +1583,8 @@ mod tests {
         // Disabling a tag locally is an explicit "stop listening", so the fleet
         // allowlist re-adding it would silently override the operator... except it
         // is then a *borrowed* tag, which is the honest outcome: audible, not owned.
-        let mut config = EyeConfig::default();
-        config.tags.push(EyeTagConfig {
+        let mut config = BeaconConfig::default();
+        config.tags.push(BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:03".into(),
             name: Some("off".into()),
             enabled: false,
@@ -1621,16 +1621,16 @@ mod tests {
         let mut jobs = vec![
             (
                 "AA".to_string(),
-                EyeJob::Download {
+                BeaconJob::Download {
                     since_ts: 0,
                     interval_s: 300,
                 },
             ),
             (
                 "BB".to_string(),
-                EyeJob::EnableRecording { interval_s: 300 },
+                BeaconJob::EnableRecording { interval_s: 300 },
             ),
-            ("CC".to_string(), EyeJob::Detect),
+            ("CC".to_string(), BeaconJob::Detect),
         ];
         jobs.sort_by_key(|(_, job)| job.priority());
         let order: Vec<&str> = jobs.iter().map(|(mac, _)| mac.as_str()).collect();
@@ -1643,14 +1643,14 @@ mod tests {
         let mut jobs = vec![
             (
                 "AA".to_string(),
-                EyeJob::Download {
+                BeaconJob::Download {
                     since_ts: 0,
                     interval_s: 300,
                 },
             ),
             (
                 "BB".to_string(),
-                EyeJob::Download {
+                BeaconJob::Download {
                     since_ts: 0,
                     interval_s: 300,
                 },

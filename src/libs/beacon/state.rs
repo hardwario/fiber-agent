@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use super::advertising::EyeReading;
-use super::config::{EyeConfig, EyeTagConfig};
+use super::advertising::BeaconReading;
+use super::config::{BeaconConfig, BeaconTagConfig};
 use crate::libs::lorawan::state::{evaluate_threshold, LoRaWANAlarmState};
 
 /// Per-tag provisioning lifecycle.
@@ -36,7 +36,7 @@ impl ProvisioningStatus {
 
 /// Live state of a single EYE tag.
 #[derive(Debug, Clone)]
-pub struct EyeTagState {
+pub struct BeaconTagState {
     pub mac: String,
     pub name: Option<String>,
     pub temperature_c: Option<f32>,
@@ -75,7 +75,7 @@ pub struct EyeTagState {
     pub discovered: bool,
 }
 
-impl EyeTagState {
+impl BeaconTagState {
     pub fn new(mac: String, name: Option<String>) -> Self {
         Self {
             mac,
@@ -114,7 +114,7 @@ impl EyeTagState {
     ///     the real signal — a numeric mV band on top of it is a duplicate;
     ///   * `movement` is `movement_count`, a monotonically increasing counter, so a
     ///     `[lo, hi]` band on it alarms once and then stays alarmed forever.
-    pub fn evaluate_alarms(&mut self, cfg: &EyeTagConfig) {
+    pub fn evaluate_alarms(&mut self, cfg: &BeaconTagConfig) {
         self.field_alarm_states.clear();
         for t in &cfg.field_thresholds {
             let value: Option<f64> = match t.field.as_str() {
@@ -156,7 +156,7 @@ impl EyeTagState {
     }
 
     /// Apply a freshly parsed advertising frame.
-    pub fn apply_reading(&mut self, r: &EyeReading, rssi: Option<i16>, now_ts: i64) {
+    pub fn apply_reading(&mut self, r: &BeaconReading, rssi: Option<i16>, now_ts: i64) {
         if r.temperature_c.is_some() {
             self.temperature_c = r.temperature_c;
         }
@@ -199,7 +199,7 @@ impl EyeTagState {
 /// External command for the EYE monitor, queued by the MQTT command handler and
 /// drained by the monitor loop (which runs it while the scan is paused).
 #[derive(Debug, Clone)]
-pub enum EyeCommand {
+pub enum BeaconCommand {
     /// Change the on-tag logging interval (minutes) and (re)start recording.
     SetRecording { mac: String, interval_min: u16 },
     /// Manually back-fill the archive for a tag now.
@@ -211,39 +211,39 @@ pub enum EyeCommand {
 
 /// Aggregate state for the EYE subsystem.
 #[derive(Debug, Clone, Default)]
-pub struct EyeSensorState {
+pub struct BeaconSensorState {
     /// Whether a usable BLE adapter was found at startup.
     pub adapter_present: bool,
     /// Tags keyed by uppercase MAC `AA:BB:CC:DD:EE:FF`.
-    pub tags: HashMap<String, EyeTagState>,
+    pub tags: HashMap<String, BeaconTagState>,
     /// Pending external commands (from MQTT); drained by the monitor loop.
-    pub command_queue: Vec<EyeCommand>,
+    pub command_queue: Vec<BeaconCommand>,
 }
 
-impl EyeSensorState {
+impl BeaconSensorState {
     /// Get-or-create the per-tag state for `mac`.
-    pub fn entry(&mut self, mac: &str, name: Option<String>) -> &mut EyeTagState {
+    pub fn entry(&mut self, mac: &str, name: Option<String>) -> &mut BeaconTagState {
         self.tags
             .entry(mac.to_string())
-            .or_insert_with(|| EyeTagState::new(mac.to_string(), name))
+            .or_insert_with(|| BeaconTagState::new(mac.to_string(), name))
     }
 }
 
-pub type SharedEyeState = Arc<RwLock<EyeSensorState>>;
+pub type SharedBeaconState = Arc<RwLock<BeaconSensorState>>;
 
 /// Process-wide handle to the running monitor's state, so the MQTT command
 /// handler can enqueue EYE commands without threading the state through every
 /// call site. Set once when the monitor starts.
-static EYE_STATE: OnceLock<SharedEyeState> = OnceLock::new();
+static EYE_STATE: OnceLock<SharedBeaconState> = OnceLock::new();
 
 /// Register the monitor's shared state (called once at monitor startup).
-pub fn register_eye_state(state: SharedEyeState) {
+pub fn register_beacon_state(state: SharedBeaconState) {
     let _ = EYE_STATE.set(state);
 }
 
 /// MACs the *fleet* knows about, pushed by the server (system#6).
 ///
-/// Deliberately separate from [`EyeConfig::tags`] and never written to
+/// Deliberately separate from [`BeaconConfig::tags`] and never written to
 /// `fiber.config.yaml`: a tag registered on another gateway must become audible
 /// here without this gateway claiming ownership of it. Ownership is what decides
 /// who runs the archive download and who evaluates the alarm thresholds — two
@@ -254,7 +254,7 @@ pub type SharedKnownTags = Arc<RwLock<HashSet<String>>>;
 static EYE_KNOWN_TAGS: OnceLock<SharedKnownTags> = OnceLock::new();
 
 /// Handle to the fleet allowlist, creating it on first use.
-pub fn eye_known_tags() -> SharedKnownTags {
+pub fn beacon_known_tags() -> SharedKnownTags {
     EYE_KNOWN_TAGS
         .get_or_init(|| Arc::new(RwLock::new(HashSet::new())))
         .clone()
@@ -265,8 +265,8 @@ pub fn eye_known_tags() -> SharedKnownTags {
 /// Wholesale, not merged: the server sends the full union every time, so a merge
 /// could never forget a tag that was unregistered fleet-wide — it would stay
 /// audible here until the gateway restarted.
-pub fn set_eye_known_tags<I: IntoIterator<Item = String>>(macs: I) -> usize {
-    let handle = eye_known_tags();
+pub fn set_beacon_known_tags<I: IntoIterator<Item = String>>(macs: I) -> usize {
+    let handle = beacon_known_tags();
     let set: HashSet<String> = macs
         .into_iter()
         .map(|m| m.to_uppercase())
@@ -281,26 +281,26 @@ pub fn set_eye_known_tags<I: IntoIterator<Item = String>>(macs: I) -> usize {
 
 /// Snapshot of the allowlist, for the scan loop.
 pub fn known_tags_snapshot() -> HashSet<String> {
-    eye_known_tags()
+    beacon_known_tags()
         .read()
         .map(|g| g.clone())
         .unwrap_or_default()
 }
 
-pub type SharedEyeConfig = Arc<RwLock<EyeConfig>>;
+pub type SharedBeaconConfig = Arc<RwLock<BeaconConfig>>;
 
 /// Process-wide handle to the monitor's live config. The scan loop re-reads it
 /// each poll cycle and the MQTT add/remove handlers mutate it, so tag changes
 /// take effect without restarting the monitor. Set once at monitor startup.
-static EYE_CONFIG: OnceLock<SharedEyeConfig> = OnceLock::new();
+static EYE_CONFIG: OnceLock<SharedBeaconConfig> = OnceLock::new();
 
 /// Register the monitor's shared config (called once at monitor startup).
-pub fn register_eye_config(config: SharedEyeConfig) {
+pub fn register_beacon_config(config: SharedBeaconConfig) {
     let _ = EYE_CONFIG.set(config);
 }
 
 /// Handle to the monitor's live config, if the monitor has started.
-pub fn eye_config_handle() -> Option<SharedEyeConfig> {
+pub fn beacon_config_handle() -> Option<SharedBeaconConfig> {
     EYE_CONFIG.get().cloned()
 }
 
@@ -328,19 +328,19 @@ pub fn is_valid_mac(s: &str) -> bool {
 
 /// Handle to the running monitor's shared state, if the monitor has started.
 /// Lets command handlers seed/drop in-memory tag entries after a config change.
-pub fn eye_state_handle() -> Option<SharedEyeState> {
+pub fn beacon_state_handle() -> Option<SharedBeaconState> {
     EYE_STATE.get().cloned()
 }
 
 /// Copy of `tag` whose aggregate `alarm_state` is escalated to `Disconnected`
 /// when the tag has not been heard from within `tag_timeout_s`.
 ///
-/// [`EyeTagState::alarm_state`] itself only ever holds the threshold verdict —
+/// [`BeaconTagState::alarm_state`] itself only ever holds the threshold verdict —
 /// staleness is a function of the clock, so it is applied at read time. This is
-/// the same escalation `eye::monitor::publish_eye_snapshot` applies before
+/// the same escalation `beacon::monitor::publish_snapshot` applies before
 /// publishing, factored out so the LCD overview and MQTT cannot disagree about
 /// whether a tag is lost.
-pub fn escalate_if_stale(tag: &EyeTagState, now_ts: i64, tag_timeout_s: i64) -> EyeTagState {
+pub fn escalate_if_stale(tag: &BeaconTagState, now_ts: i64, tag_timeout_s: i64) -> BeaconTagState {
     let mut out = tag.clone();
     if tag.is_stale(now_ts, tag_timeout_s) {
         out.alarm_state = tag.alarm_state.worst(&LoRaWANAlarmState::Disconnected);
@@ -354,7 +354,7 @@ pub fn escalate_if_stale(tag: &EyeTagState, now_ts: i64, tag_timeout_s: i64) -> 
 /// Empty when the EYE monitor is not running — the display then renders the
 /// configured BLE rows as "never seen" placeholders rather than dropping them,
 /// which is the same thing an unprovisioned MAC produces.
-pub fn display_snapshot(tag_timeout_s: i64) -> Vec<EyeTagState> {
+pub fn display_snapshot(tag_timeout_s: i64) -> Vec<BeaconTagState> {
     let Some(state) = EYE_STATE.get() else {
         return Vec::new();
     };
@@ -365,7 +365,7 @@ pub fn display_snapshot(tag_timeout_s: i64) -> Vec<EyeTagState> {
     let Ok(snapshot) = state.read() else {
         return Vec::new();
     };
-    let mut tags: Vec<EyeTagState> = snapshot
+    let mut tags: Vec<BeaconTagState> = snapshot
         .tags
         .values()
         .map(|t| escalate_if_stale(t, now_ts, tag_timeout_s))
@@ -376,7 +376,7 @@ pub fn display_snapshot(tag_timeout_s: i64) -> Vec<EyeTagState> {
 
 /// Enqueue an external command for the monitor to run. Returns `false` if the
 /// EYE monitor is not running (state never registered).
-pub fn queue_eye_command(cmd: EyeCommand) -> bool {
+pub fn queue_beacon_command(cmd: BeaconCommand) -> bool {
     match EYE_STATE.get() {
         Some(state) => {
             if let Ok(mut s) = state.write() {
@@ -391,8 +391,8 @@ pub fn queue_eye_command(cmd: EyeCommand) -> bool {
 }
 
 /// Build a fresh shared state.
-pub fn create_shared_eye_state(adapter_present: bool) -> SharedEyeState {
-    Arc::new(RwLock::new(EyeSensorState {
+pub fn create_shared_beacon_state(adapter_present: bool) -> SharedBeaconState {
+    Arc::new(RwLock::new(BeaconSensorState {
         adapter_present,
         tags: HashMap::new(),
         command_queue: Vec::new(),
@@ -402,11 +402,11 @@ pub fn create_shared_eye_state(adapter_present: bool) -> SharedEyeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::eye::advertising::parse_manufacturer_value;
+    use crate::libs::beacon::advertising::parse_manufacturer_value;
 
     #[test]
     fn apply_reading_updates_fields_and_last_seen() {
-        let mut tag = EyeTagState::new("7C:D9:F4:13:10:DE".into(), Some("Fridge".into()));
+        let mut tag = BeaconTagState::new("7C:D9:F4:13:10:DE".into(), Some("Fridge".into()));
         let r = parse_manufacturer_value(&[0x01, 0x83, 0x09, 0xab, 0x3f, 0x6a]).unwrap();
         tag.apply_reading(&r, Some(-60), 1_000);
         assert_eq!(tag.temperature_c, Some(24.75));
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn missing_fields_are_not_overwritten() {
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         tag.temperature_c = Some(10.0);
         // a frame with only battery present must not wipe temperature
         let r = parse_manufacturer_value(&[0x01, 0x80, 0x6a]).unwrap();
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn evaluate_alarms_classifies_temperature_and_humidity() {
         use crate::libs::config::FieldThreshold;
-        let cfg = EyeTagConfig {
+        let cfg = BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,
             enabled: true,
@@ -456,7 +456,7 @@ mod tests {
             ],
             provisioned: None,
         };
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
 
         // 5 °C + 50 % → both normal
         tag.temperature_c = Some(5.0);
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Critical);
 
         // no thresholds → cleared to Normal
-        let empty = EyeTagConfig {
+        let empty = BeaconTagConfig {
             field_thresholds: vec![],
             ..cfg.clone()
         };
@@ -496,7 +496,7 @@ mod tests {
         // from before must not alarm. The tag's own hardware low-battery assertion is
         // a different thing and must survive: it is the real signal, the analogue of
         // the sticker's native fPort-3 battery alarm.
-        let cfg = EyeTagConfig {
+        let cfg = BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,
             enabled: true,
@@ -511,7 +511,7 @@ mod tests {
             }],
             provisioned: None,
         };
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
 
         // Well under both stored bounds — would have been Critical before.
         tag.battery_mv = Some(2300);
@@ -524,11 +524,11 @@ mod tests {
         assert_eq!(tag.alarm_state, LoRaWANAlarmState::Normal);
 
         // The hardware flag still alarms, with or without a stored threshold.
-        let no_thr = EyeTagConfig {
+        let no_thr = BeaconTagConfig {
             field_thresholds: vec![],
             ..cfg.clone()
         };
-        let mut t2 = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut t2 = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         t2.battery_mv = Some(3000);
         t2.low_battery = true;
         t2.evaluate_alarms(&no_thr);
@@ -545,7 +545,7 @@ mod tests {
         // `movement` is movement_count — monotonically increasing — so a [lo, hi]
         // band alarms once and then stays alarmed for the life of the tag. Phase 1
         // withdrew it; a leftover threshold row must be inert.
-        let cfg = EyeTagConfig {
+        let cfg = BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,
             enabled: true,
@@ -560,7 +560,7 @@ mod tests {
             }],
             provisioned: None,
         };
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         for count in [5u16, 20, 80] {
             tag.movement_count = Some(count);
             tag.evaluate_alarms(&cfg);
@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn escalate_leaves_a_fresh_tag_alone() {
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         tag.last_seen_ts = Some(NOW - 10);
         tag.alarm_state = LoRaWANAlarmState::Warning;
         let out = escalate_if_stale(&tag, NOW, TIMEOUT);
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn escalate_marks_a_tag_past_the_timeout_as_disconnected() {
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         tag.last_seen_ts = Some(NOW - TIMEOUT - 1);
         tag.alarm_state = LoRaWANAlarmState::Critical;
         let out = escalate_if_stale(&tag, NOW, TIMEOUT);
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn escalate_marks_a_never_seen_tag_as_disconnected() {
-        let tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         assert_eq!(tag.last_seen_ts, None);
         let out = escalate_if_stale(&tag, NOW, TIMEOUT);
         assert_eq!(out.alarm_state, LoRaWANAlarmState::Disconnected);
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn escalate_does_not_mutate_the_source_tag() {
-        let mut tag = EyeTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
+        let mut tag = BeaconTagState::new("AA:BB:CC:DD:EE:FF".into(), None);
         tag.alarm_state = LoRaWANAlarmState::Normal;
         let _ = escalate_if_stale(&tag, NOW, TIMEOUT);
         assert_eq!(

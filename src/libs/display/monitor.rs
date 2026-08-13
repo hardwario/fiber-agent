@@ -36,18 +36,18 @@ use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
 const CONFIG_RECONCILE_MS: u64 = 2000;
 
 /// Fallback for `eye.tag_timeout_s` when the config has no `eye:` section at
-/// all. Matches `EyeConfig::default()` so a device that later gains the section
+/// all. Matches `BeaconConfig::default()` so a device that later gains the section
 /// does not change how its `ble` rows behave.
-const DEFAULT_EYE_TAG_TIMEOUT_S: i64 = 600;
+const DEFAULT_BEACON_TAG_TIMEOUT_S: i64 = 600;
 
 /// Snapshot of the config values the display loop cares about.
 struct DisplayConfigSnapshot {
     device_label: String,
     custom_lines: Vec<crate::libs::config::DisplayLine>,
-    /// How long an EYE tag may go unheard before a `ble` row reads as lost.
-    /// Read from the same `eye.tag_timeout_s` the EYE monitor publishes against,
+    /// How long a Beacon tag may go unheard before a `ble` row reads as lost.
+    /// Read from the same `eye.tag_timeout_s` the Beacon monitor publishes against,
     /// so the panel and MQTT agree.
-    eye_tag_timeout_s: i64,
+    beacon_tag_timeout_s: i64,
 }
 
 /// Re-read the display-relevant config from disk, or `None` if it can't be read.
@@ -65,11 +65,11 @@ fn load_config_snapshot(hostname: &str) -> Option<DisplayConfigSnapshot> {
             .device_label
             .unwrap_or_else(|| hostname.to_string()),
         custom_lines: cfg.display.custom_lines,
-        eye_tag_timeout_s: cfg
-            .eye
+        beacon_tag_timeout_s: cfg
+            .beacon
             .as_ref()
             .map(|e| e.tag_timeout_s)
-            .unwrap_or(DEFAULT_EYE_TAG_TIMEOUT_S),
+            .unwrap_or(DEFAULT_BEACON_TAG_TIMEOUT_S),
     })
 }
 
@@ -157,7 +157,7 @@ pub fn display_loop(
             DisplayConfigSnapshot {
                 device_label: hostname.clone(),
                 custom_lines: read_recover(&display_lines).clone(),
-                eye_tag_timeout_s: DEFAULT_EYE_TAG_TIMEOUT_S,
+                beacon_tag_timeout_s: DEFAULT_BEACON_TAG_TIMEOUT_S,
             }
         }
     };
@@ -398,8 +398,8 @@ pub fn display_loop(
                         // thirteen handles deep — see blank.rs). Empty when the
                         // EYE monitor isn't running, which renders configured
                         // `ble` rows as placeholders rather than dropping them.
-                        let eye_tags = crate::libs::eye::state::display_snapshot(
-                            config_snapshot.eye_tag_timeout_s,
+                        let eye_tags = crate::libs::beacon::state::display_snapshot(
+                            config_snapshot.beacon_tag_timeout_s,
                         );
                         let rows = crate::libs::display::overview::build_custom_lines(
                             &custom_lines,

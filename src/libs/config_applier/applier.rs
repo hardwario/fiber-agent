@@ -1769,7 +1769,7 @@ impl ConfigApplier {
     /// Register/update an EYE BLE tag in the main config (`eye.tags[]`).
     /// `mac` is stored uppercase; `name` is optional. Auto-provisioning still
     /// discovers unknown tags — this pins an explicit, named entry.
-    pub fn apply_eye_tag_config(&self, mac: String, name: Option<String>) -> ApplyResult {
+    pub fn apply_beacon_tag_config(&self, mac: String, name: Option<String>) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1828,7 +1828,7 @@ impl ConfigApplier {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
 
-        let created = match self.update_eye_tag_config(&mut config, &mac, name.as_deref()) {
+        let created = match self.update_beacon_tag_config(&mut config, &mac, name.as_deref()) {
             Ok(created) => created,
             Err(e) => {
                 return ApplyResult {
@@ -1890,7 +1890,7 @@ impl ConfigApplier {
     /// Persist an EYE tag's recording on/off + interval into `eye.tags[mac]`.
     /// `interval_min == 0` disables recording so it survives a restart and the
     /// gap/fallback sync stops re-enabling it (H1). The tag must already exist.
-    pub fn apply_eye_recording(&self, mac: String, interval_min: u16) -> ApplyResult {
+    pub fn apply_beacon_recording(&self, mac: String, interval_min: u16) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1939,7 +1939,7 @@ impl ConfigApplier {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
 
-        if let Err(e) = self.update_eye_recording_config(&mut config, &mac, interval_min) {
+        if let Err(e) = self.update_beacon_recording_config(&mut config, &mac, interval_min) {
             return ApplyResult {
                 success: false,
                 file_path: config_file.to_string_lossy().to_string(),
@@ -2003,11 +2003,11 @@ impl ConfigApplier {
     /// The subsystem had no command at all: `set_eye_recording`, `add_eye_tag`
     /// and friends all operate on tags, so once `eye.enabled` was false the only
     /// way back was SSH. Creates the `eye:` section if it is missing — serde
-    /// fills the rest from `EyeConfig`.
+    /// fills the rest from `BeaconConfig`.
     ///
     /// Takes effect on the next start of the `fiber` service: the EYE monitor
     /// thread is spawned once at boot, so flipping the flag cannot start it.
-    pub fn apply_eye_enabled(&self, enabled: bool) -> ApplyResult {
+    pub fn apply_beacon_enabled(&self, enabled: bool) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2055,7 +2055,7 @@ impl ConfigApplier {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
 
-        if let Err(e) = Self::update_eye_enabled_config(&mut config, enabled) {
+        if let Err(e) = Self::update_beacon_enabled_config(&mut config, enabled) {
             return ApplyResult {
                 success: false,
                 file_path: config_file.to_string_lossy().to_string(),
@@ -2107,7 +2107,7 @@ impl ConfigApplier {
     }
 
     /// Set `eye.enabled`, creating the section when absent.
-    fn update_eye_enabled_config(config: &mut Value, enabled: bool) -> Result<(), String> {
+    fn update_beacon_enabled_config(config: &mut Value, enabled: bool) -> Result<(), String> {
         let config_map = config
             .as_mapping_mut()
             .ok_or_else(|| "Config root is not a mapping".to_string())?;
@@ -2131,7 +2131,7 @@ impl ConfigApplier {
     }
 
     /// Remove an EYE BLE tag from the main config (`eye.tags[]`) by MAC.
-    pub fn remove_eye_tag_config(&self, mac: String) -> ApplyResult {
+    pub fn remove_beacon_tag_config(&self, mac: String) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2905,7 +2905,7 @@ impl ConfigApplier {
     /// expected already uppercased by the caller.
     /// Set `recording` (+ `logging_interval_min` when on) on an existing
     /// `eye.tags[mac]` entry. Errors if the tag is not present.
-    fn update_eye_recording_config(
+    fn update_beacon_recording_config(
         &self,
         config: &mut Value,
         mac: &str,
@@ -2947,7 +2947,7 @@ impl ConfigApplier {
         Ok(())
     }
 
-    fn update_eye_tag_config(
+    fn update_beacon_tag_config(
         &self,
         config: &mut Value,
         mac: &str,
@@ -3394,7 +3394,7 @@ impl ConfigApplier {
     }
 
     /// Upsert a per-field alarm threshold on an EYE tag (`eye.tags[mac].field_thresholds[]`).
-    pub fn apply_eye_field_threshold(
+    pub fn apply_beacon_field_threshold(
         &self,
         mac: String,
         field: String,
@@ -3446,7 +3446,7 @@ impl ConfigApplier {
         let backup_str = backup_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
-        if let Err(e) = self.upsert_eye_field_threshold(
+        if let Err(e) = self.upsert_beacon_field_threshold(
             &mut cfg,
             &mac,
             &field,
@@ -3500,7 +3500,7 @@ impl ConfigApplier {
     }
 
     /// Remove a per-field EYE alarm threshold. Returns success even on no-op.
-    pub fn delete_eye_field_threshold(&self, mac: String, field: String) -> ApplyResult {
+    pub fn delete_beacon_field_threshold(&self, mac: String, field: String) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3536,7 +3536,7 @@ impl ConfigApplier {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string());
         let removed = self
-            .remove_eye_field_threshold(&mut cfg, &mac, &field)
+            .remove_beacon_field_threshold(&mut cfg, &mac, &field)
             .unwrap_or(false);
         let new_content = match serde_yaml::to_string(&cfg) {
             Ok(c) => c,
@@ -3578,7 +3578,7 @@ impl ConfigApplier {
         }
     }
 
-    fn upsert_eye_field_threshold(
+    fn upsert_beacon_field_threshold(
         &self,
         config: &mut Value,
         mac: &str,
@@ -3666,7 +3666,7 @@ impl ConfigApplier {
         Ok(())
     }
 
-    fn remove_eye_field_threshold(
+    fn remove_beacon_field_threshold(
         &self,
         config: &mut Value,
         mac: &str,
@@ -3845,7 +3845,7 @@ mod tests {
     // ---- EYE tag config apply/remove tests --------------------------------------
 
     #[test]
-    fn apply_eye_tag_config_creates_section_and_entry() {
+    fn apply_beacon_tag_config_creates_section_and_entry() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         // No `eye:` section yet — the helper must create it.
         std::fs::write(
@@ -3856,7 +3856,7 @@ mod tests {
 
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
         let result = applier
-            .apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("Freezer".to_string()));
+            .apply_beacon_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("Freezer".to_string()));
         assert!(result.success, "{:?}", result.error_message);
 
         let contents =
@@ -3871,7 +3871,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_eye_tag_config_updates_existing_name() {
+    fn apply_beacon_tag_config_updates_existing_name() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3881,8 +3881,8 @@ mod tests {
 
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
         // Same MAC in lowercase must match the existing (uppercase) entry.
-        let result =
-            applier.apply_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("New".to_string()));
+        let result = applier
+            .apply_beacon_tag_config("aa:bb:cc:dd:ee:ff".to_string(), Some("New".to_string()));
         assert!(result.success, "{:?}", result.error_message);
 
         let contents =
@@ -3894,7 +3894,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_eye_tag_config_removes_entry() {
+    fn remove_beacon_tag_config_removes_entry() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3903,7 +3903,7 @@ mod tests {
         .unwrap();
 
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
-        let result = applier.remove_eye_tag_config("aa:bb:cc:dd:ee:ff".to_string());
+        let result = applier.remove_beacon_tag_config("aa:bb:cc:dd:ee:ff".to_string());
         assert!(result.success, "{:?}", result.error_message);
 
         let contents =
@@ -3913,7 +3913,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_eye_tag_config_missing_is_error() {
+    fn remove_beacon_tag_config_missing_is_error() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3922,13 +3922,13 @@ mod tests {
         .unwrap();
 
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
-        let result = applier.remove_eye_tag_config("AA:BB:CC:DD:EE:FF".to_string());
+        let result = applier.remove_beacon_tag_config("AA:BB:CC:DD:EE:FF".to_string());
         assert!(!result.success);
         assert!(result.error_message.unwrap().contains("not found"));
     }
 
     #[test]
-    fn apply_eye_enabled_flips_an_existing_section() {
+    fn apply_beacon_enabled_flips_an_existing_section() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3937,7 +3937,7 @@ mod tests {
         .unwrap();
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
 
-        assert!(applier.apply_eye_enabled(true).success);
+        assert!(applier.apply_beacon_enabled(true).success);
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3951,7 +3951,7 @@ mod tests {
         );
 
         // ...and back off again, which is the point of having the command.
-        assert!(applier.apply_eye_enabled(false).success);
+        assert!(applier.apply_beacon_enabled(false).success);
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3960,7 +3960,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_eye_enabled_creates_a_missing_section() {
+    fn apply_beacon_enabled_creates_a_missing_section() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3969,7 +3969,7 @@ mod tests {
         .unwrap();
         let applier = ConfigApplier::new(tmp_config_dir.path()).unwrap();
 
-        assert!(applier.apply_eye_enabled(true).success);
+        assert!(applier.apply_beacon_enabled(true).success);
         let parsed: Value = serde_yaml::from_str(
             &std::fs::read_to_string(tmp_config_dir.path().join("fiber.config.yaml")).unwrap(),
         )
@@ -3979,7 +3979,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_eye_recording_persists_off_and_interval() {
+    fn apply_beacon_recording_persists_off_and_interval() {
         let tmp_config_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp_config_dir.path().join("fiber.config.yaml"),
@@ -3991,7 +3991,7 @@ mod tests {
         // interval 5 -> recording on + interval persisted
         assert!(
             applier
-                .apply_eye_recording("aa:bb:cc:dd:ee:ff".to_string(), 5)
+                .apply_beacon_recording("aa:bb:cc:dd:ee:ff".to_string(), 5)
                 .success
         );
         let parsed: Value = serde_yaml::from_str(
@@ -4005,7 +4005,7 @@ mod tests {
         // interval 0 -> recording off persisted (H1: must survive restart)
         assert!(
             applier
-                .apply_eye_recording("AA:BB:CC:DD:EE:FF".to_string(), 0)
+                .apply_beacon_recording("AA:BB:CC:DD:EE:FF".to_string(), 0)
                 .success
         );
         let parsed: Value = serde_yaml::from_str(
@@ -4015,13 +4015,13 @@ mod tests {
         assert_eq!(parsed["eye"]["tags"][0]["recording"].as_bool(), Some(false));
 
         // unknown MAC -> error
-        let r = applier.apply_eye_recording("11:22:33:44:55:66".to_string(), 1);
+        let r = applier.apply_beacon_recording("11:22:33:44:55:66".to_string(), 1);
         assert!(!r.success);
         assert!(r.error_message.unwrap().contains("not found"));
     }
 
     #[test]
-    fn apply_and_delete_eye_field_threshold() {
+    fn apply_and_delete_beacon_field_threshold() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("fiber.config.yaml"),
@@ -4033,7 +4033,7 @@ mod tests {
         // upsert (lowercase MAC must match the uppercase entry)
         assert!(
             applier
-                .apply_eye_field_threshold(
+                .apply_beacon_field_threshold(
                     "aa:bb:cc:dd:ee:ff".into(),
                     "temperature".into(),
                     Some(-20.0),
@@ -4054,7 +4054,7 @@ mod tests {
         // delete
         assert!(
             applier
-                .delete_eye_field_threshold("AA:BB:CC:DD:EE:FF".into(), "temperature".into())
+                .delete_beacon_field_threshold("AA:BB:CC:DD:EE:FF".into(), "temperature".into())
                 .success
         );
         let parsed: Value = serde_yaml::from_str(

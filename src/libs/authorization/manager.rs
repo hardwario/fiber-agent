@@ -1231,7 +1231,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(AuthError::InvalidCommand(format!(
                         "Invalid MAC address: {mac}"
                     )));
@@ -1255,7 +1255,7 @@ impl AuthorizationManager {
                     .params
                     .get("critical_high")
                     .and_then(|v| v.as_f64());
-                Ok(MqttCommand::SetEyeFieldThreshold {
+                Ok(MqttCommand::SetBeaconFieldThreshold {
                     mac,
                     field,
                     critical_low,
@@ -1271,7 +1271,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(AuthError::InvalidCommand(format!(
                         "Invalid MAC address: {mac}"
                     )));
@@ -1282,7 +1282,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing field".to_string()))?
                     .to_string();
-                Ok(MqttCommand::DeleteEyeFieldThreshold { mac, field })
+                Ok(MqttCommand::DeleteBeaconFieldThreshold { mac, field })
             }
             "sticker_reboot" => MqttCommand::parse_sticker_reboot(&challenge.params)
                 .map_err(AuthError::InvalidCommand),
@@ -1523,7 +1523,7 @@ impl AuthorizationManager {
                     .get("enabled")
                     .and_then(|v| v.as_bool())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing enabled".to_string()))?;
-                Ok(MqttCommand::SetEyeEnabled { enabled })
+                Ok(MqttCommand::SetBeaconEnabled { enabled })
             }
             "set_eye_recording" => {
                 let mac = challenge
@@ -1542,7 +1542,7 @@ impl AuthorizationManager {
                         "interval_min must be 0 (off), 1, 5 or 15".to_string(),
                     ));
                 }
-                Ok(MqttCommand::SetEyeRecording {
+                Ok(MqttCommand::SetBeaconRecording {
                     mac,
                     interval_min: interval_min as u16,
                 })
@@ -1554,7 +1554,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                Ok(MqttCommand::DownloadEyeHistory { mac })
+                Ok(MqttCommand::DownloadBeaconHistory { mac })
             }
             "add_eye_tag" => {
                 let mac = challenge
@@ -1563,7 +1563,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(AuthError::InvalidCommand(format!(
                         "Invalid MAC address: {mac}"
                     )));
@@ -1574,7 +1574,7 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
-                Ok(MqttCommand::AddEyeTag { mac, name })
+                Ok(MqttCommand::AddBeaconTag { mac, name })
             }
             "set_eye_known_tags" => {
                 let arr = challenge
@@ -1597,14 +1597,14 @@ impl AuthorizationManager {
                             AuthError::InvalidCommand("'macs' entries must be strings".to_string())
                         })?
                         .to_uppercase();
-                    if !crate::libs::eye::state::is_valid_mac(&mac) {
+                    if !crate::libs::beacon::state::is_valid_mac(&mac) {
                         return Err(AuthError::InvalidCommand(format!(
                             "Invalid MAC address: {mac}"
                         )));
                     }
                     macs.push(mac);
                 }
-                Ok(MqttCommand::SetEyeKnownTags { macs })
+                Ok(MqttCommand::SetBeaconKnownTags { macs })
             }
             "remove_eye_tag" => {
                 let mac = challenge
@@ -1613,12 +1613,12 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(AuthError::InvalidCommand(format!(
                         "Invalid MAC address: {mac}"
                     )));
                 }
-                Ok(MqttCommand::RemoveEyeTag { mac })
+                Ok(MqttCommand::RemoveBeaconTag { mac })
             }
             "detect_eye_tag" => {
                 let mac = challenge
@@ -1627,12 +1627,12 @@ impl AuthorizationManager {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| AuthError::InvalidCommand("Missing mac".to_string()))?
                     .to_uppercase();
-                if !crate::libs::eye::state::is_valid_mac(&mac) {
+                if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(AuthError::InvalidCommand(format!(
                         "Invalid MAC address: {mac}"
                     )));
                 }
-                Ok(MqttCommand::DetectEyeTag { mac })
+                Ok(MqttCommand::DetectBeaconTag { mac })
             }
             _ => Err(AuthError::InvalidCommand(format!(
                 "Unsupported command type: {}",
@@ -1881,7 +1881,7 @@ mod tests {
     }
 
     #[test]
-    fn eye_tag_commands_map_to_lorawan_sensor_config_permission() {
+    fn beacon_tag_commands_map_to_lorawan_sensor_config_permission() {
         let manager = create_test_manager();
         for cmd in ["add_eye_tag", "remove_eye_tag", "detect_eye_tag"] {
             assert_eq!(
@@ -1893,43 +1893,43 @@ mod tests {
     }
 
     #[test]
-    fn build_add_eye_tag_uppercases_mac_and_keeps_name() {
+    fn build_add_beacon_tag_uppercases_mac_and_keeps_name() {
         let manager = create_test_manager();
         let challenge = test_challenge(
             "add_eye_tag",
             serde_json::json!({"mac": "aa:bb:cc:dd:ee:ff", "name": "Freezer"}),
         );
         match manager.build_command_from_challenge(&challenge).unwrap() {
-            MqttCommand::AddEyeTag { mac, name } => {
+            MqttCommand::AddBeaconTag { mac, name } => {
                 assert_eq!(mac, "AA:BB:CC:DD:EE:FF");
                 assert_eq!(name.as_deref(), Some("Freezer"));
             }
-            other => panic!("expected AddEyeTag, got {other:?}"),
+            other => panic!("expected AddBeaconTag, got {other:?}"),
         }
     }
 
     #[test]
-    fn build_add_eye_tag_rejects_malformed_mac() {
+    fn build_add_beacon_tag_rejects_malformed_mac() {
         let manager = create_test_manager();
         let challenge = test_challenge("add_eye_tag", serde_json::json!({"mac": "not-a-mac"}));
         assert!(manager.build_command_from_challenge(&challenge).is_err());
     }
 
     #[test]
-    fn build_detect_eye_tag_ok() {
+    fn build_detect_beacon_tag_ok() {
         let manager = create_test_manager();
         let challenge = test_challenge(
             "detect_eye_tag",
             serde_json::json!({"mac": "AA:BB:CC:DD:EE:FF"}),
         );
         match manager.build_command_from_challenge(&challenge).unwrap() {
-            MqttCommand::DetectEyeTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
-            other => panic!("expected DetectEyeTag, got {other:?}"),
+            MqttCommand::DetectBeaconTag { mac } => assert_eq!(mac, "AA:BB:CC:DD:EE:FF"),
+            other => panic!("expected DetectBeaconTag, got {other:?}"),
         }
     }
 
     #[test]
-    fn build_set_eye_field_threshold_uppercases_mac_and_maps_permission() {
+    fn build_set_beacon_field_threshold_uppercases_mac_and_maps_permission() {
         let manager = create_test_manager();
         let challenge = test_challenge(
             "set_eye_field_threshold",
@@ -1939,7 +1939,7 @@ mod tests {
             }),
         );
         match manager.build_command_from_challenge(&challenge).unwrap() {
-            MqttCommand::SetEyeFieldThreshold {
+            MqttCommand::SetBeaconFieldThreshold {
                 mac,
                 field,
                 warning_high,
@@ -1951,7 +1951,7 @@ mod tests {
                 assert_eq!(warning_high, Some(8.0));
                 assert_eq!(critical_high, Some(12.0));
             }
-            other => panic!("expected SetEyeFieldThreshold, got {other:?}"),
+            other => panic!("expected SetBeaconFieldThreshold, got {other:?}"),
         }
         assert_eq!(
             manager
@@ -2262,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn set_eye_known_tags_is_reachable_in_a_production_build() {
+    fn set_beacon_known_tags_is_reachable_in_a_production_build() {
         // The whole point of routing this through the signed path: the only other
         // way to construct the command lives in `build_dev_command`, which is
         // `#[cfg(feature = "dev-platform")]`. Without an arm here, system#6 could
@@ -2274,29 +2274,29 @@ mod tests {
             serde_json::json!({ "macs": ["7c:d9:f4:13:10:de", "7C:D9:F4:13:10:DF"] }),
         );
         match manager.build_command_from_challenge(&challenge) {
-            Ok(MqttCommand::SetEyeKnownTags { macs }) => {
+            Ok(MqttCommand::SetBeaconKnownTags { macs }) => {
                 // Normalised to uppercase, because the scan compares against
                 // uppercased MACs.
                 assert_eq!(macs, vec!["7C:D9:F4:13:10:DE", "7C:D9:F4:13:10:DF"]);
             }
-            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+            other => panic!("expected SetBeaconKnownTags, got {:?}", other),
         }
     }
 
     #[test]
-    fn set_eye_known_tags_accepts_an_empty_list() {
+    fn set_beacon_known_tags_accepts_an_empty_list() {
         // Empty is the only way to stop listening for borrowed tags, so rejecting
         // it would make the allowlist one-way.
         let manager = create_test_manager();
         let challenge = test_challenge("set_eye_known_tags", serde_json::json!({ "macs": [] }));
         match manager.build_command_from_challenge(&challenge) {
-            Ok(MqttCommand::SetEyeKnownTags { macs }) => assert!(macs.is_empty()),
-            other => panic!("expected SetEyeKnownTags, got {:?}", other),
+            Ok(MqttCommand::SetBeaconKnownTags { macs }) => assert!(macs.is_empty()),
+            other => panic!("expected SetBeaconKnownTags, got {:?}", other),
         }
     }
 
     #[test]
-    fn set_eye_known_tags_rejects_a_malformed_mac_and_a_missing_list() {
+    fn set_beacon_known_tags_rejects_a_malformed_mac_and_a_missing_list() {
         let manager = create_test_manager();
         let bad_mac = test_challenge(
             "set_eye_known_tags",
@@ -2312,7 +2312,7 @@ mod tests {
     }
 
     #[test]
-    fn set_eye_known_tags_takes_the_sticker_management_permission() {
+    fn set_beacon_known_tags_takes_the_sticker_management_permission() {
         let manager = create_test_manager();
         assert_eq!(
             manager

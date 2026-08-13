@@ -77,7 +77,7 @@ pub const ACTIVE_SENSORS: u8 =
 
 /// The configuration profile written to a tag during provisioning.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EyeProfile {
+pub struct BeaconProfile {
     /// Protocol type (`0x02` = EYE Sensor / "Sensors").
     pub protocol_type: u8,
     /// Advertising interval in milliseconds (1000..=10000).
@@ -86,7 +86,7 @@ pub struct EyeProfile {
     pub tx_power_dbm: i8,
 }
 
-impl Default for EyeProfile {
+impl Default for BeaconProfile {
     /// PROXIMOS default: EYE Sensor, 10 s, +8 dBm (sensors fixed to Temp+Hum,
     /// see [`ACTIVE_SENSORS`]). +8 dBm is the tag's maximum TX power — chosen for
     /// best BLE range to the FIBER gateway (tags ship at the +2 dBm factory default).
@@ -136,7 +136,7 @@ impl std::error::Error for ProvisionError {}
 /// Connect to `device`, unlock with the default PIN, apply `profile`, and
 /// persist to flash. Leaves the device connected on success — the caller
 /// decides when to disconnect.
-pub async fn provision(device: &Device, profile: &EyeProfile) -> Result<(), ProvisionError> {
+pub async fn provision(device: &Device, profile: &BeaconProfile) -> Result<(), ProvisionError> {
     if !device
         .is_connected()
         .await
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn default_profile_is_proximos() {
-        let p = EyeProfile::default();
+        let p = BeaconProfile::default();
         assert_eq!(p.protocol_type, PROTOCOL_EYE_SENSOR);
         assert_eq!(p.advertising_interval_ms, 10_000);
         assert_eq!(p.tx_power_dbm, 8); // max TX power for best range
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn negative_tx_power_byte() {
-        let p = EyeProfile {
+        let p = BeaconProfile {
             tx_power_dbm: -8,
             ..Default::default()
         };

@@ -212,7 +212,7 @@ const DS18B20_FIELDS: &[&str] = &["temperature", "status"];
 ///
 /// Deliberately the same canonical names the rest of the EYE stack already uses
 /// (`temperature`, `humidity`, `battery`, `movement` are the tag's threshold
-/// field names) rather than the `EyeTagState` struct-field names
+/// field names) rather than the `BeaconTagState` struct-field names
 /// (`temperature_c`, `humidity_pct`, `battery_mv`, `movement_count`). That way
 /// `unit_for_field` / `default_decimals` already do the right thing for
 /// `temperature`, `humidity`, `rssi` and `status` without a second table.
@@ -626,12 +626,17 @@ mod display_line_tests {
 
     #[test]
     fn rejects_unknown_ble_field() {
-        // Real EyeTagState members, but not ones a row can render: the first is
+        // Real BeaconTagState members, but not ones a row can render: the first is
         // a boolean, the second is the struct-field name rather than the
         // canonical one the catalog offers.
         for bad in ["magnet_detected", "temperature_c", "snr"] {
             let err = validate_display_line(&ble(MAC, bad)).unwrap_err();
-            assert!(err.contains("unknown ble field"), "for {:?} got: {}", bad, err);
+            assert!(
+                err.contains("unknown ble field"),
+                "for {:?} got: {}",
+                bad,
+                err
+            );
         }
     }
 
