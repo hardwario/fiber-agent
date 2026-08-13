@@ -12,6 +12,7 @@ pub mod control;
 pub mod crypto;
 pub mod display;
 pub mod eye;
+pub mod factory_reset;
 pub mod leds;
 pub mod logging;
 pub mod lorawan;

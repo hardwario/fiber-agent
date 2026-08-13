@@ -396,6 +396,15 @@ pub enum ActivationMode {
     },
 }
 
+/// What the device does immediately after a factory reset finishes wiping
+/// its data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostResetAction {
+    Reboot,
+    PowerOff,
+}
+
 /// Commands received from MQTT broker
 #[derive(Debug, Clone)]
 pub enum MqttCommand {
@@ -466,6 +475,28 @@ pub enum MqttCommand {
     PowerOffDevice {
         reason: String,
         requested_by: String,
+    },
+
+    /// Wipe the device back to factory state, then reboot or power off per
+    /// `post_action`.
+    ///
+    /// `reason` and `requested_by` are carried inline in the variant rather
+    /// than looked up from the authorization audit log later, because that
+    /// audit log is exactly what the wipe this command triggers is about to
+    /// destroy. If the wipe fails partway, this is the only surviving record
+    /// of who requested it and why, for on-device forensics.
+    ///
+    /// `request_id` is the original signed request's id (the same one
+    /// `PendingChallenge::request_id` carries), threaded through so the
+    /// phase-1 ledger can record it — a result reported after re-pairing (the
+    /// wipe destroys the old pairing) needs a value the server side already
+    /// knows about to correlate against, which a device-minted id could never
+    /// provide.
+    FactoryReset {
+        post_action: PostResetAction,
+        reason: String,
+        requested_by: String,
+        request_id: String,
     },
 
     /// Set sensor intervals (sample, aggregation, report)
@@ -861,6 +892,7 @@ impl MqttCommand {
             MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
             MqttCommand::RestartApplication { .. } => "restart_application",
             MqttCommand::PowerOffDevice { .. } => "power_off",
+            MqttCommand::FactoryReset { .. } => "factory_reset",
             MqttCommand::SetInterval { .. } => "set_interval",
             MqttCommand::GetInterval => "get_interval",
             MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
@@ -929,6 +961,48 @@ impl MqttCommand {
             ));
         }
         Ok(dev_eui.to_lowercase())
+    }
+
+    /// Parse `factory_reset` params `{post_action}` plus the signed command's
+    /// `reason`/`requested_by`/`request_id`, into [`MqttCommand::FactoryReset`].
+    ///
+    /// `post_action` has no default: an unrecognized or missing value must
+    /// never silently become a reboot given what this command does to the
+    /// device. `reason` is required (not defaulted like `parse_restart`'s)
+    /// because it's the only copy of it that survives the wipe this command
+    /// triggers. `requested_by` and `request_id` are the already-validated
+    /// signer id and the original request's id, passed through as-is.
+    pub fn parse_factory_reset(
+        params: &Value,
+        reason: Option<&str>,
+        requested_by: &str,
+        request_id: &str,
+    ) -> Result<MqttCommand, String> {
+        let post_action = match params.get("post_action").and_then(|v| v.as_str()) {
+            Some("reboot") => PostResetAction::Reboot,
+            Some("power_off") => PostResetAction::PowerOff,
+            Some(other) => {
+                return Err(format!(
+                    "Invalid post_action: {other} (must be one of: reboot, power_off)"
+                ))
+            }
+            None => return Err("Missing 'post_action' field".to_string()),
+        };
+
+        let reason = reason.ok_or_else(|| "Missing 'reason' field".to_string())?;
+        if reason.trim().is_empty() {
+            return Err("'reason' must not be empty".to_string());
+        }
+        if reason.len() > 256 {
+            return Err("Reason too long (max 256 characters)".to_string());
+        }
+
+        Ok(MqttCommand::FactoryReset {
+            post_action,
+            reason: reason.to_string(),
+            requested_by: requested_by.to_string(),
+            request_id: request_id.to_string(),
+        })
     }
 
     /// Parse `sticker_reboot` (#71).
@@ -1219,6 +1293,170 @@ mod tests {
             }
             .name(),
             "get_sticker_history"
+        );
+    }
+
+    #[test]
+    fn factory_reset_command_has_name() {
+        let cmd = MqttCommand::FactoryReset {
+            post_action: PostResetAction::Reboot,
+            reason: "test".into(),
+            requested_by: "admin".into(),
+            request_id: "req-1".into(),
+        };
+        assert_eq!(cmd.name(), "factory_reset");
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_reboot() {
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some("customer requested wipe"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset {
+                post_action,
+                reason,
+                requested_by,
+                request_id,
+            } => {
+                assert_eq!(post_action, PostResetAction::Reboot);
+                assert_eq!(reason, "customer requested wipe");
+                assert_eq!(requested_by, "signer-1");
+                assert_eq!(request_id, "req-1");
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_power_off() {
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "power_off" }),
+            Some("decommissioning"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset { post_action, .. } => {
+                assert_eq!(post_action, PostResetAction::PowerOff);
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_missing_post_action() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({}),
+            Some("reason"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("post_action"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_unknown_post_action() {
+        // No default: an unrecognized post-action must never silently
+        // become a reboot.
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reformat" }),
+            Some("reason"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reformat"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_missing_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            None,
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_blank_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(""),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_whitespace_only_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some("   \t  "),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_oversized_reason() {
+        let reason = "a".repeat(257);
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(reason.as_str()),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("too long"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_reason_at_the_256_char_boundary() {
+        let reason = "a".repeat(256);
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(reason.as_str()),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset { reason: r, .. } => assert_eq!(r.len(), 256),
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn post_reset_action_wire_format_is_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&PostResetAction::Reboot).unwrap(),
+            "\"reboot\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PostResetAction::PowerOff).unwrap(),
+            "\"power_off\""
+        );
+        assert_eq!(
+            serde_json::from_str::<PostResetAction>("\"reboot\"").unwrap(),
+            PostResetAction::Reboot
+        );
+        assert_eq!(
+            serde_json::from_str::<PostResetAction>("\"power_off\"").unwrap(),
+            PostResetAction::PowerOff
         );
     }
 

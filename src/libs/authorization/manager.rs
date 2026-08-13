@@ -466,6 +466,14 @@ impl AuthorizationManager {
             "flush_storage" => "flush_storage",
             "restart_application" => "restart_application",
             "power_off" => "power_off_device",
+            // Deliberately its own permission, not a reuse of
+            // restart_application/power_off_device: a certificate that authorizes
+            // a reboot or power-off must not thereby authorize wiping the
+            // device's data. This exact string must match the Python side's
+            // Permission.FACTORY_RESET.value, or a correctly signed factory_reset
+            // is rejected here with PermissionDenied while the viewer believes
+            // it succeeded.
+            "factory_reset" => "factory_reset",
             "set_interval" => "set_interval",
             "set_system_info_interval" => "set_system_info_interval",
             "get_info" => "get_info",
@@ -566,6 +574,26 @@ impl AuthorizationManager {
             }
             "restart_application" => "Reboot the device".to_string(),
             "power_off" => "Power the device down. It will stop monitoring, go dark and stay silent, and it will start monitoring again on its own once PoE power is reconnected".to_string(),
+            "factory_reset" => {
+                // This is the preview text a signer confirms against before the
+                // wipe is irreversible, so it must name the real post-action
+                // rather than assume one. No default here mirrors
+                // parse_factory_reset's own refusal to default post_action.
+                let action_text = match params.get("post_action").and_then(|v| v.as_str()) {
+                    Some("power_off") => "power off",
+                    Some("reboot") => "reboot",
+                    Some(other) => other,
+                    None => "reboot or power off",
+                };
+                format!(
+                    "FACTORY RESET: erase all device data — measurement database, \
+                     configuration, viewer pairing, TLS and broker credentials, \
+                     LoRaWAN/EYE registrations, BLE PIN — then {}. QBEE fleet \
+                     enrolment is preserved. The device will be unpaired and cannot \
+                     be recovered from the Viewer.",
+                    action_text
+                )
+            }
             "set_interval" => {
                 let sample = params.get("sample_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 let aggregation = params.get("aggregation_interval_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -859,6 +887,18 @@ impl AuthorizationManager {
                     requested_by: challenge.signer_id.clone(),
                 })
             }
+            // No reason default here, unlike restart_application/power_off above:
+            // parse_factory_reset requires an explicit, non-blank reason and
+            // rejects a missing one, because that reason (carried in the command,
+            // not looked up from the audit log later) is the only surviving
+            // record of who authorized the wipe and why once it runs.
+            "factory_reset" => MqttCommand::parse_factory_reset(
+                &challenge.params,
+                challenge.reason.as_deref(),
+                &challenge.signer_id,
+                &challenge.request_id,
+            )
+            .map_err(AuthError::InvalidCommand),
             "set_interval" => {
                 let sample_interval_ms = challenge
                     .params
@@ -1764,6 +1804,7 @@ mod tests {
             "set_sensor_location",
             "restart_application",
             "power_off",
+            "factory_reset",
             "set_interval",
             "set_system_info_interval",
             "add_signer",
@@ -2025,6 +2066,89 @@ mod tests {
         match manager.build_command_from_challenge(&bare).unwrap() {
             MqttCommand::RestartApplication { reason, .. } => assert!(!reason.is_empty()),
             other => panic!("expected RestartApplication, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn factory_reset_has_its_own_permission() {
+        let manager = create_test_manager();
+        assert_eq!(
+            manager.command_type_to_permission("factory_reset").unwrap(),
+            "factory_reset"
+        );
+
+        // A certificate authorized for reboot or power-off must not thereby be
+        // authorized to wipe the device's data — the three must be issued
+        // independently. Reusing either would silently hand every
+        // already-provisioned reboot/power-off certificate the power to erase
+        // patient data, so that shortcut has to fail here first.
+        assert_ne!(
+            manager.command_type_to_permission("factory_reset").unwrap(),
+            manager
+                .command_type_to_permission("restart_application")
+                .unwrap()
+        );
+        assert_ne!(
+            manager.command_type_to_permission("factory_reset").unwrap(),
+            manager.command_type_to_permission("power_off").unwrap()
+        );
+    }
+
+    #[test]
+    fn build_command_from_challenge_factory_reset_carries_signer_and_reason() {
+        use crate::libs::mqtt::messages::PostResetAction;
+
+        let manager = create_test_manager();
+
+        let mut challenge = test_challenge("factory_reset", json!({ "post_action": "power_off" }));
+        challenge.reason = Some("Decommissioned after loaner return".to_string());
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::FactoryReset {
+                post_action,
+                reason,
+                requested_by,
+                request_id,
+            } => {
+                assert_eq!(post_action, PostResetAction::PowerOff);
+                assert_eq!(reason, "Decommissioned after loaner return");
+                assert_eq!(requested_by, "s");
+                // The original signed request's id, not one minted here — see
+                // `MqttCommand::FactoryReset`'s doc comment for why that
+                // distinction matters for post-re-pairing correlation.
+                assert_eq!(request_id, "r");
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_factory_reset_rejects_a_missing_reason() {
+        // Unlike restart_application/power_off, a missing reason must NOT be
+        // defaulted here — parse_factory_reset requires an explicit,
+        // non-blank reason because it is carried in the command itself and is
+        // the only surviving record of who authorized the wipe and why, once
+        // the wipe destroys the audit log that would otherwise hold it. This
+        // must be enforced independent of whatever the viewer already does.
+        let manager = create_test_manager();
+        let bare = test_challenge("factory_reset", json!({ "post_action": "reboot" }));
+        let err = manager.build_command_from_challenge(&bare).unwrap_err();
+        match err {
+            AuthError::InvalidCommand(msg) => assert!(msg.contains("reason"), "got {msg:?}"),
+            other => panic!("expected InvalidCommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_command_from_challenge_factory_reset_rejects_a_missing_post_action() {
+        let manager = create_test_manager();
+        let mut challenge = test_challenge("factory_reset", json!({}));
+        challenge.reason = Some("cleanup".to_string());
+        let err = manager
+            .build_command_from_challenge(&challenge)
+            .unwrap_err();
+        match err {
+            AuthError::InvalidCommand(msg) => assert!(msg.contains("post_action"), "got {msg:?}"),
+            other => panic!("expected InvalidCommand, got {other:?}"),
         }
     }
 

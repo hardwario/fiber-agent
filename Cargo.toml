@@ -80,6 +80,15 @@ path = "src/main.rs"
 name = "fiberctl"
 path = "src/bin/fiberctl.rs"
 
+# Phase-2 factory reset executor. Runs unsandboxed at early boot from
+# fiber-factory-reset.service (shipped by meta-fiber) and wipes /data when the
+# phase-1 ledger fiber_app armed says to. The hyphenated name is load-bearing:
+# libs::factory_reset::PHASE2_EXECUTOR_BINARY preflights
+# /usr/bin/fiber-factory-reset before arming anything.
+[[bin]]
+name = "fiber-factory-reset"
+path = "src/bin/fiber_factory_reset.rs"
+
 [lib]
 name = "fiber_app"
 path = "src/lib.rs"

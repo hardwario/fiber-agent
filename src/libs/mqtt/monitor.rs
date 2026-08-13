@@ -29,6 +29,7 @@ use crate::libs::config_applier::ConfigApplier;
 use crate::libs::crypto::{CARegistry, NonceTracker, SignatureVerifier};
 use crate::libs::mqtt_export::ExportHandle;
 use crate::libs::pairing::PairingHandle;
+use crate::libs::system_control;
 use std::sync::Mutex;
 
 /// Shared pairing handle that can be set after MQTT monitor is created
@@ -3038,6 +3039,16 @@ impl MqttMonitor {
                     requested_by: "dev-platform".to_string(),
                 })
             }
+            "factory_reset" => {
+                let r = reason
+                    .clone()
+                    .unwrap_or_else(|| "Dev platform command".to_string());
+                // No real challenge/request id exists on this path (dev-platform
+                // bypasses the challenge-response handshake entirely), so this is
+                // a fixed sentinel rather than a per-call id — same convention as
+                // the hardcoded `requested_by` just above.
+                MqttCommand::parse_factory_reset(params, Some(&r), "dev-platform", "dev-platform")
+            }
             "set_interval" => {
                 let sample = params
                     .get("sample_interval_ms")
@@ -3427,6 +3438,21 @@ impl MqttMonitor {
     /// [`Self::execute_standby`]). Acking first would tell the signer the device
     /// is off while it carries on monitoring, which is the one outcome the
     /// preview text must never be wrong about.
+    ///
+    /// `FactoryReset` is not one of them either, for the same reason. Every one
+    /// of its own failure paths — a missing phase-2 executor, a ledger it cannot
+    /// write, a reboot thread it cannot spawn — leaves the device fully up and
+    /// still connected, having erased nothing; acking first reported all of them
+    /// as SUCCESS, which is precisely the "a reboot with no wipe behind it must
+    /// never look like success" rule the feature is built around. Its *success*
+    /// path acks just as reliably from here as it did from the pre-ack branch:
+    /// `request_factory_reset` returns as soon as the ledger is armed and the
+    /// reboot thread is spawned, and that thread sleeps through
+    /// [`crate::libs::system_control::TEARDOWN_GRACE`] first — and in any case
+    /// the ack only reaches the socket once this whole `ConfigConfirm` branch
+    /// returns to `eventloop.poll()`, which is equally true of a pre-published
+    /// one (see `system_control::spawn_teardown`'s docs). Publishing before
+    /// execution bought no extra delivery window here, only a wrong status.
     fn is_teardown_command(cmd: &MqttCommand) -> bool {
         matches!(
             cmd,
@@ -3479,7 +3505,14 @@ impl MqttMonitor {
     ///
     /// Unlike the reboot path this runs inline: there is no process teardown to
     /// race, and the caller has already queued the SUCCESS ack.
-    fn execute_standby(
+    ///
+    /// `pub` (rather than crate-private) because `main.rs`'s boot hook for a
+    /// post-factory-reset `PostResetAction::PowerOff` calls this exact
+    /// function too, from the `fiber_app` bin target — a separate crate from
+    /// this lib, which only sees fully `pub` items — so the device enters the
+    /// identical standby state a live `PowerOffDevice` command produces, with
+    /// the same recovery semantics (PoE reconnect / physical power cycle).
+    pub fn execute_standby(
         reason: String,
         requested_by: String,
         storage_handle: &Option<crate::libs::storage::StorageHandle>,
@@ -3501,7 +3534,7 @@ impl MqttMonitor {
             )
         })?;
 
-        crate::libs::system_control::audit_and_flush(
+        system_control::audit_and_flush(
             "standby",
             "POWER_OFF",
             &reason,
@@ -3530,9 +3563,7 @@ impl MqttMonitor {
         }
 
         crate::libs::display::blank::request_blank();
-        if !crate::libs::display::blank::wait_until_blank(
-            crate::libs::system_control::DISPLAY_BLANK_TIMEOUT,
-        ) {
+        if !crate::libs::display::blank::wait_until_blank(system_control::DISPLAY_BLANK_TIMEOUT) {
             eprintln!("[standby] WARN: display did not confirm blank — continuing anyway");
         }
 
@@ -3639,7 +3670,7 @@ impl MqttMonitor {
             MqttCommand::RestartApplication {
                 reason,
                 requested_by,
-            } => crate::libs::system_control::execute_teardown(
+            } => system_control::execute_teardown(
                 "reboot",
                 "REBOOT",
                 reason,
@@ -3650,6 +3681,18 @@ impl MqttMonitor {
                 reason,
                 requested_by,
             } => Self::execute_standby(reason, requested_by, storage_handle, stm_bridge),
+            MqttCommand::FactoryReset {
+                post_action,
+                reason,
+                requested_by,
+                request_id,
+            } => crate::libs::factory_reset::request_factory_reset(
+                post_action,
+                reason,
+                requested_by,
+                request_id,
+                storage_handle,
+            ),
             MqttCommand::SetInterval {
                 sample_interval_ms,
                 aggregation_interval_ms,
@@ -5162,6 +5205,139 @@ mod tests {
         assert!(!MqttMonitor::is_teardown_command(
             &MqttCommand::SetLedBrightness { brightness: 50 }
         ));
+    }
+
+    fn sample_factory_reset() -> MqttCommand {
+        use super::super::messages::PostResetAction;
+        MqttCommand::FactoryReset {
+            post_action: PostResetAction::Reboot,
+            reason: "cross-contamination cleanup".to_string(),
+            requested_by: "dr.jane@hospital.eu".to_string(),
+            request_id: "req-1".to_string(),
+        }
+    }
+
+    /// It used to be classified as a teardown, which pre-published SUCCESS
+    /// before `request_factory_reset` ran. Every failure path that function has
+    /// — no phase-2 executor on the image, a ledger it cannot write, a reboot
+    /// thread it cannot spawn — leaves the device up, connected, and with
+    /// nothing erased, so all of them were reported to the operator as SUCCESS:
+    /// the exact inversion of "a reboot with no wipe behind it must never look
+    /// like success". Same reasoning that already excludes `PowerOffDevice`.
+    #[test]
+    fn factory_reset_is_not_a_teardown_command() {
+        assert!(!MqttMonitor::is_teardown_command(&sample_factory_reset()));
+
+        // The genuine teardowns are untouched by this.
+        assert!(MqttMonitor::is_teardown_command(
+            &MqttCommand::RestartApplication {
+                reason: "r".to_string(),
+                requested_by: "dr.jane@hospital.eu".to_string(),
+            }
+        ));
+    }
+
+    /// The other half of the same fix: because it is no longer a teardown, the
+    /// ack is built from the real `Result` that `request_factory_reset` returns,
+    /// and a refusal therefore reaches the signer as ERROR.
+    ///
+    /// Uses the real entry point rather than a hand-made `Err`, so the failure
+    /// string under test is the one the device would actually produce. Follows
+    /// `confirm_response_message_reports_execution_result`'s pattern for the ack
+    /// half — `execute_resolved_command` itself needs the whole applier/bridge
+    /// apparatus and is not unit-constructible.
+    #[test]
+    fn a_factory_reset_that_erased_nothing_is_acked_as_an_error() {
+        // Safety gate: `request_factory_reset` only refuses at the preflight
+        // when phase 2 is genuinely absent. If it were installed here, this
+        // call would arm a real ledger and spawn a real reboot of the machine
+        // running the suite — so assert the precondition instead of hoping.
+        assert!(
+            !std::path::Path::new(crate::libs::factory_reset::PHASE2_EXECUTOR_BINARY).exists(),
+            "this test must only run where the phase-2 executor is not installed"
+        );
+
+        let MqttCommand::FactoryReset {
+            post_action,
+            reason,
+            requested_by,
+            request_id,
+        } = sample_factory_reset()
+        else {
+            unreachable!()
+        };
+        let exec = crate::libs::factory_reset::request_factory_reset(
+            post_action,
+            reason,
+            requested_by,
+            request_id,
+            &None,
+        );
+        let err = exec
+            .clone()
+            .expect_err("a missing phase-2 executor must refuse");
+        assert!(
+            err.contains("nothing was erased"),
+            "the refusal must say so plainly: {err}"
+        );
+
+        let success = MqttMessage::PublishConfigResponse {
+            challenge_id: "chal-1".to_string(),
+            request_id: "req-1".to_string(),
+            status: "SUCCESS".to_string(),
+            applied_at: Some(123),
+            effective_at: Some(123),
+            message: "Configuration applied: factory_reset".to_string(),
+        };
+        match MqttMonitor::confirm_response_message(exec, success) {
+            MqttMessage::PublishConfigResponse {
+                status,
+                applied_at,
+                message,
+                ..
+            } => {
+                assert_eq!(
+                    status, "ERROR",
+                    "a reset that erased nothing must never be acked as SUCCESS"
+                );
+                assert_eq!(applied_at, None);
+                assert!(message.contains("nothing was erased"), "{message}");
+            }
+            other => panic!("expected PublishConfigResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn factory_reset_is_unreachable_via_the_unsigned_command_path() {
+        // factory_reset only exists as an arm of
+        // authorization::manager::build_command_from_challenge, reached through
+        // a signed config_request -> config_confirm handshake. The raw, unsigned
+        // `{"command": "factory_reset", ...}` path that MqttSubscriber::parse_command
+        // exposes for a handful of read-only/legacy commands has no arm for it,
+        // so it is rejected right there — it can never even reach the big
+        // command-routing match in the event loop, whose `_ => "no handler
+        // implemented"` fallback is where an unsigned RestartApplication or
+        // PowerOffDevice ends up today. Do not add a "factory_reset" arm to
+        // parse_command to "support" this path: the wipe this command triggers
+        // must only ever be reachable through the authorization challenge.
+        let mut subscriber = MqttSubscriber::new(10, false);
+        let payload = br#"{"command": "factory_reset", "post_action": "reboot", "reason": "test"}"#;
+        let err = subscriber
+            .parse_command("test/commands", payload)
+            .unwrap_err();
+        assert!(err.contains("Unknown command type"), "got {err:?}");
+
+        // Same rejection, same message shape, as any other unrecognized or
+        // disallowed unsigned command name — factory_reset gets no special
+        // handling that would distinguish it from a typo.
+        let mut other = MqttSubscriber::new(10, false);
+        let other_err = other
+            .parse_command("test/commands", br#"{"command": "totally_bogus"}"#)
+            .unwrap_err();
+        assert!(
+            other_err.contains("Unknown command type"),
+            "got {other_err:?}"
+        );
     }
 
     #[test]

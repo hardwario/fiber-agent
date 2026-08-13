@@ -38,6 +38,42 @@ test:unit:
   # --test-threads 1: several tests share global state and race under a
   # multi-threaded runner. Serializing keeps the gate deterministic.
   # FOLLOW-UP: fix the shared-state races so the suite is parallel-safe.
+  variables:
+    # This job runs as root (rust:1.94-bookworm + apt-get in before_script), and
+    # root holds CAP_DAC_OVERRIDE, so no file mode can deny it anything. Two
+    # tests need a denial to prove their point and therefore cannot mean
+    # anything here. Neither of them is covered by this pipeline at all:
+    #
+    #   libs::factory_reset::tests::
+    #     an_entry_that_cannot_be_removed_still_leaves_the_recreated_dirs_behind
+    #   libs::factory_reset::tests::
+    #     is_corrupt_is_false_for_a_file_that_exists_but_cannot_be_read
+    #
+    # Without this variable those tests *fail* rather than skipping quietly, so
+    # the coverage this pipeline is giving up has to be declared here, in the
+    # open, instead of disappearing into a green run. What it stops covering in
+    # CI:
+    #
+    #   1. A factory-reset wipe whose removal is denied by filesystem
+    #      permissions collects the error, carries on past the stuck entry, and
+    #      still recreates /data/chirpstack and /data/lorawan. Partly mitigated:
+    #      `a_recreate_error_alone_degrades_the_status_and_still_creates_the_rest`
+    #      covers the same status/result/recreate contract here through an
+    #      injection root cannot bypass.
+    #   2. `ResetOutcome::is_corrupt` returning false for a result file that
+    #      exists but could not be *read* this once — the regression test for the
+    #      bug where a transient I/O error made main.rs's boot hook delete the
+    #      only on-disk record of a reset's outcome. This one has NO substitute
+    #      coverage in CI: an unreadable-but-present file is only producible via
+    #      mode bits, which root ignores.
+    #
+    # A local `cargo test` as an ordinary user covers both. Every other
+    # guardrail and failure path in that module runs unweakened as root.
+    #
+    # FOLLOW-UP: run this job's tests as a non-root user (create one, chown
+    # $CI_PROJECT_DIR, `setpriv --reuid`) and drop this variable — then CI's
+    # signal matches a local run exactly.
+    FIBER_TEST_ALLOW_ROOT_SKIPS: "1"
   before_script:
     - !reference [.mr_rust_base, before_script]
     - mkdir -p "${CARGO_HOME}/bin"
