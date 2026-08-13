@@ -352,7 +352,7 @@ async fn run_server(
     // the chip handles fine — and the phone sees the name in the scan
     // response before connection (matching app-side name filters).
     let adv = Advertisement {
-        service_uuids: std::iter::once(service::FIBER_SERVICE_UUID).collect(),
+        service_uuids: std::iter::once(service::HUB_SERVICE_UUID).collect(),
         system_includes: std::iter::once(bluer::adv::Feature::LocalName).collect(),
         ..Default::default()
     };
