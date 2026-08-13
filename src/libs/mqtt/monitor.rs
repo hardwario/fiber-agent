@@ -3165,7 +3165,7 @@ impl MqttMonitor {
                     .get("enabled")
                     .and_then(|v| v.as_bool())
                     .ok_or("Missing enabled")?;
-                MqttCommand::SetEyeEnabled { enabled }
+                Ok(MqttCommand::SetEyeEnabled { enabled })
             }
             "set_eye_recording" => {
                 let mac = params

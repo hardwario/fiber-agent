@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use bluer::gatt::local::CharacteristicNotifier;
+use bluer::Address;
 use tokio::sync::Mutex;
 
 use crate::libs::config_applier::ConfigApplier;
@@ -15,7 +16,11 @@ use super::sticker::SharedResult as StickerResultSlot;
 use super::terminal::ShellProcess;
 
 pub struct ServiceState {
-    pub authenticated: AtomicBool,
+    /// The peer currently authenticated over FB01, if any. `None` means no one
+    /// is authenticated. Scoped to a single address (rather than a bare bool)
+    /// so a second peer's traffic can never be served under a different
+    /// peer's session — see [`ServiceState::is_authenticated_for`].
+    pub authenticated_peer: Option<Address>,
     /// Live ephemeral provisioning session — `None` outside provisioning mode.
     /// Replaces the previous static `pin: String`; the BLE auth path now
     /// rejects any attempt when this is `None` or the inner session has
@@ -71,7 +76,7 @@ impl ServiceState {
         >,
     ) -> Self {
         Self {
-            authenticated: AtomicBool::new(false),
+            authenticated_peer: None,
             provisioning_session,
             hostname,
             mac_address,
@@ -99,6 +104,14 @@ impl ServiceState {
             lorawan_state: self.lorawan_state_slot.lock().ok().and_then(|g| g.clone()),
         }
     }
+
+    /// Whether `addr` is the peer that authenticated over FB01. Every
+    /// auth-gated characteristic must check this against its own request's
+    /// `device_address` rather than a bare global flag, so one peer's session
+    /// can never be used to serve another peer's request.
+    pub fn is_authenticated_for(&self, addr: Address) -> bool {
+        self.authenticated_peer == Some(addr)
+    }
 }
 
 pub type SharedState = Arc<Mutex<ServiceState>>;
@@ -109,4 +122,48 @@ pub fn get_hostname() -> String {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_uppercase())
         .unwrap_or_else(|_| "FIBER-DEVICE".to_string())
+}
+
+#[cfg(test)]
+mod auth_scoping_tests {
+    use super::*;
+    use crate::libs::network::new_shared_provisioning_session;
+
+    const PEER_A: Address = Address::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01]);
+    const PEER_B: Address = Address::new([0x7C, 0xD9, 0xF4, 0x13, 0x10, 0xDE]);
+
+    fn new_state() -> ServiceState {
+        ServiceState::new(
+            new_shared_provisioning_session(),
+            "FIBER-TEST".to_string(),
+            "00:00:00:00:00:00".to_string(),
+            None,
+            None,
+            None,
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+    }
+
+    #[test]
+    fn a_fresh_state_is_not_authenticated_for_anyone() {
+        let state = new_state();
+        assert!(!state.is_authenticated_for(PEER_A));
+        assert!(!state.is_authenticated_for(PEER_B));
+    }
+
+    #[test]
+    fn a_second_peer_cannot_ride_the_first_peers_session() {
+        let mut state = new_state();
+        state.authenticated_peer = Some(PEER_A);
+        assert!(state.is_authenticated_for(PEER_A));
+        assert!(!state.is_authenticated_for(PEER_B));
+    }
+
+    #[test]
+    fn clearing_the_peer_de_authenticates_everyone() {
+        let mut state = new_state();
+        state.authenticated_peer = Some(PEER_A);
+        state.authenticated_peer = None;
+        assert!(!state.is_authenticated_for(PEER_A));
+    }
 }

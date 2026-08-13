@@ -4,7 +4,6 @@
 //! Callers receive an `Application` ready to register with BlueZ and an
 //! `mpsc::Sender<BleEvent>` through which they observe auth/wifi transitions.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,12 +69,12 @@ pub async fn create_gatt_app(
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
                 let event_tx = event_tx.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
                         let token_attempt = String::from_utf8_lossy(&new_value).trim().to_string();
-                        let state_guard = state.lock().await;
+                        let mut state_guard = state.lock().await;
 
                         // Phone is talking to us → reset the idle timer
                         // before doing anything else. We bump on every op
@@ -87,7 +86,7 @@ pub async fn create_gatt_app(
                             &token_attempt,
                             &state_guard.provisioning_session,
                         ) {
-                            state_guard.authenticated.store(true, Ordering::SeqCst);
+                            state_guard.authenticated_peer = Some(peer_req.device_address);
                             let _ = event_tx.try_send(super::BleEvent::AuthSuccess);
                             Ok(())
                         } else {
@@ -103,12 +102,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        let is_auth = state_guard.authenticated.load(Ordering::SeqCst);
+                        let is_auth = state_guard.is_authenticated_for(peer_req.device_address);
                         let response = crate::libs::ble::gatt::auth::auth_response(is_auth);
                         Ok(serde_json::to_vec(&response).unwrap_or_default())
                     })
@@ -126,12 +125,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -156,13 +155,13 @@ pub async fn create_gatt_app(
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
                 let event_tx = event_tx.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -206,12 +205,12 @@ pub async fn create_gatt_app(
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |_new_value, _req| {
+                move |_new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -238,12 +237,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -308,12 +307,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let hostname_fallback = state_guard.hostname.clone();
@@ -337,12 +336,12 @@ pub async fn create_gatt_app(
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let applier = match state_guard.config_applier.clone() {
@@ -396,12 +395,12 @@ pub async fn create_gatt_app(
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -443,12 +442,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -473,7 +472,7 @@ pub async fn create_gatt_app(
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         use crate::libs::ble::gatt::sticker;
@@ -487,7 +486,7 @@ pub async fn create_gatt_app(
 
                         let mut state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
 
@@ -602,13 +601,13 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         use crate::libs::ble::gatt::sticker;
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let slot = state_guard.sticker_result.clone();
@@ -636,7 +635,7 @@ pub async fn create_gatt_app(
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         use crate::libs::ble::gatt::eye_tag_add;
@@ -648,7 +647,7 @@ pub async fn create_gatt_app(
 
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let slot = state_guard.eye_tag_result.clone();
@@ -755,13 +754,13 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         use crate::libs::ble::gatt::eye_tag_add;
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let slot = state_guard.eye_tag_result.clone();
@@ -786,7 +785,7 @@ pub async fn create_gatt_app(
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
                 let event_tx = event_tx.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     let event_tx = event_tx.clone();
                     Box::pin(async move {
@@ -802,7 +801,7 @@ pub async fn create_gatt_app(
 
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         let in_flight = state_guard.lan_apply_in_flight.clone();
@@ -881,12 +880,12 @@ pub async fn create_gatt_app(
             read: true,
             fun: Box::new({
                 let state = state.clone();
-                move |_req| {
+                move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
-                        if !state_guard.authenticated.load(Ordering::SeqCst) {
+                        if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
                         drop(state_guard);
@@ -921,7 +920,7 @@ pub async fn create_gatt_app(
             write_without_response: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
                 let state = state.clone();
-                move |new_value, _req| {
+                move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
                         let command = String::from_utf8_lossy(&new_value).trim().to_string();
@@ -932,7 +931,7 @@ pub async fn create_gatt_app(
                             let state_guard = state.lock().await;
                             crate::libs::network::touch_shared(&state_guard.provisioning_session);
                             (
-                                state_guard.authenticated.load(Ordering::SeqCst),
+                                state_guard.is_authenticated_for(peer_req.device_address),
                                 state_guard.terminal_notifier.clone(),
                                 state_guard.shell_process.clone(),
                             )

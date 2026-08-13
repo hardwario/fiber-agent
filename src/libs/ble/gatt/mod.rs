@@ -414,8 +414,8 @@ async fn run_server(
                         let addr_str = addr.to_string();
                         eprintln!("[BleMonitor] Client connected: {}", addr_str);
                         {
-                            let st = state.lock().await;
-                            st.authenticated.store(false, Ordering::SeqCst);
+                            let mut st = state.lock().await;
+                            st.authenticated_peer = None;
                         }
                         let _ = event_tx_xbeam.send(BleEvent::ClientConnected { addr: addr_str });
                     }
@@ -430,7 +430,7 @@ async fn run_server(
                         connected_addr = None;
                         eprintln!("[BleMonitor] Client disconnected: {}", addr);
                         let mut st = state.lock().await;
-                        st.authenticated.store(false, Ordering::SeqCst);
+                        st.authenticated_peer = None;
                         if let Some(shell_arc) = st.shell_process.take() {
                             if let Ok(mut shell) = shell_arc.try_lock() {
                                 shell.cancel_token.cancel();
