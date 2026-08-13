@@ -18,9 +18,10 @@ use crate::libs::sensors::SharedSensorStateHandle;
 use super::blank;
 use super::screens::{
     render_ble_connected, render_ble_provisioning, render_ble_wifi_fail, render_ble_wifi_ok,
-    render_custom_overview, render_lorawan_sensor_detail, render_pairing_screen,
-    render_qr_code_screen, render_qr_session_ended_screen, render_sensor_detail,
-    render_sensor_overview, render_system_info,
+    render_confirm_screen, render_custom_overview, render_lorawan_sensor_detail,
+    render_menu_screen, render_pairing_screen, render_qr_code_screen,
+    render_qr_session_ended_screen, render_sensor_detail, render_sensor_overview,
+    render_system_info,
 };
 use super::supervise::{lock_recover, read_recover, write_recover};
 use super::{Screen, SharedDisplayLinesHandle, SharedDisplayStateHandle};
@@ -593,6 +594,19 @@ pub fn display_loop(
                 Screen::BleWifiFail { error, .. } => {
                     if let Err(e) = render_ble_wifi_fail(&mut display, &error) {
                         eprintln!("[DisplayMonitor] Error rendering BLE wifi fail: {}", e);
+                    }
+                }
+                Screen::Menu { selected } => {
+                    if let Err(e) = render_menu_screen(&mut display, selected) {
+                        eprintln!("[DisplayMonitor] Error rendering menu: {}", e);
+                    }
+                }
+                Screen::Confirm {
+                    action,
+                    yes_selected,
+                } => {
+                    if let Err(e) = render_confirm_screen(&mut display, action, yes_selected) {
+                        eprintln!("[DisplayMonitor] Error rendering confirm: {}", e);
                     }
                 }
             }

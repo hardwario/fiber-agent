@@ -386,6 +386,7 @@ fn main() -> io::Result<()> {
         provisioning_session.clone(),
         mac_address.clone(),
         hostname.clone(),
+        None,
     )?;
     eprintln!("[main] Button monitor started");
 
@@ -695,6 +696,7 @@ fn main() -> io::Result<()> {
         provisioning_session.clone(),
         mac_address.clone(),
         hostname.clone(),
+        Some(storage_handle.clone()),
     )?;
     eprintln!("[main] Button monitor restarted with pairing support");
 

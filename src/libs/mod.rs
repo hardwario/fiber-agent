@@ -22,6 +22,7 @@ pub mod pairing;
 pub mod power;
 pub mod sensors;
 pub mod storage;
+pub mod system_control;
 
 // Re-export key types for convenience
 pub use accelerometer::AccelerometerMonitor;

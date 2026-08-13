@@ -77,6 +77,18 @@ impl OverviewMode {
 /// Number of pages on the system info screen.
 pub const SYSTEM_INFO_PAGES: usize = 3;
 
+/// Fixed labels for the UP-hold local action menu, in display order. A plain
+/// index into this array is enough — unlike the sensor-selection cursor,
+/// this list's length and membership never change at runtime.
+pub const MENU_ITEMS: [&str; 3] = ["Pairing code", "Reboot", "Shutdown"];
+
+/// Which destructive local action a [`Screen::Confirm`] is guarding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalAction {
+    Reboot,
+    Shutdown,
+}
+
 pub mod blank;
 pub mod buttons;
 pub mod font;
@@ -124,6 +136,16 @@ pub enum Screen {
         error: String,
         until: std::time::Instant,
     },
+    /// UP-hold local action menu. `selected` indexes [`MENU_ITEMS`] (0..3).
+    Menu { selected: usize },
+    /// Yes/No confirmation before a local Reboot/Shutdown. `yes_selected`
+    /// defaults to `false` (No) on entry — an accidental extra press can
+    /// never itself confirm a destructive action; the operator must
+    /// deliberately move the cursor onto "Yes".
+    Confirm {
+        action: LocalAction,
+        yes_selected: bool,
+    },
 }
 
 impl Screen {
@@ -140,6 +162,8 @@ impl Screen {
             Screen::BleProvisioning { .. } => None,
             Screen::BleWifiOk { .. } => None,
             Screen::BleWifiFail { .. } => None,
+            Screen::Menu { .. } => None,
+            Screen::Confirm { .. } => None,
         }
     }
 
@@ -158,6 +182,8 @@ impl Screen {
                 | Screen::BleProvisioning { .. }
                 | Screen::BleWifiOk { .. }
                 | Screen::BleWifiFail { .. }
+                | Screen::Menu { .. }
+                | Screen::Confirm { .. }
         )
     }
 
@@ -508,6 +534,61 @@ impl DisplayState {
     pub fn show_pairing(&mut self, code: String) {
         self.current_screen = Screen::Pairing { code };
         self.should_update = true;
+    }
+
+    /// Open the front-panel local action menu, cursor on the first item.
+    pub fn show_menu(&mut self) {
+        self.current_screen = Screen::Menu { selected: 0 };
+        self.should_update = true;
+    }
+
+    /// Move the menu cursor up, wrapping from the first to the last item.
+    /// No-op off the menu screen.
+    pub fn menu_up(&mut self) {
+        if let Screen::Menu { selected } = self.current_screen {
+            let n = MENU_ITEMS.len();
+            self.current_screen = Screen::Menu {
+                selected: (selected + n - 1) % n,
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Move the menu cursor down, wrapping from the last to the first item.
+    /// No-op off the menu screen.
+    pub fn menu_down(&mut self) {
+        if let Screen::Menu { selected } = self.current_screen {
+            let n = MENU_ITEMS.len();
+            self.current_screen = Screen::Menu {
+                selected: (selected + 1) % n,
+            };
+            self.should_update = true;
+        }
+    }
+
+    /// Show the Yes/No confirmation for a pending local Reboot/Shutdown,
+    /// defaulting the cursor to "No".
+    pub fn show_confirm(&mut self, action: LocalAction) {
+        self.current_screen = Screen::Confirm {
+            action,
+            yes_selected: false,
+        };
+        self.should_update = true;
+    }
+
+    /// Flip the confirm screen's Yes/No cursor. No-op off the confirm screen.
+    pub fn confirm_toggle(&mut self) {
+        if let Screen::Confirm {
+            action,
+            yes_selected,
+        } = self.current_screen
+        {
+            self.current_screen = Screen::Confirm {
+                action,
+                yes_selected: !yes_selected,
+            };
+            self.should_update = true;
+        }
     }
 
     /// Show "BLE Connected" with truncated address.
@@ -1379,5 +1460,117 @@ mod pagination_tests {
             state.current_screen,
             Screen::SystemInfo { page: 1 }
         ));
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn show_menu_defaults_to_first_item() {
+        let mut state = DisplayState::new();
+        state.show_menu();
+        assert!(matches!(state.current_screen, Screen::Menu { selected: 0 }));
+    }
+
+    #[test]
+    fn menu_up_wraps_from_first_to_last() {
+        let mut state = DisplayState::new();
+        state.show_menu();
+        state.menu_up();
+        assert!(matches!(
+            state.current_screen,
+            Screen::Menu { selected } if selected == MENU_ITEMS.len() - 1
+        ));
+    }
+
+    #[test]
+    fn menu_down_wraps_from_last_to_first() {
+        let mut state = DisplayState::new();
+        state.current_screen = Screen::Menu {
+            selected: MENU_ITEMS.len() - 1,
+        };
+        state.menu_down();
+        assert!(matches!(state.current_screen, Screen::Menu { selected: 0 }));
+    }
+
+    #[test]
+    fn menu_navigation_is_a_no_op_off_the_menu_screen() {
+        let mut state = DisplayState::new();
+        state.menu_up();
+        state.menu_down();
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn show_confirm_defaults_to_no() {
+        let mut state = DisplayState::new();
+        state.show_confirm(LocalAction::Reboot);
+        assert!(matches!(
+            state.current_screen,
+            Screen::Confirm {
+                action: LocalAction::Reboot,
+                yes_selected: false
+            }
+        ));
+    }
+
+    #[test]
+    fn confirm_toggle_flips_between_yes_and_no() {
+        let mut state = DisplayState::new();
+        state.show_confirm(LocalAction::Shutdown);
+        state.confirm_toggle();
+        assert!(matches!(
+            state.current_screen,
+            Screen::Confirm {
+                action: LocalAction::Shutdown,
+                yes_selected: true
+            }
+        ));
+        state.confirm_toggle();
+        assert!(matches!(
+            state.current_screen,
+            Screen::Confirm {
+                action: LocalAction::Shutdown,
+                yes_selected: false
+            }
+        ));
+    }
+
+    #[test]
+    fn confirm_toggle_is_a_no_op_off_the_confirm_screen() {
+        let mut state = DisplayState::new();
+        state.confirm_toggle();
+        assert!(matches!(
+            state.current_screen,
+            Screen::SensorOverview { page: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn get_page_returns_none_for_menu_and_confirm() {
+        assert_eq!(Screen::Menu { selected: 0 }.get_page(), None);
+        assert_eq!(
+            Screen::Confirm {
+                action: LocalAction::Reboot,
+                yes_selected: false
+            }
+            .get_page(),
+            None
+        );
+    }
+
+    #[test]
+    fn is_special_screen_includes_menu_and_confirm() {
+        assert!(Screen::Menu { selected: 0 }.is_special_screen());
+        assert!(Screen::Confirm {
+            action: LocalAction::Shutdown,
+            yes_selected: true
+        }
+        .is_special_screen());
     }
 }

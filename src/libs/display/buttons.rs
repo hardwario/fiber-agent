@@ -7,11 +7,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::supervise::{lock_recover, read_recover};
-use super::SharedDisplayStateHandle;
+use super::{LocalAction, Screen, SharedDisplayStateHandle};
 use crate::drivers::buttons::{Button, ButtonEvent, Buttons};
 use crate::libs::buzzer::BuzzerPriorityManager;
 use crate::libs::network::{ProvisioningSession, SharedProvisioningSession};
 use crate::libs::pairing::{PairingHandle, SharedPairingStateHandle};
+use crate::libs::storage::StorageHandle;
 
 /// Button monitor state machine for handling ENTER button countdown and DOWN button hold
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -26,7 +27,7 @@ enum ButtonMonitorState {
     DownHoldActive,
     /// System info screen is displayed
     ShowingSystem,
-    /// UP button being held, counting down for 2 seconds for pairing
+    /// UP button being held, counting down for 2 seconds to open the local action menu
     UpHoldActive,
     /// Pairing screen is displayed
     ShowingPairing,
@@ -34,6 +35,10 @@ enum ButtonMonitorState {
     SelectionMode,
     /// Viewing sensor detail screen
     ShowingDetail,
+    /// Local action menu (Pairing code / Reboot / Shutdown) is displayed.
+    MenuActive,
+    /// Yes/No confirmation for a pending local Reboot/Shutdown is displayed.
+    ConfirmActive,
 }
 
 /// Map elapsed/total to a 1-pixel-tall progress bar width in the 0..=127 range.
@@ -75,7 +80,11 @@ impl ButtonMonitor {
     ///
     /// The thread will continuously monitor button input and update the display page
     /// when UP/DOWN buttons are pressed. The ENTER button is reserved for future use.
-    /// If a pairing_handle is provided, UP held for 2 seconds triggers pairing mode.
+    /// If a pairing_handle is provided, UP held for 2 seconds opens the local
+    /// action menu (Pairing code / Reboot / Shutdown). `storage_handle` audits
+    /// the latter two, tagged as locally-triggered; pass `None` before the
+    /// storage thread exists (Reboot/Shutdown will simply go unaudited until
+    /// the monitor is recreated with it, matching how `pairing_handle` works).
     pub fn new(
         display_state: SharedDisplayStateHandle,
         pairing_handle: Option<PairingHandle>,
@@ -85,6 +94,7 @@ impl ButtonMonitor {
         provisioning_session: SharedProvisioningSession,
         mac_address: String,
         hostname: String,
+        storage_handle: Option<StorageHandle>,
     ) -> io::Result<Self> {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_flag_clone = shutdown_flag.clone();
@@ -105,6 +115,7 @@ impl ButtonMonitor {
                     provisioning_session.clone(),
                     mac_address.clone(),
                     hostname.clone(),
+                    storage_handle.clone(),
                 );
                 Ok(())
             });
@@ -127,6 +138,7 @@ impl ButtonMonitor {
         provisioning_session: SharedProvisioningSession,
         mac_address: String,
         hostname: String,
+        storage_handle: Option<StorageHandle>,
     ) {
         // Initialize buttons
         let mut buttons = match Buttons::new() {
@@ -270,10 +282,10 @@ impl ButtonMonitor {
                                     // On QR screen - ignore UP
                                     eprintln!("[ButtonMonitor] UP ignored on QR code screen");
                                 } else {
-                                    // Start UP hold countdown (for pairing if handle available)
+                                    // Start UP hold countdown - opens the local action menu
                                     state = ButtonMonitorState::UpHoldActive;
                                     up_hold_start = Instant::now();
-                                    eprintln!("[ButtonMonitor] UP hold started - counting 2 seconds for pairing");
+                                    eprintln!("[ButtonMonitor] UP hold started - counting 2 seconds to open menu");
                                 }
                             }
                             ButtonMonitorState::ShowingSystem => {
@@ -316,6 +328,16 @@ impl ButtonMonitor {
                             ButtonMonitorState::ShowingDetail => {
                                 let mut display_state_lock = lock_recover(&display_state);
                                 display_state_lock.lorawan_detail_prev();
+                            }
+                            ButtonMonitorState::MenuActive => {
+                                lock_recover(&display_state).menu_up();
+                                selection_activity = Instant::now();
+                                eprintln!("[ButtonMonitor] Menu cursor moved up");
+                            }
+                            ButtonMonitorState::ConfirmActive => {
+                                lock_recover(&display_state).confirm_toggle();
+                                selection_activity = Instant::now();
+                                eprintln!("[ButtonMonitor] Confirm choice toggled");
                             }
                             _ => {
                                 // Other states (ShowingQr) - ignore UP
@@ -422,6 +444,16 @@ impl ButtonMonitor {
                             ButtonMonitorState::ShowingDetail => {
                                 let mut display_state_lock = lock_recover(&display_state);
                                 display_state_lock.lorawan_detail_next();
+                            }
+                            ButtonMonitorState::MenuActive => {
+                                lock_recover(&display_state).menu_down();
+                                selection_activity = Instant::now();
+                                eprintln!("[ButtonMonitor] Menu cursor moved down");
+                            }
+                            ButtonMonitorState::ConfirmActive => {
+                                lock_recover(&display_state).confirm_toggle();
+                                selection_activity = Instant::now();
+                                eprintln!("[ButtonMonitor] Confirm choice toggled");
                             }
                             _ => {
                                 // Other states (ShowingQr) - ignore DOWN
@@ -530,9 +562,63 @@ impl ButtonMonitor {
                                 // Already handled above
                             }
                             ButtonMonitorState::SelectionMode
-                            | ButtonMonitorState::ShowingDetail => {
+                            | ButtonMonitorState::ShowingDetail
+                            | ButtonMonitorState::MenuActive => {
                                 // Actions handled on release for double-click detection
                                 selection_activity = Instant::now();
+                            }
+                            ButtonMonitorState::ConfirmActive => {
+                                // Acts immediately on press, unlike Menu/SelectionMode: "No"
+                                // is the pre-selected default, so there is no double-click
+                                // ambiguity to resolve on release.
+                                let (action, yes_selected) = {
+                                    let display_state_lock = lock_recover(&display_state);
+                                    match display_state_lock.current_screen {
+                                        Screen::Confirm {
+                                            action,
+                                            yes_selected,
+                                        } => (action, yes_selected),
+                                        // Unreachable: state is only ConfirmActive while
+                                        // current_screen is Screen::Confirm.
+                                        _ => (LocalAction::Reboot, false),
+                                    }
+                                };
+                                if yes_selected {
+                                    let (verb, audit_event): (&'static str, &'static str) =
+                                        match action {
+                                            LocalAction::Reboot => ("reboot", "REBOOT"),
+                                            LocalAction::Shutdown => {
+                                                ("poweroff", "POWER_OFF_LOCAL")
+                                            }
+                                        };
+                                    eprintln!(
+                                        "[ButtonMonitor] {:?} confirmed via front panel",
+                                        action
+                                    );
+                                    if let Err(e) = crate::libs::system_control::execute_teardown(
+                                        verb,
+                                        audit_event,
+                                        format!("Local {:?} via front-panel menu", action),
+                                        crate::libs::system_control::LOCAL_BUTTON_REQUESTER
+                                            .to_string(),
+                                        &storage_handle,
+                                    ) {
+                                        eprintln!(
+                                            "[ButtonMonitor] Failed to execute {}: {}",
+                                            verb, e
+                                        );
+                                    }
+                                    // execute_teardown blanks the panel and reboots/powers
+                                    // off asynchronously — nothing more to render here.
+                                } else {
+                                    let mut display_state_lock = lock_recover(&display_state);
+                                    display_state_lock.show_sensor_overview();
+                                    eprintln!(
+                                        "[ButtonMonitor] {:?} cancelled from confirm screen",
+                                        action
+                                    );
+                                }
+                                state = ButtonMonitorState::Idle;
                             }
                         }
                     }
@@ -640,6 +726,73 @@ impl ButtonMonitor {
                                     last_enter_click = Some(Instant::now());
                                 }
                             }
+                            ButtonMonitorState::MenuActive => {
+                                // Double-click cancels the menu, same idiom as
+                                // SelectionMode's exit; single-click acts on the
+                                // highlighted item.
+                                let is_double_click = last_enter_click
+                                    .map(|last| last.elapsed() < DOUBLE_CLICK_THRESHOLD)
+                                    .unwrap_or(false);
+
+                                if is_double_click {
+                                    {
+                                        let mut display_state_lock = lock_recover(&display_state);
+                                        display_state_lock.show_sensor_overview();
+                                        eprintln!(
+                                            "[ButtonMonitor] Double-click detected - menu cancelled"
+                                        );
+                                    }
+                                    state = ButtonMonitorState::Idle;
+                                    last_enter_click = None;
+                                } else {
+                                    let selected = {
+                                        let display_state_lock = lock_recover(&display_state);
+                                        match display_state_lock.current_screen {
+                                            Screen::Menu { selected } => selected,
+                                            _ => 0,
+                                        }
+                                    };
+                                    match selected {
+                                        0 => {
+                                            // "Pairing code" - identical gesture/gating to
+                                            // the old UP-hold-triggers-pairing path.
+                                            let ble_is_active = pairing_state
+                                                .as_ref()
+                                                .map(|ps| {
+                                                    ps.lock()
+                                                        .unwrap_or_else(|e| e.into_inner())
+                                                        .ble_active()
+                                                })
+                                                .unwrap_or(false);
+                                            if ble_is_active {
+                                                eprintln!("[ButtonMonitor] Pairing ignored: BLE client connected");
+                                                lock_recover(&display_state).show_sensor_overview();
+                                                state = ButtonMonitorState::Idle;
+                                            } else if let Some(ref ph) = pairing_handle {
+                                                ph.start_pairing();
+                                                eprintln!("[ButtonMonitor] Pairing selected from menu - triggering pairing mode");
+                                                state = ButtonMonitorState::ShowingPairing;
+                                            } else {
+                                                eprintln!("[ButtonMonitor] Pairing selected but not available (MQTT disabled)");
+                                                lock_recover(&display_state).show_sensor_overview();
+                                                state = ButtonMonitorState::Idle;
+                                            }
+                                        }
+                                        1 => {
+                                            lock_recover(&display_state)
+                                                .show_confirm(LocalAction::Reboot);
+                                            state = ButtonMonitorState::ConfirmActive;
+                                        }
+                                        _ => {
+                                            lock_recover(&display_state)
+                                                .show_confirm(LocalAction::Shutdown);
+                                            state = ButtonMonitorState::ConfirmActive;
+                                        }
+                                    }
+                                    selection_activity = Instant::now();
+                                    last_enter_click = Some(Instant::now());
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -731,38 +884,37 @@ impl ButtonMonitor {
                 }
             }
 
-            // Check countdown completion for UP button hold (pairing)
+            // Check countdown completion for UP button hold - opens the local
+            // action menu (Pairing code / Reboot / Shutdown) unconditionally.
+            // The BLE-active gate that used to run here now runs at the point
+            // "Pairing code" is actually selected from the menu, further down.
             if state == ButtonMonitorState::UpHoldActive {
                 if up_hold_start.elapsed() >= COUNTDOWN_DURATION {
-                    // Check whether a BLE client is currently connected; if so, the
-                    // MQTT pairing flow must not start (it would race with BLE for LCD).
-                    let ble_is_active = if let Some(ref ps) = pairing_state {
-                        let st = ps.lock().unwrap_or_else(|e| e.into_inner());
-                        st.ble_active()
-                    } else {
-                        false
-                    };
-
-                    if ble_is_active {
-                        eprintln!("[ButtonMonitor] UP+DOWN ignored: BLE client connected");
-                        state = ButtonMonitorState::Idle;
-                    } else if let Some(ref ph) = pairing_handle {
-                        ph.start_pairing();
-                        eprintln!(
-                            "[ButtonMonitor] UP hold complete (3s) - triggering pairing mode"
-                        );
-                        state = ButtonMonitorState::ShowingPairing;
-                    } else {
-                        eprintln!("[ButtonMonitor] UP hold complete (3s) - pairing not available (MQTT disabled)");
-                        state = ButtonMonitorState::Idle;
+                    {
+                        let mut display_state_lock = lock_recover(&display_state);
+                        display_state_lock.show_menu();
                     }
+                    state = ButtonMonitorState::MenuActive;
+                    // Reset here, not just on the menu's own inputs: a stale
+                    // timestamp left over from an earlier SelectionMode session
+                    // would otherwise make the freshly-opened menu look like it
+                    // had already timed out.
+                    selection_activity = Instant::now();
+                    eprintln!("[ButtonMonitor] UP hold complete (2s) - opening local action menu");
                 }
             }
 
-            // Check inactivity timeout for selection/detail mode (15 seconds)
-            if (state == ButtonMonitorState::SelectionMode
-                || state == ButtonMonitorState::ShowingDetail)
-                && selection_activity.elapsed() >= SELECTION_TIMEOUT
+            // Check inactivity timeout for selection/detail/menu/confirm modes
+            // (15 seconds). Safety-critical for Menu/Confirm: an abandoned
+            // confirm dialog must time out to the overview screen, never
+            // resolve to "Yes" by being left open.
+            if matches!(
+                state,
+                ButtonMonitorState::SelectionMode
+                    | ButtonMonitorState::ShowingDetail
+                    | ButtonMonitorState::MenuActive
+                    | ButtonMonitorState::ConfirmActive
+            ) && selection_activity.elapsed() >= SELECTION_TIMEOUT
             {
                 // Return to normal sensor overview
                 {
