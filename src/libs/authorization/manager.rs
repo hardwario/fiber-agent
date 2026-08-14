@@ -509,6 +509,12 @@ impl AuthorizationManager {
             // Switching the subsystem on/off is a gateway-scoped config change, so
             // it takes the same permission as the tag operations it gates.
             "set_eye_enabled" => "set_lorawan_sensor_config",
+            // Same permission as set_eye_enabled: both are gateway-scoped EYE
+            // subsystem switches, and a signer certificate embeds a fixed
+            // permission list at issuance — a new permission would invalidate
+            // every certificate already provisioned. Matches the viewer's
+            // CommandSigner.COMMAND_PERMISSIONS["set_eye_config"].
+            "set_eye_config" => "set_lorawan_sensor_config",
             "set_eye_recording" => "set_lorawan_sensor_config", // reuse: sensor config change
             "download_eye_history" => "set_lorawan_sensor_config", // reuse: sensor data op
             "add_eye_tag" => "set_lorawan_sensor_config",       // reuse: sensor config change
@@ -751,6 +757,16 @@ impl AuthorizationManager {
                     "{} the EYE BLE tag subsystem",
                     if enabled { "Enable" } else { "Disable" }
                 )
+            }
+            "set_eye_config" => {
+                let mut parts = Vec::new();
+                if let Some(v) = params.get("auto_provision").and_then(|v| v.as_bool()) {
+                    parts.push(format!("auto-provision={}", if v { "on" } else { "off" }));
+                }
+                if let Some(v) = params.get("auto_discover").and_then(|v| v.as_bool()) {
+                    parts.push(format!("auto-discover={}", if v { "on" } else { "off" }));
+                }
+                format!("Set EYE subsystem ({})", parts.join(", "))
             }
             "set_eye_recording" => {
                 let mac = params.get("mac").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -1524,6 +1540,8 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing enabled".to_string()))?;
                 Ok(MqttCommand::SetBeaconEnabled { enabled })
             }
+            "set_eye_config" => MqttCommand::parse_set_beacon_config(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
             "set_eye_recording" => {
                 let mac = challenge
                     .params
@@ -1833,6 +1851,7 @@ mod tests {
             "remove_external_gateway",
             "set_lorawan_cluster",
             "set_eye_enabled",
+            "set_eye_config",
             "set_eye_recording",
             "download_eye_history",
             "add_eye_tag",
@@ -1912,6 +1931,34 @@ mod tests {
         let manager = create_test_manager();
         let challenge = test_challenge("add_eye_tag", serde_json::json!({"mac": "not-a-mac"}));
         assert!(manager.build_command_from_challenge(&challenge).is_err());
+    }
+
+    #[test]
+    fn set_eye_config_parses_from_a_challenge() {
+        let manager = create_test_manager();
+        assert_eq!(
+            manager
+                .command_type_to_permission("set_eye_config")
+                .unwrap(),
+            "set_lorawan_sensor_config"
+        );
+        let challenge = test_challenge(
+            "set_eye_config",
+            serde_json::json!({ "auto_provision": false }),
+        );
+        match manager.build_command_from_challenge(&challenge).unwrap() {
+            MqttCommand::SetBeaconConfig {
+                auto_provision,
+                auto_discover,
+            } => {
+                assert_eq!(auto_provision, Some(false));
+                assert_eq!(auto_discover, None);
+            }
+            other => panic!("expected SetBeaconConfig, got {other:?}"),
+        }
+        // Neither flag -> rejected before a challenge is consumed.
+        let empty = test_challenge("set_eye_config", serde_json::json!({}));
+        assert!(manager.build_command_from_challenge(&empty).is_err());
     }
 
     #[test]

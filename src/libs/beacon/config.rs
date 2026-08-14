@@ -35,7 +35,9 @@ pub struct BeaconConfig {
     pub tag_timeout_s: i64,
 
     /// Automatically provision a configured tag (apply the default profile) the
-    /// first time it is seen advertising.
+    /// first time it is seen advertising. Acts only on tags already in `tags`
+    /// below — it never registers a MAC that has not been added there; see
+    /// `auto_discover` for surfacing unregistered tags.
     #[serde(default)]
     pub auto_provision: bool,
 
@@ -72,9 +74,9 @@ pub struct BeaconConfig {
     /// Report EYE tags seen advertising that are not in `tags` yet, so the viewer
     /// can offer them for adoption. Visibility only — an unregistered tag is
     /// published in the `eye/sensors` snapshot with `provisioning: "pending"` and
-    /// is never written to `tags` by this flag alone. Registering one (manually,
-    /// or by `auto_provision`) removes it from the discovered set; deleting it
-    /// again makes it unknown, so it reappears.
+    /// is never written to `tags` by this flag. Registering one (via `add_eye_tag`,
+    /// the BLE GATT enrollment characteristic, or by hand) removes it from the
+    /// discovered set; deleting it again makes it unknown, so it reappears.
     ///
     /// `Option` rather than a plain bool so an absent key round-trips as absent:
     /// a field missing from this struct is dropped when `BeaconConfig` is serialised
@@ -158,9 +160,8 @@ impl BeaconConfig {
 
     /// Is this MAC already registered on this gateway? Case-insensitive.
     ///
-    /// Drives both halves of discovery: a registered tag is never offered as a
-    /// discovery candidate, and `auto_provision` only adopts a MAC for which this
-    /// is false. Deleting a tag makes this false again, so it can be found anew.
+    /// A registered tag is never offered as a discovery candidate. Deleting a
+    /// tag makes this false again, so it can be found anew.
     pub fn owns_tag(&self, mac: &str) -> bool {
         let up = mac.to_uppercase();
         self.tags.iter().any(|t| t.mac.to_uppercase() == up)
@@ -295,7 +296,7 @@ pub struct BeaconTagConfig {
     ///
     /// `ProvisioningStatus` is in-memory only, so without this every restart
     /// resets all tags to `PendingProvisioning` and — with `auto_provision` on —
-    /// re-provisions the whole set at once. On a 16-tag gateway that burst
+    /// re-provisions every configured tag at once. On a 16-tag gateway that burst
     /// contends with the scan for the adapter, which is exactly the failure this
     /// avoids. Writing to the tag's flash is idempotent but not free.
     ///
@@ -350,6 +351,23 @@ mod tests {
         assert!(c.auto_discover_on());
     }
 
+    /// `auto_provision` and `auto_discover` are independent switches:
+    /// `auto_provision` (even `true`, the shipped default) must never turn the
+    /// discovery-listing gate on by itself. Regression test for the bug where
+    /// `monitor.rs`'s discovery block was gated on
+    /// `auto_discover_on() || auto_provision`, so a shipped unit — which ships
+    /// with `auto_provision: true` and no `auto_discover` key — auto-adopted
+    /// every unregistered EYE tag it heard.
+    #[test]
+    fn auto_provision_alone_does_not_enable_discovery() {
+        let mut c = BeaconConfig::default();
+        c.auto_provision = true;
+        assert!(
+            !c.auto_discover_on(),
+            "auto_provision must not imply auto_discover"
+        );
+    }
+
     #[test]
     fn auto_discover_limit_defaults_but_honours_zero() {
         let mut c = BeaconConfig::default();
@@ -389,8 +407,9 @@ mod tests {
 
     #[test]
     fn adopting_a_discovered_tag_is_a_plain_upsert() {
-        // Auto-provision adopts by the same path an operator add uses, so the tag
-        // it produces must be indistinguishable from a manually added one.
+        // add_eye_tag and BLE GATT enrollment both adopt through `upsert_tag`,
+        // so the tag they produce must be indistinguishable from one added any
+        // other way — there is no separate "auto-adopted" shape.
         let mut c = BeaconConfig::default();
         c.upsert_tag("AA:BB:CC:DD:EE:09", None);
         let t = c

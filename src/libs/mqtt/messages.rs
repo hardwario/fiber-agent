@@ -729,6 +729,22 @@ pub enum MqttCommand {
         enabled: bool,
     },
 
+    /// Toggle `eye.auto_provision` / `eye.auto_discover` at runtime. Each field
+    /// is optional and `None` leaves the current value untouched; at least one
+    /// must be present. Persisted through the applier (so it gets the usual
+    /// backup, validation and audit trail) and mirrored into the live
+    /// `SharedBeaconConfig`, so the scan loop picks it up on the next poll — no
+    /// restart. Signed via ConfigRequest, same permission as `set_eye_enabled`.
+    ///
+    /// `auto_provision` only ever applies the PROXIMOS profile to a tag already
+    /// in `eye.tags`; it never registers an unknown MAC. `auto_discover` is the
+    /// separate, visibility-only switch that lists unregistered tags in range
+    /// as candidates without writing anything to `eye.tags`.
+    SetBeaconConfig {
+        auto_provision: Option<bool>,
+        auto_discover: Option<bool>,
+    },
+
     /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
     SetBeaconRecording {
         mac: String,
@@ -911,6 +927,7 @@ impl MqttCommand {
             MqttCommand::DeleteBeaconFieldThreshold { .. } => "delete_eye_field_threshold",
             MqttCommand::AddLoRaWANNode { .. } => "add_lorawan_sticker",
             MqttCommand::SetBeaconEnabled { .. } => "set_eye_enabled",
+            MqttCommand::SetBeaconConfig { .. } => "set_eye_config",
             MqttCommand::SetBeaconRecording { .. } => "set_eye_recording",
             MqttCommand::DownloadBeaconHistory { .. } => "download_eye_history",
             MqttCommand::SetBeaconKnownTags { .. } => "set_eye_known_tags",
@@ -1207,6 +1224,36 @@ impl MqttCommand {
             dev_eui: dev_eui.to_lowercase(),
             bytes,
             fport,
+        })
+    }
+
+    /// Parse `set_eye_config` params `{auto_provision?, auto_discover?}` into
+    /// [`MqttCommand::SetBeaconConfig`]. Shared by the signed (challenge) and
+    /// dev/unsigned command paths so both reject identically. An explicit JSON
+    /// `null` reads as absent, same as an omitted key; at least one of the two
+    /// must be present, since a command that changes nothing would still burn a
+    /// challenge and write a config backup.
+    pub fn parse_set_beacon_config(params: &Value) -> Result<MqttCommand, String> {
+        let parse_bool = |key: &str| -> Result<Option<bool>, String> {
+            match params.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(v) => v
+                    .as_bool()
+                    .map(Some)
+                    .ok_or_else(|| format!("{key} must be a boolean")),
+            }
+        };
+        let auto_provision = parse_bool("auto_provision")?;
+        let auto_discover = parse_bool("auto_discover")?;
+        if auto_provision.is_none() && auto_discover.is_none() {
+            return Err(
+                "set_eye_config requires at least one of auto_provision / auto_discover"
+                    .to_string(),
+            );
+        }
+        Ok(MqttCommand::SetBeaconConfig {
+            auto_provision,
+            auto_discover,
         })
     }
 }
@@ -1679,6 +1726,56 @@ mod tests {
             &json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 300 })
         )
         .is_err());
+    }
+
+    #[test]
+    fn parse_set_beacon_config_parses_and_validates() {
+        use serde_json::json;
+        assert_eq!(
+            MqttCommand::SetBeaconConfig {
+                auto_provision: None,
+                auto_discover: None,
+            }
+            .name(),
+            "set_eye_config"
+        );
+        match MqttCommand::parse_set_beacon_config(
+            &json!({ "auto_provision": false, "auto_discover": true }),
+        )
+        .unwrap()
+        {
+            MqttCommand::SetBeaconConfig {
+                auto_provision,
+                auto_discover,
+            } => {
+                assert_eq!(auto_provision, Some(false));
+                assert_eq!(auto_discover, Some(true));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // Only one field given: the other stays None ("leave untouched").
+        assert!(matches!(
+            MqttCommand::parse_set_beacon_config(&json!({ "auto_provision": true })).unwrap(),
+            MqttCommand::SetBeaconConfig {
+                auto_provision: Some(true),
+                auto_discover: None,
+            }
+        ));
+        // An explicit null is treated the same as an absent key.
+        assert!(matches!(
+            MqttCommand::parse_set_beacon_config(
+                &json!({ "auto_provision": null, "auto_discover": false })
+            )
+            .unwrap(),
+            MqttCommand::SetBeaconConfig {
+                auto_provision: None,
+                auto_discover: Some(false),
+            }
+        ));
+        // Neither field given: rejected before a challenge/config write happens.
+        assert!(MqttCommand::parse_set_beacon_config(&json!({})).is_err());
+        // Wrong type.
+        assert!(MqttCommand::parse_set_beacon_config(&json!({ "auto_provision": "yes" })).is_err());
     }
 
     #[test]

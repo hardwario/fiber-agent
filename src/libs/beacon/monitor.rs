@@ -27,8 +27,8 @@ use super::advertising::{parse_manufacturer_value, BeaconReading, TELTONIKA_COMP
 use super::en12830;
 use super::provisioning::{provision, BeaconProfile, ProvisionError};
 use super::state::{
-    create_shared_beacon_state, register_beacon_config, register_beacon_state, ProvisioningStatus,
-    SharedBeaconConfig, SharedBeaconState,
+    create_shared_beacon_state, register_beacon_config, register_beacon_state, BeaconSensorState,
+    ProvisioningStatus, SharedBeaconConfig, SharedBeaconState,
 };
 use super::SharedBeaconConnections;
 
@@ -914,6 +914,13 @@ fn beacon_loop(
                     }
                 }
 
+                // Registered ∪ fleet-known MACs — used both by discovery below
+                // (to know what is *not* ours) and by the publish/reconcile step
+                // (to know what must never be pruned).
+                let mut configured: HashSet<String> =
+                    config.tags.iter().map(|t| t.mac.to_uppercase()).collect();
+                configured.extend(known_tags.iter().cloned());
+
                 // ---- Discovery: EYE tags in earshot that we do not own -------
                 //
                 // The scan is already global: the DiscoveryFilter sets no MAC
@@ -922,17 +929,16 @@ fn beacon_loop(
                 // config. A MAC that is neither owned nor fleet-known is therefore a
                 // discovery candidate, costing one property read to confirm it is a
                 // Teltonika tag rather than a phone.
-                if config.auto_discover_on() || config.auto_provision {
-                    let owned_now: HashSet<String> = config
-                        .tags
-                        .iter()
-                        .map(|t| t.mac.to_uppercase())
-                        .chain(known_tags.iter().cloned())
-                        .collect();
-
+                //
+                // Visibility only: this never writes to `eye.tags`. Adopting a tag
+                // (via `add_eye_tag`, the BLE GATT enrollment characteristic, or by
+                // hand) is the only way a candidate becomes owned; auto-provision
+                // (below, and in the per-tag loop above) only ever acts on tags
+                // that are already owned.
+                if config.auto_discover_on() {
                     for fresh in fresh_macs.iter() {
                         let mac_key = fresh.to_uppercase();
-                        if owned_now.contains(&mac_key) {
+                        if configured.contains(&mac_key) {
                             continue;
                         }
                         let addr: bluer::Address = match mac_key.parse() {
@@ -958,83 +964,50 @@ fn beacon_loop(
                         };
                         let rssi = device.rssi().await.ok().flatten();
 
-                        if config.auto_provision {
-                            // Adopt outright: write it into eye.tags through the
-                            // applier, so the change gets the same backup, validation
-                            // and audit trail as an operator-issued add_eye_tag. The
-                            // existing first-sight provisioning then picks it up next
-                            // tick, since a freshly added tag is PendingProvisioning.
-                            match crate::libs::config_applier::config_applier_handle() {
-                                Some(applier) => {
-                                    let result =
-                                        applier.apply_beacon_tag_config(mac_key.clone(), None);
-                                    if result.success {
-                                        if let Ok(mut c) = shared_config.write() {
-                                            c.upsert_tag(&mac_key, None);
-                                        }
-                                        if let Ok(mut st) = state.write() {
-                                            let entry = st.entry(&mac_key, None);
-                                            entry.discovered = false;
-                                            entry.apply_reading(&reading, rssi, now_ts);
-                                        }
-                                        eprintln!(
-                                            "[EYE Monitor] Adopted {mac_key} (auto-provision)"
-                                        );
-                                    } else {
-                                        eprintln!(
-                                            "[EYE Monitor] Could not adopt {mac_key}: {}",
-                                            result.error_message.as_deref().unwrap_or("unknown"),
-                                        );
-                                    }
-                                }
-                                None => eprintln!(
-                                    "[EYE Monitor] Cannot adopt {mac_key}: applier not ready"
-                                ),
-                            }
-                        } else {
-                            // Visibility only. Capped so a tag-dense site cannot grow
-                            // the snapshot without bound; an entry that already exists
-                            // is always refreshed, so the cap bounds the set rather
-                            // than freezing the first-seen tags at a stale reading.
-                            let (known, room) = state
-                                .read()
-                                .map(|st| {
-                                    (
-                                        st.tags.contains_key(&mac_key),
-                                        st.tags.values().filter(|t| t.discovered).count()
-                                            < config.auto_discover_limit(),
-                                    )
-                                })
-                                .unwrap_or((false, false));
-                            if known || room {
-                                if let Ok(mut st) = state.write() {
-                                    let entry = st.entry(&mac_key, None);
-                                    entry.discovered = true;
-                                    entry.apply_reading(&reading, rssi, now_ts);
-                                }
+                        // Capped so a tag-dense site cannot grow the snapshot
+                        // without bound; an entry that already exists is always
+                        // refreshed, so the cap bounds the set rather than
+                        // freezing the first-seen tags at a stale reading.
+                        let (known, room) = state
+                            .read()
+                            .map(|st| {
+                                (
+                                    st.tags.contains_key(&mac_key),
+                                    st.tags.values().filter(|t| t.discovered).count()
+                                        < config.auto_discover_limit(),
+                                )
+                            })
+                            .unwrap_or((false, false));
+                        if known || room {
+                            if let Ok(mut st) = state.write() {
+                                let entry = st.entry(&mac_key, None);
+                                entry.discovered = true;
+                                entry.apply_reading(&reading, rssi, now_ts);
                             }
                         }
                     }
+                }
 
-                    // Drop candidates that have gone quiet. An owned tag stays in
-                    // state when it goes stale (its history and alarm state matter);
-                    // a candidate is only interesting while it is in range, and
-                    // leaving it listed would offer a tag that is no longer there.
-                    if let Ok(mut st) = state.write() {
-                        st.tags
-                            .retain(|_, t| !t.discovered || !t.is_stale(now_ts, config.tag_timeout_s));
-                    }
+                // Reconcile the discovered set every tick, regardless of whether
+                // auto_discover is currently on: a MAC that got adopted (by
+                // `add_eye_tag`, GATT enrollment, or by hand) mid-poll must have
+                // its `discovered` flag cleared here rather than wait for the
+                // owned-tag loop to see it advertise again, and turning
+                // auto_discover off must drop the whole candidate set immediately
+                // rather than let it linger until each entry goes stale.
+                if let Ok(mut st) = state.write() {
+                    reconcile_discovered(
+                        &mut st,
+                        &configured,
+                        config.auto_discover_on(),
+                        now_ts,
+                        config.tag_timeout_s,
+                    );
                 }
 
                 // Publish snapshot periodically.
                 if last_publish.elapsed() >= publish_interval {
                     last_publish = Instant::now();
-                    // Publish a borrowed tag too, otherwise capturing it would be
-                    // pointless — the prune below is the second place a
-                    // fleet-known MAC used to be dropped.
-                    let mut configured: HashSet<String> =
-                        config.tags.iter().map(|t| t.mac.to_uppercase()).collect();
-                    configured.extend(known_tags.iter().cloned());
                     publish_snapshot(
                         &state,
                         &mqtt_tx,
@@ -1298,6 +1271,38 @@ fn classify_detect(
     }
 }
 
+/// Clear `discovered` on any candidate that has since become owned (registered
+/// locally or fleet-known), and drop candidates that no longer belong in the
+/// set: gone stale while `auto_discover` is on, or `auto_discover` just turned
+/// off entirely. A registered/fleet-known MAC is never dropped by this
+/// function regardless of its `discovered` flag or staleness — that decision
+/// belongs to the owned-tag loop, which keeps stale owned tags around because
+/// their history and alarm state still matter.
+///
+/// Runs every tick regardless of `auto_discover`'s current value: turning it
+/// off must empty the candidate set immediately (not merely stop growing it),
+/// and a MAC adopted between ticks (via `add_eye_tag`, BLE GATT enrollment, or
+/// by hand) must lose its `discovered` flag before the next publish rather
+/// than wait for the owned-tag loop to observe it advertise again.
+fn reconcile_discovered(
+    state: &mut BeaconSensorState,
+    configured: &HashSet<String>,
+    discover_on: bool,
+    now_ts: i64,
+    tag_timeout_s: i64,
+) {
+    for (mac, t) in state.tags.iter_mut() {
+        if t.discovered && configured.contains(mac) {
+            t.discovered = false;
+        }
+    }
+    state.tags.retain(|mac, t| {
+        configured.contains(mac)
+            || !t.discovered
+            || (discover_on && !t.is_stale(now_ts, tag_timeout_s))
+    });
+}
+
 /// Tags this gateway should listen for: the ones it owns, plus the ones the fleet
 /// knows about (system#6).
 ///
@@ -1436,9 +1441,11 @@ fn publish_snapshot(
             }
         })
         .collect();
-    if tags.is_empty() {
-        return;
-    }
+    // An empty `tags: []` is published deliberately, not suppressed: it is the
+    // only wire signal that the discovered set just emptied (auto_discover
+    // turned off, or every candidate went stale/out of range), and `eye/sensors`
+    // is not retained (publisher.rs), so the viewer needs this message to drop
+    // candidates it has already shown rather than carry them forever.
     let _ = mqtt_tx.try_send(MqttMessage::PublishBeaconSensorData { tags });
 }
 
@@ -1589,6 +1596,85 @@ mod tests {
         assert!(
             borrowed.field_thresholds.is_empty(),
             "a borrowed tag must not alarm"
+        );
+    }
+
+    #[test]
+    fn reconcile_discovered_never_drops_a_configured_mac() {
+        // A MAC that is registered/fleet-known must survive the prune even if
+        // its `discovered` flag is (stale-)true and it has gone quiet — the
+        // adopt-and-go-out-of-range regression.
+        let mut state = super::super::state::BeaconSensorState::default();
+        {
+            let entry = state.entry("AA:BB:CC:DD:EE:01", None);
+            entry.discovered = true;
+            entry.last_seen_ts = None; // never seen since adoption: is_stale() == true
+        }
+        let configured: HashSet<String> = ["AA:BB:CC:DD:EE:01".to_string()].into_iter().collect();
+
+        reconcile_discovered(&mut state, &configured, true, 1_000, 600);
+
+        let entry = state
+            .tags
+            .get("AA:BB:CC:DD:EE:01")
+            .expect("must not be dropped");
+        assert!(
+            !entry.discovered,
+            "reconcile must clear the flag for an owned MAC"
+        );
+    }
+
+    #[test]
+    fn reconcile_discovered_drops_the_whole_candidate_set_when_discovery_is_off() {
+        let mut state = super::super::state::BeaconSensorState::default();
+        {
+            let entry = state.entry("AA:BB:CC:DD:EE:02", None);
+            entry.discovered = true;
+            entry.last_seen_ts = Some(999); // fresh, not stale
+        }
+        let configured: HashSet<String> = HashSet::new();
+
+        reconcile_discovered(&mut state, &configured, false, 1_000, 600);
+
+        assert!(
+            state.tags.is_empty(),
+            "turning auto_discover off must drop candidates immediately, not wait for staleness"
+        );
+    }
+
+    #[test]
+    fn reconcile_discovered_keeps_a_fresh_candidate_while_discovery_is_on() {
+        let mut state = super::super::state::BeaconSensorState::default();
+        {
+            let entry = state.entry("AA:BB:CC:DD:EE:03", None);
+            entry.discovered = true;
+            entry.last_seen_ts = Some(999); // fresh, not stale at now_ts=1_000
+        }
+        let configured: HashSet<String> = HashSet::new();
+
+        reconcile_discovered(&mut state, &configured, true, 1_000, 600);
+
+        assert!(
+            state.tags.contains_key("AA:BB:CC:DD:EE:03"),
+            "a fresh candidate must survive while discovery stays on"
+        );
+    }
+
+    #[test]
+    fn reconcile_discovered_drops_a_stale_candidate_while_discovery_is_on() {
+        let mut state = super::super::state::BeaconSensorState::default();
+        {
+            let entry = state.entry("AA:BB:CC:DD:EE:04", None);
+            entry.discovered = true;
+            entry.last_seen_ts = Some(0); // way past tag_timeout_s
+        }
+        let configured: HashSet<String> = HashSet::new();
+
+        reconcile_discovered(&mut state, &configured, true, 1_000, 600);
+
+        assert!(
+            state.tags.is_empty(),
+            "a candidate that has gone stale must still be pruned while discovery is on"
         );
     }
 
