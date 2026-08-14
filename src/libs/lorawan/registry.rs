@@ -1,4 +1,4 @@
-//! Hardcoded field registry for STICKER LoRaWAN codec.
+//! Hardcoded field registry for NODE LoRaWAN codec.
 //! MUST mirror the Python and TypeScript registries.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,11 +113,11 @@ pub const REGISTRY: &[FieldDef] = &[
         thresholdable: true,
         threshold_kind: Some(ThresholdKind::Range),
     },
-    // Battery — reported and displayed, but NOT thresholdable: the sticker
+    // Battery — reported and displayed, but NOT thresholdable: the node
     // evaluates its own low-battery condition and reports it as a native alarm on
     // fPort 3, so a threshold here is a duplicate of an alarm the device already
     // raises. It was armed by default via `common_lorawan_field_thresholds`, so
-    // every sticker had one without anyone configuring it.
+    // every node had one without anyone configuring it.
     FieldDef {
         name: "voltage",
         kind: FieldKind::Continuous,
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn voltage_is_reported_but_not_thresholdable() {
-        // Phase 1: the sticker raises its own low-battery alarm on fPort 3, so the
+        // Phase 1: the node raises its own low-battery alarm on fPort 3, so the
         // viewer must not offer (or auto-arm) a second one. The field itself stays
         // in the registry because the value is still reported and displayed.
         let v = lookup("voltage").expect("voltage in registry");

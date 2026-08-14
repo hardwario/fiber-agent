@@ -19,7 +19,7 @@ impl GatewayDetection {
     /// is running, OR ChirpStack is running — which covers devices that have no
     /// local concentrator but receive/transmit via an EXTERNAL gateway registered
     /// in the on-device ChirpStack (Semtech UDP). Without this, the monitor never
-    /// starts on external-gateway devices, so fPort-85 sticker config/history
+    /// starts on external-gateway devices, so fPort-85 node config/history
     /// downlinks can't be sent and uplinks aren't re-published.
     pub fn is_present(&self) -> bool {
         self.concentratord_running || self.chirpstack_running

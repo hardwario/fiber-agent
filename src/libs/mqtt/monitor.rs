@@ -541,50 +541,49 @@ impl MqttHandle {
 
 /// MQTT monitor thread
 /// Floor for an fPort-85 command round-trip. A round-trip needs at least two
-/// sticker uplinks, which on a Class-A sticker is bounded by its report
+/// Node uplinks, which on a Class-A Node is bounded by its report
 /// interval, so this is deliberately longer than the fiberctl ControlContext
 /// default of 30 s.
 ///
-/// This is only the FLOOR — see `sticker_command_timeout`. As a fixed value it
-/// silently broke every sticker reporting slower than ~90 s: a config read is
+/// This is only the FLOOR — see `node_command_timeout`. As a fixed value it
+/// silently broke every Node reporting slower than ~90 s: a config read is
 /// chunked six fields at a time and each chunk waits for the device's next RX
 /// window, so at `interval_report = 900 s` every chunk expired at 180 s and the
 /// read returned nothing at all.
-const STICKER_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const NODE_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Cap for a derived fPort-85 timeout.
 ///
 /// `application.interval_report` accepts up to 86400 s, so the derivation has to
 /// keep scaling well past any single "expected" interval — a cap that is too low
-/// silently recreates the original bug for slow stickers. Waiting is cheap here:
+/// silently recreates the original bug for slow Nodes. Waiting is cheap here:
 /// responses are correlated by seq (1..=250) rather than queued per device, so a
 /// pending command holds one task and one map entry and blocks nothing else. The
 /// only real bound is seq reuse, which needs 250 further commands while one is
 /// outstanding — far beyond any read. Six hours covers cadences up to ~2.4 h; a
-/// sticker slower than that makes a full read take days, which is a decision for
+/// Node slower than that makes a full read take days, which is a decision for
 /// the operator (the UI states the estimate) rather than something a timeout
 /// should paper over. Clamping is logged so it is never silent.
-const STICKER_COMMAND_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+const NODE_COMMAND_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
-/// Timeout used while the sticker's cadence is still unknown.
+/// Timeout used while the Node's cadence is still unknown.
 ///
 /// Deliberately NOT the 180 s floor. "Unknown" means we cannot rule out a slow
-/// sticker, so assuming a fast one is the wrong default — it is what made the
-/// first read after a restart the most likely to fail. A sticker that has never
+/// Node, so assuming a fast one is the wrong default — it is what made the
+/// first read after a restart the most likely to fail. A Node that has never
 /// uplinked at all does not wait this long: `send_command` fails immediately,
 /// because without an uplink the gateway has no ChirpStack application id to
 /// address a downlink to.
-const STICKER_COMMAND_TIMEOUT_UNKNOWN: std::time::Duration =
-    std::time::Duration::from_secs(20 * 60);
+const NODE_COMMAND_TIMEOUT_UNKNOWN: std::time::Duration = std::time::Duration::from_secs(20 * 60);
 
-/// Multiple of the sticker's reporting cadence to allow for one round trip.
+/// Multiple of the Node's reporting cadence to allow for one round trip.
 /// A request rides the RX window after an uplink and the answer comes with a
 /// later uplink, so two cadences is the floor for a healthy exchange; 2.5 leaves
 /// room for one retry without doubling the wait.
-const STICKER_COMMAND_CADENCE_FACTOR: f64 = 2.5;
+const NODE_COMMAND_CADENCE_FACTOR: f64 = 2.5;
 
 /// Timeout for one fPort-85 round trip with `dev_eui`, derived from that
-/// sticker's own observed reporting cadence.
+/// Node's own observed reporting cadence.
 ///
 /// Applies to writes as well as reads: a write is also only delivered in the
 /// window after an uplink, so it has exactly the same lower bound.
@@ -592,7 +591,7 @@ const STICKER_COMMAND_CADENCE_FACTOR: f64 = 2.5;
 /// Falls back to the floor while the cadence is still unknown (fewer than two
 /// uplinks seen since start-up), which is the previous behaviour. Reads the
 /// cadence off the handle's shared state, so no call site has to thread it in.
-fn sticker_command_timeout(
+fn node_command_timeout(
     handle: &crate::libs::lorawan::LoRaWANHandle,
     dev_eui: &str,
 ) -> std::time::Duration {
@@ -604,26 +603,26 @@ fn sticker_command_timeout(
     let out = match cadence {
         Some(secs) if secs > 0 => {
             let want =
-                std::time::Duration::from_secs_f64(secs as f64 * STICKER_COMMAND_CADENCE_FACTOR);
-            let clamped = want.clamp(STICKER_COMMAND_TIMEOUT, STICKER_COMMAND_TIMEOUT_CAP);
-            if want > STICKER_COMMAND_TIMEOUT_CAP {
+                std::time::Duration::from_secs_f64(secs as f64 * NODE_COMMAND_CADENCE_FACTOR);
+            let clamped = want.clamp(NODE_COMMAND_TIMEOUT, NODE_COMMAND_TIMEOUT_CAP);
+            if want > NODE_COMMAND_TIMEOUT_CAP {
                 eprintln!(
-                    "[sticker] {dev_eui}: cadence {}s wants {}s but the cap is {}s — a full \
+                    "[node] {dev_eui}: cadence {}s wants {}s but the cap is {}s — a full \
                      config read will not complete; shorten interval_report first",
                     secs,
                     want.as_secs(),
-                    STICKER_COMMAND_TIMEOUT_CAP.as_secs()
+                    NODE_COMMAND_TIMEOUT_CAP.as_secs()
                 );
             }
             clamped
         }
-        _ => STICKER_COMMAND_TIMEOUT_UNKNOWN,
+        _ => NODE_COMMAND_TIMEOUT_UNKNOWN,
     };
     // Logged unconditionally, including the fallback: when a read comes back empty
     // the first question is always "how long did we actually wait, and did we know
     // the cadence?", and answering it from the journal beats guessing.
     eprintln!(
-        "[sticker] {dev_eui}: fPort-85 timeout {}s (observed cadence {})",
+        "[node] {dev_eui}: fPort-85 timeout {}s (observed cadence {})",
         out.as_secs(),
         cadence.map_or_else(|| "unknown".to_string(), |s| format!("{s}s")),
     );
@@ -645,7 +644,7 @@ pub struct MqttMonitor {
     lorawan_state_slot:
         std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
     /// fPort-85 command handle, filled after the LoRaWAN monitor exists (see
-    /// set_lorawan_handle); used by the sticker config/history MQTT commands.
+    /// set_lorawan_handle); used by the Node config/history MQTT commands.
     lorawan_handle_slot:
         std::sync::Arc<std::sync::Mutex<Option<crate::libs::lorawan::LoRaWANHandle>>>,
     lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
@@ -837,7 +836,7 @@ impl MqttMonitor {
     }
 
     /// Set the LoRaWAN command handle (call after LoRaWANMonitor is created).
-    /// Enables the MQTT sticker config/history commands to drive fPort-85.
+    /// Enables the MQTT Node config/history commands to drive fPort-85.
     pub fn set_lorawan_handle(&self, handle: crate::libs::lorawan::LoRaWANHandle) {
         if let Ok(mut g) = self.lorawan_handle_slot.lock() {
             *g = Some(handle);
@@ -866,35 +865,35 @@ impl MqttMonitor {
         self.connection_state.clone()
     }
 
-    /// Spawn a detached task that reads a STICKER's fPort-85 config and publishes
+    /// Spawn a detached task that reads a Node's fPort-85 config and publishes
     /// the merged result to `lorawan/sensors/<dev_eui>/config`. Detached so the
     /// MQTT event loop stays responsive while the blocking downlink round-trips
     /// run on a blocking thread.
-    /// Run one STICKER control command (#71) and publish its outcome.
+    /// Run one Node control command (#71) and publish its outcome.
     ///
     /// The three commands that cannot be confirmed at Ack time are handled
     /// explicitly rather than left to time out into a false failure:
     ///
-    ///   * `sticker_force_send` sends no fPort-85 reply at all
+    ///   * `node_force_send` sends no fPort-85 reply at all
     ///     (`app_cmd.c:699-711`) — the fPort-2 telemetry frame is the answer. It
     ///     goes out fire-and-forget, with no `seq` allocated, so it can never alias
     ///     a pending waiter.
-    ///   * `sticker_clock_sync` with no `unix_time` asks the device to re-sync from
+    ///   * `node_clock_sync` with no `unix_time` asks the device to re-sync from
     ///     the network, which also produces no immediate reply; the deferred `Info`
     ///     arrives later and is picked up by the unsolicited-Info path from #65.
-    ///   * `sticker_reboot` / `sticker_device_reset` answer `Ack` and then restart
+    ///   * `node_reboot` / `node_device_reset` answer `Ack` and then restart
     ///     8 s later, so a missing reply is expected rather than a failure.
-    fn spawn_sticker_command(
+    fn spawn_node_command(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
         handle: crate::libs::lorawan::LoRaWANHandle,
         cmd: MqttCommand,
     ) {
-        use crate::libs::lorawan::sticker_command as sc;
-        use crate::libs::lorawan::sticker_config;
-        use crate::libs::lorawan::sticker_proto::Command as ProtoCommand;
-        use crate::libs::lorawan::sticker_response::ResponseKind;
+        use crate::libs::lorawan::node_command as sc;
+        use crate::libs::lorawan::node_config;
+        use crate::libs::lorawan::node_proto::Command as ProtoCommand;
+        use crate::libs::lorawan::node_response::ResponseKind;
         use prost::Message as _;
 
         tokio::spawn(async move {
@@ -908,19 +907,19 @@ impl MqttMonitor {
                 Option<&str>,
                 bool,
             ) = match &cmd {
-                MqttCommand::StickerReboot { dev_eui } => (
+                MqttCommand::NodeReboot { dev_eui } => (
                     dev_eui.clone(),
                     sc::build_reboot(),
                     Some("unsolicited_info_on_rejoin"),
                     true,
                 ),
-                MqttCommand::StickerDeviceReset { dev_eui } => (
+                MqttCommand::NodeDeviceReset { dev_eui } => (
                     dev_eui.clone(),
                     sc::build_device_reset(),
                     Some("unsolicited_info_on_rejoin"),
                     true,
                 ),
-                MqttCommand::StickerResetCounters {
+                MqttCommand::NodeResetCounters {
                     dev_eui,
                     hall_left,
                     hall_right,
@@ -932,13 +931,13 @@ impl MqttMonitor {
                     None,
                     true,
                 ),
-                MqttCommand::StickerForceSend { dev_eui } => (
+                MqttCommand::NodeForceSend { dev_eui } => (
                     dev_eui.clone(),
                     sc::build_force_send(),
                     Some("telemetry_uplink"),
                     false,
                 ),
-                MqttCommand::StickerClockSync { dev_eui, unix_time } => match unix_time {
+                MqttCommand::NodeClockSync { dev_eui, unix_time } => match unix_time {
                     Some(t) => (dev_eui.clone(), sc::build_clock_sync(*t), None, false),
                     None => (
                         dev_eui.clone(),
@@ -949,7 +948,7 @@ impl MqttMonitor {
                 },
                 other => {
                     eprintln!(
-                        "[MQTT Monitor] spawn_sticker_command: not a control command: {}",
+                        "[MQTT Monitor] spawn_node_command: not a control command: {}",
                         other.name()
                     );
                     return;
@@ -957,10 +956,10 @@ impl MqttMonitor {
             };
 
             // force_send is unsigned, so broker access alone can trigger uplinks.
-            // A sticker's duty cycle is finite, so space them per device.
-            if matches!(cmd, MqttCommand::StickerForceSend { .. }) {
-                if let Err(reason) = sticker_config::check_force_send_cooldown(&dev_eui) {
-                    let msg = MqttMessage::PublishStickerCommandResult {
+            // A Node's duty cycle is finite, so space them per device.
+            if matches!(cmd, MqttCommand::NodeForceSend { .. }) {
+                if let Err(reason) = node_config::check_force_send_cooldown(&dev_eui) {
+                    let msg = MqttMessage::PublishNodeCommandResult {
                         dev_eui,
                         command: name,
                         seq: 0,
@@ -979,10 +978,10 @@ impl MqttMonitor {
             // Commands that leave a deferred action on the device's single slot must
             // not overlap. Refuse immediately rather than queueing behind a lock.
             let guard = if action_bearing {
-                match sticker_config::try_action_guard(&dev_eui) {
+                match node_config::try_action_guard(&dev_eui) {
                     Ok(g) => Some(g),
                     Err(reason) => {
-                        let msg = MqttMessage::PublishStickerCommandResult {
+                        let msg = MqttMessage::PublishNodeCommandResult {
                             dev_eui,
                             command: name,
                             seq: 0,
@@ -1018,7 +1017,7 @@ impl MqttMonitor {
                         .send_command(
                             &dev_eui_blocking,
                             proto,
-                            sticker_command_timeout(&handle, &dev_eui_blocking),
+                            node_command_timeout(&handle, &dev_eui_blocking),
                         )
                         .map(Some)
                 }
@@ -1060,7 +1059,7 @@ impl MqttMonitor {
                 ),
             };
 
-            let msg = MqttMessage::PublishStickerCommandResult {
+            let msg = MqttMessage::PublishNodeCommandResult {
                 dev_eui,
                 command: name,
                 seq,
@@ -1071,16 +1070,16 @@ impl MqttMonitor {
             };
             if let Err(e) = publisher.handle_message(msg).await {
                 eprintln!(
-                    "[MQTT Monitor] Failed to publish sticker command result: {}",
+                    "[MQTT Monitor] Failed to publish Node command result: {}",
                     e
                 );
             }
         });
     }
 
-    /// Answer a `get_sticker_info` query (#65): one `GetInfo` round trip, then
+    /// Answer a `get_node_info` query (#65): one `GetInfo` round trip, then
     /// publish the decoded info on the retained `.../info` topic.
-    fn spawn_sticker_info_read(
+    fn spawn_node_info_read(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
@@ -1090,10 +1089,10 @@ impl MqttMonitor {
         tokio::spawn(async move {
             let dev_eui_blocking = dev_eui.clone();
             let read = tokio::task::spawn_blocking(move || {
-                crate::libs::lorawan::sticker_config::read_info(
+                crate::libs::lorawan::node_config::read_info(
                     &handle,
                     &dev_eui_blocking,
-                    sticker_command_timeout(&handle, &dev_eui_blocking),
+                    node_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1101,8 +1100,8 @@ impl MqttMonitor {
             let publisher = MqttPublisher::new(client, topics, &publish_cfg);
             match read {
                 Ok(Ok((seq, info))) => {
-                    let msg = MqttMessage::PublishStickerInfo {
-                        info: crate::libs::lorawan::sticker_config::info_to_json(
+                    let msg = MqttMessage::PublishNodeInfo {
+                        info: crate::libs::lorawan::node_config::info_to_json(
                             &info,
                             &dev_eui,
                             "query",
@@ -1112,21 +1111,18 @@ impl MqttMonitor {
                         dev_eui,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker info: {}", e);
+                        eprintln!("[MQTT Monitor] Failed to publish Node info: {}", e);
                     }
                 }
                 Ok(Err(e)) => {
-                    // Includes the honest 64-byte-buffer overflow case: a sticker
+                    // Includes the honest 64-byte-buffer overflow case: a Node
                     // with several latched alarms answers "response too large".
                     // Reported as-is and never retried — the reply would not change.
                     if let Err(pe) = publisher
                         .publish_error("get_sticker_info", "transport", &e)
                         .await
                     {
-                        eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker info error: {}",
-                            pe
-                        );
+                        eprintln!("[MQTT Monitor] Failed to publish Node info error: {}", pe);
                     }
                 }
                 Err(join_err) => {
@@ -1139,7 +1135,7 @@ impl MqttMonitor {
         });
     }
 
-    fn spawn_sticker_config_read(
+    fn spawn_node_config_read(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
@@ -1152,11 +1148,11 @@ impl MqttMonitor {
             let key_strings = keys.unwrap_or_default();
             let read = tokio::task::spawn_blocking(move || {
                 let key_refs: Vec<&str> = key_strings.iter().map(|s| s.as_str()).collect();
-                crate::libs::lorawan::sticker_config::read_config(
+                crate::libs::lorawan::node_config::read_config(
                     &handle,
                     &dev_eui_blocking,
                     &key_refs,
-                    sticker_command_timeout(&handle, &dev_eui_blocking),
+                    node_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1171,21 +1167,21 @@ impl MqttMonitor {
                         "ok".to_string()
                     } else {
                         eprintln!(
-                            "[MQTT Monitor] partial sticker config read: {} key(s) not read",
+                            "[MQTT Monitor] partial Node config read: {} key(s) not read",
                             cfg.failed_keys.len()
                         );
                         "partial".to_string()
                     };
-                    let msg = MqttMessage::PublishStickerConfig {
+                    let msg = MqttMessage::PublishNodeConfig {
                         dev_eui,
-                        config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
+                        config: crate::libs::lorawan::node_config::config_to_json(&cfg.config),
                         page_index: 0,
                         page_count: cfg.page_count,
                         last_seq: cfg.last_seq,
                         last_result,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker config: {}", e);
+                        eprintln!("[MQTT Monitor] Failed to publish Node config: {}", e);
                     }
                 }
                 Ok(Err(e)) => {
@@ -1193,10 +1189,7 @@ impl MqttMonitor {
                         .publish_error("get_sticker_config", "transport", &e)
                         .await
                     {
-                        eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker config error: {}",
-                            pe
-                        );
+                        eprintln!("[MQTT Monitor] Failed to publish Node config error: {}", pe);
                     }
                 }
                 Err(join_err) => {
@@ -1209,7 +1202,7 @@ impl MqttMonitor {
         });
     }
 
-    /// Spawn a detached task that reads *every* readable STICKER key and
+    /// Spawn a detached task that reads *every* readable Node key and
     /// publishes it to `lorawan/sensors/<dev_eui>/full-config`.
     ///
     /// Same engine as the settable read, a wider key list, a different topic. It
@@ -1219,7 +1212,7 @@ impl MqttMonitor {
     /// as `partial` with the missing keys named instead of being retried here. A
     /// retry would cost another full pass and produce the same answer if the
     /// device genuinely will not serve those keys.
-    fn spawn_sticker_full_config_read(
+    fn spawn_node_full_config_read(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
@@ -1229,12 +1222,12 @@ impl MqttMonitor {
         tokio::spawn(async move {
             let dev_eui_blocking = dev_eui.clone();
             let read = tokio::task::spawn_blocking(move || {
-                let keys = crate::libs::lorawan::sticker_command::all_readable_keys();
-                crate::libs::lorawan::sticker_config::read_config(
+                let keys = crate::libs::lorawan::node_command::all_readable_keys();
+                crate::libs::lorawan::node_config::read_config(
                     &handle,
                     &dev_eui_blocking,
                     &keys,
-                    sticker_command_timeout(&handle, &dev_eui_blocking),
+                    node_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1246,7 +1239,7 @@ impl MqttMonitor {
                         "complete".to_string()
                     } else {
                         eprintln!(
-                            "[MQTT Monitor] partial sticker full-config read: {} key(s) not read",
+                            "[MQTT Monitor] partial Node full-config read: {} key(s) not read",
                             cfg.failed_keys.len()
                         );
                         "partial".to_string()
@@ -1257,19 +1250,16 @@ impl MqttMonitor {
                         read_status,
                         cfg.config.len()
                     );
-                    let msg = MqttMessage::PublishStickerFullConfig {
+                    let msg = MqttMessage::PublishNodeFullConfig {
                         dev_eui,
-                        config: crate::libs::lorawan::sticker_config::config_to_json(&cfg.config),
+                        config: crate::libs::lorawan::node_config::config_to_json(&cfg.config),
                         page_count: cfg.page_count,
                         last_seq: cfg.last_seq,
                         read_status,
                         missing: cfg.failed_keys,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
-                        eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker full config: {}",
-                            e
-                        );
+                        eprintln!("[MQTT Monitor] Failed to publish Node full config: {}", e);
                     }
                 }
                 Ok(Err(e)) => {
@@ -1278,7 +1268,7 @@ impl MqttMonitor {
                         .await
                     {
                         eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker full config error: {}",
+                            "[MQTT Monitor] Failed to publish Node full config error: {}",
                             pe
                         );
                     }
@@ -1293,10 +1283,10 @@ impl MqttMonitor {
         });
     }
 
-    /// Spawn a detached task that writes a STICKER's fPort-85 config (validate →
+    /// Spawn a detached task that writes a Node's fPort-85 config (validate →
     /// SetParam batches), reads it back (unless save+reboot), and publishes the
     /// result to `lorawan/sensors/<dev_eui>/config` with the last Ack/Error.
-    fn spawn_sticker_config_write(
+    fn spawn_node_config_write(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
@@ -1306,7 +1296,7 @@ impl MqttMonitor {
         save: bool,
     ) {
         tokio::spawn(async move {
-            use crate::libs::lorawan::{sticker_command as sc, sticker_config};
+            use crate::libs::lorawan::{node_command as sc, node_config};
             let dev_eui_blocking = dev_eui.clone();
             let outcome = tokio::task::spawn_blocking(move || {
                 // Parse string values into typed ConfigValue (fail fast).
@@ -1319,12 +1309,12 @@ impl MqttMonitor {
                         Err(e) => return Err(format!("{}: {}", e.key, e.reason)),
                     }
                 }
-                let write = sticker_config::write_config(
+                let write = node_config::write_config(
                     &handle,
                     &dev_eui_blocking,
                     &config,
                     save,
-                    sticker_command_timeout(&handle, &dev_eui_blocking),
+                    node_command_timeout(&handle, &dev_eui_blocking),
                 )
                 .map_err(|errs| {
                     errs.iter()
@@ -1336,11 +1326,11 @@ impl MqttMonitor {
                 let read = if save {
                     None
                 } else {
-                    sticker_config::read_config(
+                    node_config::read_config(
                         &handle,
                         &dev_eui_blocking,
                         &[],
-                        sticker_command_timeout(&handle, &dev_eui_blocking),
+                        node_command_timeout(&handle, &dev_eui_blocking),
                     )
                     .ok()
                 };
@@ -1354,13 +1344,13 @@ impl MqttMonitor {
                     let last_result = write
                         .batches
                         .last()
-                        .map(sticker_config::batch_result)
+                        .map(node_config::batch_result)
                         .unwrap_or_else(|| "ok".to_string());
                     let (config_json, page_count) = match read {
-                        Some(cfg) => (sticker_config::config_to_json(&cfg.config), cfg.page_count),
+                        Some(cfg) => (node_config::config_to_json(&cfg.config), cfg.page_count),
                         None => (std::collections::BTreeMap::new(), 1),
                     };
-                    let msg = MqttMessage::PublishStickerConfig {
+                    let msg = MqttMessage::PublishNodeConfig {
                         dev_eui,
                         config: config_json,
                         page_index: 0,
@@ -1369,7 +1359,7 @@ impl MqttMonitor {
                         last_result,
                     };
                     if let Err(e) = publisher.handle_message(msg).await {
-                        eprintln!("[MQTT Monitor] Failed to publish sticker config: {}", e);
+                        eprintln!("[MQTT Monitor] Failed to publish Node config: {}", e);
                     }
                 }
                 Ok(Err(e)) => {
@@ -1377,10 +1367,7 @@ impl MqttMonitor {
                         .publish_error("set_sticker_config", "transport", &e)
                         .await
                     {
-                        eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker config error: {}",
-                            pe
-                        );
+                        eprintln!("[MQTT Monitor] Failed to publish Node config error: {}", pe);
                     }
                 }
                 Err(join_err) => {
@@ -1393,9 +1380,9 @@ impl MqttMonitor {
         });
     }
 
-    /// Spawn a detached task that requests a STICKER's on-device history and
+    /// Spawn a detached task that requests a Node's on-device history and
     /// publishes each returned frame to `lorawan/sensors/<dev_eui>/history`.
-    fn spawn_sticker_history_read(
+    fn spawn_node_history_read(
         client: AsyncClient,
         topics: TopicBuilder,
         publish_cfg: crate::libs::config::PublishConfig,
@@ -1405,15 +1392,15 @@ impl MqttMonitor {
         to_unix: Option<u32>,
     ) {
         tokio::spawn(async move {
-            use crate::libs::lorawan::sticker_config;
+            use crate::libs::lorawan::node_config;
             let dev_eui_blocking = dev_eui.clone();
             let result = tokio::task::spawn_blocking(move || {
-                sticker_config::read_history(
+                node_config::read_history(
                     &handle,
                     &dev_eui_blocking,
                     from_unix,
                     to_unix,
-                    sticker_command_timeout(&handle, &dev_eui_blocking),
+                    node_command_timeout(&handle, &dev_eui_blocking),
                 )
             })
             .await;
@@ -1423,40 +1410,37 @@ impl MqttMonitor {
                 Ok(Ok(hr)) => {
                     if !hr.complete {
                         eprintln!(
-                            "[MQTT Monitor] sticker history incomplete for {}: missing frames {:?}",
+                            "[MQTT Monitor] Node history incomplete for {}: missing frames {:?}",
                             dev_eui, hr.missing_indices
                         );
                     }
                     if hr.pages.is_empty() {
                         // Signal completion-with-no-data so the viewer can stop waiting
                         // (also covers the device reporting history_unavailable).
-                        let msg = MqttMessage::PublishStickerHistory {
+                        let msg = MqttMessage::PublishNodeHistory {
                             dev_eui: dev_eui.clone(),
                             frame_index: 0,
                             frame_count: 0,
                             records: Vec::new(),
                         };
                         if let Err(e) = publisher.handle_message(msg).await {
-                            eprintln!("[MQTT Monitor] Failed to publish sticker history: {}", e);
+                            eprintln!("[MQTT Monitor] Failed to publish Node history: {}", e);
                         }
                     } else {
                         for page in hr.pages {
                             let records: Vec<serde_json::Value> = page
                                 .records
                                 .iter()
-                                .map(sticker_config::history_record_to_json)
+                                .map(node_config::history_record_to_json)
                                 .collect();
-                            let msg = MqttMessage::PublishStickerHistory {
+                            let msg = MqttMessage::PublishNodeHistory {
                                 dev_eui: dev_eui.clone(),
                                 frame_index: page.frame_index,
                                 frame_count: page.frame_count,
                                 records,
                             };
                             if let Err(e) = publisher.handle_message(msg).await {
-                                eprintln!(
-                                    "[MQTT Monitor] Failed to publish sticker history: {}",
-                                    e
-                                );
+                                eprintln!("[MQTT Monitor] Failed to publish Node history: {}", e);
                             }
                         }
                     }
@@ -1467,7 +1451,7 @@ impl MqttMonitor {
                         .await
                     {
                         eprintln!(
-                            "[MQTT Monitor] Failed to publish sticker history error: {}",
+                            "[MQTT Monitor] Failed to publish Node history error: {}",
                             pe
                         );
                     }
@@ -2401,7 +2385,7 @@ impl MqttMonitor {
 
                                                 // Unsigned control command (#71).
                                                 // Rate-limited per device below.
-                                                MqttCommand::StickerForceSend { ref dev_eui } => {
+                                                MqttCommand::NodeForceSend { ref dev_eui } => {
                                                     let dev_eui = dev_eui.clone();
                                                     match lorawan_handle_slot
                                                         .lock()
@@ -2409,12 +2393,12 @@ impl MqttMonitor {
                                                         .and_then(|g| g.clone())
                                                     {
                                                         Some(lr_handle) => {
-                                                            Self::spawn_sticker_command(
+                                                            Self::spawn_node_command(
                                                                 client.clone(),
                                                                 topics.clone(),
                                                                 config.publish.clone(),
                                                                 lr_handle,
-                                                                MqttCommand::StickerForceSend { dev_eui },
+                                                                MqttCommand::NodeForceSend { dev_eui },
                                                             );
                                                         }
                                                         None => {
@@ -2431,14 +2415,14 @@ impl MqttMonitor {
                                                         }
                                                     }
                                                 }
-                                                MqttCommand::GetStickerInfo { dev_eui } => {
+                                                MqttCommand::GetNodeInfo { dev_eui } => {
                                                     match lorawan_handle_slot
                                                         .lock()
                                                         .ok()
                                                         .and_then(|g| g.clone())
                                                     {
                                                         Some(lr_handle) => {
-                                                            Self::spawn_sticker_info_read(
+                                                            Self::spawn_node_info_read(
                                                                 client.clone(),
                                                                 topics.clone(),
                                                                 config.publish.clone(),
@@ -2460,14 +2444,14 @@ impl MqttMonitor {
                                                         }
                                                     }
                                                 }
-                                                MqttCommand::GetStickerConfig { dev_eui, keys } => {
+                                                MqttCommand::GetNodeConfig { dev_eui, keys } => {
                                                     match lorawan_handle_slot
                                                         .lock()
                                                         .ok()
                                                         .and_then(|g| g.clone())
                                                     {
                                                         Some(lr_handle) => {
-                                                            Self::spawn_sticker_config_read(
+                                                            Self::spawn_node_config_read(
                                                                 client.clone(),
                                                                 topics.clone(),
                                                                 config.publish.clone(),
@@ -2491,14 +2475,14 @@ impl MqttMonitor {
                                                     }
                                                 }
 
-                                                MqttCommand::GetStickerFullConfig { dev_eui } => {
+                                                MqttCommand::GetNodeFullConfig { dev_eui } => {
                                                     match lorawan_handle_slot
                                                         .lock()
                                                         .ok()
                                                         .and_then(|g| g.clone())
                                                     {
                                                         Some(lr_handle) => {
-                                                            Self::spawn_sticker_full_config_read(
+                                                            Self::spawn_node_full_config_read(
                                                                 client.clone(),
                                                                 topics.clone(),
                                                                 config.publish.clone(),
@@ -2521,14 +2505,14 @@ impl MqttMonitor {
                                                     }
                                                 }
 
-                                                MqttCommand::GetStickerHistory { dev_eui, from_unix, to_unix } => {
+                                                MqttCommand::GetNodeHistory { dev_eui, from_unix, to_unix } => {
                                                     match lorawan_handle_slot
                                                         .lock()
                                                         .ok()
                                                         .and_then(|g| g.clone())
                                                     {
                                                         Some(lr_handle) => {
-                                                            Self::spawn_sticker_history_read(
+                                                            Self::spawn_node_history_read(
                                                                 client.clone(),
                                                                 topics.clone(),
                                                                 config.publish.clone(),
@@ -3158,8 +3142,8 @@ impl MqttMonitor {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
             }),
-            "set_sticker_config" => MqttCommand::parse_set_sticker_config(params),
-            "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(params),
+            "set_sticker_config" => MqttCommand::parse_set_node_config(params),
+            "send_sticker_raw" => MqttCommand::parse_send_node_raw(params),
             "set_eye_enabled" => {
                 let enabled = params
                     .get("enabled")
@@ -3294,7 +3278,7 @@ impl MqttMonitor {
         }
     }
 
-    /// Dispatch a resolved (authorized) config command. `set_sticker_config` is
+    /// Dispatch a resolved (authorized) config command. `set_node_config` is
     /// an async fPort-85 write that publishes its own result, so it is spawned
     /// here; every other command delegates to the synchronous executor.
     #[allow(clippy::too_many_arguments)]
@@ -3321,7 +3305,7 @@ impl MqttMonitor {
         publish_cfg: &crate::libs::config::PublishConfig,
         export_handle_slot: &SharedExportHandle,
     ) -> Result<(), String> {
-        if let MqttCommand::SendStickerRaw {
+        if let MqttCommand::SendNodeRaw {
             dev_eui,
             bytes,
             fport,
@@ -3339,15 +3323,15 @@ impl MqttMonitor {
         // rather than to on-disk config.
         if matches!(
             cmd,
-            MqttCommand::StickerReboot { .. }
-                | MqttCommand::StickerDeviceReset { .. }
-                | MqttCommand::StickerResetCounters { .. }
-                | MqttCommand::StickerClockSync { .. }
-                | MqttCommand::StickerForceSend { .. }
+            MqttCommand::NodeReboot { .. }
+                | MqttCommand::NodeDeviceReset { .. }
+                | MqttCommand::NodeResetCounters { .. }
+                | MqttCommand::NodeClockSync { .. }
+                | MqttCommand::NodeForceSend { .. }
         ) {
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
                 Some(handle) => {
-                    Self::spawn_sticker_command(
+                    Self::spawn_node_command(
                         client.clone(),
                         topics.clone(),
                         publish_cfg.clone(),
@@ -3359,7 +3343,7 @@ impl MqttMonitor {
                 None => Err("LoRaWAN command handle not available".to_string()),
             };
         }
-        if let MqttCommand::SetStickerConfig {
+        if let MqttCommand::SetNodeConfig {
             dev_eui,
             fields,
             save,
@@ -3367,7 +3351,7 @@ impl MqttMonitor {
         {
             return match lorawan_handle_slot.lock().ok().and_then(|g| g.clone()) {
                 Some(handle) => {
-                    Self::spawn_sticker_config_write(
+                    Self::spawn_node_config_write(
                         client.clone(),
                         topics.clone(),
                         publish_cfg.clone(),
@@ -3382,10 +3366,10 @@ impl MqttMonitor {
             };
         }
         // Captured before `cmd` is moved: a successful removal has to clear the
-        // sticker's retained device-info topic, or the broker replays a
+        // Node's retained device-info topic, or the broker replays a
         // decommissioned device's info to every new subscriber indefinitely (#65).
-        let removed_sticker = match &cmd {
-            MqttCommand::RemoveLoRaWANSticker { dev_eui } => Some(dev_eui.clone()),
+        let removed_node = match &cmd {
+            MqttCommand::RemoveLoRaWANNode { dev_eui } => Some(dev_eui.clone()),
             _ => None,
         };
         let result = Self::execute_config_command(
@@ -3404,17 +3388,14 @@ impl MqttMonitor {
             export_handle_slot,
         );
         if result.is_ok() {
-            if let Some(dev_eui) = removed_sticker {
+            if let Some(dev_eui) = removed_node {
                 let publisher = MqttPublisher::new(client.clone(), topics.clone(), publish_cfg);
                 tokio::spawn(async move {
                     if let Err(e) = publisher
-                        .handle_message(MqttMessage::ClearStickerInfo { dev_eui })
+                        .handle_message(MqttMessage::ClearNodeInfo { dev_eui })
                         .await
                     {
-                        eprintln!(
-                            "[MQTT Monitor] Failed to clear retained sticker info: {}",
-                            e
-                        );
+                        eprintln!("[MQTT Monitor] Failed to clear retained Node info: {}", e);
                     }
                 });
             }
@@ -3990,25 +3971,25 @@ impl MqttMonitor {
                     Err("Config applier not initialized".to_string())
                 }
             }
-            MqttCommand::AddLoRaWANSticker {
+            MqttCommand::AddLoRaWANNode {
                 dev_eui,
                 name,
                 serial_number,
                 activation,
             } => {
                 let lorawan_state = lorawan_state_slot.lock().ok().and_then(|g| g.clone());
-                let deps = crate::libs::lorawan::StickerAddDeps {
+                let deps = crate::libs::lorawan::NodeAddDeps {
                     config_applier: config_applier.clone(),
                     storage: storage_handle.clone(),
                     lorawan_configs: lorawan_configs.clone(),
                     lorawan_state,
                 };
-                crate::libs::lorawan::add_lorawan_sticker(
+                crate::libs::lorawan::add_lorawan_node(
                     &deps, dev_eui, name, serial_number, activation,
                 )
             }
-            MqttCommand::RemoveLoRaWANSticker { dev_eui } => {
-                eprintln!("[MQTT Monitor] Removing sticker {} ...", dev_eui);
+            MqttCommand::RemoveLoRaWANNode { dev_eui } => {
+                eprintln!("[MQTT Monitor] Removing Node {} ...", dev_eui);
                 if let Some(applier) = config_applier {
                     let result = applier.remove_lorawan_sensor_config(dev_eui.clone());
                     if result.success {
@@ -4030,9 +4011,9 @@ impl MqttMonitor {
                         // Best-effort: remove from ChirpStack so the device disappears
                         // from the network server too. Failure is logged but not fatal —
                         // local config is the source of truth.
-                        match crate::libs::lorawan::provisioning::deprovision_sticker(&dev_eui) {
+                        match crate::libs::lorawan::provisioning::deprovision_node(&dev_eui) {
                             Ok(()) => eprintln!(
-                                "[MQTT Monitor] ✓ Sticker {} removed from ChirpStack",
+                                "[MQTT Monitor] ✓ Node {} removed from ChirpStack",
                                 dev_eui
                             ),
                             Err(e) => eprintln!(
@@ -4040,7 +4021,7 @@ impl MqttMonitor {
                                 dev_eui, e
                             ),
                         }
-                        eprintln!("[MQTT Monitor] ✓ LoRaWAN sticker {} removed", dev_eui);
+                        eprintln!("[MQTT Monitor] ✓ LoRaWAN Node {} removed", dev_eui);
                         Ok(())
                     } else {
                         Err(result.error_message.unwrap_or_else(|| "Unknown error".to_string()))
@@ -4126,8 +4107,8 @@ impl MqttMonitor {
 
                 // Step 2: the one-publisher invariant. A follower contributes its
                 // radio, not its reports — only the leader's fiber_app may
-                // publish a sticker's telemetry, or the viewer sees two sources
-                // for one sticker and history double-counts.
+                // publish a Node's telemetry, or the viewer sees two sources
+                // for one Node and history double-counts.
                 let want_lorawan = parsed_role != ClusterRole::Follower;
                 if let Some(applier) = config_applier {
                     let result = applier.apply_lorawan_enabled(want_lorawan);
@@ -4156,7 +4137,7 @@ impl MqttMonitor {
                 // from a gateway ChirpStack does not know are discarded, so
                 // without this a follower's frames arrive on the leader's broker
                 // and go nowhere — the failure mode looks like a working forward
-                // and a silent sticker. Idempotent both ways, and best-effort:
+                // and a silent Node. Idempotent both ways, and best-effort:
                 // it can be redone from the UI, whereas losing the arm cannot.
                 if parsed_role == ClusterRole::Leader {
                     if let Some(eui) = arm.peer_gateway_eui.as_deref() {
@@ -5384,37 +5365,37 @@ mod tests {
     }
 
     /// The derivation under test, isolated from the handle so a unit test does not
-    /// need a live monitor: mirrors `sticker_command_timeout`'s clamp.
+    /// need a live monitor: mirrors `node_command_timeout`'s clamp.
     fn derive(cadence: Option<u64>) -> std::time::Duration {
         match cadence {
             Some(secs) if secs > 0 => {
-                std::time::Duration::from_secs_f64(secs as f64 * STICKER_COMMAND_CADENCE_FACTOR)
-                    .clamp(STICKER_COMMAND_TIMEOUT, STICKER_COMMAND_TIMEOUT_CAP)
+                std::time::Duration::from_secs_f64(secs as f64 * NODE_COMMAND_CADENCE_FACTOR)
+                    .clamp(NODE_COMMAND_TIMEOUT, NODE_COMMAND_TIMEOUT_CAP)
             }
-            _ => STICKER_COMMAND_TIMEOUT_UNKNOWN,
+            _ => NODE_COMMAND_TIMEOUT_UNKNOWN,
         }
     }
 
     #[test]
     fn fport85_timeout_is_patient_when_the_cadence_is_unknown() {
-        // Not the floor: "unknown" cannot rule out a slow sticker, and assuming a
+        // Not the floor: "unknown" cannot rule out a slow Node, and assuming a
         // fast one is what made the first read after a restart the likeliest to fail.
-        assert_eq!(derive(None), STICKER_COMMAND_TIMEOUT_UNKNOWN);
-        assert_eq!(derive(Some(0)), STICKER_COMMAND_TIMEOUT_UNKNOWN);
-        assert!(STICKER_COMMAND_TIMEOUT_UNKNOWN > STICKER_COMMAND_TIMEOUT);
+        assert_eq!(derive(None), NODE_COMMAND_TIMEOUT_UNKNOWN);
+        assert_eq!(derive(Some(0)), NODE_COMMAND_TIMEOUT_UNKNOWN);
+        assert!(NODE_COMMAND_TIMEOUT_UNKNOWN > NODE_COMMAND_TIMEOUT);
     }
 
     #[test]
-    fn fport85_timeout_keeps_the_floor_for_fast_stickers() {
-        // A 60 s sticker needs 150 s by the factor, which is under the floor — the
+    fn fport85_timeout_keeps_the_floor_for_fast_nodes() {
+        // A 60 s Node needs 150 s by the factor, which is under the floor — the
         // previous behaviour must be preserved for everything that already worked.
-        assert_eq!(derive(Some(60)), STICKER_COMMAND_TIMEOUT);
+        assert_eq!(derive(Some(60)), NODE_COMMAND_TIMEOUT);
     }
 
     #[test]
-    fn fport85_timeout_covers_a_900s_sticker() {
+    fn fport85_timeout_covers_a_900s_node() {
         // The reported case. Every chunk of a config read used to expire at the fixed
-        // 180 s — before the sticker's next RX window — so the read returned nothing.
+        // 180 s — before the Node's next RX window — so the read returned nothing.
         let t = derive(Some(900));
         assert!(
             t.as_secs() >= 2 * 900,
@@ -5431,7 +5412,7 @@ mod tests {
         for cadence in [900u64, 1800, 3600, 7200] {
             assert_eq!(
                 derive(Some(cadence)).as_secs(),
-                (cadence as f64 * STICKER_COMMAND_CADENCE_FACTOR) as u64,
+                (cadence as f64 * NODE_COMMAND_CADENCE_FACTOR) as u64,
                 "cadence {cadence}s must derive exactly, not hit a cap"
             );
         }
@@ -5441,8 +5422,8 @@ mod tests {
     fn fport85_timeout_is_capped_for_an_absurd_cadence() {
         // A ceiling still exists, but only where a full read is hopeless anyway —
         // and the derivation logs when it bites, so it is never silent.
-        assert_eq!(derive(Some(24 * 3600)), STICKER_COMMAND_TIMEOUT_CAP);
-        assert!(STICKER_COMMAND_TIMEOUT_CAP.as_secs() >= 6 * 3600);
+        assert_eq!(derive(Some(24 * 3600)), NODE_COMMAND_TIMEOUT_CAP);
+        assert!(NODE_COMMAND_TIMEOUT_CAP.as_secs() >= 6 * 3600);
     }
 }
 

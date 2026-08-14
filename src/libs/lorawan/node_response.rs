@@ -1,4 +1,4 @@
-//! In-app decoding of STICKER fPort-85 `Response` messages (command/response
+//! In-app decoding of NODE fPort-85 `Response` messages (command/response
 //! protocol, #34). A `Response` carries the original command `seq` plus one of
 //! Ack / Info (#65) / ConfigDump (#70) / HistoryFrame (#39) / Error / W1Scan.
 //!
@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use prost::Message;
 
-use super::sticker_proto::{response, Response};
+use super::node_proto::{response, Response};
 
 /// One expanded history record (timestamp + decoded sensor values), produced
 /// from a `HistoryFrame.samples` blob (#39).
@@ -34,7 +34,7 @@ enum Enc {
 }
 
 /// `present`-mask bit order → (name, encoding). Mirrors `app_history_sensor`
-/// enum in sticker-firmware `app_history.c` / the `ttn.js` `_HIST_SENSORS` table.
+/// enum in node-firmware `app_history.c` / the `ttn.js` `_HIST_SENSORS` table.
 const HIST_SENSORS: &[(&str, Enc)] = &[
     ("temperature", Enc::Temp),
     ("humidity", Enc::Hum),
@@ -144,7 +144,7 @@ pub struct DecodedResponse {
 
 /// One latched alarm from `Response.Info.active_alarms` (proto field 15). The
 /// numeric ids share the `app_alarm_source` / `app_alarm_quantity` enums used by
-/// fPort-3 alarm reports, so `sticker_alarm`'s name tables resolve them.
+/// fPort-3 alarm reports, so `node_alarm`'s name tables resolve them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveAlarm {
     pub source: u32,
@@ -154,7 +154,7 @@ pub struct ActiveAlarm {
 }
 
 /// A decoded `Response.Info` (fPort-85 `GetInfo` reply, and the unsolicited
-/// `seq=0` Info the sticker emits on every join).
+/// `seq=0` Info the node emits on every join).
 ///
 /// Its own struct rather than an inline enum variant: v1.4.0 takes this to 13
 /// fields, and the previous inline form meant every exhaustive `match` pattern
@@ -523,7 +523,7 @@ pub fn device_status_flags(v: u32) -> Vec<String> {
 }
 
 /// `Response.Error.Code` → the stable string the control socket and MQTT expose.
-/// Mirrors the enum in `app_config.proto` @ sticker `v1.4.0`. A code this table
+/// Mirrors the enum in `app_config.proto` @ node `v1.4.0`. A code this table
 /// does not know collapses to "unknown", so a firmware that adds one needs a
 /// line here before the UI can tell it apart.
 fn error_code_name(v: i32) -> &'static str {
@@ -616,10 +616,10 @@ pub fn decode_response(bytes: &[u8]) -> Result<DecodedResponse, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::sticker_proto::app_config_message::{
+    use crate::libs::lorawan::node_proto::app_config_message::{
         self, Application, Lorawan, Sensors,
     };
-    use crate::libs::lorawan::sticker_proto::{response, Response};
+    use crate::libs::lorawan::node_proto::{response, Response};
 
     #[test]
     fn config_dump_round_trip() {
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn real_e2e_fport85_config_dump_decodes() {
-        // GOLDEN VECTOR: live fPort-85 Response{ConfigDump} from a STICKER,
+        // GOLDEN VECTOR: live fPort-85 Response{ConfigDump} from a NODE,
         // captured as the on-wire payload (incl. 0x01 proto-version byte) the
         // firmware queues for fPort 85. Produced by a selective GetParam
         // requesting lorawan{region,adr,activation}, application{interval_report,
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn v140_error_codes_not_supported_and_not_writable_decode() {
-        // Both codes are new in sticker v1.4.0 and used on paths this branch adds:
+        // Both codes are new in node v1.4.0 and used on paths this branch adds:
         //   NOT_WRITABLE (8) — any `lorawan.*` write over LoRaWAN. fault_field is
         //     group-encoded, so 104 is lorawan (group 1) field 4 = adr.
         //   NOT_SUPPORTED (7) — an unknown/removed command tag.
@@ -986,7 +986,7 @@ mod tests {
 
     #[test]
     fn real_e2e_fport85_info_decodes() {
-        // GOLDEN VECTOR: live fPort-85 `Response{Info}` captured from a STICKER
+        // GOLDEN VECTOR: live fPort-85 `Response{Info}` captured from a NODE
         // (get_info reply), with the 0x01 proto-version byte stripped. Confirms
         // the in-app Response decode against real firmware output.
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn real_e2e_fport85_unsolicited_info_on_join() {
-        // GOLDEN VECTOR: the unsolicited device-info the STICKER sends as its FIRST
+        // GOLDEN VECTOR: the unsolicited device-info the NODE sends as its FIRST
         // uplink after every join (fCnt=1, seq=0), captured live on a FIBER device
         // after `ats device reboot`. seq=0 => no pending command, so it is routed by
         // dev_eui rather than by seq correlation.
@@ -1127,7 +1127,7 @@ mod tests {
     #[test]
     fn real_e2e_fport85_history_frame_decodes() {
         // GOLDEN VECTOR: live fPort-85 Response{HistoryFrame} captured from a
-        // STICKER (ReqHistory reply) over RF -> local RAK gateway -> ChirpStack
+        // NODE (ReqHistory reply) over RF -> local RAK gateway -> ChirpStack
         // on a FIBER device. Validates expand_history_frame against real output.
         use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
         let raw = B64

@@ -287,7 +287,7 @@ pub struct BeaconTagConfig {
     pub recording: Option<bool>,
 
     /// Per-field alarm thresholds (fields: `temperature`, `humidity`), reusing
-    /// the LoRaWAN sticker field-threshold model.
+    /// the LoRaWAN node field-threshold model.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
 

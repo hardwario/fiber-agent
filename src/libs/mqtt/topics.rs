@@ -197,12 +197,12 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors"])
     }
 
-    /// Per-sticker fPort-85 config read-back result (Feature C).
+    /// Per-node fPort-85 config read-back result (Feature C).
     pub fn lorawan_sensor_config(&self, dev_eui: &str) -> String {
         self.build(&["lorawan", "sensors", dev_eui, "config"])
     }
 
-    /// Per-sticker full non-secret config read-back — every readable key, not
+    /// Per-node full non-secret config read-back — every readable key, not
     /// just the settable ones. Deliberately a separate topic from `config`: a
     /// Feature-C write publishes to `config`, and if the wide read shared that
     /// topic each write would clobber the read-only snapshot the drawer renders.
@@ -211,13 +211,13 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors", dev_eui, "full-config"])
     }
 
-    /// Per-sticker fPort-85 history page (Feature D).
+    /// Per-node fPort-85 history page (Feature D).
     pub fn lorawan_sensor_history(&self, dev_eui: &str) -> String {
         self.build(&["lorawan", "sensors", dev_eui, "history"])
     }
 
-    /// Per-sticker fPort-85 device info (`GetInfo`, #65). Published **retained**:
-    /// it is the device's identity and last-known health, and a sticker only
+    /// Per-node fPort-85 device info (`GetInfo`, #65). Published **retained**:
+    /// it is the device's identity and last-known health, and a node only
     /// speaks every `interval_report` (900 s by default), so a reconnecting
     /// viewer must be able to render a firmware version without waiting for an
     /// operator to re-query. Contrast `lorawan_sensor_config`, which is the answer
@@ -226,7 +226,7 @@ impl TopicBuilder {
         self.build(&["lorawan", "sensors", dev_eui, "info"])
     }
 
-    /// Per-sticker control-command outcome (#71). **Not** retained: it is the
+    /// Per-node control-command outcome (#71). **Not** retained: it is the
     /// result of one operator action, and a replayed copy would read as a fresh
     /// command to a reconnecting viewer.
     pub fn lorawan_sensor_command(&self, dev_eui: &str) -> String {
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sticker_subtopics() {
+    fn test_node_subtopics() {
         let builder = TopicBuilder::new("fiber".to_string(), "DEVICE001".to_string(), true);
         assert_eq!(
             builder.lorawan_sensor_config("0102030405060708"),

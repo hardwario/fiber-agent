@@ -2,8 +2,8 @@
 //!
 //! # The problem
 //!
-//! Every FIBER runs its own private ChirpStack, and a STICKER's OTAA session
-//! lives in exactly one of them. A sticker at the edge of one unit's range — or
+//! Every FIBER runs its own private ChirpStack, and a NODE's OTAA session
+//! lives in exactly one of them. A node at the edge of one unit's range — or
 //! one that moves between rooms — is simply unreachable, and the issue offers
 //! only two ways out: a single fleet-wide ChirpStack, or replicating session
 //! keys between instances.
@@ -230,7 +230,7 @@ pub fn ca_fingerprint_sha256(pem: &str) -> Result<String, String> {
 ///
 /// The cluster is deliberately site-local: the leader's broker is a medical
 /// device's broker, and a Class-A downlink has to be scheduled inside the
-/// sticker's RX window, which a WAN round trip will not reliably make. A public
+/// node's RX window, which a WAN round trip will not reliably make. A public
 /// address is refused rather than merely discouraged.
 ///
 /// Accepts RFC1918, CGNAT (`100.64.0.0/10` — the range both office units

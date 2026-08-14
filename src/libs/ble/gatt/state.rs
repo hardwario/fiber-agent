@@ -12,7 +12,7 @@ use crate::libs::config_applier::ConfigApplier;
 use crate::libs::network::SharedProvisioningSession;
 
 use super::beacon_add::SharedResult as BeaconAddResultSlot;
-use super::sticker::SharedResult as StickerResultSlot;
+use super::node::SharedResult as NodeResultSlot;
 use super::terminal::ShellProcess;
 
 pub struct ServiceState {
@@ -32,7 +32,7 @@ pub struct ServiceState {
     /// can mutate `system.device_label` atomically. `None` only in tests
     /// or when the applier failed to construct at boot.
     pub config_applier: Option<Arc<ConfigApplier>>,
-    /// Handles for the FB0D sticker-add path (mirror the MQTT add). `storage`
+    /// Handles for the FB0D node-add path (mirror the MQTT add). `storage`
     /// and `lorawan_configs` exist before the BLE monitor starts; the LoRaWAN
     /// shared state is created later, so it is delivered through a slot the
     /// main thread fills once the LoRaWAN monitor is up (same as MQTT's
@@ -46,11 +46,11 @@ pub struct ServiceState {
     /// Result of the most recent FB0D enrollment, scoped to this GATT-server
     /// instance. Cleared on BLE disconnect so one client cannot read another
     /// client's pending or completed result.
-    pub sticker_result: StickerResultSlot,
+    pub node_result: NodeResultSlot,
     /// Handle to the background enrollment task (if any). Aborted on
     /// disconnect so a slow add cannot keep running and overwrite the slot
     /// after the originating peer is gone.
-    pub sticker_task: Option<tokio::task::JoinHandle<()>>,
+    pub node_task: Option<tokio::task::JoinHandle<()>>,
     /// Result of the most recent FB0E EYE-tag-add write, scoped to this
     /// GATT-server instance. Cleared on BLE disconnect. Enrollment is a
     /// synchronous local YAML write, so (unlike FB0D) there is no task handle.
@@ -86,18 +86,18 @@ impl ServiceState {
             lorawan_state_slot,
             terminal_notifier: None,
             shell_process: None,
-            sticker_result: super::sticker::new_slot(),
-            sticker_task: None,
+            node_result: super::node::new_slot(),
+            node_task: None,
             beacon_add_result: super::beacon_add::new_slot(),
             lan_apply_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Bundle the handles the FB0D sticker-add path needs. The LoRaWAN shared
+    /// Bundle the handles the FB0D node-add path needs. The LoRaWAN shared
     /// state is read from its slot at call time (it may still be empty early in
     /// boot before the LoRaWAN monitor fills it).
-    pub fn sticker_deps(&self) -> crate::libs::lorawan::StickerAddDeps {
-        crate::libs::lorawan::StickerAddDeps {
+    pub fn node_deps(&self) -> crate::libs::lorawan::NodeAddDeps {
+        crate::libs::lorawan::NodeAddDeps {
             config_applier: self.config_applier.clone(),
             storage: self.storage.clone(),
             lorawan_configs: self.lorawan_configs.clone(),

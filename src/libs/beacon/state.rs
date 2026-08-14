@@ -105,7 +105,7 @@ impl BeaconTagState {
 
     /// Evaluate the current temperature/humidity against the tag's configured
     /// field thresholds, producing per-field + aggregate alarm state. Reuses the
-    /// LoRaWAN sticker classifier so behaviour matches sticker field alarms.
+    /// LoRaWAN node classifier so behaviour matches node field alarms.
     ///
     /// Only the measured quantities are threshold-driven (phase 1). `battery` and
     /// `movement` are deliberately absent from the match, so a stored threshold row
@@ -495,7 +495,7 @@ mod tests {
         // Phase 1 withdrew the configurable battery band — a threshold row left over
         // from before must not alarm. The tag's own hardware low-battery assertion is
         // a different thing and must survive: it is the real signal, the analogue of
-        // the sticker's native fPort-3 battery alarm.
+        // the node's native fPort-3 battery alarm.
         let cfg = BeaconTagConfig {
             mac: "AA:BB:CC:DD:EE:FF".into(),
             name: None,

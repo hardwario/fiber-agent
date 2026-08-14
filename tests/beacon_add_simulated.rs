@@ -1,6 +1,6 @@
 //! Simulated FB0E "EYE Tag Add" enrollment without a BLE stack.
 //!
-//! Mirrors `sticker_add_simulated.rs` (FB0D): drive the FB0E write flow
+//! Mirrors `node_add_simulated.rs` (FB0D): drive the FB0E write flow
 //! (parse → prepare → apply_beacon_tag_config → store) against a real
 //! `ConfigApplier` on a temp dir, and assert on the resulting response slot and
 //! the persisted `eye.tags[]`. The live-config / in-memory-state seed in the

@@ -39,7 +39,7 @@ const DEVICE_LABEL_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0A_0000_1000_8000_00805F9B34FB);
 const TIME_SET_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0B_0000_1000_8000_00805F9B34FB);
-const STICKER_ADD_CHAR_UUID: uuid::Uuid =
+const NODE_ADD_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0D_0000_1000_8000_00805F9B34FB);
 const BEACON_ADD_CHAR_UUID: uuid::Uuid =
     uuid::Uuid::from_u128(0x0000FB0E_0000_1000_8000_00805F9B34FB);
@@ -461,13 +461,13 @@ pub async fn create_gatt_app(
         ..Default::default()
     };
 
-    // --- Sticker Add characteristic (FB0D) ------------------------------------
+    // --- Node Add characteristic (FB0D) ------------------------------------
     // Write {"deveui","joineui","appkey","name","serial_number"} to enroll a
-    // LoRaWAN sticker (OTAA) into the local ChirpStack via the shared add path
-    // (same as MQTT's AddLoRaWANSticker). Read returns the structured result of
+    // LoRaWAN node (OTAA) into the local ChirpStack via the shared add path
+    // (same as MQTT's AddLoRaWANNode). Read returns the structured result of
     // the most recent write. Auth-gated, mirrors FB09/FB01.
-    let sticker_add_char = Characteristic {
-        uuid: STICKER_ADD_CHAR_UUID.into(),
+    let node_add_char = Characteristic {
+        uuid: NODE_ADD_CHAR_UUID.into(),
         write: Some(CharacteristicWrite {
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new({
@@ -475,12 +475,12 @@ pub async fn create_gatt_app(
                 move |new_value, peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
-                        use crate::libs::ble::gatt::sticker;
+                        use crate::libs::ble::gatt::node;
 
                         // Bound the request before any parsing work — a
                         // malicious peer could otherwise push megabytes
                         // through serde_json before validation rejects it.
-                        if new_value.len() > sticker::MAX_PAYLOAD_BYTES {
+                        if new_value.len() > node::MAX_PAYLOAD_BYTES {
                             return Err(ReqError::InvalidValueLength);
                         }
 
@@ -495,36 +495,35 @@ pub async fn create_gatt_app(
                         // a fast peer could pile up unbounded blocking
                         // workers and the result slot would be clobbered
                         // mid-flight.
-                        let slot = state_guard.sticker_result.clone();
-                        if sticker::read(&slot).pending {
+                        let slot = state_guard.node_result.clone();
+                        if node::read(&slot).pending {
                             return Err(ReqError::Failed);
                         }
 
-                        let req: sticker::StickerAddRequest =
-                            match serde_json::from_slice(&new_value) {
-                                Ok(r) => r,
-                                Err(_) => {
-                                    // Record the failure so the FB0D read
-                                    // does not surface a stale prior result.
-                                    sticker::store(
-                                        &slot,
-                                        sticker::StickerAddResponse {
-                                            pending: false,
-                                            success: false,
-                                            message: "invalid json".to_string(),
-                                            deveui: String::new(),
-                                        },
-                                    );
-                                    return Err(ReqError::Failed);
-                                }
-                            };
+                        let req: node::NodeAddRequest = match serde_json::from_slice(&new_value) {
+                            Ok(r) => r,
+                            Err(_) => {
+                                // Record the failure so the FB0D read
+                                // does not surface a stale prior result.
+                                node::store(
+                                    &slot,
+                                    node::NodeAddResponse {
+                                        pending: false,
+                                        success: false,
+                                        message: "invalid json".to_string(),
+                                        deveui: String::new(),
+                                    },
+                                );
+                                return Err(ReqError::Failed);
+                            }
+                        };
 
-                        let prepared = match sticker::prepare(&req) {
+                        let prepared = match node::prepare(&req) {
                             Ok(p) => p,
                             Err(msg) => {
-                                sticker::store(
+                                node::store(
                                     &slot,
-                                    sticker::StickerAddResponse {
+                                    node::NodeAddResponse {
                                         pending: false,
                                         success: false,
                                         message: msg,
@@ -535,7 +534,7 @@ pub async fn create_gatt_app(
                             }
                         };
 
-                        // add_lorawan_sticker drives ChirpStack gRPC + disk
+                        // add_lorawan_node drives ChirpStack gRPC + disk
                         // writes that take seconds — longer than the BLE
                         // write-response ACK. So we ACK the write immediately
                         // and run the enrollment in the background; the
@@ -543,9 +542,9 @@ pub async fn create_gatt_app(
                         // result). A synchronous wait here returned a GATT
                         // UNLIKELY_ERROR on a real device even though the
                         // add succeeded.
-                        let deps = state_guard.sticker_deps();
+                        let deps = state_guard.node_deps();
                         let dev_eui = prepared.dev_eui.clone();
-                        if !sticker::try_begin(&slot, dev_eui.clone()) {
+                        if !node::try_begin(&slot, dev_eui.clone()) {
                             // Lost a race against another concurrent writer
                             // that got the slot first; behave like the
                             // pending-guard above.
@@ -555,13 +554,13 @@ pub async fn create_gatt_app(
                         // Drop any prior task handle (it must already be
                         // done — the pending-guard guarantees this) before
                         // we own the new one.
-                        if let Some(prev) = state_guard.sticker_task.take() {
+                        if let Some(prev) = state_guard.node_task.take() {
                             prev.abort();
                         }
                         let slot_for_task = slot.clone();
                         let handle = tokio::spawn(async move {
                             let result = tokio::task::spawn_blocking(move || {
-                                crate::libs::lorawan::add_lorawan_sticker(
+                                crate::libs::lorawan::add_lorawan_node(
                                     &deps,
                                     prepared.dev_eui,
                                     prepared.name,
@@ -571,17 +570,17 @@ pub async fn create_gatt_app(
                             })
                             .await
                             .unwrap_or_else(|join_err| {
-                                eprintln!("[gatt::sticker] enrollment task failed: {join_err}");
+                                eprintln!("[gatt::node] enrollment task failed: {join_err}");
                                 Err("internal task error".to_string())
                             });
 
                             let (success, message) = match &result {
-                                Ok(()) => (true, "sticker enrolled".to_string()),
+                                Ok(()) => (true, "node enrolled".to_string()),
                                 Err(e) => (false, e.clone()),
                             };
-                            sticker::store(
+                            node::store(
                                 &slot_for_task,
-                                sticker::StickerAddResponse {
+                                node::NodeAddResponse {
                                     pending: false,
                                     success,
                                     message,
@@ -589,7 +588,7 @@ pub async fn create_gatt_app(
                                 },
                             );
                         });
-                        state_guard.sticker_task = Some(handle);
+                        state_guard.node_task = Some(handle);
                         drop(state_guard);
                         Ok(())
                     })
@@ -604,15 +603,15 @@ pub async fn create_gatt_app(
                 move |peer_req| {
                     let state = state.clone();
                     Box::pin(async move {
-                        use crate::libs::ble::gatt::sticker;
+                        use crate::libs::ble::gatt::node;
                         let state_guard = state.lock().await;
                         crate::libs::network::touch_shared(&state_guard.provisioning_session);
                         if !state_guard.is_authenticated_for(peer_req.device_address) {
                             return Err(ReqError::NotAuthorized);
                         }
-                        let slot = state_guard.sticker_result.clone();
+                        let slot = state_guard.node_result.clone();
                         drop(state_guard);
-                        let resp = sticker::read(&slot);
+                        let resp = node::read(&slot);
                         Ok(serde_json::to_vec(&resp).unwrap_or_default())
                     })
                 }
@@ -1062,7 +1061,7 @@ pub async fn create_gatt_app(
         device_info_char,
         device_label_char,
         time_set_char,
-        sticker_add_char,
+        node_add_char,
         beacon_add_char,
         lan_config_char,
         lan_status_char,

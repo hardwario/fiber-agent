@@ -1,4 +1,4 @@
-//! Heuristic reassembly of multi-frame STICKER telemetry reports (#64).
+//! Heuristic reassembly of multi-frame NODE telemetry reports (#64).
 //!
 //! # Why this is heuristic
 //!
@@ -41,7 +41,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use super::chirpstack::StickerReading;
+use super::chirpstack::NodeReading;
 
 /// Counters that are transport metadata rather than sensor readings, so they must
 /// not be treated as report content.
@@ -86,7 +86,7 @@ impl ClosedBy {
 /// A reassembled report plus the provenance of the merge.
 #[derive(Debug, Clone)]
 pub struct Reassembled {
-    pub reading: StickerReading,
+    pub reading: NodeReading,
     /// How many fPort-2 frames were merged (1 = an ordinary single-frame report).
     pub frames: u32,
     pub fcnt_first: Option<u64>,
@@ -102,7 +102,7 @@ impl Reassembled {
 }
 
 struct Partial {
-    reading: StickerReading,
+    reading: NodeReading,
     /// Content keys seen so far, used purely as the overlap detector.
     keys: HashSet<String>,
     first_seen: Instant,
@@ -148,7 +148,7 @@ impl FrameAssembler {
     /// an event rather than a field, so a report whose only accelerometer content
     /// is an orientation would otherwise look key-less and never trip the overlap
     /// rule.
-    fn content_keys(r: &StickerReading) -> HashSet<String> {
+    fn content_keys(r: &NodeReading) -> HashSet<String> {
         let mut keys: HashSet<String> = r.fields.keys().cloned().collect();
         for k in r.counters.keys() {
             if !META_COUNTERS.contains(&k.as_str()) {
@@ -172,7 +172,7 @@ impl FrameAssembler {
         keys
     }
 
-    fn fcnt_of(r: &StickerReading) -> Option<u64> {
+    fn fcnt_of(r: &NodeReading) -> Option<u64> {
         r.counters.get("fCnt").copied()
     }
 
@@ -181,11 +181,11 @@ impl FrameAssembler {
     /// Deliberate asymmetry, because the two halves answer different questions:
     ///   * `message_id` and `fCnt` anchor on the **first** frame, so the merged row
     ///     is byte-identical to the row frame 0 would have written on its own. That
-    ///     is what keeps the `sticker_readings.message_id` UNIQUE constraint safe
+    ///     is what keeps the `node_readings.message_id` UNIQUE constraint safe
     ///     and avoids colliding with rows already in the database.
     ///   * `rssi`, `snr` and `received_at` come from the **last** frame, since the
     ///     freshest link quality and wall clock are the useful ones.
-    fn absorb(partial: &mut Partial, frame: StickerReading) {
+    fn absorb(partial: &mut Partial, frame: NodeReading) {
         partial.reading.fields.extend(frame.fields);
         for (k, v) in frame.counters {
             if META_COUNTERS.contains(&k.as_str()) {
@@ -219,7 +219,7 @@ impl FrameAssembler {
         }
     }
 
-    fn start(reading: StickerReading, now: Instant) -> Partial {
+    fn start(reading: NodeReading, now: Instant) -> Partial {
         let keys = Self::content_keys(&reading);
         let fcnt = Self::fcnt_of(&reading);
         Partial {
@@ -240,7 +240,7 @@ impl FrameAssembler {
     ///
     /// Callers must only pass `fport == Some(2)` readings; anything else has no
     /// snapshot semantics and must bypass the assembler.
-    pub fn admit(&mut self, reading: StickerReading, now: Instant) -> Vec<Reassembled> {
+    pub fn admit(&mut self, reading: NodeReading, now: Instant) -> Vec<Reassembled> {
         let dev_eui = reading.dev_eui.clone();
         let mut out = Vec::new();
 
@@ -334,20 +334,20 @@ impl FrameAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::chirpstack::{parse_uplink, StickerEvent};
+    use crate::libs::lorawan::chirpstack::{parse_uplink, NodeEvent};
 
     fn reading(
         dev_eui: &str,
         fcnt: u64,
         fields: &[(&str, f64)],
         counters: &[(&str, u64)],
-    ) -> StickerReading {
+    ) -> NodeReading {
         let mut c: HashMap<String, u64> =
             counters.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         c.insert("fCnt".to_string(), fcnt);
-        StickerReading {
+        NodeReading {
             dev_eui: dev_eui.to_string(),
-            device_name: "sticker".to_string(),
+            device_name: "node".to_string(),
             fields: fields.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             counters: c,
             events: Vec::new(),
@@ -605,7 +605,7 @@ mod tests {
         let mut a = FrameAssembler::default();
         let base = t0();
         let mut first = reading("aabb", 10, &[], &[]);
-        first.events.push(StickerEvent {
+        first.events.push(NodeEvent {
             event_type: "orientation".to_string(),
             ts: "t".to_string(),
             extra: serde_json::json!({ "value": 2 }),
@@ -613,7 +613,7 @@ mod tests {
         a.admit(first, base);
 
         let mut second = reading("aabb", 11, &[], &[]);
-        second.events.push(StickerEvent {
+        second.events.push(NodeEvent {
             event_type: "orientation".to_string(),
             ts: "t".to_string(),
             extra: serde_json::json!({ "value": 3 }),
@@ -630,12 +630,12 @@ mod tests {
     #[test]
     fn hall_channels_are_discriminated_not_confused() {
         // Two hall_active events in ONE report differ only by channel. They must not
-        // look like a repeat of each other, or every dual-hall sticker would have
+        // look like a repeat of each other, or every dual-hall node would have
         // its reports split.
         let mut a = FrameAssembler::default();
         let base = t0();
         let mut first = reading("aabb", 10, &[], &[("hall_left_count", 4)]);
-        first.events.push(StickerEvent {
+        first.events.push(NodeEvent {
             event_type: "hall_active".to_string(),
             ts: "t".to_string(),
             extra: serde_json::json!({ "channel": "left", "active": true }),
@@ -643,7 +643,7 @@ mod tests {
         a.admit(first, base);
 
         let mut second = reading("aabb", 11, &[], &[("hall_right_count", 7)]);
-        second.events.push(StickerEvent {
+        second.events.push(NodeEvent {
             event_type: "hall_active".to_string(),
             ts: "t".to_string(),
             extra: serde_json::json!({ "channel": "right", "active": true }),

@@ -25,7 +25,7 @@ use crate::libs::sensors::state::SharedSensorState;
 /// A single row of the sensor overview, with its identity and active flag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverviewEntry {
-    /// Sensor kind (DS18B20 probe or LoRa sticker).
+    /// Sensor kind (DS18B20 probe or LoRa node).
     pub kind: OverviewKind,
     /// Global sensor index: 0..8 for DS18B20 slot, 8..8+N for LoRa.
     pub global_idx: usize,
@@ -78,8 +78,8 @@ pub fn ds_slot_visible(
     }
 }
 
-/// True if a LoRa sticker should appear on the overview at all.
-/// Hidden until it has been heard from once; a disconnected sticker keeps its
+/// True if a LoRa node should appear on the overview at all.
+/// Hidden until it has been heard from once; a disconnected node keeps its
 /// last fields and so stays visible.
 pub fn lora_sensor_visible(sensor: &crate::libs::lorawan::state::LoRaWANSensorState) -> bool {
     !sensor.fields.is_empty()

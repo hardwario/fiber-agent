@@ -12,9 +12,9 @@ pub mod beacon_add;
 pub mod device_info;
 pub mod lan;
 pub mod net_error;
+pub mod node;
 pub mod service;
 pub mod state;
-pub mod sticker;
 pub mod terminal;
 pub mod time_sync;
 pub mod wifi;
@@ -371,7 +371,7 @@ async fn run_server(
     // are never connected to *our* GATT server, so treating every such event
     // as a client connect/disconnect (as this loop used to) fires spurious
     // pairing cancellations and, worse, resets an actually-connected client's
-    // session (shell, sticker/eye-tag enrollment) whenever an unrelated
+    // session (shell, node/eye-tag enrollment) whenever an unrelated
     // nearby phone appears or ages out of BlueZ's scan cache. Track the one
     // address that is genuinely connected to us and scope handling to it.
     let mut connected_addr: Option<bluer::Address> = None;
@@ -442,10 +442,10 @@ async fn run_server(
                         // result slot — a slow ChirpStack add would otherwise
                         // keep running and leak its outcome (deveui + final
                         // message) to whichever client connects next.
-                        if let Some(task) = st.sticker_task.take() {
+                        if let Some(task) = st.node_task.take() {
                             task.abort();
                         }
-                        crate::libs::ble::gatt::sticker::reset(&st.sticker_result);
+                        crate::libs::ble::gatt::node::reset(&st.node_result);
                         // Clear the FB0E EYE-tag-add result slot too (synchronous
                         // enrollment, so no task to abort — just the slot).
                         crate::libs::ble::gatt::beacon_add::reset(&st.beacon_add_result);

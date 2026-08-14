@@ -313,10 +313,10 @@ pub struct SensorFileConfig {
     /// Common (default) alarm thresholds for all lines
     pub common_alarms: SensorAlarmConfig,
 
-    /// Default per-field thresholds for LoRaWAN stickers, keyed by field name
-    /// (matches `registry::REGISTRY`). Used as a fallback for every sticker that
+    /// Default per-field thresholds for LoRaWAN nodes, keyed by field name
+    /// (matches `registry::REGISTRY`). Used as a fallback for every node that
     /// has no explicit override, on a per-bound basis. Empty map disables
-    /// auto-alarming for stickers.
+    /// auto-alarming for nodes.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub common_lorawan_field_thresholds: HashMap<String, FieldThresholdBounds>,
 
@@ -635,7 +635,7 @@ pub struct SystemConfig {
 ///
 /// When `custom_lines` is empty the overview screen renders the built-in
 /// layout (active-first list of the 8 DS18B20 probes then the LoRaWAN
-/// stickers) — i.e. an absent `display:` section means "behave as before".
+/// nodes) — i.e. an absent `display:` section means "behave as before".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DisplayConfig {
     /// User-authored overview lines, rendered top-to-bottom in this order,
@@ -660,8 +660,9 @@ pub struct DisplayConfig {
 pub enum DisplayLineSource {
     /// A DS18B20 1-Wire probe, addressed by its line index.
     Ds18b20,
-    /// A STICKER / LoRaWAN sensor, addressed by DevEUI.
-    Sticker,
+    /// A ProXimos Node / LoRaWAN sensor, addressed by DevEUI.
+    #[serde(rename = "sticker")]
+    Node,
     /// An EYE BLE tag, addressed by MAC.
     Ble,
 }
@@ -678,11 +679,11 @@ pub struct DisplayLine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u8>,
 
-    /// STICKER DevEUI (16 hex chars, lowercased on load). Required when
+    /// Node DevEUI (16 hex chars, lowercased on load). Required when
     /// `source` is `sticker`, and must be absent otherwise.
     ///
-    /// Deliberately not an ordinal ("Sticker 2"): sticker ordering is derived
-    /// from a sort over the live sensor map, so adding or removing one sticker
+    /// Deliberately not an ordinal ("Node 2"): node ordering is derived
+    /// from a sort over the live sensor map, so adding or removing one node
     /// renumbers every later one — an ordinal line would silently re-point at
     /// a different physical probe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -846,7 +847,7 @@ impl FieldThresholdBounds {
     }
 }
 
-/// Resolve the effective threshold for a single field on a sticker, merging the
+/// Resolve the effective threshold for a single field on a node, merging the
 /// per-sensor override (if present) over the YAML defaults (if present) on a
 /// per-bound basis. Returns `None` only when neither side provides any bound.
 pub fn resolve_field_threshold(
@@ -886,14 +887,14 @@ pub fn resolve_field_threshold(
     }
 }
 
-/// Compute the full list of effective thresholds for a sticker, considering
+/// Compute the full list of effective thresholds for a node, considering
 /// both the per-sensor `field_thresholds` and the YAML defaults map. Every
 /// *thresholdable* field that has at least one bound from either source is
 /// included.
 ///
 /// The registry is the authority on which fields may alarm at all. Without that
 /// check this function was purely data-driven, so a field the product has
-/// withdrawn from alarming — battery, whose low-battery condition the sticker
+/// withdrawn from alarming — battery, whose low-battery condition the node
 /// already reports natively on fPort 3 — kept alarming from a stale per-sensor
 /// override or an older YAML that still listed it. Filtering here (rather than
 /// only in the UI) means the withdrawal holds for config written before it.
@@ -956,7 +957,7 @@ pub struct LoRaWANSensorConfig {
     ///
     /// Needed because clearing the bounds cannot express it: an omitted bound
     /// inherits the YAML default (see [`resolve_field_threshold`]), and the
-    /// defaults arm temperature, humidity and the probe fields on every sticker
+    /// defaults arm temperature, humidity and the probe fields on every node
     /// the moment it is paired. So there was no way to silence a quantity —
     /// emptying the inputs and "reset to default" both landed back on the armed
     /// default.
@@ -1071,7 +1072,7 @@ pub struct LoRaWANConfig {
     /// start purely on hardware detection and nothing read this flag, so a
     /// config that never mentioned it would otherwise go silent on upgrade.
     /// Only an explicit `enabled: false` stops the monitor — which is how a
-    /// cluster follower stops reporting stickers the leader now owns.
+    /// cluster follower stops reporting nodes the leader now owns.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
@@ -1579,7 +1580,7 @@ impl Config {
                 // 2.5 GB cap on the 4 GB /data partition shared with
                 // fiber-viewer's DBs. Leaves ~1.5 GB headroom for the
                 // viewer (whose lorawan_field_readings table grows
-                // ~7 MB/day at 10 stickers). A higher cap here would
+                // ~7 MB/day at 10 nodes). A higher cap here would
                 // let our DB fill the whole partition and lock the
                 // viewer (and us) out before retention could run.
                 max_size_gb: 3,
@@ -1662,8 +1663,8 @@ mod tests {
         // asserted the opposite. That test was quarantined for drifting from the
         // shipped values and was un-quarantined on dev by 7fea467 (application#19);
         // it is deleted here rather than repaired, because the value it pinned is
-        // gone on purpose. Battery must NOT be auto-armed: the sticker raises its
-        // own low-battery alarm on fPort 3, so a default here gave every sticker a
+        // gone on purpose. Battery must NOT be auto-armed: the node raises its
+        // own low-battery alarm on fPort 3, so a default here gave every node a
         // duplicate alarm nobody had configured.
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
@@ -1671,7 +1672,7 @@ mod tests {
             .expect("shipped fiber.sensors.config.yaml must parse");
         assert!(
             cfg.common_lorawan_field_thresholds.get("voltage").is_none(),
-            "voltage must have no global default — the sticker alarms on it natively"
+            "voltage must have no global default — the node alarms on it natively"
         );
     }
 
@@ -1817,7 +1818,7 @@ name: "Fridge"
     /// else can.
     ///
     /// The YAML defaults arm temperature, humidity and the probe fields on every
-    /// sticker the moment it is paired — measured on a bench unit with no
+    /// node the moment it is paired — measured on a bench unit with no
     /// `field_thresholds` of its own at all, which still reported eight armed
     /// bands. Clearing the numbers does not help: an omitted bound inherits the
     /// default (see `resolve_field_threshold`), so before this there was no way
@@ -1854,11 +1855,7 @@ name: "Fridge"
             disarmed_fields: Vec::new(),
         };
         let before = effective_field_thresholds(Some(&armed), &defaults);
-        assert_eq!(
-            before.len(),
-            2,
-            "both defaults arm the sticker to begin with"
-        );
+        assert_eq!(before.len(), 2, "both defaults arm the node to begin with");
 
         let mut off = armed.clone();
         off.disarmed_fields = vec!["temperature".to_string()];
@@ -2031,12 +2028,12 @@ custom_lines:
         let cfg: DisplayConfig = serde_yaml::from_str(EXAMPLE_YAML).unwrap();
         assert_eq!(cfg.custom_lines.len(), 4);
 
-        let sticker_ext = &cfg.custom_lines[0];
-        assert_eq!(sticker_ext.source, DisplayLineSource::Sticker);
-        assert_eq!(sticker_ext.dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
-        assert_eq!(sticker_ext.field, "ext_temperature_1");
-        assert_eq!(sticker_ext.label.as_deref(), Some("Stkr1 ext"));
-        assert_eq!(sticker_ext.line, None);
+        let node_ext = &cfg.custom_lines[0];
+        assert_eq!(node_ext.source, DisplayLineSource::Node);
+        assert_eq!(node_ext.dev_eui.as_deref(), Some("70b3d57ed0051f2a"));
+        assert_eq!(node_ext.field, "ext_temperature_1");
+        assert_eq!(node_ext.label.as_deref(), Some("Stkr1 ext"));
+        assert_eq!(node_ext.line, None);
 
         let probe = &cfg.custom_lines[1];
         assert_eq!(probe.source, DisplayLineSource::Ds18b20);
@@ -2167,7 +2164,7 @@ custom_lines:
     /// The two normalizations are independent: one file may carry both sources,
     /// and each must end up in its own subsystem's canonical case.
     #[test]
-    fn sticker_and_ble_lines_normalize_in_opposite_directions() {
+    fn node_and_ble_lines_normalize_in_opposite_directions() {
         let dir = tempfile::tempdir().unwrap();
         let path = config_file_with_display(
             dir.path(),
@@ -2186,7 +2183,7 @@ custom_lines:
         );
     }
 
-    /// `mac` is `skip_serializing_if = "Option::is_none"`, so a probe or sticker
+    /// `mac` is `skip_serializing_if = "Option::is_none"`, so a probe or node
     /// row must not gain an empty key when the applier rewrites the file.
     #[test]
     fn mac_is_omitted_from_serialized_non_ble_lines() {

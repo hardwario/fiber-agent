@@ -1,22 +1,22 @@
-//! ChirpStack v4 MQTT uplink parser → generic StickerReading
+//! ChirpStack v4 MQTT uplink parser → generic NodeReading
 //!
 //! Decoding happens **in-app** (issue #31): we read the raw application payload
 //! (`data`, base64) from the ChirpStack uplink and dispatch by `fPort` into the
-//! protobuf codec (`super::sticker_payload`). The ChirpStack device-profile JS
+//! protobuf codec (`super::node_payload`). The ChirpStack device-profile JS
 //! codec is no longer the source of truth; its decoded `object` is only used as
-//! a migration fallback until every STICKER runs firmware v1.4.0.
+//! a migration fallback until every NODE runs firmware v1.4.0.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use super::node_payload;
 use super::registry::{FieldKind, REGISTRY};
-use super::sticker_payload;
 
 /// fPort 2 (Telemetry), fPort 3 (AlarmReport) and fPort 85 (Response) payloads
 /// are all prefixed with a 1-byte protocol version (`APP_PROTO_VERSION`, mirrors
-/// sticker-firmware `app_cmd.h`). Confirmed against real device frames captured
+/// node-firmware `app_cmd.h`). Confirmed against real device frames captured
 /// over the air — every in-app-decoded port carries the prefix.
 const APP_PROTO_VERSION: u8 = 0x01;
 
@@ -37,7 +37,7 @@ pub fn extract_fport_data(payload: &[u8]) -> Option<(u64, Vec<u8>)> {
 /// The gateway id is the one ChirpStack **actually used to transmit** the
 /// downlink — its own best-signal pick from the receiving gateways of the last
 /// uplink. We surface it for display so an admin can see the real downlink
-/// gateway alongside the uplink "primary" (strongest-RSSI) shown for the sticker.
+/// gateway alongside the uplink "primary" (strongest-RSSI) shown for the node.
 /// `dev_eui` is lower-cased to match `parse_uplink`. Returns `None` if the event
 /// lacks a device EUI or a non-empty gateway id.
 pub fn parse_txack(payload: &[u8]) -> Option<(String, String)> {
@@ -72,7 +72,7 @@ pub fn strip_proto_version<'a>(bytes: &'a [u8], dev_eui: &str) -> Result<&'a [u8
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StickerEvent {
+pub struct NodeEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     pub ts: String,
@@ -80,7 +80,7 @@ pub struct StickerEvent {
     pub extra: serde_json::Value,
 }
 
-/// One gateway's reception of a single uplink. A Sticker frame is broadcast and
+/// One gateway's reception of a single uplink. A Node frame is broadcast and
 /// typically heard by several gateways at once; ChirpStack v4 aggregates them
 /// into the uplink event's `rxInfo[]` (camelCase `gatewayId`/`rssi`/`snr`).
 /// Serialized snake_case to match FIBER's own MQTT schema (`dev_eui`, …).
@@ -92,12 +92,12 @@ pub struct GatewayRx {
 }
 
 #[derive(Debug, Clone)]
-pub struct StickerReading {
+pub struct NodeReading {
     pub dev_eui: String,
     pub device_name: String,
     pub fields: HashMap<String, f64>,
     pub counters: HashMap<String, u64>,
-    pub events: Vec<StickerEvent>,
+    pub events: Vec<NodeEvent>,
     /// Every gateway that received this uplink (ChirpStack `rxInfo[]`). Order is
     /// not guaranteed to be by strength — the consumer sorts. Empty if `rxInfo`
     /// was absent.
@@ -115,7 +115,7 @@ pub struct StickerReading {
     pub fport: Option<u64>,
 }
 
-/// Parse a ChirpStack v4 uplink event into a `StickerReading`.
+/// Parse a ChirpStack v4 uplink event into a `NodeReading`.
 ///
 /// Decoding is in-app (issue #31): the raw application payload (`data`, base64)
 /// is decoded by `fPort` through the protobuf codec:
@@ -127,7 +127,7 @@ pub struct StickerReading {
 /// While devices migrate to firmware v1.4.0, fPort 1 / no-fPort uplinks fall back
 /// to the legacy ChirpStack JS-codec `object`. Returns `Ok(None)` when the uplink
 /// carries nothing this monitor should persist.
-pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
+pub fn parse_uplink(payload: &[u8]) -> Result<Option<NodeReading>, String> {
     let v: Value = serde_json::from_slice(payload).map_err(|e| format!("Invalid JSON: {}", e))?;
     let device_info = v.get("deviceInfo").ok_or("Missing deviceInfo")?;
     let dev_eui = device_info
@@ -146,7 +146,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
         .unwrap_or("")
         .to_string();
 
-    // A Sticker uplink is broadcast and usually heard by several gateways;
+    // A Node uplink is broadcast and usually heard by several gateways;
     // ChirpStack v4 marshals each receiver in rxInfo[] (camelCase
     // gatewayId/rssi/snr). Collect them ALL (previously only rxInfo[0] survived,
     // and its gatewayId was dropped, so nothing downstream could tell which
@@ -183,7 +183,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
     let mut counters = HashMap::new();
     let mut events = Vec::new();
 
-    // LoRaWAN frame counter → message_id dedup (UNIQUE on sticker_readings.message_id).
+    // LoRaWAN frame counter → message_id dedup (UNIQUE on node_readings.message_id).
     if let Some(fcnt) = v.get("fCnt").and_then(|v| v.as_u64()) {
         counters.insert("fCnt".to_string(), fcnt);
     }
@@ -198,7 +198,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
                 .decode(b64)
                 .map_err(|e| format!("Invalid base64 data: {}", e))?;
             let bytes = strip_proto_version(&raw, &dev_eui)?;
-            let d = sticker_payload::decode_telemetry(bytes, &received_at)?;
+            let d = node_payload::decode_telemetry(bytes, &received_at)?;
             fields.extend(d.fields);
             counters.extend(d.counters);
             events.extend(d.events);
@@ -211,7 +211,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
                 .decode(b64)
                 .map_err(|e| format!("Invalid base64 data: {}", e))?;
             let bytes = strip_proto_version(&raw, &dev_eui)?;
-            events.extend(sticker_payload::decode_alarm_report(bytes, &received_at)?);
+            events.extend(node_payload::decode_alarm_report(bytes, &received_at)?);
         }
         // fPort 85: command/response, handled by the seq-correlation stream (#34).
         (Some(85), _) => return Ok(None),
@@ -240,7 +240,7 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
         }
     }
 
-    Ok(Some(StickerReading {
+    Ok(Some(NodeReading {
         dev_eui,
         device_name,
         fields,
@@ -256,14 +256,14 @@ pub fn parse_uplink(payload: &[u8]) -> Result<Option<StickerReading>, String> {
 }
 
 /// Legacy path: map the ChirpStack JS-codec `object` (flat fields) into
-/// fields/counters/events. Kept as a migration fallback until every STICKER runs
+/// fields/counters/events. Kept as a migration fallback until every NODE runs
 /// firmware v1.4.0 (protobuf on fPort 2/3); see issue #31.
 fn decode_object_legacy(
     object: &Value,
     received_at: &str,
     fields: &mut HashMap<String, f64>,
     counters: &mut HashMap<String, u64>,
-    events: &mut Vec<StickerEvent>,
+    events: &mut Vec<NodeEvent>,
 ) {
     // Iterate the registry: assign each known field to fields/counters
     for fdef in REGISTRY {
@@ -293,7 +293,7 @@ fn decode_object_legacy(
     }
 
     let mut push_event = |event_type: &str, extra: serde_json::Value| {
-        events.push(StickerEvent {
+        events.push(NodeEvent {
             event_type: event_type.to_string(),
             ts: received_at.to_string(),
             extra,
@@ -372,15 +372,15 @@ fn decode_object_legacy(
     }
 }
 
-/// Compute a stable message_id for a sticker uplink.
+/// Compute a stable message_id for a node uplink.
 ///
 /// Format: `{dev_eui}-{ts}-{seq}`. `seq` is `fCnt` if present in the
 /// `counters` map (inserted by `parse_uplink` from the ChirpStack uplink's
 /// LoRaWAN frame counter), otherwise 0. Two uplinks from the same `dev_eui`
 /// with the same `(ts, seq)` are treated as the same message (the
 /// save-and-feed write path dedups via the UNIQUE constraint on
-/// `sticker_readings.message_id`).
-pub fn message_id_for(reading: &StickerReading, ts: i64) -> String {
+/// `node_readings.message_id`).
+pub fn message_id_for(reading: &NodeReading, ts: i64) -> String {
     let seq = reading.counters.get("fCnt").copied().unwrap_or(0);
     format!("{}-{}-{}", reading.dev_eui, ts, seq)
 }
@@ -399,7 +399,7 @@ pub fn extract_dev_eui_from_topic(topic: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::sticker_proto::{AlarmEvent, AlarmReport, Telemetry};
+    use crate::libs::lorawan::node_proto::{AlarmEvent, AlarmReport, Telemetry};
     use prost::Message;
 
     /// Wrap protobuf bytes in a minimal ChirpStack v4 uplink JSON on `fPort`.
@@ -415,7 +415,7 @@ mod tests {
         };
         let data = BASE64.encode(&payload);
         serde_json::json!({
-            "deviceInfo": { "devEui": dev_eui, "deviceName": "sticker-01" },
+            "deviceInfo": { "devEui": dev_eui, "deviceName": "node-01" },
             "fPort": fport,
             "fCnt": fcnt,
             "data": data,
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn real_v140_fport2_frame_decodes() {
         // GOLDEN VECTOR: the exact fPort-2 payload composed by firmware v1.4.0
-        // (`ats lrw compose` on a real STICKER), including the leading 0x01
+        // (`ats lrw compose` on a real NODE), including the leading 0x01
         // proto-version byte. Guards the version-strip: without it prost fails
         // with "invalid tag value: 0".
         let raw: &[u8] = &[
@@ -494,7 +494,7 @@ mod tests {
             0x98, 0x01, 0x04, 0xa0, 0x01, 0x00, 0xa8, 0x01, 0x04,
         ];
         let payload = serde_json::json!({
-            "deviceInfo": { "devEui": "2162164514AABBCC", "deviceName": "sticker-real" },
+            "deviceInfo": { "devEui": "2162164514AABBCC", "deviceName": "node-real" },
             "fPort": 2, "fCnt": 1, "data": BASE64.encode(raw),
             "rxInfo": [{ "rssi": -77, "snr": 9.0 }],
             "time": "2026-06-19T12:00:00Z",
@@ -511,12 +511,12 @@ mod tests {
     #[test]
     fn real_e2e_fport2_frame_decodes() {
         // END-TO-END GOLDEN VECTOR: a live fPort-2 frame captured from a real
-        // STICKER (DevEUI 5876070000000001) over the full path — RF -> MikroTik
+        // NODE (DevEUI 5876070000000001) over the full path — RF -> MikroTik
         // gateway -> chirpstack-gateway-bridge -> ChirpStack 4.16 -> application
         // event `data`. Codec-free device profile (object=null), so the in-app
         // decode is the sole source of truth.
         let payload = serde_json::json!({
-            "deviceInfo": { "devEui": "5876070000000001", "deviceName": "sticker-5876" },
+            "deviceInfo": { "devEui": "5876070000000001", "deviceName": "node-5876" },
             "fPort": 2, "fCnt": 3, "data": "AQiuARAAGM4mIGqQAQCYAQSgAQCoAQQ=",
             "rxInfo": [{ "rssi": -69, "snr": 10.0 }],
             "time": "2026-06-23T05:40:19Z",
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn real_e2e_fport2_accel_pir_frame_decodes() {
         // END-TO-END GOLDEN VECTOR: a live fPort-2 frame captured 2026-07-28 from
-        // STICKER "Motion QA" (DevEUI 70b3d57ed80051b2) running fw v1.4.0, via the
+        // NODE "Motion QA" (DevEUI 70b3d57ed80051b2) running fw v1.4.0, via the
         // external Milesight gateway 24e124fffefd3bda -> ChirpStack -> application
         // event `data`. Hex: 01088901100018b226206b40024809d00125.
         //
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn multi_gateway_rxinfo_collects_all_and_picks_best() {
-        // One Sticker uplink heard by TWO gateways. parse_uplink keeps the full
+        // One Node uplink heard by TWO gateways. parse_uplink keeps the full
         // rxInfo[] list AND sets the back-compat scalar rssi/snr to the BEST
         // (strongest = max-rssi) receiver — here gw-b at -60 dBm, not the first
         // element gw-a at -85 dBm.
@@ -597,7 +597,7 @@ mod tests {
             .chain(t.encode_to_vec())
             .collect();
         let payload = serde_json::json!({
-            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "node-01" },
             "fPort": 2, "fCnt": 42, "dr": 3, "data": BASE64.encode(&raw),
             "rxInfo": [
                 { "gatewayId": "gw-a", "rssi": -85, "snr": 7.5 },
@@ -650,7 +650,7 @@ mod tests {
             .chain(t.encode_to_vec())
             .collect();
         let payload = serde_json::json!({
-            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "node-01" },
             "fPort": 2, "fCnt": 1, "data": BASE64.encode(&raw),
             "time": "2026-07-01T10:30:00Z",
         })
@@ -674,7 +674,7 @@ mod tests {
             .chain(t.encode_to_vec())
             .collect();
         let payload = serde_json::json!({
-            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "node-01" },
             "fPort": 2, "fCnt": 7, "data": BASE64.encode(&raw),
             "rxInfo": [
                 { "gatewayId": "gw-noisy" },
@@ -692,10 +692,10 @@ mod tests {
     #[test]
     fn parse_txack_extracts_dev_eui_and_downlink_gateway() {
         // Live event/txack captured from the on-device ChirpStack (a fPort-85
-        // downlink to the bench sticker). Confirms the exact field names
+        // downlink to the bench node). Confirms the exact field names
         // parse_txack relies on: top-level `gatewayId` + `deviceInfo.devEui`
         // (lower-cased to match parse_uplink).
-        let payload = r#"{"downlinkId":893069247,"time":"2026-07-22T21:02:57Z","deviceInfo":{"deviceName":"sticker-bench","devEui":"D7653371A0EF363F","deviceClassEnabled":"CLASS_A"},"queueItemId":"c6779998","fCntDown":3,"gatewayId":"24e124fffefd3bda","txInfo":{"frequency":867500000}}"#;
+        let payload = r#"{"downlinkId":893069247,"time":"2026-07-22T21:02:57Z","deviceInfo":{"deviceName":"node-bench","devEui":"D7653371A0EF363F","deviceClassEnabled":"CLASS_A"},"queueItemId":"c6779998","fCntDown":3,"gatewayId":"24e124fffefd3bda","txInfo":{"frequency":867500000}}"#;
         let (dev_eui, gw) = parse_txack(payload.as_bytes()).expect("txack parsed");
         assert_eq!(dev_eui, "d7653371a0ef363f");
         assert_eq!(gw, "24e124fffefd3bda");
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn real_e2e_fport3_alarm_decodes() {
-        // Live fPort-3 AlarmReport captured from the STICKER (onboard-temperature
+        // Live fPort-3 AlarmReport captured from the NODE (onboard-temperature
         // out-of-band alarm). Carries the same 0x01 proto-version prefix as fPort 2
         // — guards the alarm-port strip that a synthetic prost vector would miss.
         let payload = serde_json::json!({
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn real_e2e_fport85_response_is_skipped() {
-        // Live fPort-85 Response (get_info -> Info), captured from the STICKER.
+        // Live fPort-85 Response (get_info -> Info), captured from the NODE.
         // The command/response stream is owned by #34, so parse_uplink skips it.
         let payload = serde_json::json!({
             "deviceInfo": { "devEui": "5876070000000001" },
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn legacy_object_fallback_without_fport() {
         let payload = r#"{
-            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "sticker-01" },
+            "deviceInfo": { "devEui": "70B3D57ED0060ABC", "deviceName": "node-01" },
             "object": {
                 "boot": true,
                 "temperature": 22.5,
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn message_id_uses_fcnt_when_present_else_received_at_seq() {
-        let mut r = StickerReading {
+        let mut r = NodeReading {
             dev_eui: "70b3d5".into(),
             device_name: "".into(),
             fields: Default::default(),

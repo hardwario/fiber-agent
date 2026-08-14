@@ -40,7 +40,7 @@ enum TopCmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
-    /// STICKER LoRaWAN control.
+    /// Node LoRaWAN control.
     Lorawan {
         #[command(subcommand)]
         action: LorawanCmd,
@@ -120,7 +120,7 @@ impl From<ConfigSetCmd> for ConfigSetting {
 
 #[derive(Subcommand)]
 enum LorawanCmd {
-    /// Write config to a STICKER (SetParam). FIELDS are `group.field=value`.
+    /// Write config to a Node (SetParam). FIELDS are `group.field=value`.
     SetParam {
         dev_eui: String,
         /// One or more `group.field=value`, e.g. application.interval_report=600
@@ -133,7 +133,7 @@ enum LorawanCmd {
         #[arg(long)]
         force: bool,
     },
-    /// Read config back from a STICKER (GetParam). KEYS are `group.field`.
+    /// Read config back from a Node (GetParam). KEYS are `group.field`.
     GetParam {
         dev_eui: String,
         #[arg(required = true)]
@@ -161,7 +161,7 @@ enum SendCmd {
     ResetCounters,
     ClockSync,
     /// Restore defaults, keeping identity and the LoRaWAN keys (proto id 8). The
-    /// sticker stays joined; parameters and alarm rules are lost.
+    /// node stays joined; parameters and alarm rules are lost.
     DeviceReset,
     /// The NFC/shell-only factory reset (proto id 23). Always rejected over
     /// LoRaWAN with NOT_READY "transport not allowed" — present so that limit can

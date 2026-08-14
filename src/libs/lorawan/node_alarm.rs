@@ -1,8 +1,8 @@
-//! STICKER alarm-slot codec (fPort-85 `alarms.alarm_0..15`).
+//! NODE alarm-slot codec (fPort-85 `alarms.alarm_0..15`).
 //!
 //! Each slot is a 17-byte little-endian packed rule; this module is the single
 //! source of truth for that layout and the source/quantity tables (mirroring
-//! the sticker firmware's app_alarm). It decodes a slot for display and encodes
+//! the node firmware's app_alarm). It decodes a slot for display and encodes
 //! an edited slot back to bytes for `SetParam`. Source/quantity are kept as raw
 //! `u8` with name lookups (rather than closed enums) so a firmware that adds a
 //! value never breaks a read — unknown values surface as "unknown".
@@ -67,7 +67,7 @@ pub fn is_threshold(quantity: u8) -> bool {
     matches!(quantity, 0..=4) // temperature, humidity, pressure, illuminance, magnetic_field
 }
 
-/// Which quantities each source can raise. Mirrors the sticker firmware
+/// Which quantities each source can raise. Mirrors the node firmware
 /// authority `app_alarm_rules.c::app_alarm_rule_valid` (v1.4.0): onboard does
 /// temp/hum/pressure; the 1-Wire slots s1..s4 do temp/hum/illuminance/magnetic/
 /// tilt; the digital sources (hall l/r, input a/b, pir, accel) do state/count.

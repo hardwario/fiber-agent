@@ -788,7 +788,7 @@ fn main() -> io::Result<()> {
             }
         };
 
-    // Slot for the LoRaWAN shared state handed to the BLE FB0D sticker-add
+    // Slot for the LoRaWAN shared state handed to the BLE FB0D node-add
     // path. The LoRaWAN monitor is created after the BLE monitor, so (like
     // MQTT's set_lorawan_state) the main thread fills this slot once it exists.
     let ble_lorawan_state_slot: std::sync::Arc<
@@ -933,8 +933,8 @@ fn main() -> io::Result<()> {
         }
 
         eprintln!("[main] Starting LoRaWAN monitor...");
-        // Load YAML defaults for sticker per-field thresholds. These give newly
-        // paired stickers automatic alarming (mirrors DS18B20 `common_alarms`).
+        // Load YAML defaults for node per-field thresholds. These give newly
+        // paired nodes automatic alarming (mirrors DS18B20 `common_alarms`).
         let lorawan_field_defaults: fiber_app::libs::lorawan::SharedFieldThresholdDefaults =
             Arc::new(
                 fiber_app::libs::config::SensorFileConfig::load_default()
@@ -1030,7 +1030,7 @@ fn main() -> io::Result<()> {
         eprintln!("[main] control server disabled (FIBER_CONTROL_DISABLE set)");
     }
 
-    // Fill the BLE FB0D sticker-add slot with the LoRaWAN shared state, so an
+    // Fill the BLE FB0D node-add slot with the LoRaWAN shared state, so an
     // enrollment over BLE inserts the same optimistic stub the MQTT add does.
     // NOTE: the LoRaWAN monitor only exists when MQTT is enabled. In a
     // pure BLE-only / MQTT-disabled deployment this slot stays None, so a

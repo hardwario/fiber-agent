@@ -1,9 +1,9 @@
-//! In-app decoding of STICKER LoRaWAN payloads (protobuf), replacing the
+//! In-app decoding of NODE LoRaWAN payloads (protobuf), replacing the
 //! dependency on the ChirpStack-side JS codec.
 //!
 //! Decodes the raw application bytes (ChirpStack uplink `data`, base64-decoded)
-//! straight from the protobuf schema (`sticker_proto`, generated from
-//! sticker-firmware v1.4.0 `app_config.proto`):
+//! straight from the protobuf schema (`node_proto`, generated from
+//! node-firmware v1.4.0 `app_config.proto`):
 //!   - fPort 2 → `Telemetry`     → `decode_telemetry`
 //!   - fPort 3 → `AlarmReport`   → `decode_alarm_report`
 //!
@@ -16,16 +16,16 @@ use std::collections::HashMap;
 
 use serde_json::json;
 
-use super::chirpstack::StickerEvent;
-use super::sticker_proto::{AlarmReport, Telemetry};
+use super::chirpstack::NodeEvent;
+use super::node_proto::{AlarmReport, Telemetry};
 use prost::Message;
 
-/// Decoded telemetry, shaped to match `StickerReading`'s field containers.
+/// Decoded telemetry, shaped to match `NodeReading`'s field containers.
 #[derive(Debug, Clone, Default)]
 pub struct DecodedTelemetry {
     pub fields: HashMap<String, f64>,
     pub counters: HashMap<String, u64>,
-    pub events: Vec<StickerEvent>,
+    pub events: Vec<NodeEvent>,
 }
 
 /// 1-Wire slot type (mirrors `enum app_w1_slot_type` in app_w1_slots.h).
@@ -36,7 +36,7 @@ const W1_TYPE_MACHINE_PROBE: u32 = 2;
 /// as the sentinel and must decode to "field omitted", not a scaled garbage
 /// value (e.g. `INT32_MIN / 100 ≈ -21_474_836 °C`). Mirrors `app_compose.c`
 /// `TM_S32_NA` / `TM_U32_NA` and `ttn.js` `_TM_S32_NA` / `_TM_U32_NA`; same
-/// intent as `sticker_response.rs`'s `HIST_TEMP_SENTINEL`.
+/// intent as `node_response.rs`'s `HIST_TEMP_SENTINEL`.
 const TM_S32_NA: i32 = i32::MIN; // sint32 fields: temperature, altitude
 const TM_U32_NA: u32 = u32::MAX; // uint32 fields: humidity, pressure, illuminance
 
@@ -49,7 +49,7 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
     let mut d = DecodedTelemetry::default();
 
     let mut event = |ty: &str, extra: serde_json::Value| {
-        d.events.push(StickerEvent {
+        d.events.push(NodeEvent {
             event_type: ty.to_string(),
             ts: received_at.to_string(),
             extra,
@@ -193,7 +193,7 @@ pub fn decode_telemetry(bytes: &[u8], received_at: &str) -> Result<DecodedTeleme
 /// `value` scaling depends on `quantity` (analog ×100/×10, digital 0/1, counter);
 /// since the quantity→scale map is not yet fixed host-side, the raw value and
 /// quantity are passed through in `extra` for the consumer to interpret.
-pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<StickerEvent>, String> {
+pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<NodeEvent>, String> {
     let r = AlarmReport::decode(bytes)
         .map_err(|e| format!("AlarmReport protobuf decode failed: {e}"))?;
     // time_synced absent = old FW = treat as synced (mirrors ttn.js decodeAlarmBatch).
@@ -210,7 +210,7 @@ pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<Sticke
             } else {
                 None
             };
-            StickerEvent {
+            NodeEvent {
                 event_type: "alarm".to_string(),
                 ts: received_at.to_string(),
                 extra: json!({
@@ -234,7 +234,7 @@ pub fn decode_alarm_report(bytes: &[u8], received_at: &str) -> Result<Vec<Sticke
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::sticker_proto::{AlarmEvent, AlarmReport, SensorReading, Telemetry};
+    use crate::libs::lorawan::node_proto::{AlarmEvent, AlarmReport, SensorReading, Telemetry};
 
     #[test]
     fn telemetry_scaling_matches_ttn_js() {

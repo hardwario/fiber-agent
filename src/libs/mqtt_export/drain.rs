@@ -23,7 +23,7 @@ use crate::libs::storage::{StorageHandle, StorageResult};
 /// multi-year history queries from its mirror.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Stream {
-    Sticker,
+    Node,
     Probe,
     Probe1m,
     Alarm,
@@ -33,7 +33,7 @@ pub enum Stream {
 impl Stream {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Stream::Sticker => "sticker",
+            Stream::Node => "sticker",
             Stream::Probe => "probe",
             Stream::Probe1m => "probe_1m",
             Stream::Alarm => "alarm",
@@ -43,7 +43,7 @@ impl Stream {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "sticker" => Some(Stream::Sticker),
+            "sticker" => Some(Stream::Node),
             "probe" => Some(Stream::Probe),
             "probe_1m" => Some(Stream::Probe1m),
             "alarm" => Some(Stream::Alarm),
@@ -91,11 +91,10 @@ pub async fn drain_one_batch(
 ) -> StorageResult<(usize, i64)> {
     let mut last_id = cursor_in;
     let fetched = match stream {
-        Stream::Sticker => {
-            let rows =
-                StorageReader::fetch_sticker_readings_after(conn, cursor_in, cfg.batch_size)?;
+        Stream::Node => {
+            let rows = StorageReader::fetch_node_readings_after(conn, cursor_in, cfg.batch_size)?;
             for row in &rows {
-                let (topic, payload) = super::envelope::sticker_envelope(row);
+                let (topic, payload) = super::envelope::node_envelope(row);
                 if let Err(e) = publisher.publish(&topic, payload.as_bytes()).await {
                     eprintln!("[mqtt_export] publish failed on {}: {}", topic, e);
                     break;
@@ -226,7 +225,7 @@ mod tests {
 
         for i in 0..5 {
             storage
-                .write_sticker_reading(
+                .write_node_reading(
                     "abc".into(),
                     1,
                     1000 + i,
@@ -255,7 +254,7 @@ mod tests {
 
         let db = Database::new(&path, 1).unwrap();
         let conn = db.connect().unwrap();
-        let (n, new_cursor) = drain_one_batch(&cfg, Stream::Sticker, &stub, &storage, &conn, 0)
+        let (n, new_cursor) = drain_one_batch(&cfg, Stream::Node, &stub, &storage, &conn, 0)
             .await
             .unwrap();
         assert_eq!(n, 5);

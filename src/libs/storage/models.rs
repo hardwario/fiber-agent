@@ -322,9 +322,9 @@ mod tests {
 
 /// Row from the `sticker_readings` table — one row per LoRaWAN uplink or
 /// sticker_removed marker. Used by the save-and-feed pipeline so the firmware
-/// DB is the authoritative store of every sticker event.
+/// DB is the authoritative store of every Node event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StickerReadingRow {
+pub struct NodeReadingRow {
     pub id: i64,
     pub dev_eui: String,
     pub provisioning_epoch: i64,
@@ -337,7 +337,7 @@ pub struct StickerReadingRow {
     pub created_at: i64,
 }
 
-/// One persisted EYE BLE tag reading. Like [`StickerReadingRow`] but keyed by
+/// One persisted EYE BLE tag reading. Like [`NodeReadingRow`] but keyed by
 /// the tag MAC and without an OTAA provisioning epoch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeaconReadingRow {
@@ -387,12 +387,12 @@ pub struct ExportCursorRow {
 }
 
 #[cfg(test)]
-mod sticker_model_tests {
+mod node_model_tests {
     use super::*;
 
     #[test]
-    fn sticker_row_roundtrips_through_serde() {
-        let row = StickerReadingRow {
+    fn node_row_roundtrips_through_serde() {
+        let row = NodeReadingRow {
             id: 42,
             dev_eui: "70b3d5".into(),
             provisioning_epoch: 2,
@@ -404,7 +404,7 @@ mod sticker_model_tests {
             created_at: 1716120001,
         };
         let s = serde_json::to_string(&row).unwrap();
-        let parsed: StickerReadingRow = serde_json::from_str(&s).unwrap();
+        let parsed: NodeReadingRow = serde_json::from_str(&s).unwrap();
         assert_eq!(row.id, parsed.id);
         assert_eq!(row.dev_eui, parsed.dev_eui);
         assert_eq!(row.message_id, parsed.message_id);
