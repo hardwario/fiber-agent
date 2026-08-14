@@ -308,6 +308,16 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
         }
     }
 
+    // Explicit rather than relying on rumqttc's unconfigured 10240-byte
+    // default coinciding with what this app happens to publish — the
+    // combined lorawan/sensors snapshot is capped well under this by
+    // build_lorawan_sensors_payload (mqtt/publisher.rs), but every publish
+    // path shares this ceiling, so keep it generous and documented. Applied
+    // here (after the TLS block, which may have replaced `mqttoptions`
+    // wholesale) rather than at construction, so it survives every branch.
+    const MQTT_MAX_PACKET_SIZE_BYTES: usize = 20 * 1024;
+    mqttoptions.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
+
     // Set Last Will and Testament
     if config.last_will.enabled {
         let lwt_topic = if config.publish.include_hostname {

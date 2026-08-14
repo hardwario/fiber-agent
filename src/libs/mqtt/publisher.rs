@@ -10,6 +10,207 @@ use crate::libs::config::{PublishConfig, QosOverrides};
 use super::messages::MqttMessage;
 use super::topics::TopicBuilder;
 
+/// How many of a sensor's most-recent buffered events to include in the
+/// periodic combined snapshot at the least aggressive rung of
+/// `LORAWAN_SENSORS_CAP_LADDER`. This only bounds the periodic broadcast
+/// snapshot — the in-memory backlog itself
+/// (`lorawan::state::MAX_RECENT_EVENTS` = 32) is unaffected — and
+/// alarm-type events are preferentially retained over routine ones when a
+/// tighter rung must trim further (see `select_events`), since `events[]`
+/// is the only channel carrying Node native alarms to the viewer's
+/// Alarms/email pipeline.
+const LORAWAN_SENSORS_EVENTS_CAP: usize = 8;
+
+/// How many gateways' reception detail to keep per sensor at the least
+/// aggressive rung. The top-level `rssi`/`snr` fields already carry the
+/// strongest receiver's numbers; this only adds secondary detail.
+const LORAWAN_SENSORS_GATEWAYS_CAP: usize = 5;
+
+/// Safe byte budget for the combined `lorawan/sensors` publish, comfortably
+/// under the 20480-byte outgoing-packet ceiling explicitly configured in
+/// `mqtt/monitor.rs::create_mqtt_options`, with headroom for the topic name
+/// and MQTT framing overhead. A single sensor with a full 32-event backlog
+/// and several gateways was already ~14KB before this cap existed — see the
+/// commit this constant was introduced in.
+const LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES: usize = 8192;
+
+/// The actual wire ceiling this payload must never exceed, matching
+/// `MQTT_MAX_PACKET_SIZE_BYTES` in `mqtt/monitor.rs::create_mqtt_options`
+/// exactly (kept as a separate constant, not shared across the module
+/// boundary, since publisher.rs has no dependency on monitor.rs — if you
+/// change one, change the other). `LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES`
+/// above is a *comfortable target* the ladder tries to stay under; this is
+/// the hard limit only the minimal-fields last resort is judged against,
+/// since a pathologically large fleet may legitimately need more than the
+/// comfortable budget just for `dev_eui`+safety-fields, and that's fine as
+/// long as it still fits on the wire at all.
+const LORAWAN_SENSORS_HARD_CEILING_BYTES: usize = 20 * 1024;
+
+/// Ladder of (events_cap, gateways_cap) pairs tried in order, most detailed
+/// first, until the combined payload fits under
+/// `LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES`. Gateways (pure diagnostics)
+/// degrade before events (alarm-bearing) — see `build_lorawan_sensors_payload`
+/// for what happens if every rung still exceeds budget.
+const LORAWAN_SENSORS_CAP_LADDER: &[(usize, usize)] = &[
+    (LORAWAN_SENSORS_EVENTS_CAP, LORAWAN_SENSORS_GATEWAYS_CAP),
+    (LORAWAN_SENSORS_EVENTS_CAP, 1),
+    (4, 1),
+    (2, 1),
+    (1, 0),
+    (0, 0),
+];
+
+/// Selects up to `cap` of a sensor's events for the periodic snapshot,
+/// preferring `event_type == "alarm"` entries (the only ones the viewer's
+/// Alarms/email pipeline consumes) over routine ones
+/// (`boot`/`orientation`/`hall_active`) when the buffer must be trimmed.
+/// `events` is chronological, oldest-first (see `state.rs`'s
+/// push_back/pop_front ring buffer) — this restores that order in the
+/// output, with alarms filled in newest-first before routine events take
+/// any remaining slots.
+fn select_events(
+    events: &[crate::libs::lorawan::chirpstack::NodeEvent],
+    cap: usize,
+) -> Vec<crate::libs::lorawan::chirpstack::NodeEvent> {
+    if cap == 0 || events.is_empty() {
+        return Vec::new();
+    }
+    if events.len() <= cap {
+        return events.to_vec();
+    }
+
+    let mut alarm_idx: Vec<usize> = Vec::new();
+    let mut other_idx: Vec<usize> = Vec::new();
+    for (i, e) in events.iter().enumerate() {
+        if e.event_type == "alarm" {
+            alarm_idx.push(i);
+        } else {
+            other_idx.push(i);
+        }
+    }
+    // Higher index = more recent; take newest of each group first.
+    alarm_idx.reverse();
+    other_idx.reverse();
+
+    let mut selected: Vec<usize> = alarm_idx.into_iter().take(cap).collect();
+    if selected.len() < cap {
+        let remaining = cap - selected.len();
+        selected.extend(other_idx.into_iter().take(remaining));
+    }
+
+    selected.sort_unstable();
+    selected.into_iter().map(|i| events[i].clone()).collect()
+}
+
+/// Serializes one sensor's data, capping its `events`/`gateways` detail. The
+/// caps are parameters (rather than always using the module constants) so
+/// `build_lorawan_sensors_payload` can try progressively more aggressive
+/// rungs of `LORAWAN_SENSORS_CAP_LADDER` if the result comes out over budget.
+fn lorawan_sensor_json(
+    s: &super::messages::LoRaWANSensorPayload,
+    events_cap: usize,
+    gateways_cap: usize,
+) -> serde_json::Value {
+    let events = select_events(&s.events, events_cap);
+
+    let mut gateways = s.gateways.clone();
+    gateways.sort_by(|a, b| b.rssi.unwrap_or(i32::MIN).cmp(&a.rssi.unwrap_or(i32::MIN)));
+    gateways.truncate(gateways_cap);
+
+    json!({
+        "dev_eui": s.dev_eui,
+        "name": s.name,
+        "serial_number": s.serial_number,
+        "location": s.location,
+        "fields": s.fields,
+        "field_alarm_states": s.field_alarm_states,
+        "field_thresholds": s.field_thresholds,
+        "counters": s.counters,
+        "events": events,
+        // Additive per-gateway reception detail. `rssi`/`snr` stay the
+        // strongest receiver so existing consumers are unaffected;
+        // `gateways[]` is what tells you WHICH gateway heard the frame.
+        "gateways": gateways,
+        // `fcnt` is lifted out of `counters` to a top-level field so a
+        // consumer does not have to know it lives under a counter name.
+        "fcnt": s.counters.get("fCnt").copied(),
+        "dr": s.dr,
+        "downlink_gateway_id": s.downlink_gateway_id,
+        "rssi": s.rssi,
+        "snr": s.snr,
+        "last_seen": s.last_seen,
+        "alarm_state": s.alarm_state,
+    })
+}
+
+/// Absolute-last-resort fields when even the most aggressive ladder rung
+/// still exceeds budget (pathologically many sensors). The sensor *list*
+/// itself must never shrink — the viewer's `sync_lorawan_sensors`
+/// reconciliation deletes any Node missing from a snapshot — so this keeps
+/// only what's needed for that reconciliation plus current alarm-relevant
+/// state, dropping every diagnostic/detail field.
+fn lorawan_sensor_json_minimal(s: &super::messages::LoRaWANSensorPayload) -> serde_json::Value {
+    json!({
+        "dev_eui": s.dev_eui,
+        "name": s.name,
+        "fields": s.fields,
+        "field_alarm_states": s.field_alarm_states,
+        "field_thresholds": s.field_thresholds,
+        "counters": s.counters,
+        "alarm_state": s.alarm_state,
+        "last_seen": s.last_seen,
+    })
+}
+
+/// Builds the `lorawan/sensors` payload, guaranteed to stay under
+/// `LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES` in all but pathological cases.
+/// Tries each rung of `LORAWAN_SENSORS_CAP_LADDER` in order (most detail
+/// first); if the combined result is still too big at every rung — e.g. a
+/// gateway with dozens of paired Nodes — falls back to
+/// `lorawan_sensor_json_minimal`, which always preserves every sensor and
+/// its safety-relevant fields (`dev_eui`, `fields`, `field_alarm_states`,
+/// `field_thresholds`, `counters`, `alarm_state`) even though it drops
+/// events/gateways/diagnostics entirely. This minimal fallback is only
+/// held to `LORAWAN_SENSORS_HARD_CEILING_BYTES` — the real wire limit — not
+/// the tighter comfortable budget the ladder itself targets.
+fn build_lorawan_sensors_payload(
+    sensors: &[super::messages::LoRaWANSensorPayload],
+    timestamp: &str,
+) -> String {
+    for &(events_cap, gateways_cap) in LORAWAN_SENSORS_CAP_LADDER {
+        let sensors_data: Vec<_> = sensors
+            .iter()
+            .map(|s| lorawan_sensor_json(s, events_cap, gateways_cap))
+            .collect();
+        let payload = json!({ "timestamp": timestamp, "sensors": sensors_data }).to_string();
+        if payload.len() <= LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES {
+            return payload;
+        }
+        eprintln!(
+            "[MQTT Publisher] lorawan/sensors payload {} bytes exceeds budget {} at events_cap={} gateways_cap={} ({} sensors); trying a more aggressive cap",
+            payload.len(),
+            LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES,
+            events_cap,
+            gateways_cap,
+            sensors.len()
+        );
+    }
+
+    let sensors_data: Vec<_> = sensors.iter().map(lorawan_sensor_json_minimal).collect();
+    let payload = json!({ "timestamp": timestamp, "sensors": sensors_data }).to_string();
+    if payload.len() > LORAWAN_SENSORS_HARD_CEILING_BYTES {
+        let dev_euis: Vec<&str> = sensors.iter().map(|s| s.dev_eui.as_str()).collect();
+        eprintln!(
+            "[MQTT Publisher] lorawan/sensors payload still {} bytes after minimal-fields fallback (hard ceiling {}, {} sensors: {:?}); publishing anyway",
+            payload.len(),
+            LORAWAN_SENSORS_HARD_CEILING_BYTES,
+            sensors.len(),
+            dev_euis
+        );
+    }
+    payload
+}
+
 /// Message publisher that formats and publishes MQTT messages
 pub struct MqttPublisher {
     client: AsyncClient,
@@ -910,45 +1111,10 @@ impl MqttPublisher {
         &self,
         sensors: Vec<super::messages::LoRaWANSensorPayload>,
     ) -> Result<(), String> {
-        let sensors_data: Vec<serde_json::Value> = sensors
-            .iter()
-            .map(|s| {
-                json!({
-                    "dev_eui": s.dev_eui,
-                    "name": s.name,
-                    "serial_number": s.serial_number,
-                    "location": s.location,
-                    "fields": s.fields,
-                    "field_alarm_states": s.field_alarm_states,
-                    "field_thresholds": s.field_thresholds,
-                    "counters": s.counters,
-                    "events": s.events,
-                    // Additive per-gateway reception detail. `rssi`/`snr` stay the
-                    // strongest receiver so existing consumers are unaffected;
-                    // `gateways[]` is what tells you WHICH gateway heard the frame.
-                    // `fcnt` is lifted out of `counters` to a top-level field so a
-                    // consumer does not have to know it lives under a counter name.
-                    "gateways": s.gateways,
-                    "fcnt": s.counters.get("fCnt").copied(),
-                    "dr": s.dr,
-                    "downlink_gateway_id": s.downlink_gateway_id,
-                    "rssi": s.rssi,
-                    "snr": s.snr,
-                    "last_seen": s.last_seen,
-                    "alarm_state": s.alarm_state,
-                })
-            })
-            .collect();
-
-        let payload = json!({
-            "timestamp": Self::timestamp(),
-            "sensors": sensors_data,
-        });
-
+        let payload = build_lorawan_sensors_payload(&sensors, &Self::timestamp());
         let topic = self.topics.lorawan_sensors();
         let qos = Self::qos_from_u8(self.qos_overrides.sensor_readings);
-
-        self.publish(topic, payload.to_string(), qos, false).await
+        self.publish(topic, payload, qos, false).await
     }
 
     /// Publish external LoRaWAN gateway status
@@ -1245,5 +1411,237 @@ mod tests {
         assert!(matches!(MqttPublisher::qos_from_u8(0), QoS::AtMostOnce));
         assert!(matches!(MqttPublisher::qos_from_u8(1), QoS::AtLeastOnce));
         assert!(matches!(MqttPublisher::qos_from_u8(2), QoS::ExactlyOnce));
+    }
+
+    fn sensor_with_backlog(
+        dev_eui: &str,
+        event_count: usize,
+        gateway_count: usize,
+    ) -> super::super::messages::LoRaWANSensorPayload {
+        use crate::libs::lorawan::chirpstack::{GatewayRx, NodeEvent};
+
+        let events = (0..event_count)
+            .map(|i| NodeEvent {
+                event_type: format!("event-{}", i),
+                ts: format!("2026-08-14T02:{:02}:00Z", i % 60),
+                // Realistic-sized nested payload, matching what a real alarm/
+                // status event embeds via #[serde(flatten)] in production.
+                extra: serde_json::json!({"detail": "x".repeat(200), "seq": i}),
+            })
+            .collect();
+
+        let gateways = (0..gateway_count)
+            .map(|i| GatewayRx {
+                gateway_id: format!("gw-{:016}", i),
+                rssi: Some(-40 - i as i32),
+                snr: Some(9.5 - i as f32),
+            })
+            .collect();
+
+        super::super::messages::LoRaWANSensorPayload {
+            dev_eui: dev_eui.to_string(),
+            name: "Test Node".to_string(),
+            serial_number: Some("123456".to_string()),
+            location: None,
+            fields: std::collections::HashMap::from([("temperature".to_string(), 22.5)]),
+            field_alarm_states: std::collections::HashMap::new(),
+            field_thresholds: vec![],
+            counters: std::collections::HashMap::new(),
+            events,
+            gateways,
+            dr: Some(5),
+            downlink_gateway_id: None,
+            rssi: Some(-42),
+            snr: Some(9.0),
+            last_seen: Some("2026-08-14T02:18:39Z".to_string()),
+            alarm_state: "OK".to_string(),
+        }
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_stays_under_budget_with_a_full_event_backlog() {
+        // 32 events matches MAX_RECENT_EVENTS; 10 gateways is a generous
+        // real-world upper bound. This single sensor alone reproduced the
+        // live ~14KB failure before the fix.
+        let sensors = vec![sensor_with_backlog("587607079406ab88", 32, 10)];
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        assert!(
+            payload.len() <= LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES,
+            "payload was {} bytes, budget is {}",
+            payload.len(),
+            LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES
+        );
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_caps_events_to_the_configured_limit() {
+        let sensors = vec![sensor_with_backlog("587607079406ab88", 32, 1)];
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let events = parsed["sensors"][0]["events"].as_array().unwrap();
+        assert_eq!(events.len(), LORAWAN_SENSORS_EVENTS_CAP);
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_keeps_the_most_recent_events_when_capping() {
+        let sensors = vec![sensor_with_backlog("587607079406ab88", 32, 1)];
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let events = parsed["sensors"][0]["events"].as_array().unwrap();
+        // Original events are named "event-0".."event-31"; capping to the
+        // last N must keep "event-31" (most recent), not "event-0".
+        let last = events.last().unwrap()["type"].as_str().unwrap();
+        assert_eq!(last, format!("event-{}", 31));
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_keeps_essential_fields_even_when_capped() {
+        let sensors = vec![sensor_with_backlog("587607079406ab88", 32, 10)];
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let sensor = &parsed["sensors"][0];
+        assert_eq!(sensor["dev_eui"], "587607079406ab88");
+        assert_eq!(sensor["alarm_state"], "OK");
+        assert_eq!(sensor["fields"]["temperature"], 22.5);
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_degrades_gracefully_with_many_sensors() {
+        // 50 sensors each carrying a full backlog: even after per-sensor
+        // capping this would exceed the budget, so the ladder must reach
+        // its minimal-fields fallback, and the essential fields must still
+        // all be present, and the payload must actually fit.
+        let sensors: Vec<_> = (0..50)
+            .map(|i| sensor_with_backlog(&format!("dev-eui-{:016}", i), 32, 10))
+            .collect();
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        assert!(
+            payload.len() <= LORAWAN_SENSORS_HARD_CEILING_BYTES,
+            "payload was {} bytes, hard ceiling is {}",
+            payload.len(),
+            LORAWAN_SENSORS_HARD_CEILING_BYTES
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["sensors"].as_array().unwrap().len(), 50);
+        for sensor in parsed["sensors"].as_array().unwrap() {
+            assert!(sensor["dev_eui"].as_str().unwrap().starts_with("dev-eui-"));
+            assert_eq!(sensor["alarm_state"], "OK");
+        }
+    }
+
+    /// Builds a sensor whose events are realistically-sized alarm reports
+    /// (matching `node_payload.rs`'s ~186-byte serialized `NodeEvent` for a
+    /// real fPort-3 AlarmReport), reproducing the exact live payload shape
+    /// the final whole-branch review measured tripping the old two-tier
+    /// fallback at 4 paired Nodes.
+    fn sensor_with_realistic_alarm_backlog(
+        dev_eui: &str,
+    ) -> super::super::messages::LoRaWANSensorPayload {
+        use crate::libs::lorawan::chirpstack::{GatewayRx, NodeEvent};
+
+        let events = (0..8)
+            .map(|i| NodeEvent {
+                event_type: "alarm".to_string(),
+                ts: format!("2026-08-14T02:{:02}:00Z", i % 60),
+                extra: serde_json::json!({
+                    "field": "temperature", "state": "CRITICAL_HIGH",
+                    "value": 41.2, "threshold": 41.0, "line": 1,
+                }),
+            })
+            .collect();
+        let gateways = (0..5)
+            .map(|i| GatewayRx {
+                gateway_id: format!("gw-{:016}", i),
+                rssi: Some(-40 - i as i32),
+                snr: Some(9.5 - i as f32),
+            })
+            .collect();
+
+        super::super::messages::LoRaWANSensorPayload {
+            dev_eui: dev_eui.to_string(),
+            name: "Test Node".to_string(),
+            serial_number: Some("123456".to_string()),
+            location: None,
+            fields: std::collections::HashMap::from([
+                ("temperature".to_string(), 41.2),
+                ("humidity".to_string(), 55.0),
+                ("battery".to_string(), 3.6),
+            ]),
+            field_alarm_states: std::collections::HashMap::from([(
+                "temperature".to_string(),
+                "CRITICAL_HIGH".to_string(),
+            )]),
+            field_thresholds: vec![],
+            counters: std::collections::HashMap::new(),
+            events,
+            gateways,
+            dr: Some(5),
+            downlink_gateway_id: None,
+            rssi: Some(-42),
+            snr: Some(9.0),
+            last_seen: Some("2026-08-14T02:18:39Z".to_string()),
+            alarm_state: "CRITICAL".to_string(),
+        }
+    }
+
+    #[test]
+    fn lorawan_sensors_payload_keeps_alarm_events_for_a_realistic_multi_node_hub() {
+        // 4 paired Nodes with realistic alarm-event sizes reproduces the
+        // exact scenario the final review found tripping the old two-tier
+        // fallback into events_cap=0 forever. The ladder must instead
+        // degrade gateways first and still deliver at least one alarm event
+        // per sensor.
+        let sensors: Vec<_> = (0..4)
+            .map(|i| sensor_with_realistic_alarm_backlog(&format!("dev-eui-{:016}", i)))
+            .collect();
+        let payload = build_lorawan_sensors_payload(&sensors, "2026-08-14T02:20:00Z");
+        assert!(
+            payload.len() <= LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES,
+            "payload was {} bytes, budget is {}",
+            payload.len(),
+            LORAWAN_SENSORS_PAYLOAD_BUDGET_BYTES
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        for sensor in parsed["sensors"].as_array().unwrap() {
+            let events = sensor["events"].as_array().unwrap();
+            assert!(
+                !events.is_empty(),
+                "expected at least one alarm event to survive capping for {:?}, got none",
+                sensor["dev_eui"]
+            );
+        }
+    }
+
+    #[test]
+    fn select_events_prefers_alarm_events_over_routine_ones_when_capping() {
+        use crate::libs::lorawan::chirpstack::NodeEvent;
+
+        // Oldest-first, as the real backlog is stored: 2 routine events,
+        // then 2 alarm events, then 2 more routine events.
+        let events: Vec<NodeEvent> = vec![
+            ("boot", 0),
+            ("orientation", 1),
+            ("alarm", 2),
+            ("alarm", 3),
+            ("hall_active", 4),
+            ("boot", 5),
+        ]
+        .into_iter()
+        .map(|(t, i)| NodeEvent {
+            event_type: t.to_string(),
+            ts: format!("2026-08-14T02:{:02}:00Z", i),
+            extra: serde_json::json!({"seq": i}),
+        })
+        .collect();
+
+        // Cap of 2: without alarm-priority this would keep the 2 most
+        // recent by position ("hall_active", "boot") and drop both alarms.
+        let selected = select_events(&events, 2);
+        assert_eq!(selected.len(), 2);
+        assert!(
+            selected.iter().all(|e| e.event_type == "alarm"),
+            "expected both alarm events to be preferentially retained, got {:?}",
+            selected.iter().map(|e| &e.event_type).collect::<Vec<_>>()
+        );
     }
 }
