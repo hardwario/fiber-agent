@@ -25,3 +25,10 @@ pub use advertising::{parse_manufacturer_value, BeaconReading, TELTONIKA_COMPANY
 pub use monitor::{BeaconHandle, BeaconMonitor};
 pub use provisioning::{BeaconProfile, ProvisionError};
 pub use state::{BeaconSensorState, BeaconTagState, SharedBeaconState};
+
+/// Addresses the Beacon monitor currently has an outbound BlueZ connection
+/// open to (provisioning). The GATT server shares the same adapter and
+/// otherwise can't tell "we dialed out to this tag" from "a phone dialed in
+/// to us" — both show up as the same `Device1.Connected` transition. See
+/// `libs/ble/gatt/mod.rs`'s `should_accept_connect`.
+pub type SharedBeaconConnections = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<bluer::Address>>>;

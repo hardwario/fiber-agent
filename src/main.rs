@@ -1,6 +1,6 @@
 // FIBER Medical Thermometer main application
 
-use fiber_app::libs::beacon::BeaconMonitor;
+use fiber_app::libs::beacon::{BeaconMonitor, SharedBeaconConnections};
 use fiber_app::libs::buzzer::BuzzerPriorityManager;
 use fiber_app::libs::config::LoRaWANConfig;
 use fiber_app::libs::sensors::create_shared_sensor_state;
@@ -795,6 +795,12 @@ fn main() -> io::Result<()> {
         std::sync::Mutex<Option<fiber_app::libs::lorawan::SharedLoRaWANState>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(None));
 
+    // Addresses the Beacon monitor currently has an outbound connection open
+    // to (provisioning) — shared with the GATT server so it doesn't mistake
+    // those for a phone connecting in. See SharedBeaconConnections's doc comment.
+    let beacon_active_connections: SharedBeaconConnections =
+        Arc::new(Mutex::new(std::collections::HashSet::new()));
+
     // Create and spawn BLE monitor if enabled.
     // Phase 1: ble.enabled defaults to false — Yocto ble-fiber owns BLE until Phase 3.
     let (_ble_monitor, ble_handle) = if config.ble.enabled {
@@ -806,6 +812,7 @@ fn main() -> io::Result<()> {
             Some(storage_handle.clone()),
             Some(lorawan_configs.clone()),
             ble_lorawan_state_slot.clone(),
+            beacon_active_connections.clone(),
         ) {
             Ok(monitor) => {
                 eprintln!("[main] BLE monitor started");
@@ -1050,6 +1057,7 @@ fn main() -> io::Result<()> {
             hostname.clone(),
             storage_handle.clone(),
             config.storage.db_path.clone(),
+            beacon_active_connections.clone(),
         ) {
             Ok(monitor) => Some(monitor),
             Err(e) => {

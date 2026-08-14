@@ -30,6 +30,7 @@ use super::state::{
     create_shared_beacon_state, register_beacon_config, register_beacon_state, ProvisioningStatus,
     SharedBeaconConfig, SharedBeaconState,
 };
+use super::SharedBeaconConnections;
 
 /// Max consecutive auto-provision attempts before giving up (avoids tripping
 /// the tag's anti-bruteforce lockout).
@@ -243,6 +244,7 @@ impl BeaconMonitor {
         hostname: String,
         storage: StorageHandle,
         db_path: String,
+        active_connections: SharedBeaconConnections,
     ) -> io::Result<Self> {
         let state = create_shared_beacon_state(false);
 
@@ -277,6 +279,7 @@ impl BeaconMonitor {
                 hostname,
                 storage,
                 db_path,
+                active_connections,
             );
         });
 
@@ -324,6 +327,7 @@ fn beacon_loop(
     hostname: String,
     storage: StorageHandle,
     db_path: String,
+    active_connections: SharedBeaconConnections,
 ) {
     // Live view of the config; re-read from the shared handle each poll cycle so
     // add/remove_eye_tag take effect without restarting the monitor.
@@ -789,6 +793,13 @@ fn beacon_loop(
                                 }
                             }
                             eprintln!("[EYE Monitor] Provisioning {mac_key} (first sight)...");
+                            // Mark this address as ours before dialing out — the
+                            // GATT server shares this adapter and would otherwise
+                            // mistake our outbound connect for a phone connecting
+                            // in (see SharedBeaconConnections's doc comment).
+                            if let Ok(mut c) = active_connections.lock() {
+                                c.insert(addr);
+                            }
                             // Bound the whole provisioning session so a stuck
                             // connect()/services() cannot freeze the single-thread
                             // runtime (scan + command queue) indefinitely.
@@ -802,6 +813,9 @@ fn beacon_loop(
                                 Err(_) => Err(ProvisionError::Timeout),
                             };
                             let _ = device.disconnect().await;
+                            if let Ok(mut c) = active_connections.lock() {
+                                c.remove(&addr);
+                            }
                             if let Ok(mut s) = state.write() {
                                 if let Some(t) = s.tags.get_mut(&mac_key) {
                                     match result {

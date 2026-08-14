@@ -88,6 +88,7 @@ impl BleMonitor {
         storage: Option<crate::libs::storage::StorageHandle>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        beacon_active_connections: crate::libs::beacon::SharedBeaconConnections,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = channel::unbounded::<BleCommand>();
         let (event_tx_xbeam, event_rx) = channel::unbounded::<BleEvent>();
@@ -105,6 +106,7 @@ impl BleMonitor {
                     storage,
                     lorawan_configs,
                     lorawan_state_slot,
+                    beacon_active_connections,
                     command_rx,
                     event_tx_xbeam,
                     shutdown_flag_clone,
@@ -133,6 +135,7 @@ impl BleMonitor {
         storage: Option<crate::libs::storage::StorageHandle>,
         lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
         lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+        beacon_active_connections: crate::libs::beacon::SharedBeaconConnections,
         command_rx: Receiver<BleCommand>,
         event_tx: Sender<BleEvent>,
         shutdown_flag: Arc<AtomicBool>,
@@ -158,6 +161,7 @@ impl BleMonitor {
                 storage,
                 lorawan_configs,
                 lorawan_state_slot,
+                beacon_active_connections,
                 command_rx,
                 event_tx,
                 shutdown_flag,
@@ -197,8 +201,9 @@ fn should_accept_connect(
     is_connected: bool,
     tracked: Option<bluer::Address>,
     addr: bluer::Address,
+    beacon_connecting: bool,
 ) -> bool {
-    is_connected && tracked != Some(addr)
+    is_connected && tracked != Some(addr) && !beacon_connecting
 }
 
 /// Whether a `DeviceRemoved` event is our client disconnecting.
@@ -218,6 +223,7 @@ async fn run_server(
     storage: Option<crate::libs::storage::StorageHandle>,
     lorawan_configs: Option<crate::libs::lorawan::SharedLoRaWANSensorConfigs>,
     lorawan_state_slot: Arc<std::sync::Mutex<Option<crate::libs::lorawan::SharedLoRaWANState>>>,
+    beacon_active_connections: crate::libs::beacon::SharedBeaconConnections,
     command_rx: Receiver<BleCommand>,
     event_tx_xbeam: Sender<BleEvent>,
     shutdown_flag: Arc<AtomicBool>,
@@ -407,7 +413,12 @@ async fn run_server(
                             Ok(d) => d.is_connected().await.unwrap_or(false),
                             Err(_) => false,
                         };
-                        if !should_accept_connect(is_connected, connected_addr, addr) {
+                        let beacon_connecting = beacon_active_connections
+                            .lock()
+                            .map(|c| c.contains(&addr))
+                            .unwrap_or(false);
+                        if !should_accept_connect(is_connected, connected_addr, addr, beacon_connecting)
+                        {
                             continue;
                         }
                         connected_addr = Some(addr);
@@ -477,22 +488,32 @@ mod client_scoping_tests {
         // The EYE monitor scans on the same adapter, so BlueZ creates a Device1
         // object — and therefore a DeviceAdded event — for every tag and phone
         // in range. None of them is connected to our GATT server.
-        assert!(!should_accept_connect(false, None, OTHER));
+        assert!(!should_accept_connect(false, None, OTHER, false));
     }
 
     #[test]
     fn a_connected_device_is_a_client() {
-        assert!(should_accept_connect(true, None, CLIENT));
+        assert!(should_accept_connect(true, None, CLIENT, false));
     }
 
     #[test]
     fn a_repeat_event_for_the_tracked_client_is_not_a_new_connection() {
-        assert!(!should_accept_connect(true, Some(CLIENT), CLIENT));
+        assert!(!should_accept_connect(true, Some(CLIENT), CLIENT, false));
     }
 
     #[test]
     fn another_genuinely_connected_device_replaces_the_tracked_client() {
-        assert!(should_accept_connect(true, Some(CLIENT), OTHER));
+        assert!(should_accept_connect(true, Some(CLIENT), OTHER, false));
+    }
+
+    #[test]
+    fn a_beacon_tag_being_provisioned_is_not_a_client() {
+        // The Beacon monitor dials out to the tag (central role) to provision
+        // it, which flips the same Device1.Connected property a phone
+        // connecting in to our GATT server (peripheral role) would. Without
+        // this check that outbound connect gets misread as a client
+        // connecting.
+        assert!(!should_accept_connect(true, None, OTHER, true));
     }
 
     #[test]
