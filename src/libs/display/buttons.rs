@@ -57,10 +57,10 @@ impl Applier {
         match effect {
             Effect::MarkActivity => lock_recover(&self.display_state).mark_activity(),
 
-            Effect::SilenceSensorBeep => {
+            Effect::SilenceBeep => {
                 if let Some(ref bp) = self.buzzer_priority {
-                    bp.silence_sensor_30min();
-                    eprintln!("[ButtonMonitor] Sensor beep silenced by button press (30 min)");
+                    bp.silence_beep_30min();
+                    eprintln!("[ButtonMonitor] Beep silenced by button press (30 min)");
                 }
             }
 
@@ -339,10 +339,10 @@ impl ButtonMonitor {
             // poll rather than per event: two events landing in the same 50ms
             // window then see one consistent view of the world.
             let screen: Screen = lock_recover(&applier.display_state).current_screen.clone();
-            let sensor_beeping = applier
+            let any_beeping = applier
                 .buzzer_priority
                 .as_ref()
-                .is_some_and(|bp| bp.is_sensor_beeping());
+                .is_some_and(|bp| bp.is_sensor_beeping() || bp.is_battery_beeping());
             let ble_active = pairing_state
                 .as_ref()
                 .map(|ps| ps.lock().unwrap_or_else(|e| e.into_inner()).ble_active())
@@ -405,7 +405,7 @@ impl ButtonMonitor {
                 screen: &screen,
                 levels,
                 in_standby: crate::libs::power::standby::is_standby(),
-                sensor_beeping,
+                any_beeping,
                 ble_active,
                 pairing_available: applier.pairing_handle.is_some(),
                 provisioning_expired,

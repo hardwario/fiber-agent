@@ -366,7 +366,7 @@ pub fn display_loop(
                     // Clone the LoRa handle and silence flag out from under the
                     // display_state mutex in one pass, then drop it before
                     // taking the inner RwLock.
-                    let (lorawan_state_arc, sensor_silenced) = {
+                    let (lorawan_state_arc, beep_silenced) = {
                         let ds = lock_recover(&display_state);
                         let silenced = ds
                             .buzzer_priority
@@ -416,7 +416,7 @@ pub fn display_loop(
                             lorawan_gateway_present,
                             &rows,
                             total_pages,
-                            sensor_silenced,
+                            beep_silenced,
                             hold_bar_pixels,
                         )
                     } else {
@@ -463,7 +463,7 @@ pub fn display_loop(
                             &lorawan_sensors,
                             &entries,
                             total_pages,
-                            sensor_silenced,
+                            beep_silenced,
                             hold_bar_pixels,
                         )
                     };

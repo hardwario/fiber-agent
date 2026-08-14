@@ -365,12 +365,14 @@ impl PowerMonitor {
                         // Establish the baseline silently — there is no prior
                         // state yet, so this can't be a real edge.
                         first_vin_reading = false;
+                        priority_manager.set_battery_reminder(!current_vin_status);
                     } else if current_vin_status && !previous_vin_status {
                         // VIN just connected (DC power detected)
                         eprintln!(
                             "[{}] [PowerMonitor] DC power detected - VIN connected",
                             get_timestamp_str()
                         );
+                        priority_manager.set_battery_reminder(false);
 
                         // In standby the resume plays this same pattern once the
                         // connection has been confirmed. Beeping here too would
@@ -400,6 +402,7 @@ impl PowerMonitor {
                             "[{}] [PowerMonitor] DC power lost - switched to battery",
                             get_timestamp_str()
                         );
+                        priority_manager.set_battery_reminder(true);
 
                         // Record DC loss timestamp in shared power status
                         if let Ok(mut ps) = power_status.lock() {
@@ -444,16 +447,18 @@ impl PowerMonitor {
                         && status.is_on_battery()
                         && last_battery_beep.elapsed() >= battery_beep_interval
                     {
-                        eprintln!(
-                            "[{}] [PowerMonitor] Battery mode reminder beep",
-                            get_timestamp_str()
-                        );
-                        if let Ok(bz) = buzzer.lock() {
-                            let battery_mode_timing = BuzzerTiming {
-                                on_ms: 100, // 100ms beep
-                                off_ms: 100,
-                            };
-                            bz.play_once(BuzzerPattern::BatteryModeBeep(battery_mode_timing));
+                        if priority_manager.should_play_battery_reminder() {
+                            eprintln!(
+                                "[{}] [PowerMonitor] Battery mode reminder beep",
+                                get_timestamp_str()
+                            );
+                            if let Ok(bz) = buzzer.lock() {
+                                let battery_mode_timing = BuzzerTiming {
+                                    on_ms: 100, // 100ms beep
+                                    off_ms: 100,
+                                };
+                                bz.play_once(BuzzerPattern::BatteryModeBeep(battery_mode_timing));
+                            }
                         }
                         last_battery_beep = Instant::now();
                     }
