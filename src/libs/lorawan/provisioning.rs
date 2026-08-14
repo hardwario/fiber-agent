@@ -490,6 +490,31 @@ fn activate_device_abp(
     Ok(())
 }
 
+/// Extracts `application_id` from an already-parsed lorawan config JSON value
+/// — the same file `provision_node`/`provision_node_otaa` read below. Split
+/// out as a pure function so it's testable without touching the filesystem.
+pub fn application_id_from_config(config: &serde_json::Value) -> Option<String> {
+    config
+        .get("application_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Reads the ChirpStack application_id straight from `/data/lorawan/config.json`
+/// (written once during first-boot provisioning). Used as a startup fallback
+/// for the LoRaWAN monitor's `last_app_id` cache, so downlinks work even
+/// before any Node uplink has been observed in the current process's
+/// lifetime — otherwise every `fiber.service` restart leaves commands broken
+/// until some Node happens to transmit again.
+pub fn read_application_id() -> Result<String, String> {
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
+        .map_err(|e| format!("Cannot read {}: {}", LORAWAN_CONFIG_PATH, e))?;
+    let config: serde_json::Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
+    application_id_from_config(&config)
+        .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))
+}
+
 /// Provision a HARDWARIO NODE in ChirpStack: login + create device + ABP activate.
 ///
 /// Reads application_id and device_profile_id from /data/lorawan/config.json.
@@ -1079,6 +1104,27 @@ mod tests {
         let s = epoch_to_rfc3339(1_700_000_000).unwrap();
         assert!(s.starts_with("2023-11-14T22:13:20"), "got {s}");
         assert!(s.ends_with("+00:00"), "got {s}");
+    }
+
+    #[test]
+    fn application_id_from_config_reads_the_field() {
+        let config = serde_json::json!({"application_id": "abc-123", "tenant_id": "t1"});
+        assert_eq!(
+            application_id_from_config(&config),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn application_id_from_config_missing_field_is_none() {
+        let config = serde_json::json!({"tenant_id": "t1"});
+        assert_eq!(application_id_from_config(&config), None);
+    }
+
+    #[test]
+    fn application_id_from_config_wrong_type_is_none() {
+        let config = serde_json::json!({"application_id": 123});
+        assert_eq!(application_id_from_config(&config), None);
     }
 
     /// `resolve_otaa_profile` is the whole point of carrying profile_id: it has

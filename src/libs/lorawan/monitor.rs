@@ -460,7 +460,25 @@ fn lorawan_loop(
         // until the caller drops its receiver, at which point the next send fails
         // and the entry is dropped.
         let mut pending_multi: HashMap<u32, Sender<DecodedResponse>> = HashMap::new();
-        let mut last_app_id: Option<String> = None;
+        // Falls back to the application_id already persisted at
+        // /data/lorawan/config.json during first-boot provisioning, so
+        // downlinks work immediately after a fiber.service restart instead of
+        // waiting for a live uplink to (re-)learn it (see the comment above
+        // on why this is scoped outside the reconnect loop).
+        let mut last_app_id: Option<String> =
+            match crate::libs::lorawan::provisioning::read_application_id() {
+                Ok(id) => {
+                    eprintln!("[LoRaWAN Monitor] Seeded application id at startup: {}", id);
+                    Some(id)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[LoRaWAN Monitor] No application id available at startup ({}); will learn it from the first uplink",
+                        e
+                    );
+                    None
+                }
+            };
 
         // Multi-frame telemetry reassembly (#64). Declared alongside the pending
         // maps so it survives MQTT reconnects for the same reason they do — but
