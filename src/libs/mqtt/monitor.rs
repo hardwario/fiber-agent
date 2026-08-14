@@ -233,6 +233,14 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
     let mut mqttoptions =
         MqttOptions::new(client_id, config.broker.host.clone(), config.broker.port);
 
+    // Explicit rather than relying on rumqttc's unconfigured 10240-byte
+    // default coinciding with what this app happens to publish — the
+    // combined lorawan/sensors snapshot is now capped well under this by
+    // build_lorawan_sensors_payload (mqtt/publisher.rs), but every publish
+    // path shares this ceiling, so keep it generous and documented.
+    const MQTT_MAX_PACKET_SIZE_BYTES: usize = 20 * 1024;
+    mqttoptions.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
+
     // Set connection parameters
     mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
     mqttoptions.set_clean_session(config.connection.clean_session);
@@ -1653,8 +1661,9 @@ impl MqttMonitor {
             Ok(applier) => {
                 eprintln!("[MQTT Monitor] Configuration applier initialized");
                 let applier = Arc::new(applier);
-                // Publish it process-wide so the EYE monitor can adopt a
-                // discovered tag through the same audited write path.
+                // Publish it process-wide (see config_applier::mod.rs) for any
+                // subsystem spawned before this one that needs an audited
+                // config write path without a direct reference threaded in.
                 crate::libs::config_applier::register_config_applier(applier.clone());
                 Some(applier)
             }
@@ -4228,6 +4237,39 @@ impl MqttMonitor {
                 Ok(())
             }
 
+            MqttCommand::SetBeaconConfig {
+                auto_provision,
+                auto_discover,
+            } => {
+                let Some(applier) = config_applier else {
+                    return Err("Config applier not initialized".to_string());
+                };
+                let result = applier.apply_beacon_config(auto_provision, auto_discover);
+                if !result.success {
+                    return Err(result
+                        .error_message
+                        .unwrap_or_else(|| "Unknown error".to_string()));
+                }
+                // Mirror into the live config so the scan loop picks it up on
+                // its next poll, and config_state echoes the new value
+                // immediately — no restart needed, unlike set_eye_enabled.
+                if let Some(cfg) = crate::libs::beacon::state::beacon_config_handle() {
+                    if let Ok(mut c) = cfg.write() {
+                        if let Some(v) = auto_provision {
+                            c.auto_provision = v;
+                        }
+                        if let Some(v) = auto_discover {
+                            c.auto_discover = Some(v);
+                        }
+                    }
+                }
+                eprintln!(
+                    "[MQTT Monitor] Set EYE config: auto_provision={:?} auto_discover={:?}",
+                    auto_provision, auto_discover
+                );
+                Ok(())
+            }
+
             MqttCommand::SetBeaconRecording { mac, interval_min } => {
                 // Hand off to the EYE monitor, which runs recorder ops with the
                 // BLE scan paused (raw L2CAP and an active scan must not overlap).
@@ -4288,7 +4330,9 @@ impl MqttMonitor {
             }
             MqttCommand::AddBeaconTag { mac, name } => {
                 // Persist the tag into `eye.tags[]` so it is tracked/named
-                // explicitly (auto-provisioning still discovers unknown tags).
+                // explicitly. This is the operator-driven adoption path — the
+                // scan loop's own discovery pass only ever lists a stranger,
+                // never writes it here.
                 if !crate::libs::beacon::state::is_valid_mac(&mac) {
                     return Err(format!("Invalid MAC address: {mac}"));
                 }
@@ -4313,6 +4357,13 @@ impl MqttMonitor {
                                 if let Some(n) = name {
                                     entry.name = Some(n);
                                 }
+                                // Clear it explicitly rather than rely on the scan
+                                // loop's own reconcile: this MAC may be adopted
+                                // while out of range (stale), and the reconcile
+                                // that follows the next config re-read would
+                                // otherwise be the only thing standing between it
+                                // and the discovered-prune.
+                                entry.discovered = false;
                             }
                         }
                         eprintln!("[MQTT Monitor] ✓ EYE tag {mac} added to config");

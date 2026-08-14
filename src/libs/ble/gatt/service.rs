@@ -729,6 +729,11 @@ pub async fn create_gatt_app(
                                 if let Some(n) = prepared.name.clone() {
                                     entry.name = Some(n);
                                 }
+                                // See mqtt::monitor's AddBeaconTag arm: clear it
+                                // explicitly rather than rely on the scan loop's
+                                // next reconcile, since this MAC may be enrolled
+                                // while out of range.
+                                entry.discovered = false;
                             }
                         }
 

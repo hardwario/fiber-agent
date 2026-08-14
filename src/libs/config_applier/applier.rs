@@ -2130,6 +2130,165 @@ impl ConfigApplier {
         Ok(())
     }
 
+    /// Toggle `eye.auto_provision` / `eye.auto_discover` at runtime. Each `Some`
+    /// field overwrites the corresponding key; a `None` field is left untouched
+    /// (mirrors `apply_beacon_enabled`, but per-field rather than whole-value).
+    /// Creates the `eye:` section if missing.
+    pub fn apply_beacon_config(
+        &self,
+        auto_provision: Option<bool>,
+        auto_discover: Option<bool>,
+    ) -> ApplyResult {
+        let applied_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let config_file = self.config_dir.join("fiber.config.yaml");
+        if !config_file.exists() {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: None,
+                error_message: Some("Main config file not found".to_string()),
+                applied_at,
+            };
+        }
+
+        let content = match fs::read_to_string(&config_file) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to read config file: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let mut config: Value = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: None,
+                    error_message: Some(format!("Failed to parse YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        let backup_path = self.create_backup(&config_file, &content);
+        let backup_path_str = backup_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+
+        if let Err(e) = Self::update_beacon_config_flags(&mut config, auto_provision, auto_discover)
+        {
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(e),
+                applied_at,
+            };
+        }
+
+        let new_content = match serde_yaml::to_string(&config) {
+            Ok(c) => c,
+            Err(e) => {
+                return ApplyResult {
+                    success: false,
+                    file_path: config_file.to_string_lossy().to_string(),
+                    backup_path: backup_path_str,
+                    error_message: Some(format!("Failed to serialize YAML: {}", e)),
+                    applied_at,
+                }
+            }
+        };
+
+        if let Err(e) = self.write_atomic(&config_file, &new_content) {
+            if let Some(backup) = &backup_path {
+                let _ = self.rollback(&config_file, backup);
+            }
+            return ApplyResult {
+                success: false,
+                file_path: config_file.to_string_lossy().to_string(),
+                backup_path: backup_path_str,
+                error_message: Some(format!("Failed to write config: {}", e)),
+                applied_at,
+            };
+        }
+
+        eprintln!(
+            "[ConfigApplier] \u{2713} EYE config: auto_provision={:?} auto_discover={:?}",
+            auto_provision, auto_discover
+        );
+        self.log_audit(
+            "SET_EYE_CONFIG",
+            format!(
+                r#"{{"auto_provision":{},"auto_discover":{}}}"#,
+                auto_provision
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                auto_discover
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+            ),
+        );
+
+        ApplyResult {
+            success: true,
+            file_path: config_file.to_string_lossy().to_string(),
+            backup_path: backup_path_str,
+            error_message: None,
+            applied_at,
+        }
+    }
+
+    /// Set the `Some` top-level `eye:` booleans (`auto_provision` /
+    /// `auto_discover`). Creates the `eye:` mapping if it is absent (unlike the
+    /// per-tag helpers, which require an existing tag) so a config omitting
+    /// `eye:` still works.
+    ///
+    /// `auto_discover` is written as a real YAML key rather than being left
+    /// implicit: `BeaconConfig::auto_discover` is `Option<bool>` precisely so an
+    /// unset key round-trips as unset, but an operator flipping the toggle is an
+    /// explicit decision and must be recorded as `Some(_)` on disk.
+    fn update_beacon_config_flags(
+        config: &mut Value,
+        auto_provision: Option<bool>,
+        auto_discover: Option<bool>,
+    ) -> Result<(), String> {
+        let config_map = config
+            .as_mapping_mut()
+            .ok_or_else(|| "Config root is not a mapping".to_string())?;
+        let eye_key = Value::String("eye".to_string());
+
+        if !config_map
+            .get(&eye_key)
+            .map(|v| v.is_mapping())
+            .unwrap_or(false)
+        {
+            config_map.insert(eye_key.clone(), Value::Mapping(serde_yaml::Mapping::new()));
+        }
+        let eye = config_map
+            .get_mut(&eye_key)
+            .and_then(|v| v.as_mapping_mut())
+            .ok_or_else(|| "eye config is not a mapping".to_string())?;
+
+        if let Some(v) = auto_provision {
+            eye.insert(Value::String("auto_provision".to_string()), Value::Bool(v));
+        }
+        if let Some(v) = auto_discover {
+            eye.insert(Value::String("auto_discover".to_string()), Value::Bool(v));
+        }
+        Ok(())
+    }
+
     /// Remove an EYE BLE tag from the main config (`eye.tags[]`) by MAC.
     pub fn remove_beacon_tag_config(&self, mac: String) -> ApplyResult {
         let applied_at = SystemTime::now()
@@ -3976,6 +4135,48 @@ mod tests {
         .unwrap();
         assert_eq!(parsed["eye"]["enabled"].as_bool(), Some(true));
         assert_eq!(parsed["mqtt"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn apply_beacon_config_persists_flags_and_creates_section() {
+        // Existing eye: section — only the Some field is written, the other and
+        // the rest of the section survive.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("fiber.config.yaml"),
+            "eye:\n  enabled: true\n  auto_provision: true\n  auto_discover: true\n  tags: []\n",
+        )
+        .unwrap();
+        let applier = ConfigApplier::new(tmp.path()).unwrap();
+        assert!(applier.apply_beacon_config(Some(false), None).success);
+        let parsed: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(tmp.path().join("fiber.config.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed["eye"]["auto_provision"].as_bool(), Some(false));
+        assert_eq!(parsed["eye"]["auto_discover"].as_bool(), Some(true)); // untouched
+        assert_eq!(parsed["eye"]["enabled"].as_bool(), Some(true));
+
+        // Config WITHOUT an eye: section — it is created, and auto_discover
+        // lands as a real key (not an omitted Option).
+        let tmp2 = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp2.path().join("fiber.config.yaml"),
+            "mqtt:\n  enabled: true\n",
+        )
+        .unwrap();
+        let applier2 = ConfigApplier::new(tmp2.path()).unwrap();
+        assert!(
+            applier2
+                .apply_beacon_config(Some(true), Some(false))
+                .success
+        );
+        let raw = std::fs::read_to_string(tmp2.path().join("fiber.config.yaml")).unwrap();
+        assert!(raw.contains("auto_discover"));
+        let parsed2: Value = serde_yaml::from_str(&raw).unwrap();
+        assert_eq!(parsed2["eye"]["auto_provision"].as_bool(), Some(true));
+        assert_eq!(parsed2["eye"]["auto_discover"].as_bool(), Some(false));
+        assert_eq!(parsed2["mqtt"]["enabled"].as_bool(), Some(true));
     }
 
     #[test]

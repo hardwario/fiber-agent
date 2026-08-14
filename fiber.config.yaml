@@ -178,13 +178,19 @@ lorawan:
     password: ""
 
 # Teltonika EYE BLE sensor tags (BTSMP1).
-# Tags are read passively from their BLE advertising; `auto_provision` connects
-# once (default PIN 123456) on first sight to apply the profile below.
+# Tags are read passively from their BLE advertising. `auto_provision` applies the
+# PROXIMOS profile (one connect, default PIN 123456) to tags listed in `tags:`
+# below — it never registers a tag it has not been told about. To surface
+# unregistered tags in earshot as candidates for the viewer to offer, set
+# `auto_discover: true` (visibility only; it writes nothing to `tags:`). Both are
+# togglable at runtime via the signed `set_eye_config` command from the viewer.
 eye:
   enabled: true                # set false to switch the EYE tag monitor off
   publish_interval_s: 30
   tag_timeout_s: 600           # mark a tag stale if unseen for this long
-  auto_provision: true         # apply the PROXIMOS profile on first sight
+  auto_provision: true         # apply the PROXIMOS profile to tags listed below
+  # auto_discover: false       # (default) surface unregistered tags as candidates
+  # auto_discover_max: 32      # cap on candidates held at once
   tags:
     - mac: "7C:D9:F4:13:10:DE"
       name: "EYE tag 1"
