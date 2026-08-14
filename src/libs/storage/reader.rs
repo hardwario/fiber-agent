@@ -5,8 +5,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::libs::storage::error::{StorageError, StorageResult};
 use crate::libs::storage::models::{
-    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
-    StorageStats,
+    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, NodeReadingRow, SensorReading, StorageStats,
 };
 
 /// Reader for querying sensor data
@@ -176,14 +175,14 @@ impl StorageReader {
         })
     }
 
-    /// The `limit` most recent stored uplink timestamps for one sticker, newest
+    /// The `limit` most recent stored uplink timestamps for one Node, newest
     /// first.
     ///
-    /// Exists so the sticker's reporting cadence survives a restart. The cadence
+    /// Exists so the Node's reporting cadence survives a restart. The cadence
     /// bounds every fPort-85 round trip (a Class-A device answers only in the
     /// window after its own uplink), and the in-memory view starts empty — which
     /// is exactly when an operator opens the drawer and hits "Read from device".
-    pub fn recent_sticker_uplink_times(
+    pub fn recent_node_uplink_times(
         conn: &Connection,
         dev_eui: &str,
         limit: usize,
@@ -196,32 +195,32 @@ impl StorageReader {
                  LIMIT ?",
             )
             .map_err(|e| {
-                StorageError::QueryError(format!("prepare recent_sticker_uplink_times: {}", e))
+                StorageError::QueryError(format!("prepare recent_node_uplink_times: {}", e))
             })?;
         let rows = stmt
             .query_map(rusqlite::params![dev_eui, limit as i64], |r| {
                 r.get::<_, i64>(0)
             })
             .map_err(|e| {
-                StorageError::QueryError(format!("query recent_sticker_uplink_times: {}", e))
+                StorageError::QueryError(format!("query recent_node_uplink_times: {}", e))
             })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r.map_err(|e| {
-                StorageError::QueryError(format!("row recent_sticker_uplink_times: {}", e))
+                StorageError::QueryError(format!("row recent_node_uplink_times: {}", e))
             })?);
         }
         Ok(out)
     }
 
-    /// Fetch sticker readings with `id > last_id`, ordered by id ascending,
+    /// Fetch Node readings with `id > last_id`, ordered by id ascending,
     /// up to `limit` rows. Used by the export drain loop to consume rows
     /// past the per-(broker, stream) cursor.
-    pub fn fetch_sticker_readings_after(
+    pub fn fetch_node_readings_after(
         conn: &Connection,
         last_id: i64,
         limit: usize,
-    ) -> StorageResult<Vec<StickerReadingRow>> {
+    ) -> StorageResult<Vec<NodeReadingRow>> {
         let mut stmt = conn
             .prepare(
                 "SELECT id, dev_eui, provisioning_epoch, ts, received_at, message_id,
@@ -231,13 +230,11 @@ impl StorageReader {
                  ORDER BY id ASC
                  LIMIT ?",
             )
-            .map_err(|e| {
-                StorageError::QueryError(format!("prepare sticker_readings_after: {}", e))
-            })?;
+            .map_err(|e| StorageError::QueryError(format!("prepare node_readings_after: {}", e)))?;
 
         let rows = stmt
             .query_map(rusqlite::params![last_id, limit as i64], |r| {
-                Ok(StickerReadingRow {
+                Ok(NodeReadingRow {
                     id: r.get(0)?,
                     dev_eui: r.get(1)?,
                     provisioning_epoch: r.get(2)?,
@@ -249,11 +246,9 @@ impl StorageReader {
                     created_at: r.get(8)?,
                 })
             })
-            .map_err(|e| StorageError::QueryError(format!("query sticker_readings_after: {}", e)))?
+            .map_err(|e| StorageError::QueryError(format!("query node_readings_after: {}", e)))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                StorageError::QueryError(format!("collect sticker_readings_after: {}", e))
-            })?;
+            .map_err(|e| StorageError::QueryError(format!("collect node_readings_after: {}", e)))?;
 
         Ok(rows)
     }
@@ -308,7 +303,7 @@ impl StorageReader {
     }
 
     /// Fetch sensor readings with `id > last_id`, ordered by id ascending,
-    /// up to `limit` rows. Companion to `fetch_sticker_readings_after`,
+    /// up to `limit` rows. Companion to `fetch_node_readings_after`,
     /// consumed by the probe-stream export drain.
     pub fn fetch_sensor_readings_after(
         conn: &Connection,
@@ -545,13 +540,13 @@ mod tests {
     }
 
     #[test]
-    fn fetch_sticker_readings_after_returns_only_above_cursor_in_order() {
+    fn fetch_node_readings_after_returns_only_above_cursor_in_order() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
         for i in 0..5 {
-            StorageWriter::write_sticker_reading(
+            StorageWriter::write_node_reading(
                 &mut conn,
                 "abc",
                 1,
@@ -564,12 +559,12 @@ mod tests {
             .unwrap();
         }
 
-        let rows = StorageReader::fetch_sticker_readings_after(&conn, 2, 10).unwrap();
+        let rows = StorageReader::fetch_node_readings_after(&conn, 2, 10).unwrap();
         assert_eq!(rows.len(), 3, "expected ids 3,4,5 (cursor=2)");
         let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![3, 4, 5]);
 
-        let limited = StorageReader::fetch_sticker_readings_after(&conn, 0, 2).unwrap();
+        let limited = StorageReader::fetch_node_readings_after(&conn, 0, 2).unwrap();
         assert_eq!(limited.len(), 2);
     }
 }

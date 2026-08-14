@@ -1,6 +1,6 @@
-//! Sticker-add GATT characteristic (FB0D).
+//! Node-add GATT characteristic (FB0D).
 //!
-//! Thin transport layer over the shared `add_lorawan_sticker` path: parse and
+//! Thin transport layer over the shared `add_lorawan_node` path: parse and
 //! validate the FB0D JSON, build an OTAA `ActivationMode`, and hand off to the
 //! same full add the MQTT command uses. The credentials are decoded from NFC
 //! by the phone; this side only validates shape and enrolls.
@@ -31,13 +31,13 @@ fn default_join_eui() -> String {
     "0000000000000000".to_string()
 }
 
-/// FB0D write payload. Fields map 1:1 onto `MqttCommand::AddLoRaWANSticker`
-/// (OTAA only) — all decoded from the sticker's NFC tag by the phone.
+/// FB0D write payload. Fields map 1:1 onto `MqttCommand::AddLoRaWANNode`
+/// (OTAA only) — all decoded from the node's NFC tag by the phone.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StickerAddRequest {
+pub struct NodeAddRequest {
     pub deveui: String,
-    /// Vendor device-profile number off the sticker's label. The manager app
+    /// Vendor device-profile number off the node's label. The manager app
     /// does not send one today (it reads the credentials over NFC, not off the
     /// QR), so this stays optional — `deny_unknown_fields` above means a field
     /// the firmware does not declare would reject the whole enrolment.
@@ -57,7 +57,7 @@ pub struct StickerAddRequest {
 /// the background. The client polls this via FB0D read: `pending=true` while it
 /// runs, then `pending=false` with the final `success`/`message`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StickerAddResponse {
+pub struct NodeAddResponse {
     /// True while the enrollment is still running (poll again).
     #[serde(default)]
     pub pending: bool,
@@ -69,21 +69,21 @@ pub struct StickerAddResponse {
 /// Per-`ServiceState` slot holding the most recent FB0D result. Scoped to a
 /// single GATT-server instance (not a process-global), so the slot can be
 /// reset on BLE disconnect and one client cannot read another's result.
-pub type SharedResult = Arc<Mutex<StickerAddResponse>>;
+pub type SharedResult = Arc<Mutex<NodeAddResponse>>;
 
 pub fn new_slot() -> SharedResult {
-    Arc::new(Mutex::new(StickerAddResponse::default()))
+    Arc::new(Mutex::new(NodeAddResponse::default()))
 }
 
 /// Read the current slot. Returns the default response if the lock is
 /// poisoned — the caller treats that as "no result yet".
-pub fn read(slot: &SharedResult) -> StickerAddResponse {
+pub fn read(slot: &SharedResult) -> NodeAddResponse {
     slot.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
 /// Overwrite the slot. Recovers from a poisoned lock so a panicked prior
 /// holder cannot strand the slot.
-pub fn store(slot: &SharedResult, resp: StickerAddResponse) {
+pub fn store(slot: &SharedResult, resp: NodeAddResponse) {
     let mut g = match slot.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -93,7 +93,7 @@ pub fn store(slot: &SharedResult, resp: StickerAddResponse) {
 
 /// Reset the slot to the default (no result). Called on BLE disconnect.
 pub fn reset(slot: &SharedResult) {
-    store(slot, StickerAddResponse::default());
+    store(slot, NodeAddResponse::default());
 }
 
 /// Atomic "begin a new enrollment" gate.
@@ -110,7 +110,7 @@ pub fn try_begin(slot: &SharedResult, deveui: String) -> bool {
     if g.pending {
         return false;
     }
-    *g = StickerAddResponse {
+    *g = NodeAddResponse {
         pending: true,
         success: false,
         message: "enrolling".to_string(),
@@ -124,7 +124,7 @@ fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Validated, normalized command components ready for `add_lorawan_sticker`.
+/// Validated, normalized command components ready for `add_lorawan_node`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedAdd {
     pub dev_eui: String,
@@ -140,7 +140,7 @@ pub struct PreparedAdd {
 /// `MAX_STR_CHARS`, and must not contain ASCII control characters (newlines
 /// would break YAML quoting and inject into log lines). Returns a human-
 /// readable reason on failure (surfaced in the FB0D response `message`).
-pub fn prepare(req: &StickerAddRequest) -> Result<PreparedAdd, String> {
+pub fn prepare(req: &NodeAddRequest) -> Result<PreparedAdd, String> {
     let dev_eui = req.deveui.trim().to_lowercase();
     let join_eui = req.joineui.trim().to_lowercase();
     let app_key = req.appkey.trim().to_lowercase();
@@ -191,8 +191,8 @@ fn check_label(s: &str, field: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    fn req() -> StickerAddRequest {
-        StickerAddRequest {
+    fn req() -> NodeAddRequest {
+        NodeAddRequest {
             deveui: "0011223344556677".to_string(),
             joineui: "8899AABBCCDDEEFF".to_string(),
             appkey: "00112233445566778899AABBCCDDEEFF".to_string(),
@@ -275,14 +275,14 @@ mod tests {
     #[test]
     fn deserialize_defaults_joineui() {
         let json = r#"{"deveui":"0011223344556677","appkey":"00112233445566778899aabbccddeeff","name":"x","serial_number":"s"}"#;
-        let r: StickerAddRequest = serde_json::from_str(json).unwrap();
+        let r: NodeAddRequest = serde_json::from_str(json).unwrap();
         assert_eq!(r.joineui, "0000000000000000");
     }
 
     #[test]
     fn deserialize_rejects_unknown_fields() {
         let json = r#"{"deveui":"0011223344556677","appkey":"00112233445566778899aabbccddeeff","name":"x","serial_number":"s","sneaky":"x"}"#;
-        let r: Result<StickerAddRequest, _> = serde_json::from_str(json);
+        let r: Result<NodeAddRequest, _> = serde_json::from_str(json);
         assert!(r.is_err(), "unknown fields must be rejected");
     }
 
@@ -308,10 +308,10 @@ mod tests {
         // Finish the enrollment.
         store(
             &slot,
-            StickerAddResponse {
+            NodeAddResponse {
                 pending: false,
                 success: true,
-                message: "sticker enrolled".to_string(),
+                message: "node enrolled".to_string(),
                 deveui: "deveui-a".to_string(),
             },
         );

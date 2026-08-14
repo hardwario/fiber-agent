@@ -62,9 +62,9 @@ pub enum StorageMessage {
     /// Graceful shutdown
     Shutdown,
 
-    // ===== Save-and-feed (sticker stream + export cursor) =====
-    /// Write a sticker uplink or marker. Fire-and-forget — failures are logged.
-    WriteStickerReading {
+    // ===== Save-and-feed (Node stream + export cursor) =====
+    /// Write a Node uplink or marker. Fire-and-forget — failures are logged.
+    WriteNodeReading {
         dev_eui: String,
         provisioning_epoch: i64,
         ts: i64,
@@ -83,7 +83,7 @@ pub enum StorageMessage {
         payload_json: String,
     },
     /// Append a `sticker_removed` marker event (fire-and-forget).
-    AppendStickerRemoved { dev_eui: String, ts: i64 },
+    AppendNodeRemoved { dev_eui: String, ts: i64 },
     /// Bump and return the new provisioning epoch for a dev_eui.
     BumpProvisioningEpoch {
         dev_eui: String,
@@ -94,9 +94,9 @@ pub enum StorageMessage {
         dev_eui: String,
         reply: Sender<StorageResult<i64>>,
     },
-    /// Recent stored uplink timestamps for a sticker, for deriving its cadence
+    /// Recent stored uplink timestamps for a Node, for deriving its cadence
     /// across a restart.
-    GetRecentStickerUplinks {
+    GetRecentNodeUplinks {
         dev_eui: String,
         limit: usize,
         reply: Sender<StorageResult<Vec<i64>>>,
@@ -111,7 +111,7 @@ pub enum StorageMessage {
     ResetExportCursor { broker_id: String, stream: String },
     /// Enforce retention on `sticker_readings` (delete rows older than
     /// `retention_seconds`, log a WARN for un-exported drops).
-    EnforceStickerRetention { retention_seconds: i64 },
+    EnforceNodeRetention { retention_seconds: i64 },
     /// Returns true if `dev_eui` has no sticker_readings rows OR the
     /// most-recent one is a `sticker_removed` marker. Used by provisioning
     /// to decide whether to bump the epoch.
@@ -231,10 +231,10 @@ impl StorageHandle {
         })
     }
 
-    // ===== Save-and-feed (sticker stream + export cursor) =====
+    // ===== Save-and-feed (Node stream + export cursor) =====
 
-    /// Send a sticker reading to be persisted (fire-and-forget).
-    pub fn write_sticker_reading(
+    /// Send a Node reading to be persisted (fire-and-forget).
+    pub fn write_node_reading(
         &self,
         dev_eui: String,
         provisioning_epoch: i64,
@@ -245,7 +245,7 @@ impl StorageHandle {
         payload_json: String,
     ) -> StorageResult<()> {
         self.sender
-            .send(StorageMessage::WriteStickerReading {
+            .send(StorageMessage::WriteNodeReading {
                 dev_eui,
                 provisioning_epoch,
                 ts,
@@ -256,7 +256,7 @@ impl StorageHandle {
             })
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
-                    "Failed to send sticker reading: {}",
+                    "Failed to send Node reading: {}",
                     e
                 ))
             })
@@ -290,9 +290,9 @@ impl StorageHandle {
     }
 
     /// Append a `sticker_removed` marker event (fire-and-forget).
-    pub fn append_sticker_removed(&self, dev_eui: String, ts: i64) -> StorageResult<()> {
+    pub fn append_node_removed(&self, dev_eui: String, ts: i64) -> StorageResult<()> {
         self.sender
-            .send(StorageMessage::AppendStickerRemoved { dev_eui, ts })
+            .send(StorageMessage::AppendNodeRemoved { dev_eui, ts })
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
                     "Failed to send sticker_removed: {}",
@@ -321,23 +321,23 @@ impl StorageHandle {
     }
 
     /// The most recent stored uplink timestamps for `dev_eui`, newest first.
-    pub fn recent_sticker_uplinks(&self, dev_eui: String, limit: usize) -> StorageResult<Vec<i64>> {
+    pub fn recent_node_uplinks(&self, dev_eui: String, limit: usize) -> StorageResult<Vec<i64>> {
         let (tx, rx) = bounded(1);
         self.sender
-            .send(StorageMessage::GetRecentStickerUplinks {
+            .send(StorageMessage::GetRecentNodeUplinks {
                 dev_eui,
                 limit,
                 reply: tx,
             })
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
-                    "Failed to send get_recent_sticker_uplinks: {}",
+                    "Failed to send get_recent_node_uplinks: {}",
                     e
                 ))
             })?;
         rx.recv().map_err(|e| {
             crate::libs::storage::error::StorageError::ChannelError(format!(
-                "Failed to receive get_recent_sticker_uplinks reply: {}",
+                "Failed to receive get_recent_node_uplinks reply: {}",
                 e
             ))
         })?
@@ -399,7 +399,7 @@ impl StorageHandle {
     /// most-recent row for it is a `sticker_removed` marker. Used by the
     /// LoRaWAN provisioning path to decide whether bumping the epoch is
     /// the right thing to do (vs. an idempotent re-provision of an already-
-    /// active sticker).
+    /// active Node).
     pub fn dev_eui_last_event_was_removal_or_absent(&self, dev_eui: String) -> StorageResult<bool> {
         let (tx, rx) = bounded(1);
         self.sender
@@ -419,12 +419,12 @@ impl StorageHandle {
     }
 
     /// Enforce retention on `sticker_readings`.
-    pub fn enforce_sticker_retention(&self, retention_seconds: i64) -> StorageResult<()> {
+    pub fn enforce_node_retention(&self, retention_seconds: i64) -> StorageResult<()> {
         self.sender
-            .send(StorageMessage::EnforceStickerRetention { retention_seconds })
+            .send(StorageMessage::EnforceNodeRetention { retention_seconds })
             .map_err(|e| {
                 crate::libs::storage::error::StorageError::ChannelError(format!(
-                    "Failed to send enforce_sticker_retention: {}",
+                    "Failed to send enforce_node_retention: {}",
                     e
                 ))
             })
@@ -633,15 +633,15 @@ impl StorageThread {
         let raw_retention_interval = Duration::from_secs(3600);
         let mut last_raw_retention_run = std::time::Instant::now();
 
-        // Sticker retention sweep: every hour, drop sticker_readings older
+        // Node retention sweep: every hour, drop sticker_readings older
         // than 30 days. The matching aggregate (probe_1m / minute aggregates)
         // is shipped via the export pipeline and replayed on demand by
-        // viewers, so raw sticker rows past the live window are safe to drop.
+        // viewers, so raw Node rows past the live window are safe to drop.
         // Without this the table grew unbounded — the StorageHandle method
         // exists but had no scheduler hooked up.
-        const STICKER_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
-        let sticker_retention_interval = Duration::from_secs(3600);
-        let mut last_sticker_retention_run = std::time::Instant::now();
+        const NODE_RETENTION_SECONDS: i64 = 30 * 24 * 3600;
+        let node_retention_interval = Duration::from_secs(3600);
+        let mut last_node_retention_run = std::time::Instant::now();
 
         // EYE retention sweep: every hour, drop eye_readings older than 30
         // days, mirroring the sticker_readings policy above. Without this
@@ -729,26 +729,26 @@ impl StorageThread {
                         }
                         last_raw_retention_run = std::time::Instant::now();
                     }
-                    if last_sticker_retention_run.elapsed() >= sticker_retention_interval
+                    if last_node_retention_run.elapsed() >= node_retention_interval
                         && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
                     {
                         match RetentionPolicy::default()
-                            .sweep_sticker_readings(&mut conn, STICKER_RETENTION_SECONDS)
+                            .sweep_node_readings(&mut conn, NODE_RETENTION_SECONDS)
                         {
                             Ok(stats) if stats.purged > 0 => {
                                 eprintln!(
-                                    "STORAGE THREAD: sticker retention swept {} sticker_readings rows older than {} days (unexported_dropped={})",
+                                    "STORAGE THREAD: Node retention swept {} sticker_readings rows older than {} days (unexported_dropped={})",
                                     stats.purged,
-                                    STICKER_RETENTION_SECONDS / 86400,
+                                    NODE_RETENTION_SECONDS / 86400,
                                     stats.unexported_dropped,
                                 );
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!("STORAGE THREAD: sticker retention sweep failed: {}", e);
+                                eprintln!("STORAGE THREAD: Node retention sweep failed: {}", e);
                             }
                         }
-                        last_sticker_retention_run = std::time::Instant::now();
+                        last_node_retention_run = std::time::Instant::now();
                     }
                     if last_beacon_retention_run.elapsed() >= beacon_retention_interval
                         && consecutive_write_failures < RECONNECT_FAILURE_THRESHOLD
@@ -957,7 +957,7 @@ impl StorageThread {
                         }
                     }
 
-                    StorageMessage::WriteStickerReading {
+                    StorageMessage::WriteNodeReading {
                         dev_eui,
                         provisioning_epoch,
                         ts,
@@ -966,7 +966,7 @@ impl StorageThread {
                         event_type,
                         payload_json,
                     } => {
-                        match StorageWriter::write_sticker_reading(
+                        match StorageWriter::write_node_reading(
                             &mut conn,
                             &dev_eui,
                             provisioning_epoch,
@@ -981,7 +981,7 @@ impl StorageThread {
                                 message_count += 1;
                             }
                             Err(e) => {
-                                eprintln!("STORAGE THREAD: write_sticker_reading failed: {}", e);
+                                eprintln!("STORAGE THREAD: write_node_reading failed: {}", e);
                             }
                         }
                     }
@@ -1013,15 +1013,15 @@ impl StorageThread {
                         }
                     }
 
-                    StorageMessage::AppendStickerRemoved { dev_eui, ts } => {
-                        match StorageWriter::append_sticker_removed_event(&mut conn, &dev_eui, ts) {
+                    StorageMessage::AppendNodeRemoved { dev_eui, ts } => {
+                        match StorageWriter::append_node_removed_event(&mut conn, &dev_eui, ts) {
                             Ok(_) => {
                                 pending_writes += 1;
                                 message_count += 1;
                             }
                             Err(e) => {
                                 eprintln!(
-                                    "STORAGE THREAD: append_sticker_removed_event failed: {}",
+                                    "STORAGE THREAD: append_node_removed_event failed: {}",
                                     e
                                 );
                             }
@@ -1037,13 +1037,13 @@ impl StorageThread {
                         let _ = reply.send(StorageWriter::get_provisioning_epoch(&conn, &dev_eui));
                     }
 
-                    StorageMessage::GetRecentStickerUplinks {
+                    StorageMessage::GetRecentNodeUplinks {
                         dev_eui,
                         limit,
                         reply,
                     } => {
                         let _ = reply.send(
-                            crate::libs::storage::reader::StorageReader::recent_sticker_uplink_times(
+                            crate::libs::storage::reader::StorageReader::recent_node_uplink_times(
                                 &conn, &dev_eui, limit,
                             ),
                         );
@@ -1124,20 +1124,20 @@ impl StorageThread {
                         }
                     }
 
-                    StorageMessage::EnforceStickerRetention { retention_seconds } => {
+                    StorageMessage::EnforceNodeRetention { retention_seconds } => {
                         match RetentionPolicy::default()
-                            .sweep_sticker_readings(&mut conn, retention_seconds)
+                            .sweep_node_readings(&mut conn, retention_seconds)
                         {
                             Ok(r) => {
                                 if r.purged > 0 {
                                     eprintln!(
-                                        "STORAGE THREAD: sticker retention purged {} rows ({} un-exported)",
+                                        "STORAGE THREAD: Node retention purged {} rows ({} un-exported)",
                                         r.purged, r.unexported_dropped
                                     );
                                 }
                             }
                             Err(e) => {
-                                eprintln!("STORAGE THREAD: sweep_sticker_readings failed: {}", e);
+                                eprintln!("STORAGE THREAD: sweep_node_readings failed: {}", e);
                             }
                         }
                     }
@@ -1204,13 +1204,13 @@ mod tests {
     }
 
     #[test]
-    fn storage_handle_write_sticker_reading_persists_via_thread() {
+    fn storage_handle_write_node_reading_persists_via_thread() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
 
         let (handle, join) = StorageThread::spawn(&path, 1).unwrap();
         handle
-            .write_sticker_reading(
+            .write_node_reading(
                 "abc".into(),
                 1,
                 1716120000,
@@ -1307,7 +1307,7 @@ mod tests {
             .unwrap());
 
         handle
-            .write_sticker_reading(
+            .write_node_reading(
                 "abc".into(),
                 1,
                 1000,
@@ -1323,7 +1323,7 @@ mod tests {
             .dev_eui_last_event_was_removal_or_absent("abc".into())
             .unwrap());
 
-        handle.append_sticker_removed("abc".into(), 1100).unwrap();
+        handle.append_node_removed("abc".into(), 1100).unwrap();
         handle.flush().unwrap();
         // Last event is sticker_removed → true
         assert!(handle

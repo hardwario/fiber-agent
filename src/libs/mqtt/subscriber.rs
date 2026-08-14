@@ -103,16 +103,16 @@ impl MqttSubscriber {
             }
             "config_confirm" => self.parse_config_confirm(&json),
             "history_request" => self.parse_history_request(&json),
-            "get_sticker_config" => self.parse_get_sticker_config(&json),
-            "get_sticker_full_config" => self.parse_get_sticker_full_config(&json),
-            "get_sticker_info" => self.parse_get_sticker_info(&json),
-            "get_sticker_history" => self.parse_get_sticker_history(&json),
+            "get_sticker_config" => self.parse_get_node_config(&json),
+            "get_sticker_full_config" => self.parse_get_node_full_config(&json),
+            "get_sticker_info" => self.parse_get_node_info(&json),
+            "get_sticker_history" => self.parse_get_node_history(&json),
             // Unsigned (#71): force_send changes no device state, so it is the same
             // risk class as the reads above — it only costs airtime. The other four
             // control commands mutate the device and arrive signed, via
             // config_request/config_confirm.
             "sticker_force_send" => {
-                MqttCommand::parse_sticker_force_send(&json).map_err(|e| e.to_string())
+                MqttCommand::parse_node_force_send(&json).map_err(|e| e.to_string())
             }
             _ => Err(format!("Unknown command type: {}", command_type)),
         }
@@ -180,9 +180,9 @@ impl MqttSubscriber {
         })
     }
 
-    /// Validate a STICKER `dev_eui` field: exactly 16 hex chars, normalized to
+    /// Validate a NODE `dev_eui` field: exactly 16 hex chars, normalized to
     /// lowercase to match the on-device / fPort-85 downlink representation.
-    fn parse_sticker_dev_eui(json: &Value) -> Result<String, String> {
+    fn parse_node_dev_eui(json: &Value) -> Result<String, String> {
         let dev_eui = json
             .get("dev_eui")
             .and_then(|v| v.as_str())
@@ -213,10 +213,10 @@ impl MqttSubscriber {
         }
     }
 
-    /// Parse `get_sticker_config`: read a STICKER's fPort-85 parameters. Optional
+    /// Parse `get_node_config`: read a NODE's fPort-85 parameters. Optional
     /// `keys` selects specific `group.field` names (omitted = full settable set).
-    fn parse_get_sticker_config(&self, json: &Value) -> Result<MqttCommand, String> {
-        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+    fn parse_get_node_config(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_node_dev_eui(json)?;
         let keys = match json.get("keys") {
             None => None,
             Some(v) if v.is_null() => None,
@@ -234,29 +234,29 @@ impl MqttSubscriber {
                 Some(out)
             }
         };
-        Ok(MqttCommand::GetStickerConfig { dev_eui, keys })
+        Ok(MqttCommand::GetNodeConfig { dev_eui, keys })
     }
 
-    /// Parse `get_sticker_full_config`: read every readable key. No `keys` field —
+    /// Parse `get_node_full_config`: read every readable key. No `keys` field —
     /// the point of this command is that the caller does not have to know the
     /// registry, so accepting a subset here would just duplicate
-    /// `get_sticker_config`.
-    fn parse_get_sticker_full_config(&self, json: &Value) -> Result<MqttCommand, String> {
-        let dev_eui = Self::parse_sticker_dev_eui(json)?;
-        Ok(MqttCommand::GetStickerFullConfig { dev_eui })
+    /// `get_node_config`.
+    fn parse_get_node_full_config(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_node_dev_eui(json)?;
+        Ok(MqttCommand::GetNodeFullConfig { dev_eui })
     }
 
-    /// Parse `get_sticker_info` (#65): read a STICKER's device info. `dev_eui` is
+    /// Parse `get_node_info` (#65): read a NODE's device info. `dev_eui` is
     /// the only field — `GetInfo` has an empty body.
-    fn parse_get_sticker_info(&self, json: &Value) -> Result<MqttCommand, String> {
-        let dev_eui = Self::parse_sticker_dev_eui(json)?;
-        Ok(MqttCommand::GetStickerInfo { dev_eui })
+    fn parse_get_node_info(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_node_dev_eui(json)?;
+        Ok(MqttCommand::GetNodeInfo { dev_eui })
     }
 
-    /// Parse `get_sticker_history`: request a STICKER's on-device history buffer.
+    /// Parse `get_node_history`: request a NODE's on-device history buffer.
     /// Optional `from`/`to` (Unix seconds) bound the window.
-    fn parse_get_sticker_history(&self, json: &Value) -> Result<MqttCommand, String> {
-        let dev_eui = Self::parse_sticker_dev_eui(json)?;
+    fn parse_get_node_history(&self, json: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::parse_node_dev_eui(json)?;
         let from_unix = Self::parse_opt_u32(json, "from")?;
         let to_unix = Self::parse_opt_u32(json, "to")?;
         if let (Some(f), Some(t)) = (from_unix, to_unix) {
@@ -264,7 +264,7 @@ impl MqttSubscriber {
                 return Err(format!("Invalid range: from ({}) must be <= to ({})", f, t));
             }
         }
-        Ok(MqttCommand::GetStickerHistory {
+        Ok(MqttCommand::GetNodeHistory {
             dev_eui,
             from_unix,
             to_unix,
@@ -770,12 +770,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_config() {
+    fn test_parse_get_node_config() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_config", "dev_eui": "0102030405060708",
                            "keys": ["application.interval_report"]}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerConfig { dev_eui, keys } => {
+            MqttCommand::GetNodeConfig { dev_eui, keys } => {
                 assert_eq!(dev_eui, "0102030405060708");
                 assert_eq!(keys, Some(vec!["application.interval_report".to_string()]));
             }
@@ -784,12 +784,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_full_config() {
+    fn test_parse_get_node_full_config() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_full_config", "dev_eui": "70B3D57ED80051B2"}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerFullConfig { dev_eui } => {
-                // Canonicalised to lowercase like every other sticker command,
+            MqttCommand::GetNodeFullConfig { dev_eui } => {
+                // Canonicalised to lowercase like every other node command,
                 // because ChirpStack lowercases the dev_eui in uplinks.
                 assert_eq!(dev_eui, "70b3d57ed80051b2");
             }
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_sticker_full_config_ignores_a_keys_field() {
+    fn test_get_node_full_config_ignores_a_keys_field() {
         // The command reads the whole registry by definition. A caller that sends
         // `keys` anyway must not get a narrowed read silently — it gets the full
         // one, which is what the command name promises.
@@ -807,7 +807,7 @@ mod tests {
                            "dev_eui": "0102030405060708",
                            "keys": ["application.interval_report"]}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerFullConfig { dev_eui } => {
+            MqttCommand::GetNodeFullConfig { dev_eui } => {
                 assert_eq!(dev_eui, "0102030405060708");
             }
             _ => panic!("Wrong command type"),
@@ -815,12 +815,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_info() {
+    fn test_parse_get_node_info() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_info", "dev_eui": "70B3D57ED80051B2"}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerInfo { dev_eui } => {
-                // Normalised to lowercase, like every other sticker command, so the
+            MqttCommand::GetNodeInfo { dev_eui } => {
+                // Normalised to lowercase, like every other node command, so the
                 // publish topic matches the one telemetry uses.
                 assert_eq!(dev_eui, "70b3d57ed80051b2");
             }
@@ -829,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_info_rejects_bad_dev_eui() {
+    fn test_parse_get_node_info_rejects_bad_dev_eui() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_info", "dev_eui": "0102"}"#;
         let err = subscriber
@@ -839,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_config_rejects_bad_dev_eui() {
+    fn test_parse_get_node_config_rejects_bad_dev_eui() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_config", "dev_eui": "nothex"}"#;
         let err = subscriber
@@ -849,12 +849,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_history_range() {
+    fn test_parse_get_node_history_range() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
                            "from": 1000, "to": 2000}"#;
         match subscriber.parse_command("test/commands", payload).unwrap() {
-            MqttCommand::GetStickerHistory {
+            MqttCommand::GetNodeHistory {
                 dev_eui,
                 from_unix,
                 to_unix,
@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_get_sticker_history_rejects_inverted_range() {
+    fn test_parse_get_node_history_rejects_inverted_range() {
         let mut subscriber = MqttSubscriber::new(10, false);
         let payload = br#"{"command": "get_sticker_history", "dev_eui": "0102030405060708",
                            "from": 2000, "to": 1000}"#;

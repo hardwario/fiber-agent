@@ -1,4 +1,4 @@
-//! Shared STICKER fPort-85 config read/write engine.
+//! Shared NODE fPort-85 config read/write engine.
 //!
 //! Used by BOTH the on-device `fiberctl` control server (`control/server.rs`)
 //! and the MQTT command path (`mqtt/monitor.rs`), so the validate → build →
@@ -13,10 +13,10 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::monitor::LoRaWANHandle;
-use super::sticker_command::{self as sc, ConfigError};
-use super::sticker_response::{ConfigValue, DecodedResponse, HistoryRecord, ResponseKind};
+use super::node_command::{self as sc, ConfigError};
+use super::node_response::{ConfigValue, DecodedResponse, HistoryRecord, ResponseKind};
 
-/// Result of reading a STICKER's config (all ConfigDump pages merged).
+/// Result of reading a NODE's config (all ConfigDump pages merged).
 #[derive(Debug, Clone)]
 pub struct ConfigRead {
     /// Merged `group.field` → value across every page returned by the device.
@@ -49,7 +49,7 @@ pub enum BatchOutcome {
     Failed { transport_error: String },
 }
 
-/// Result of writing a STICKER's config — one entry per SetParam batch sent.
+/// Result of writing a NODE's config — one entry per SetParam batch sent.
 #[derive(Debug, Clone)]
 pub struct ConfigWrite {
     pub batches: Vec<BatchOutcome>,
@@ -90,10 +90,10 @@ pub fn read_config(
     // ConfigDump never spans this many DR0 pages; guards against a misbehaving
     // device looping forever.
     const MAX_PAGES: u32 = 16;
-    // The sticker caps how many fields a single GetParam may request (it rejects
+    // The node caps how many fields a single GetParam may request (it rejects
     // an over-long request with bad_request "array overflow"). Split large reads
     // — e.g. the 16 alarm slots — into small chunks so we never hit that cap.
-    // See docs/sticker-alarm-readback-issue.md.
+    // See docs/node-alarm-readback-issue.md.
     const MAX_FIELDS_PER_GETPARAM: usize = 6;
     // Accumulate across chunks and record the ones that failed, rather than
     // abandoning the whole read on the first failure. With the #69 surface a full
@@ -104,7 +104,7 @@ pub fn read_config(
     // Why the first chunk failed. Kept so a read that got nothing can say what
     // went wrong instead of only how many keys it lost — the reason was being
     // logged to the journal and then discarded, so the operator-visible error
-    // pointed at the sticker even when the gateway was the one at fault.
+    // pointed at the node even when the gateway was the one at fault.
     let mut first_failure: Option<String> = None;
 
     for chunk in selected.chunks(MAX_FIELDS_PER_GETPARAM) {
@@ -116,7 +116,7 @@ pub fn read_config(
                 Ok(dr) => dr,
                 Err(e) => {
                     eprintln!(
-                        "[sticker] {dev_eui}: config read chunk {chunk:?} failed: {e} \
+                        "[node] {dev_eui}: config read chunk {chunk:?} failed: {e} \
                          (keeping the chunks already read)"
                     );
                     if first_failure.is_none() {
@@ -134,7 +134,7 @@ pub fn read_config(
             } = dr.kind
             else {
                 eprintln!(
-                    "[sticker] {dev_eui}: expected ConfigDump for {chunk:?}, got {:?}",
+                    "[node] {dev_eui}: expected ConfigDump for {chunk:?}, got {:?}",
                     dr.kind
                 );
                 if first_failure.is_none() {
@@ -180,7 +180,7 @@ pub fn read_config(
     })
 }
 
-/// Read a STICKER's device info: one `GetInfo` downlink, one `Info` uplink (#65).
+/// Read a NODE's device info: one `GetInfo` downlink, one `Info` uplink (#65).
 ///
 /// Returns the device's `seq` alongside the decoded info so a caller can report
 /// which exchange produced it.
@@ -194,7 +194,7 @@ pub fn read_info(
     handle: &LoRaWANHandle,
     dev_eui: &str,
     timeout: Duration,
-) -> Result<(u32, super::sticker_response::DeviceInfo), String> {
+) -> Result<(u32, super::node_response::DeviceInfo), String> {
     let dr = handle.send_command(dev_eui, sc::build_get_info(), timeout)?;
     match dr.kind {
         ResponseKind::Info(info) => Ok((dr.seq, info)),
@@ -205,7 +205,7 @@ pub fn read_info(
 
 /// How long a device is considered busy after an action-bearing command.
 ///
-/// The sticker does not run a deferred action immediately: it answers first and
+/// The node does not run a deferred action immediately: it answers first and
 /// schedules the action 8 s later (`app_lrw.c:738-743`). 12 s leaves margin for
 /// the reply itself plus the scheduling delay.
 pub const ACTION_SETTLE: Duration = Duration::from_secs(12);
@@ -219,7 +219,7 @@ fn action_busy_map() -> &'static std::sync::Mutex<std::collections::HashMap<Stri
 
 /// Held while an action-bearing fPort-85 command settles on one device. Dropping
 /// it does **not** release the device early — the 8 s deferred action is still
-/// pending on the sticker regardless of what the gateway does next.
+/// pending on the node regardless of what the gateway does next.
 #[derive(Debug)]
 pub struct ActionGuard {
     dev_eui: String,
@@ -234,7 +234,7 @@ impl ActionGuard {
 
 /// Serialise **action-bearing** fPort-85 commands per device.
 ///
-/// The sticker holds a single `m_post_cmd_action` slot (`app_lrw.c:254`) and its
+/// The node holds a single `m_post_cmd_action` slot (`app_lrw.c:254`) and its
 /// downlink queue is two deep, and `dl_request_work_handler` drains the whole
 /// queue in one pass — so if two action-bearing commands arrive together, the
 /// second overwrites the first and only it ever runs. The first command still
@@ -246,7 +246,7 @@ impl ActionGuard {
 ///
 /// This closes a race that predates the #71 commands: `control/server.rs` took
 /// `ctx.lorawan_lock` but the MQTT write path did not, so an MQTT
-/// `set_sticker_config{save:true}` could already collide with a `fiberctl reboot`.
+/// `set_node_config{save:true}` could already collide with a `fiberctl reboot`.
 ///
 /// Deliberately **try**-style rather than blocking: a viewer gets an immediate
 /// "device busy, retry in Ns" instead of a request that hangs for 12 s.
@@ -265,7 +265,7 @@ fn try_action_guard_at(
         .lock()
         .map_err(|_| "action guard poisoned".to_string())?;
     // Opportunistic sweep so a long-lived process does not accumulate an entry
-    // per sticker it has ever talked to.
+    // per node it has ever talked to.
     map.retain(|_, busy_until| *busy_until > now);
     if let Some(busy_until) = map.get(dev_eui) {
         let remaining = busy_until.saturating_duration_since(now).as_secs() + 1;
@@ -293,7 +293,7 @@ fn force_send_map() -> &'static std::sync::Mutex<std::collections::HashMap<Strin
 ///
 /// `force_send` is unsigned — it changes no device state, so requiring the
 /// Ed25519 handshake for it would be theatre. But that also means anything with
-/// broker access can trigger uplinks, and a sticker has a finite duty cycle: a
+/// broker access can trigger uplinks, and a node has a finite duty cycle: a
 /// tight loop would exhaust its airtime budget and starve real telemetry. The
 /// global subscriber rate limit is not per-device, so it cannot prevent this.
 pub fn check_force_send_cooldown(dev_eui: &str) -> Result<(), String> {
@@ -313,7 +313,7 @@ fn check_force_send_cooldown_at(
         let remaining = next_allowed.saturating_duration_since(now).as_secs() + 1;
         return Err(format!(
             "force_send rate limited for this device, retry in {remaining}s \
-             (a sticker's duty cycle is finite)"
+             (a node's duty cycle is finite)"
         ));
     }
     map.insert(dev_eui.to_string(), now + cooldown);
@@ -420,7 +420,7 @@ fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
 /// never disagree about field names or redaction.
 ///
 /// `source` distinguishes how the Info arrived: `"query"` (a GetInfo we sent) or
-/// `"unsolicited"` (the `seq=0` Info the sticker sends on every join, and the
+/// `"unsolicited"` (the `seq=0` Info the node sends on every join, and the
 /// deferred answer to an empty-body clock_sync).
 ///
 /// Two deliberate shape choices:
@@ -432,14 +432,14 @@ fn cv_to_json(v: &ConfigValue) -> serde_json::Value {
 ///     honestly means absent, and `device_status.flags` carries `time_unsynced`
 ///     for the clock case.
 pub fn info_to_json(
-    info: &super::sticker_response::DeviceInfo,
+    info: &super::node_response::DeviceInfo,
     dev_eui: &str,
     source: &str,
     seq: u32,
     synced_at: &str,
 ) -> serde_json::Value {
-    use super::sticker_alarm::{quantity_name, source_name};
-    use super::sticker_response::{alarm_type_name, device_status_flags};
+    use super::node_alarm::{quantity_name, source_name};
+    use super::node_response::{alarm_type_name, device_status_flags};
 
     let alarms: Vec<serde_json::Value> = info
         .active_alarms
@@ -484,7 +484,7 @@ pub fn info_to_json(
     })
 }
 
-/// One page of a STICKER's on-device history (an expanded fPort-85 HistoryFrame).
+/// One page of a NODE's on-device history (an expanded fPort-85 HistoryFrame).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryPage {
     pub frame_index: u32,
@@ -649,8 +649,8 @@ pub fn history_record_to_json(r: &HistoryRecord) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    fn device_info() -> super::super::sticker_response::DeviceInfo {
-        use super::super::sticker_response::{ActiveAlarm, DeviceInfo};
+    fn device_info() -> super::super::node_response::DeviceInfo {
+        use super::super::node_response::{ActiveAlarm, DeviceInfo};
         DeviceInfo {
             fw_version: "1.4.0".into(),
             build_type: "main",
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn action_guard_allows_different_devices_concurrently() {
-        // The single m_post_cmd_action slot is per sticker, so one busy device must
+        // The single m_post_cmd_action slot is per node, so one busy device must
         // never block commands to another.
         let now = Instant::now();
         assert!(try_action_guard_at("guard00000000002", now, Duration::from_secs(12)).is_ok());
@@ -783,7 +783,7 @@ mod tests {
         assert!(try_action_guard_at("guard00000000005", t0, Duration::from_secs(12)).is_ok());
         assert!(try_action_guard_at("guard00000000006", t0, Duration::from_secs(12)).is_ok());
         // A later call sweeps every expired entry, so a long-lived process does not
-        // accumulate one per sticker it has ever talked to.
+        // accumulate one per node it has ever talked to.
         let far = t0 + Duration::from_secs(600);
         assert!(try_action_guard_at("guard00000000007", far, Duration::from_secs(12)).is_ok());
         let map = action_busy_map().lock().unwrap();

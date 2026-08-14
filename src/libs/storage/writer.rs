@@ -286,7 +286,7 @@ impl StorageWriter {
     /// Look up the current provisioning epoch for a `dev_eui`. Returns 1 if
     /// the dev_eui has never been provisioned (default epoch). Used by the
     /// LoRaWAN monitor to stamp every uplink with the active epoch so a
-    /// sticker that was removed and re-provisioned does not look identical
+    /// Node that was removed and re-provisioned does not look identical
     /// to its previous incarnation in downstream replays.
     pub fn get_provisioning_epoch(conn: &Connection, dev_eui: &str) -> StorageResult<i64> {
         let mut stmt = conn
@@ -300,7 +300,7 @@ impl StorageWriter {
     }
 
     /// Atomically bump the provisioning epoch for a `dev_eui`. If no row
-    /// exists for the dev_eui, inserts at epoch=2 (a brand-new sticker that
+    /// exists for the dev_eui, inserts at epoch=2 (a brand-new Node that
     /// has never sent traffic yet is implicitly at epoch 1; the first bump
     /// signals re-provisioning and lands at 2). Otherwise increments by one.
     pub fn bump_provisioning_epoch(conn: &mut Connection, dev_eui: &str) -> StorageResult<i64> {
@@ -330,20 +330,20 @@ impl StorageWriter {
         Ok(epoch)
     }
 
-    /// Append a `sticker_removed` marker event for a sticker. The marker is
+    /// Append a `sticker_removed` marker event for a Node. The marker is
     /// stored under the current provisioning epoch so that downstream readers
-    /// can distinguish "this sticker was deprovisioned" from a subsequent
+    /// can distinguish "this Node was deprovisioned" from a subsequent
     /// re-provisioned incarnation. The `message_id` is derived from the
     /// `dev_eui` and `ts`, so calling this twice with the same timestamp is
-    /// a no-op (same idempotency story as `write_sticker_reading`).
-    pub fn append_sticker_removed_event(
+    /// a no-op (same idempotency story as `write_node_reading`).
+    pub fn append_node_removed_event(
         conn: &mut Connection,
         dev_eui: &str,
         ts: i64,
     ) -> StorageResult<Option<i64>> {
         let epoch = Self::get_provisioning_epoch(conn, dev_eui)?;
         let message_id = format!("{}-{}-removed", dev_eui, ts);
-        Self::write_sticker_reading(
+        Self::write_node_reading(
             conn,
             dev_eui,
             epoch,
@@ -355,13 +355,13 @@ impl StorageWriter {
         )
     }
 
-    /// Insert a sticker reading (LoRaWAN uplink or sticker_removed marker).
+    /// Insert a Node reading (LoRaWAN uplink or sticker_removed marker).
     ///
     /// Idempotent on `message_id`: returns `Ok(Some(rowid))` on insert and
     /// `Ok(None)` if a row with the same `message_id` already exists. This
     /// lets the save-and-feed write path be retried freely (e.g. by the
     /// LoRaWAN monitor on transient failures) without creating duplicates.
-    pub fn write_sticker_reading(
+    pub fn write_node_reading(
         conn: &mut Connection,
         dev_eui: &str,
         provisioning_epoch: i64,
@@ -385,7 +385,7 @@ impl StorageWriter {
                 message_id, event_type, payload_json, now,
             ],
         )
-        .map_err(|e| StorageError::InsertError(format!("Failed to insert sticker reading: {}", e)))?;
+        .map_err(|e| StorageError::InsertError(format!("Failed to insert Node reading: {}", e)))?;
 
         if res == 0 {
             Ok(None)
@@ -396,7 +396,7 @@ impl StorageWriter {
 
     /// Persist one EYE BLE tag reading. Idempotent on `message_id`
     /// (`INSERT OR IGNORE`); returns the new row id, or `None` if it was a
-    /// duplicate. No provisioning epoch (unlike sticker readings).
+    /// duplicate. No provisioning epoch (unlike Node readings).
     pub fn write_beacon_reading(
         conn: &mut Connection,
         mac: &str,
@@ -627,12 +627,12 @@ mod tests {
     }
 
     #[test]
-    fn write_sticker_reading_inserts_and_is_idempotent_on_message_id() {
+    fn write_node_reading_inserts_and_is_idempotent_on_message_id() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let id1 = StorageWriter::write_sticker_reading(
+        let id1 = StorageWriter::write_node_reading(
             &mut conn,
             "70b3d5",
             2,
@@ -646,7 +646,7 @@ mod tests {
         assert!(id1.is_some());
 
         // Same message_id again: must be a no-op, returns None.
-        let id2 = StorageWriter::write_sticker_reading(
+        let id2 = StorageWriter::write_node_reading(
             &mut conn,
             "70b3d5",
             2,
@@ -742,13 +742,12 @@ mod tests {
     }
 
     #[test]
-    fn append_sticker_removed_event_inserts_marker_row() {
+    fn append_node_removed_event_inserts_marker_row() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let db = Database::new(tmp.path(), 1).unwrap();
         let mut conn = db.connect().unwrap();
 
-        let id =
-            StorageWriter::append_sticker_removed_event(&mut conn, "70b3d5", 1716120100).unwrap();
+        let id = StorageWriter::append_node_removed_event(&mut conn, "70b3d5", 1716120100).unwrap();
         assert!(id.is_some());
 
         let (event_type, dev_eui): (String, String) = conn

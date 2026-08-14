@@ -202,7 +202,7 @@ const MAX_DS18B20_LINE: u8 = 7;
 
 /// Pseudo-fields that are not in the LoRaWAN field registry because they
 /// describe the link or the sensor as a whole rather than a measurement.
-const STICKER_PSEUDO_FIELDS: &[&str] = &["rssi", "snr", "status"];
+const NODE_PSEUDO_FIELDS: &[&str] = &["rssi", "snr", "status"];
 
 /// Fields available for a DS18B20 probe. The 1-Wire path carries no battery,
 /// RSSI or humidity — only a temperature and an alarm state.
@@ -277,30 +277,30 @@ pub fn validate_display_line(line: &DisplayLine) -> Result<(), String> {
                 ));
             }
         }
-        DisplayLineSource::Sticker => {
+        DisplayLineSource::Node => {
             let dev_eui = line
                 .dev_eui
                 .as_deref()
-                .ok_or_else(|| "sticker display line requires 'dev_eui'".to_string())?;
+                .ok_or_else(|| "node display line requires 'dev_eui'".to_string())?;
             if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err(format!(
-                    "sticker dev_eui must be 16 hex characters (got {:?})",
+                    "node dev_eui must be 16 hex characters (got {:?})",
                     dev_eui,
                 ));
             }
             if line.line.is_some() {
-                return Err("sticker display line must not set 'line'".to_string());
+                return Err("node display line must not set 'line'".to_string());
             }
             if line.mac.is_some() {
-                return Err("sticker display line must not set 'mac'".to_string());
+                return Err("node display line must not set 'mac'".to_string());
             }
             let known = crate::libs::lorawan::registry::lookup(&line.field).is_some()
-                || STICKER_PSEUDO_FIELDS.contains(&line.field.as_str());
+                || NODE_PSEUDO_FIELDS.contains(&line.field.as_str());
             if !known {
                 return Err(format!(
-                    "unknown sticker field {:?} (not in the LoRaWAN field registry, and not one of: {})",
+                    "unknown node field {:?} (not in the LoRaWAN field registry, and not one of: {})",
                     line.field,
-                    STICKER_PSEUDO_FIELDS.join(", "),
+                    NODE_PSEUDO_FIELDS.join(", "),
                 ));
             }
         }
@@ -499,9 +499,9 @@ mod display_line_tests {
         }
     }
 
-    fn sticker(dev_eui: &str, field: &str) -> DisplayLine {
+    fn node(dev_eui: &str, field: &str) -> DisplayLine {
         DisplayLine {
-            source: DisplayLineSource::Sticker,
+            source: DisplayLineSource::Node,
             line: None,
             dev_eui: Some(dev_eui.to_string()),
             mac: None,
@@ -527,10 +527,10 @@ mod display_line_tests {
     const MAC: &str = "7C:D9:F4:13:10:DE";
 
     #[test]
-    fn accepts_valid_ds18b20_and_sticker_lines() {
+    fn accepts_valid_ds18b20_and_node_lines() {
         assert!(validate_display_line(&ds(Some(0), "temperature")).is_ok());
         assert!(validate_display_line(&ds(Some(7), "status")).is_ok());
-        assert!(validate_display_line(&sticker(EUI, "humidity")).is_ok());
+        assert!(validate_display_line(&node(EUI, "humidity")).is_ok());
     }
 
     #[test]
@@ -553,8 +553,8 @@ mod display_line_tests {
     }
 
     #[test]
-    fn rejects_sticker_with_line_index() {
-        let mut line = sticker(EUI, "temperature");
+    fn rejects_node_with_line_index() {
+        let mut line = node(EUI, "temperature");
         line.line = Some(2);
         let err = validate_display_line(&line).unwrap_err();
         assert!(err.contains("'line'"), "got: {}", err);
@@ -562,23 +562,23 @@ mod display_line_tests {
 
     #[test]
     fn rejects_unknown_ds18b20_field() {
-        // Valid for a sticker, but the 1-Wire path has no humidity.
+        // Valid for a node, but the 1-Wire path has no humidity.
         let err = validate_display_line(&ds(Some(0), "humidity")).unwrap_err();
         assert!(err.contains("unknown ds18b20 field"), "got: {}", err);
     }
 
     #[test]
-    fn accepts_every_registry_field_and_pseudo_field_for_stickers() {
+    fn accepts_every_registry_field_and_pseudo_field_for_nodes() {
         for def in crate::libs::lorawan::registry::REGISTRY {
             assert!(
-                validate_display_line(&sticker(EUI, def.name)).is_ok(),
+                validate_display_line(&node(EUI, def.name)).is_ok(),
                 "registry field {} should be selectable",
                 def.name,
             );
         }
-        for name in STICKER_PSEUDO_FIELDS {
+        for name in NODE_PSEUDO_FIELDS {
             assert!(
-                validate_display_line(&sticker(EUI, name)).is_ok(),
+                validate_display_line(&node(EUI, name)).is_ok(),
                 "pseudo-field {} should be selectable",
                 name,
             );
@@ -586,9 +586,9 @@ mod display_line_tests {
     }
 
     #[test]
-    fn rejects_unknown_sticker_field() {
-        let err = validate_display_line(&sticker(EUI, "battery_percent")).unwrap_err();
-        assert!(err.contains("unknown sticker field"), "got: {}", err);
+    fn rejects_unknown_node_field() {
+        let err = validate_display_line(&node(EUI, "battery_percent")).unwrap_err();
+        assert!(err.contains("unknown node field"), "got: {}", err);
     }
 
     #[test]
@@ -599,14 +599,14 @@ mod display_line_tests {
             "70b3d57ed0051fZZ",
             "",
         ] {
-            let err = validate_display_line(&sticker(bad, "temperature")).unwrap_err();
+            let err = validate_display_line(&node(bad, "temperature")).unwrap_err();
             assert!(err.contains("16 hex"), "for {:?} got: {}", bad, err);
         }
     }
 
     #[test]
-    fn rejects_sticker_without_dev_eui() {
-        let mut line = sticker(EUI, "temperature");
+    fn rejects_node_without_dev_eui() {
+        let mut line = node(EUI, "temperature");
         line.dev_eui = None;
         assert!(validate_display_line(&line).is_err());
     }
@@ -684,9 +684,9 @@ mod display_line_tests {
             .unwrap_err()
             .contains("must not set 'line'"));
 
-        let mut sticker_with_mac = sticker(EUI, "temperature");
-        sticker_with_mac.mac = Some(MAC.to_string());
-        assert!(validate_display_line(&sticker_with_mac)
+        let mut node_with_mac = node(EUI, "temperature");
+        node_with_mac.mac = Some(MAC.to_string());
+        assert!(validate_display_line(&node_with_mac)
             .unwrap_err()
             .contains("must not set 'mac'"));
 
@@ -751,9 +751,9 @@ mod display_line_tests {
 
     #[test]
     fn duplicate_lines_on_the_same_source_are_allowed() {
-        // Two rows on one sticker (e.g. temperature + battery) is the headline
+        // Two rows on one node (e.g. temperature + battery) is the headline
         // use case from the feature request, not an error.
-        let lines = vec![sticker(EUI, "ext_temperature_1"), sticker(EUI, "voltage")];
+        let lines = vec![node(EUI, "ext_temperature_1"), node(EUI, "voltage")];
         assert!(validate_display_custom_lines(&lines).is_ok());
     }
 }

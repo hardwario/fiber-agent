@@ -23,10 +23,10 @@ use serde_json::{json, Value};
 
 use crate::libs::config::Config;
 use crate::libs::config_applier::ConfigApplier;
+use crate::libs::lorawan::node_command as sc;
+use crate::libs::lorawan::node_config::{self, BatchOutcome};
+use crate::libs::lorawan::node_response::{ConfigMismatch, ConfigValue};
 use crate::libs::lorawan::state::SharedLoRaWANState;
-use crate::libs::lorawan::sticker_command as sc;
-use crate::libs::lorawan::sticker_config::{self, BatchOutcome};
-use crate::libs::lorawan::sticker_response::{ConfigMismatch, ConfigValue};
 use crate::libs::lorawan::LoRaWANHandle;
 use crate::libs::mqtt::{ConnectionState, SharedConnectionState};
 use crate::libs::power::SharedPowerStatus;
@@ -47,7 +47,7 @@ pub struct ControlContext {
     /// Per-command timeout for fPort-85 round-trips.
     pub command_timeout: Duration,
     /// Serializes device-mutating LoRaWAN operations so concurrent control
-    /// requests don't interleave downlinks/reboots to the same STICKER.
+    /// requests don't interleave downlinks/reboots to the same Node.
     pub lorawan_lock: Arc<Mutex<()>>,
     pub power: Option<SharedPowerStatus>,
     pub sensors: Option<SharedSensorStateHandle>,
@@ -554,21 +554,21 @@ fn lorawan_set_param(
     );
 
     let sent_keys: Vec<&str> = config.keys().map(|s| s.as_str()).collect();
-    let write =
-        match sticker_config::write_config(handle, dev_eui, &config, save, ctx.command_timeout) {
-            Ok(w) => w,
-            Err(errs) => {
-                let errors: Vec<Value> = errs
-                    .iter()
-                    .map(|e| json!({ "key": e.key, "reason": e.reason }))
-                    .collect();
-                return Response::err_coded(
-                    "validation",
-                    "validation failed",
-                    json!({ "errors": errors }),
-                );
-            }
-        };
+    let write = match node_config::write_config(handle, dev_eui, &config, save, ctx.command_timeout)
+    {
+        Ok(w) => w,
+        Err(errs) => {
+            let errors: Vec<Value> = errs
+                .iter()
+                .map(|e| json!({ "key": e.key, "reason": e.reason }))
+                .collect();
+            return Response::err_coded(
+                "validation",
+                "validation failed",
+                json!({ "errors": errors }),
+            );
+        }
+    };
 
     let batches: Vec<Value> = write
         .batches
@@ -605,7 +605,7 @@ fn lorawan_get_param(
     let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     // read_config follows ConfigDump paging and returns the merged config (fixes
     // the prior single-page read, which silently dropped pages 1..n).
-    let read = match sticker_config::read_config(handle, dev_eui, &key_refs, ctx.command_timeout) {
+    let read = match node_config::read_config(handle, dev_eui, &key_refs, ctx.command_timeout) {
         Ok(r) => r,
         Err(e) => {
             return Response::err_coded(
@@ -648,7 +648,7 @@ fn lorawan_get_param(
                 json!({ "errors": perr }),
             );
         }
-        let mismatches = crate::libs::lorawan::sticker_response::diff_config(&want, &read.config);
+        let mismatches = crate::libs::lorawan::node_response::diff_config(&want, &read.config);
         data["diff"] = json!(mismatches.iter().map(mismatch_to_json).collect::<Vec<_>>());
         data["in_sync"] = json!(mismatches.is_empty());
     }
@@ -678,7 +678,7 @@ fn lorawan_send(
                                           // which the MQTT path shares. lorawan_lock only covers this process's control
                                           // socket, so it alone cannot stop an MQTT save from colliding with a reboot.
     let _action_guard = if command.is_action_bearing() {
-        match sticker_config::try_action_guard(dev_eui) {
+        match node_config::try_action_guard(dev_eui) {
             Ok(g) => Some(g),
             Err(reason) => return Response::err_coded("device_busy", reason, json!(null)),
         }
@@ -742,17 +742,17 @@ fn mismatch_to_json(m: &ConfigMismatch) -> Value {
 }
 
 fn decoded_to_json(
-    dr: &crate::libs::lorawan::sticker_response::DecodedResponse,
+    dr: &crate::libs::lorawan::node_response::DecodedResponse,
     sent_keys: &[&str],
 ) -> Value {
-    use crate::libs::lorawan::sticker_response::ResponseKind as K;
+    use crate::libs::lorawan::node_response::ResponseKind as K;
     let kind = match &dr.kind {
         K::Ack => json!({ "kind": "ack" }),
         // Shares one projection with the MQTT publish so the CLI and the bus can
         // never disagree about field names or redaction. claim_token is a
         // provisioning secret and is reduced to has_claim_token there.
         K::Info(info) => {
-            let mut v = sticker_config::info_to_json(info, "", "query", dr.seq, "");
+            let mut v = node_config::info_to_json(info, "", "query", dr.seq, "");
             if let Some(map) = v.as_object_mut() {
                 // dev_eui/synced_at/source belong to the publish envelope, not to
                 // a CLI reply that already knows which device it asked.

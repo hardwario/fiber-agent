@@ -1,8 +1,8 @@
-//! Encoding side of the STICKER fPort-85 protocol: build `Command` downlinks
+//! Encoding side of the NODE fPort-85 protocol: build `Command` downlinks
 //! and the remote-configuration engine (#68).
 //!
 //! The config-write API takes the same flat `group.field` key space that
-//! `sticker_response::decode_config` produces (#70), so a desired config can be
+//! `node_response::decode_config` produces (#70), so a desired config can be
 //! written here and verified with `diff_config` against a `GetParam` read-back.
 //!
 //! `Command`s are emitted with `seq = 0`; the live sender
@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 
 use prost::Message;
 
-use super::sticker_alarm;
-use super::sticker_proto::app_config_message::{Alarms, Application, Sensors};
-use super::sticker_proto::{command, Command};
-use super::sticker_response::ConfigValue;
+use super::node_alarm;
+use super::node_proto::app_config_message::{Alarms, Application, Sensors};
+use super::node_proto::{command, Command};
+use super::node_response::ConfigValue;
 
-/// EU868 DR0 (SF12) maximum downlink application payload, in bytes. The STICKER
+/// EU868 DR0 (SF12) maximum downlink application payload, in bytes. The NODE
 /// receives the raw `Command` protobuf on fPort 85 (no proto-version prefix on
 /// downlinks), so the whole encoded `Command` must fit this budget at the
 /// worst-case data rate.
@@ -167,7 +167,7 @@ const SETTABLE: &[(&str, u32, Kind)] = &[
 ];
 
 /// Readable over LoRaWAN but never written from here, so the viewer can display a
-/// sticker's full non-secret configuration without offering to change it.
+/// node's full non-secret configuration without offering to change it.
 ///
 /// The reasons differ per entry and the distinction matters, because a future
 /// reader might otherwise "fix" a deliberate policy choice:
@@ -316,8 +316,8 @@ fn validate_one(key: &str, v: &ConfigValue) -> Result<(), ConfigError> {
         }
         (Kind::Uint { .. }, _) => Err(err("expected an unsigned integer".into())),
         (Kind::AlarmHex, ConfigValue::Hex(s)) => {
-            let slot = sticker_alarm::decode_slot(s).map_err(|e| err(e))?;
-            sticker_alarm::validate_slot(&slot).map_err(|e| err(e))
+            let slot = node_alarm::decode_slot(s).map_err(|e| err(e))?;
+            node_alarm::validate_slot(&slot).map_err(|e| err(e))
         }
         (Kind::AlarmHex, _) => Err(err("expected a hex alarm slot".into())),
         // Accepted only in the canonical Enum form that reads emit, so a write and
@@ -333,7 +333,7 @@ fn validate_one(key: &str, v: &ConfigValue) -> Result<(), ConfigError> {
 }
 
 /// Map a motion-sensitivity name to its proto value. The inverse of
-/// `sticker_response::motion_name`, accepting either case so an operator can type
+/// `node_response::motion_name`, accepting either case so an operator can type
 /// `medium` while reads emit `MEDIUM`.
 fn motion_value(s: &str) -> Option<i32> {
     match s.trim().to_ascii_uppercase().as_str() {
@@ -466,7 +466,7 @@ fn apply(sp: &mut command::SetParam, key: &str, v: &ConfigValue) {
 fn alarm_slot_index(key: &str) -> Option<u8> {
     key.strip_prefix("alarms.alarm_")
         .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < sticker_alarm::SLOT_COUNT)
+        .filter(|n| *n < node_alarm::SLOT_COUNT)
 }
 
 /// Set the encoded bytes for alarm slot `n` (0..15) on a SetParam's Alarms.
@@ -560,7 +560,7 @@ fn cmd(body: command::Body) -> Command {
 /// `GetParam` reading back the given `group.field` keys — the read-side partner
 /// of `build_set_param`, used to verify a write landed (decode → `diff_config`).
 /// Unknown keys are skipped. The full-dump `GetConfig` is avoided on purpose
-/// (it overflows the device stack in fw v1.4.0, hardware/sticker-firmware#176).
+/// (it overflows the device stack in fw v1.4.0, hardware/node-firmware#176).
 pub fn build_get_param(keys: &[&str]) -> Command {
     build_get_param_page(keys, 0)
 }
@@ -578,7 +578,7 @@ pub fn build_get_param_page(keys: &[&str], page: u32) -> Command {
         // came back. A group added to GROUPS is now handled here automatically, and
         // an unknown key is logged rather than swallowed.
         let Some(field) = field_number(k) else {
-            eprintln!("[sticker] get_param: ignoring unknown key {k:?}");
+            eprintln!("[node] get_param: ignoring unknown key {k:?}");
             continue;
         };
         match group_id(k) {
@@ -586,7 +586,7 @@ pub fn build_get_param_page(keys: &[&str], page: u32) -> Command {
             Some(2) => gp.application_field.push(field),
             Some(3) => gp.sensors_field.push(field),
             Some(4) => gp.alarms_field.push(field),
-            _ => eprintln!("[sticker] get_param: ignoring key in unknown group {k:?}"),
+            _ => eprintln!("[node] get_param: ignoring key in unknown group {k:?}"),
         }
     }
     if page > 0 {
@@ -605,7 +605,7 @@ pub fn build_get_param_page(keys: &[&str], page: u32) -> Command {
 /// [`all_settable_keys`] or [`all_readable_keys`].
 pub fn core_settable_keys() -> Vec<&'static str> {
     // The 16 numbered alarm slots are settable but excluded: requesting all of them
-    // in one GetParam overflows the sticker's request array (it replies bad_request
+    // in one GetParam overflows the node's request array (it replies bad_request
     // "array overflow"). Alarm slots are read explicitly when needed.
     // `sensors.*` and `battery_level` are excluded for the airtime reason above, and
     // so is `alarm_light_confirm_delay` — it is niche enough that spending a chunk
@@ -634,7 +634,7 @@ pub fn all_settable_keys() -> Vec<&'static str> {
 }
 
 /// Everything readable over LoRaWAN: the settable surface plus the read-only
-/// groups, for a viewer that wants to show a sticker's whole non-secret config.
+/// groups, for a viewer that wants to show a node's whole non-secret config.
 ///
 /// Excludes the alarm slots (array-overflow, as above) and never includes the four
 /// LoRaWAN session keys — the device does not return those over the radio at all.
@@ -699,11 +699,11 @@ pub fn build_reset_counters() -> Command {
 /// `transports: [nfc, shell]`, so the generated dispatch answers
 /// `Error{NOT_READY, "transport not allowed"}` and does nothing. It exists here so
 /// the rejection can be demonstrated from the bench rather than asserted from
-/// documentation, and so nobody reaches for `send_sticker_raw` with hand-written
+/// documentation, and so nobody reaches for `send_node_raw` with hand-written
 /// hex to find that out.
 ///
 /// The reachable reset over the radio is `device_reset` (id 8): it restores
-/// defaults but keeps identity and the LoRaWAN keys, so the sticker stays joined.
+/// defaults but keeps identity and the LoRaWAN keys, so the node stays joined.
 pub fn build_factory_reset() -> Command {
     cmd(command::Body::FactoryReset(command::FactoryReset::default()))
 }
@@ -741,7 +741,7 @@ pub fn build_clock_sync_from_network() -> Command {
 /// `from_unix`/`to_unix` bound the window (Unix seconds); `None` = whole buffer.
 /// The device replies with one or more `HistoryFrame` responses that share this
 /// command's seq (collected by the history backfill path), each expanded with
-/// [`super::sticker_response::expand_history_frame`].
+/// [`super::node_response::expand_history_frame`].
 pub fn build_req_history(from_unix: Option<u32>, to_unix: Option<u32>) -> Command {
     cmd(command::Body::ReqHistory(command::ReqHistory {
         from_unix,
@@ -780,7 +780,7 @@ pub fn parse_value(key: &str, raw: &str) -> Result<ConfigValue, ConfigError> {
         // Accept a name OR the numeric proto value, and normalise both to the Enum
         // spelling reads emit. Without this normalisation a write of "2" would be
         // stored as Uint(2), diff_config would compare it against Enum("MEDIUM")
-        // forever, and the sticker would look permanently out of sync on the one
+        // forever, and the node would look permanently out of sync on the one
         // field that was just written successfully.
         Kind::MotionEnum => {
             let t = raw.trim();
@@ -805,7 +805,7 @@ pub fn parse_value(key: &str, raw: &str) -> Result<ConfigValue, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::lorawan::sticker_proto::{command, Command};
+    use crate::libs::lorawan::node_proto::{command, Command};
 
     fn cfg(pairs: &[(&str, ConfigValue)]) -> BTreeMap<String, ConfigValue> {
         pairs
@@ -1059,7 +1059,7 @@ mod tests {
         // NEW, narrower factory_reset at id 23. They are different operations and
         // must never be confused:
         //   device_reset  (8)  restores defaults but KEEPS identity + LoRaWAN keys,
-        //                      so the sticker stays joined. Reachable over LoRaWAN.
+        //                      so the node stays joined. Reachable over LoRaWAN.
         //   factory_reset (23) also drops the LoRaWAN session/keys, and is
         //                      transports [nfc, shell] — over LoRaWAN the device
         //                      answers Error{NOT_READY,"transport not allowed"}.
@@ -1077,13 +1077,11 @@ mod tests {
 
     #[test]
     fn real_hw_set_param_accepted_with_ack() {
-        // GOLDEN: the STICKER (fw v1.4.0) accepted exactly these bytes over the
+        // GOLDEN: the NODE (fw v1.4.0) accepted exactly these bytes over the
         // shell-inject path and replied Response{seq, Ack} (action 1=save was
         // recognised, just not executed from a shell inject). Ties our builder
         // output to bytes real firmware parses, plus the decode of its Ack.
-        use crate::libs::lorawan::sticker_response::{
-            decode_response, DecodedResponse, ResponseKind,
-        };
+        use crate::libs::lorawan::node_response::{decode_response, DecodedResponse, ResponseKind};
         let config = cfg(&[
             ("application.interval_report", ConfigValue::Uint(1200)),
             ("application.history_enable", ConfigValue::Bool(true)),
@@ -1105,7 +1103,7 @@ mod tests {
         );
     }
 
-    // Onboard temperature threshold slot (matches the sticker_alarm vector).
+    // Onboard temperature threshold slot (matches the node_alarm vector).
     const ALARM_HEX: &str = "0300000000000070410000c8410000003f";
 
     #[test]
@@ -1242,9 +1240,9 @@ mod tests {
 
     #[test]
     fn motion_sensitivity_write_and_read_back_agree() {
-        use crate::libs::lorawan::sticker_proto::app_config_message::Sensors as PSensors;
-        use crate::libs::lorawan::sticker_proto::response;
-        use crate::libs::lorawan::sticker_response::{decode_config, diff_config};
+        use crate::libs::lorawan::node_proto::app_config_message::Sensors as PSensors;
+        use crate::libs::lorawan::node_proto::response;
+        use crate::libs::lorawan::node_response::{decode_config, diff_config};
 
         // A write accepts a name or the numeric proto value, and BOTH normalise to
         // the Enum spelling reads emit.
@@ -1291,12 +1289,12 @@ mod tests {
         // reads back as absent forever, so diff_config reports it permanently
         // unverified and the UI can never show it as applied. battery_level was
         // exactly this until decode_config learned it.
-        use crate::libs::lorawan::sticker_proto::app_config_message::{
+        use crate::libs::lorawan::node_proto::app_config_message::{
             Alarms as PAlarms, Application as PApplication, Lorawan as PLorawan,
             Sensors as PSensors,
         };
-        use crate::libs::lorawan::sticker_proto::response;
-        use crate::libs::lorawan::sticker_response::decode_config;
+        use crate::libs::lorawan::node_proto::response;
+        use crate::libs::lorawan::node_response::decode_config;
 
         let dump = response::ConfigDump {
             lorawan: Some(PLorawan {

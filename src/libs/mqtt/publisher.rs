@@ -269,7 +269,7 @@ impl MqttPublisher {
                 self.publish_lorawan_gateways(gateways).await
             }
 
-            MqttMessage::PublishStickerConfig {
+            MqttMessage::PublishNodeConfig {
                 dev_eui,
                 config,
                 page_index,
@@ -277,7 +277,7 @@ impl MqttPublisher {
                 last_seq,
                 last_result,
             } => {
-                self.publish_sticker_config(
+                self.publish_node_config(
                     dev_eui,
                     config,
                     page_index,
@@ -288,7 +288,7 @@ impl MqttPublisher {
                 .await
             }
 
-            MqttMessage::PublishStickerFullConfig {
+            MqttMessage::PublishNodeFullConfig {
                 dev_eui,
                 config,
                 page_count,
@@ -296,7 +296,7 @@ impl MqttPublisher {
                 read_status,
                 missing,
             } => {
-                self.publish_sticker_full_config(
+                self.publish_node_full_config(
                     dev_eui,
                     config,
                     page_count,
@@ -307,13 +307,13 @@ impl MqttPublisher {
                 .await
             }
 
-            MqttMessage::PublishStickerInfo { dev_eui, info } => {
-                self.publish_sticker_info(dev_eui, info).await
+            MqttMessage::PublishNodeInfo { dev_eui, info } => {
+                self.publish_node_info(dev_eui, info).await
             }
 
-            MqttMessage::ClearStickerInfo { dev_eui } => self.clear_sticker_info(&dev_eui).await,
+            MqttMessage::ClearNodeInfo { dev_eui } => self.clear_node_info(&dev_eui).await,
 
-            MqttMessage::PublishStickerCommandResult {
+            MqttMessage::PublishNodeCommandResult {
                 dev_eui,
                 command,
                 seq,
@@ -322,19 +322,19 @@ impl MqttPublisher {
                 detail,
                 fault_key,
             } => {
-                self.publish_sticker_command_result(
+                self.publish_node_command_result(
                     dev_eui, command, seq, result, expect, detail, fault_key,
                 )
                 .await
             }
 
-            MqttMessage::PublishStickerHistory {
+            MqttMessage::PublishNodeHistory {
                 dev_eui,
                 frame_index,
                 frame_count,
                 records,
             } => {
-                self.publish_sticker_history(dev_eui, frame_index, frame_count, records)
+                self.publish_node_history(dev_eui, frame_index, frame_count, records)
                     .await
             }
 
@@ -1024,10 +1024,10 @@ impl MqttPublisher {
         self.publish(topic, payload.to_string(), qos, false).await
     }
 
-    /// Publish a STICKER's fPort-85 config read-back to
+    /// Publish a NODE's fPort-85 config read-back to
     /// `lorawan/sensors/<dev_eui>/config` (Feature C). `last_ack` lets the viewer
     /// render pending / awaiting-Ack / ok for a preceding write.
-    async fn publish_sticker_config(
+    async fn publish_node_config(
         &self,
         dev_eui: String,
         config: std::collections::BTreeMap<String, serde_json::Value>,
@@ -1054,7 +1054,7 @@ impl MqttPublisher {
         // something overwrites it: measured on FIBER-CE3D59F8, a fresh subscriber
         // with no command in flight was handed a snapshot stamped four hours
         // earlier, which the viewer would render as the live config. The empty
-        // retained payload is the standard tombstone, same as `clear_sticker_info`.
+        // retained payload is the standard tombstone, same as `clear_node_info`.
         let _ = self
             .publish(topic.clone(), String::new(), QoS::AtLeastOnce, true)
             .await;
@@ -1066,7 +1066,7 @@ impl MqttPublisher {
     /// are derived from `missing` rather than tracked separately: the reader
     /// batches at most `MAX_FIELDS_PER_GETPARAM` keys per chunk, so the counts a
     /// progress bar needs are just "how many keys landed out of how many asked".
-    async fn publish_sticker_full_config(
+    async fn publish_node_full_config(
         &self,
         dev_eui: String,
         config: std::collections::BTreeMap<String, serde_json::Value>,
@@ -1093,19 +1093,19 @@ impl MqttPublisher {
             .await
     }
 
-    /// Publish a STICKER's fPort-85 device info to
+    /// Publish a NODE's fPort-85 device info to
     /// `lorawan/sensors/<dev_eui>/info` (#65), **retained**.
     ///
     /// Retained because this is device identity plus last-known health, and a
-    /// sticker only reports every `interval_report` (900 s by default): a viewer
+    /// node only reports every `interval_report` (900 s by default): a viewer
     /// that reconnects has to be able to render a firmware version and health
     /// flags immediately rather than showing blanks until someone re-queries.
     ///
-    /// `info` arrives already projected by `sticker_config::info_to_json`, which
+    /// `info` arrives already projected by `node_config::info_to_json`, which
     /// reduces `claim_token` to `has_claim_token`. That redaction matters here
     /// specifically *because* the message is retained: the broker replays it to
     /// every future subscriber, so a secret published once would leak indefinitely.
-    async fn publish_sticker_info(
+    async fn publish_node_info(
         &self,
         dev_eui: String,
         info: serde_json::Value,
@@ -1115,15 +1115,15 @@ impl MqttPublisher {
             .await
     }
 
-    /// Clear the retained device-info for a decommissioned sticker. Without this a
+    /// Clear the retained device-info for a decommissioned node. Without this a
     /// removed device's info would be replayed to new subscribers forever.
-    async fn clear_sticker_info(&self, dev_eui: &str) -> Result<(), String> {
+    async fn clear_node_info(&self, dev_eui: &str) -> Result<(), String> {
         let topic = self.topics.lorawan_sensor_info(dev_eui);
         self.publish(topic, String::new(), QoS::AtLeastOnce, true)
             .await
     }
 
-    /// Publish the outcome of a STICKER control command (#71) to
+    /// Publish the outcome of a NODE control command (#71) to
     /// `lorawan/sensors/<dev_eui>/command`.
     ///
     /// `expect` is what makes this payload honest. Three of the five commands
@@ -1133,7 +1133,7 @@ impl MqttPublisher {
     /// outstanding expectation lets the viewer render "requested" rather than
     /// claiming a success it cannot know about yet.
     #[allow(clippy::too_many_arguments)]
-    async fn publish_sticker_command_result(
+    async fn publish_node_command_result(
         &self,
         dev_eui: String,
         command: String,
@@ -1158,9 +1158,9 @@ impl MqttPublisher {
             .await
     }
 
-    /// Publish one page of a STICKER's on-device history to
+    /// Publish one page of a NODE's on-device history to
     /// `lorawan/sensors/<dev_eui>/history` (Feature D).
-    async fn publish_sticker_history(
+    async fn publish_node_history(
         &self,
         dev_eui: String,
         frame_index: u32,

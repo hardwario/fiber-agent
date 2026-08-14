@@ -4,7 +4,7 @@
 //! FIBER: the app scans the tag's MAC from its QR label and writes it here; the
 //! FIBER then discovers and provisions the tag itself over BLE (the FIBER is a
 //! peripheral for the phone and a central for the tags). Mirrors FB0D
-//! "Sticker Add" — see issue #84.
+//! "Node Add" — see issue #84.
 //!
 //! FB0E is write + read: the write enrolls the tag into `eye.tags[]` via the
 //! same `add_eye_tag` path the MQTT command uses, and the read returns the

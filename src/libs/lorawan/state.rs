@@ -9,7 +9,7 @@ use crate::libs::config::{
     effective_field_thresholds, FieldThreshold, FieldThresholdBounds, LoRaWANSensorConfig,
 };
 
-use super::chirpstack::{GatewayRx, StickerEvent, StickerReading};
+use super::chirpstack::{GatewayRx, NodeEvent, NodeReading};
 
 const MAX_RECENT_EVENTS: usize = 32;
 
@@ -96,7 +96,7 @@ pub struct LoRaWANSensorState {
     /// publisher and the on-device display so they don't re-resolve.
     pub field_thresholds: Vec<FieldThreshold>,
     pub counters: HashMap<String, u64>,
-    pub recent_events: VecDeque<StickerEvent>,
+    pub recent_events: VecDeque<NodeEvent>,
     /// Every gateway that received the latest uplink (replaced each uplink).
     pub gateways: Vec<GatewayRx>,
     /// LoRaWAN data-rate index of the latest uplink.
@@ -104,30 +104,30 @@ pub struct LoRaWANSensorState {
     /// Back-compat scalar = the best (strongest) gateway of `gateways`.
     pub rssi: Option<i32>,
     pub snr: Option<f32>,
-    /// Gateway ChirpStack last used to transmit a downlink to this sticker (from
+    /// Gateway ChirpStack last used to transmit a downlink to this node (from
     /// `event/txack`) — the network's best-signal pick. Display-only; persists
     /// across uplinks and is only replaced by a newer txack. Distinct from the
     /// uplink `gateways`/`rssi` (who *received* the last uplink).
     pub downlink_gateway_id: Option<String>,
     pub last_seen: Option<String>,
     /// Unix seconds of the last few uplinks, oldest first, for deriving the
-    /// sticker's *observed* reporting cadence — see `observed_interval_secs`.
+    /// node's *observed* reporting cadence — see `observed_interval_secs`.
     /// Bounded ring, in memory only: after a restart it refills within a few
     /// uplinks and callers fall back to their own default meanwhile.
     pub uplink_ring: VecDeque<i64>,
     pub alarm_state: LoRaWANAlarmState,
 }
 
-/// How many uplink instants to remember per sticker. Enough for a median over
+/// How many uplink instants to remember per node. Enough for a median over
 /// several intervals without holding history nobody reads.
 const UPLINK_RING_LEN: usize = 6;
 
-/// The sticker's cadence from a set of uplink instants, in seconds.
+/// The node's cadence from a set of uplink instants, in seconds.
 ///
 /// `max(median gap, most recent gap)`, and the asymmetry is deliberate.
 ///
 /// The median alone resists the two ways a single gap lies: an event-driven uplink
-/// landing seconds after a periodic one would make a 15-minute sticker look like a
+/// landing seconds after a periodic one would make a 15-minute node look like a
 /// 10-second one, and one missed uplink would make it look twice as slow. But a
 /// median also *lags* a real change — after `interval_report` goes 120 s -> 900 s
 /// it takes four more uplinks (about an hour) for the median to follow, and every
@@ -182,10 +182,10 @@ fn rfc3339(secs: i64) -> Option<String> {
 }
 
 impl LoRaWANSensorState {
-    /// A sticker the device knows has reported before, but has not heard from
+    /// A node the device knows has reported before, but has not heard from
     /// since this process started.
     ///
-    /// Without this a restart makes every sticker read as *never connected* — the
+    /// Without this a restart makes every node read as *never connected* — the
     /// row only exists once an uplink creates it, and the viewer's default for a
     /// missing row is `NeverConnected`. With a 15-minute cadence that is a
     /// quarter of an hour in which a fridge that has been reporting for months is
@@ -228,8 +228,8 @@ impl LoRaWANSensorState {
         })
     }
 
-    pub fn from_reading(reading: &StickerReading) -> Self {
-        let mut events: VecDeque<StickerEvent> = reading.events.iter().cloned().collect();
+    pub fn from_reading(reading: &NodeReading) -> Self {
+        let mut events: VecDeque<NodeEvent> = reading.events.iter().cloned().collect();
         while events.len() > MAX_RECENT_EVENTS {
             events.pop_front();
         }
@@ -258,7 +258,7 @@ impl LoRaWANSensorState {
         }
     }
 
-    pub fn update_from_reading(&mut self, reading: &StickerReading) {
+    pub fn update_from_reading(&mut self, reading: &NodeReading) {
         if !reading.device_name.is_empty() {
             self.name = reading.device_name.clone();
         }
@@ -280,7 +280,7 @@ impl LoRaWANSensorState {
         self.snr = reading.snr;
         if !reading.received_at.is_empty() {
             // Record the instant BEFORE overwriting last_seen: the ring is what makes
-            // the sticker's real cadence observable, and a Class-A read/write can only
+            // the node's real cadence observable, and a Class-A read/write can only
             // be answered in the window after an uplink, so that cadence bounds every
             // fPort-85 round trip.
             if let Some(ts) = unix_secs(&reading.received_at) {
@@ -297,7 +297,7 @@ impl LoRaWANSensorState {
         self.alarm_state = LoRaWANAlarmState::Normal;
     }
 
-    /// The sticker's observed reporting cadence in seconds, or `None` until at
+    /// The node's observed reporting cadence in seconds, or `None` until at
     /// least two uplinks have been seen.
     ///
     /// `max(median gap, most recent gap)` — see `cadence_from` for why the
@@ -322,9 +322,9 @@ impl LoRaWANSensorState {
             self.location = cfg.location.clone();
         }
 
-        // Merge per-sensor overrides over YAML defaults. Stickers without a
+        // Merge per-sensor overrides over YAML defaults. Nodes without a
         // matching config entry still pick up defaults — this is what gives
-        // newly-paired stickers automatic alarming, mirroring DS18B20 probes.
+        // newly-paired nodes automatic alarming, mirroring DS18B20 probes.
         self.field_thresholds = effective_field_thresholds(config, defaults);
 
         for t in &self.field_thresholds {
@@ -342,11 +342,11 @@ impl LoRaWANSensorState {
         // A row that has never carried a measurement in this process — the
         // `Disconnected` placeholder seeded from storage at start-up — has nothing
         // to fold, and folding an empty set yields `Normal`. That would announce a
-        // silent sticker as healthy, which is the opposite of true, so leave its
+        // silent node as healthy, which is the opposite of true, so leave its
         // state alone until an uplink gives it something to evaluate.
         //
         // Deliberately keyed on "has any measurement at all" rather than on the
-        // alarm map being empty: a sticker that *is* reporting but has every
+        // alarm map being empty: a node that *is* reporting but has every
         // threshold removed must still fall back to Normal.
         if self.fields.is_empty() && self.counters.is_empty() {
             return;
@@ -371,7 +371,7 @@ pub struct LoRaWANState {
     ///
     /// Kept beside `sensors` rather than inside them on purpose: a sensor row is
     /// created by the first uplink, so at start-up there is nowhere to put this —
-    /// and inventing a row would make a sticker that has never reported look
+    /// and inventing a row would make a node that has never reported look
     /// present. Consulted only until the live ring has two uplinks of its own.
     pub cadence_hint: HashMap<String, u64>,
 }
@@ -391,17 +391,17 @@ impl LoRaWANState {
     ///
     /// Returns the cadence it stored, or `None` when the timestamps cannot yield
     /// one. Stored as a hint rather than pushed into a sensor row because no row
-    /// exists until the sticker's first uplink after start-up.
+    /// exists until the node's first uplink after start-up.
     pub fn seed_cadence_hint(&mut self, dev_eui: &str, times: Vec<i64>) -> Option<u64> {
         let cadence = cadence_from(&times)?;
         self.cadence_hint.insert(dev_eui.to_string(), cadence);
         Some(cadence)
     }
 
-    /// Give a sticker that has reported before a `Disconnected` row at start-up,
+    /// Give a node that has reported before a `Disconnected` row at start-up,
     /// so a restart does not report it as *never connected*.
     ///
-    /// Only for stickers with stored uplinks — one that has genuinely never
+    /// Only for nodes with stored uplinks — one that has genuinely never
     /// reported still gets no row, which is what makes `NeverConnected` mean
     /// something. Never overwrites a row a live uplink already created, so this is
     /// safe to call after the monitor is running.
@@ -428,7 +428,7 @@ impl LoRaWANState {
         last_seen
     }
 
-    /// The sticker's reporting cadence: what its live uplinks show, else the hint
+    /// The node's reporting cadence: what its live uplinks show, else the hint
     /// recovered from storage at start-up.
     pub fn cadence_secs(&self, dev_eui: &str) -> Option<u64> {
         self.sensors
@@ -437,7 +437,7 @@ impl LoRaWANState {
             .or_else(|| self.cadence_hint.get(dev_eui).copied())
     }
 
-    pub fn update_sensor(&mut self, reading: &StickerReading) {
+    pub fn update_sensor(&mut self, reading: &NodeReading) {
         if !self.sensors.contains_key(&reading.dev_eui) {
             self.sensors.insert(
                 reading.dev_eui.clone(),
@@ -452,8 +452,8 @@ impl LoRaWANState {
     }
 
     /// Record the gateway ChirpStack used to transmit the last downlink to a
-    /// sticker (from an `event/txack`). Display-only; persists across uplinks.
-    /// Returns `false` (no-op) if the sticker has no state row yet — a txack
+    /// node (from an `event/txack`). Display-only; persists across uplinks.
+    /// Returns `false` (no-op) if the node has no state row yet — a txack
     /// before the first uplink; rows are created by uplinks.
     pub fn set_downlink_gateway(&mut self, dev_eui: &str, gateway_id: String) -> bool {
         match self.sensors.get_mut(dev_eui) {
@@ -518,11 +518,11 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn reading_with_fields(dev_eui: &str, t: f64, h: f64) -> StickerReading {
+    fn reading_with_fields(dev_eui: &str, t: f64, h: f64) -> NodeReading {
         let mut fields = HashMap::new();
         fields.insert("temperature".into(), t);
         fields.insert("humidity".into(), h);
-        StickerReading {
+        NodeReading {
             dev_eui: dev_eui.into(),
             device_name: "test".into(),
             fields,
@@ -718,7 +718,7 @@ mod tests {
 
     /// Build a state with a given set of uplink instants (unix seconds).
     fn state_with_uplinks(secs: &[i64]) -> LoRaWANSensorState {
-        let mut st = LoRaWANSensorState::from_reading(&StickerReading {
+        let mut st = LoRaWANSensorState::from_reading(&NodeReading {
             dev_eui: "aabb".into(),
             device_name: "t".into(),
             fields: HashMap::new(),
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn observed_cadence_ignores_a_burst_uplink() {
         // An event-driven uplink 10 s after a periodic one must not make a
-        // 15-minute sticker look like a 10-second one — that would shorten every
+        // 15-minute node look like a 10-second one — that would shorten every
         // fPort-85 timeout derived from it straight back to the old floor.
         // Gaps are [900, 10, 890, 900] → median 895, i.e. still ~the real cadence.
         let cadence = state_with_uplinks(&[0, 900, 910, 1800, 2700])
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn observed_cadence_ignores_a_single_missed_uplink() {
         // One dropped uplink doubles a gap; the median must ignore it rather than
-        // reporting the sticker as twice as slow.
+        // reporting the node as twice as slow.
         let st = state_with_uplinks(&[0, 900, 2700, 3600, 4500]);
         assert_eq!(st.observed_interval_secs(), Some(900));
     }
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn uplink_ring_is_bounded_and_deduplicated() {
         let mut st = state_with_uplinks(&[]);
-        let mut reading = StickerReading {
+        let mut reading = NodeReading {
             dev_eui: "aabb".into(),
             device_name: "t".into(),
             fields: HashMap::new(),
@@ -836,12 +836,12 @@ mod tests {
         }
     }
 
-    /// A restart must not turn a sticker that has been reporting for months into
+    /// A restart must not turn a node that has been reporting for months into
     /// one that was never installed. Those two states call for opposite actions —
     /// check the radio versus check the wiring — and with a 15-minute cadence the
     /// wrong one is on screen for a quarter of an hour.
     #[test]
-    fn a_sticker_with_history_comes_back_disconnected_not_never_connected() {
+    fn a_node_with_history_comes_back_disconnected_not_never_connected() {
         let mut st = LoRaWANState::new(true);
         let c = cfg("58760700c0668fc7", "Input QA");
         // Newest is deliberately not last: storage returns newest-first.
@@ -849,7 +849,7 @@ mod tests {
 
         let last = st
             .seed_disconnected(&c, &uplinks)
-            .expect("a sticker with stored uplinks gets a row");
+            .expect("a node with stored uplinks gets a row");
 
         let row = st.sensors.get("58760700c0668fc7").expect("row seeded");
         assert_eq!(row.alarm_state, LoRaWANAlarmState::Disconnected);
@@ -871,7 +871,7 @@ mod tests {
 
     /// The seeded Disconnected must survive the periodic alarm pass. That pass
     /// folds `field_alarm_states` starting at Normal, and a placeholder row has
-    /// none — so before this it announced every silent sticker as healthy, one
+    /// none — so before this it announced every silent node as healthy, one
     /// evaluation tick after start-up. Measured on fiber-ce3d59f8: last_seen was
     /// recovered correctly and the state still read Normal.
     #[test]
@@ -887,10 +887,10 @@ mod tests {
         assert_eq!(row.last_seen.as_deref(), rfc3339(1_786_000_900).as_deref());
     }
 
-    /// The other side of that guard: a sticker that IS reporting, with every
+    /// The other side of that guard: a node that IS reporting, with every
     /// threshold removed, must still fall back to Normal rather than freeze.
     #[test]
-    fn a_reporting_sticker_with_no_thresholds_falls_back_to_normal() {
+    fn a_reporting_node_with_no_thresholds_falls_back_to_normal() {
         let mut st = LoRaWANState::new(true);
         st.update_sensor(&reading_with_fields("aabb", 22.5, 48.0));
         if let Some(r) = st.sensors.get_mut("aabb") {
@@ -903,7 +903,7 @@ mod tests {
     /// The other half of the contract: absence still means "never reported", or
     /// NeverConnected would stop meaning anything.
     #[test]
-    fn a_sticker_that_never_reported_gets_no_row() {
+    fn a_node_that_never_reported_gets_no_row() {
         let mut st = LoRaWANState::new(true);
         assert_eq!(
             st.seed_disconnected(&cfg("aabbccddeeff0011", "Fresh"), &[]),

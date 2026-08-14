@@ -48,7 +48,7 @@ pub enum Command {
     /// Aggregate device status (version, power, network, lorawan, mqtt, sensors).
     Status,
 
-    /// Write STICKER config via fPort-85 `SetParam` (#68). `fields` are
+    /// Write Node config via fPort-85 `SetParam` (#68). `fields` are
     /// `group.field` → string value (parsed + range-validated server-side).
     /// `save=true` commits + reboots the device.
     LorawanSetParam {
@@ -61,7 +61,7 @@ pub enum Command {
         force: bool,
     },
 
-    /// Read back STICKER config via `GetParam` (#70) and decode it. If
+    /// Read back Node config via `GetParam` (#70) and decode it. If
     /// `desired` is set, also return the `diff_config` mismatches.
     LorawanGetParam {
         dev_eui: String,
@@ -167,7 +167,7 @@ pub enum LorawanSimpleCommand {
     /// Push the daemon's current wall-clock to the device.
     ClockSync,
     /// Restore defaults, keeping identity and the LoRaWAN keys (proto id 8). The
-    /// sticker stays joined; all parameters and alarm rules are lost.
+    /// node stays joined; all parameters and alarm rules are lost.
     DeviceReset,
     /// The NFC/shell-only factory reset (proto id 23). **Always rejected over
     /// LoRaWAN** with `Error{NOT_READY, "transport not allowed"}` — exposed so the
@@ -188,7 +188,7 @@ impl LorawanSimpleCommand {
     }
 
     /// Commands that leave a deferred action pending on the device's single
-    /// `m_post_cmd_action` slot, so they must not overlap on one sticker.
+    /// `m_post_cmd_action` slot, so they must not overlap on one node.
     pub fn is_action_bearing(self) -> bool {
         matches!(
             self,

@@ -15,7 +15,7 @@ use std::time::Duration;
 use super::{DestinationConfig, ExportConfig, MqttExportThread};
 use crate::libs::storage::{db::Database, reader::StorageReader, StorageThread};
 
-/// Simulates ~10h of accumulated sticker readings while the destination
+/// Simulates ~10h of accumulated node readings while the destination
 /// broker is unreachable, then enables the broker and verifies the export
 /// orchestrator catches up — cursor reaches the head of the stream.
 #[tokio::test(flavor = "current_thread")]
@@ -34,7 +34,7 @@ async fn ten_hour_offline_drain_matches_input_inner() {
 
     for i in 0..1_000 {
         storage
-            .write_sticker_reading(
+            .write_node_reading(
                 "abc".into(),
                 1,
                 1000 + i,

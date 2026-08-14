@@ -498,7 +498,7 @@ impl AuthorizationManager {
             "remove_lorawan_sticker" => "set_lorawan_sensor_config", // reuse same permission
             "add_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
             "remove_external_gateway" => "set_lorawan_sensor_config", // reuse same permission
-            // system#7. Reuses the sticker-management permission — a signer
+            // system#7. Reuses the node-management permission — a signer
             // certificate embeds a fixed permission list at issuance, so a new
             // one would invalidate every certificate already provisioned across
             // the fleet, and it raises no real bar: whoever can already register
@@ -518,17 +518,17 @@ impl AuthorizationManager {
             // listens for — but it is still a fleet-scoped write, so it takes the
             // same permission as adding a tag rather than a read permission.
             "set_eye_known_tags" => "set_lorawan_sensor_config",
-            "reset_export_cursor" => "set_lorawan_sensor_config", // admin op: align with sticker management
+            "reset_export_cursor" => "set_lorawan_sensor_config", // admin op: align with node management
 
             "set_lorawan_field_threshold" => "set_threshold",
             "delete_lorawan_field_threshold" => "set_threshold",
-            "set_sticker_config" => "set_lorawan_sensor_config", // reuse sticker-management permission
-            "send_sticker_raw" => "set_lorawan_sensor_config", // reuse sticker-management permission
+            "set_sticker_config" => "set_lorawan_sensor_config", // reuse node-management permission
+            "send_sticker_raw" => "set_lorawan_sensor_config",   // reuse node-management permission
             "set_eye_field_threshold" => "set_lorawan_sensor_config",
             "delete_eye_field_threshold" => "set_lorawan_sensor_config",
-            // #71 control commands. They reuse the sticker-management permission
+            // #71 control commands. They reuse the node-management permission
             // rather than introducing a new one, because anyone who can already
-            // write sticker config can already reboot the device via
+            // write node config can already reboot the device via
             // SetParam{save:true} — a dedicated permission would raise no real bar
             // while forcing every provisioned signer certificate to be re-issued.
             // Tightening this is a follow-up, not a prerequisite.
@@ -1220,9 +1220,9 @@ impl AuthorizationManager {
                     .to_string();
                 Ok(MqttCommand::DeleteLoRaWANFieldThreshold { dev_eui, field })
             }
-            "set_sticker_config" => MqttCommand::parse_set_sticker_config(&challenge.params)
+            "set_sticker_config" => MqttCommand::parse_set_node_config(&challenge.params)
                 .map_err(AuthError::InvalidCommand),
-            "send_sticker_raw" => MqttCommand::parse_send_sticker_raw(&challenge.params)
+            "send_sticker_raw" => MqttCommand::parse_send_node_raw(&challenge.params)
                 .map_err(AuthError::InvalidCommand),
             "set_eye_field_threshold" => {
                 let mac = challenge
@@ -1284,15 +1284,14 @@ impl AuthorizationManager {
                     .to_string();
                 Ok(MqttCommand::DeleteBeaconFieldThreshold { mac, field })
             }
-            "sticker_reboot" => MqttCommand::parse_sticker_reboot(&challenge.params)
-                .map_err(AuthError::InvalidCommand),
-            "sticker_device_reset" => MqttCommand::parse_sticker_device_reset(&challenge.params)
-                .map_err(AuthError::InvalidCommand),
-            "sticker_reset_counters" => {
-                MqttCommand::parse_sticker_reset_counters(&challenge.params)
-                    .map_err(AuthError::InvalidCommand)
+            "sticker_reboot" => {
+                MqttCommand::parse_node_reboot(&challenge.params).map_err(AuthError::InvalidCommand)
             }
-            "sticker_clock_sync" => MqttCommand::parse_sticker_clock_sync(&challenge.params)
+            "sticker_device_reset" => MqttCommand::parse_node_device_reset(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
+            "sticker_reset_counters" => MqttCommand::parse_node_reset_counters(&challenge.params)
+                .map_err(AuthError::InvalidCommand),
+            "sticker_clock_sync" => MqttCommand::parse_node_clock_sync(&challenge.params)
                 .map_err(AuthError::InvalidCommand),
             "add_lorawan_sticker" => {
                 let dev_eui = challenge
@@ -1424,7 +1423,7 @@ impl AuthorizationManager {
                     }
                 };
 
-                Ok(MqttCommand::AddLoRaWANSticker {
+                Ok(MqttCommand::AddLoRaWANNode {
                     dev_eui,
                     name,
                     serial_number,
@@ -1439,7 +1438,7 @@ impl AuthorizationManager {
                     .ok_or_else(|| AuthError::InvalidCommand("Missing dev_eui".to_string()))?
                     .to_lowercase();
 
-                Ok(MqttCommand::RemoveLoRaWANSticker { dev_eui })
+                Ok(MqttCommand::RemoveLoRaWANNode { dev_eui })
             }
             "add_external_gateway" => {
                 let gateway_eui = challenge
@@ -1857,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn cluster_command_reuses_the_sticker_management_permission() {
+    fn cluster_command_reuses_the_node_management_permission() {
         // Not its own permission: a signer certificate embeds a fixed permission
         // list at issuance, so a new one would invalidate every certificate
         // already provisioned across the fleet. The viewer's CommandSigner maps
@@ -2235,7 +2234,7 @@ mod tests {
             .build_command_from_challenge(&challenge)
             .unwrap_err();
         assert!(
-            format!("{:?}", err).contains("unknown sticker field"),
+            format!("{:?}", err).contains("unknown node field"),
             "got: {:?}",
             err,
         );
@@ -2312,7 +2311,7 @@ mod tests {
     }
 
     #[test]
-    fn set_beacon_known_tags_takes_the_sticker_management_permission() {
+    fn set_beacon_known_tags_takes_the_node_management_permission() {
         let manager = create_test_manager();
         assert_eq!(
             manager

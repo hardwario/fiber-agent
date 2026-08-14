@@ -42,7 +42,7 @@ pub type SharedDisplayLinesHandle = Arc<std::sync::RwLock<Vec<crate::libs::confi
 /// which row set is on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewMode {
-    /// Built-in active-first layout: 8 DS18B20 slots plus N stickers.
+    /// Built-in active-first layout: 8 DS18B20 slots plus N nodes.
     Default { rows: usize },
     /// User-configured display lines.
     ///
@@ -353,7 +353,7 @@ impl DisplayState {
     /// Which row set the overview is showing right now.
     ///
     /// Selection mode always falls back to the canonical sensor list: custom
-    /// lines may repeat a source (two rows on one sticker is the headline use
+    /// lines may repeat a source (two rows on one node is the headline use
     /// case), and the selection cursor is keyed on a sensor's global index, so a
     /// custom-derived list would make the second row on a sensor unreachable.
     ///
@@ -422,7 +422,7 @@ impl DisplayState {
     }
 
     /// Pull the overview page and the selection cursor back into range after
-    /// the visible sensor list shrinks (a LoRa sticker can leave the map), so
+    /// the visible sensor list shrinks (a LoRa node can leave the map), so
     /// the screen self-corrects instead of sitting on a blank page — or in
     /// selection mode with no cursor drawn — until the next button press.
     /// No-op on any other screen.
@@ -843,7 +843,7 @@ impl DisplayState {
             }
             _ => None,
         };
-        // A LoRa sticker can leave the map while its detail view is open, in
+        // A LoRa node can leave the map while its detail view is open, in
         // which case there is no global index to go back to at all. Falling
         // through here would leave the detail screen up while the button state
         // machine has already moved to selection mode — the click would look
@@ -1359,7 +1359,7 @@ mod pagination_tests {
     }
 
     /// A cursor left pointing at a sensor that dropped off the list (a LoRa
-    /// sticker leaving the map) must move to a row the renderer can draw.
+    /// node leaving the map) must move to a row the renderer can draw.
     #[test]
     fn clamp_overview_moves_cursor_off_a_vanished_sensor() {
         let mut state = DisplayState::new();
@@ -1471,12 +1471,12 @@ mod pagination_tests {
         ));
     }
 
-    /// Regression: a sticker that leaves the map while its detail view is open
+    /// Regression: a node that leaves the map while its detail view is open
     /// has no global index left to resolve. We must still leave the detail
     /// screen — the button state machine has already moved to selection mode,
     /// so staying put makes the click look dead.
     #[test]
-    fn exit_detail_view_leaves_screen_when_sticker_vanished() {
+    fn exit_detail_view_leaves_screen_when_node_vanished() {
         let mut state = DisplayState::new();
         let mut ds_arr = empty_ds();
         ds_arr[4] = connected(20.0);

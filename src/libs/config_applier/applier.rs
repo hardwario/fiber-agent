@@ -74,7 +74,7 @@ impl ConfigApplier {
     /// configuration change that affects device behaviour; before this
     /// helper only `apply_device_label_change` actually wrote a row, so
     /// the trail had silent gaps for thresholds, names, locations,
-    /// intervals, LoRaWAN sensor/threshold/sticker changes, etc.
+    /// intervals, LoRaWAN sensor/threshold/node changes, etc.
     ///
     /// Failure to log is reported on stderr but never rolls back the
     /// just-committed YAML write — same trade-off as `apply_device_label`.
@@ -1336,7 +1336,7 @@ impl ConfigApplier {
         // can see the deprovisioning event and avoid mis-attributing a later
         // re-provisioned incarnation to the old epoch.
         if let Some(storage) = self.storage.as_ref() {
-            if let Err(e) = storage.append_sticker_removed(dev_eui.clone(), applied_at) {
+            if let Err(e) = storage.append_node_removed(dev_eui.clone(), applied_at) {
                 eprintln!(
                     "[ConfigApplier] WARN: failed to append sticker_removed for {}: {}",
                     dev_eui, e
@@ -1478,8 +1478,8 @@ impl ConfigApplier {
     ///
     /// A follower contributes its **radio**, not its reports: its frames reach
     /// the leader's ChirpStack, and only the leader's `fiber_app` may publish a
-    /// sticker's telemetry. If a follower's LoRaWAN monitor also subscribed, the
-    /// viewer would see two sources for one sticker and history would
+    /// node's telemetry. If a follower's LoRaWAN monitor also subscribed, the
+    /// viewer would see two sources for one node and history would
     /// double-count, so arming a follower disables its monitor here and clearing
     /// the cluster re-enables it.
     ///
@@ -1614,7 +1614,7 @@ impl ConfigApplier {
 
     /// Remove an external LoRaWAN gateway from the main config by gateway_eui.
     /// Mirrors `remove_lorawan_sensor_config` (no sticker_removed marker — a
-    /// gateway is not a save-and-feed sticker).
+    /// gateway is not a save-and-feed node).
     pub fn remove_external_gateway(&self, gateway_eui: String) -> ApplyResult {
         let applied_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4334,9 +4334,9 @@ mod display_lines_tests {
         }
     }
 
-    fn sticker_line(field: &str) -> DisplayLine {
+    fn node_line(field: &str) -> DisplayLine {
         DisplayLine {
-            source: DisplayLineSource::Sticker,
+            source: DisplayLineSource::Node,
             line: None,
             dev_eui: Some(EUI.to_string()),
             mac: None,
@@ -4373,7 +4373,7 @@ mqtt:
         let path = write_config(dir.path());
         let applier = ConfigApplier::new(dir.path()).unwrap();
 
-        let result = applier.apply_display_custom_lines(vec![sticker_line("voltage"), ds_line(0)]);
+        let result = applier.apply_display_custom_lines(vec![node_line("voltage"), ds_line(0)]);
         assert!(result.success, "{:?}", result.error_message);
 
         let parsed = read_yaml(&path);
@@ -4393,7 +4393,7 @@ mqtt:
         let applier = ConfigApplier::new(dir.path()).unwrap();
 
         applier.apply_display_custom_lines(vec![ds_line(0), ds_line(1), ds_line(2)]);
-        let result = applier.apply_display_custom_lines(vec![sticker_line("humidity")]);
+        let result = applier.apply_display_custom_lines(vec![node_line("humidity")]);
         assert!(result.success, "{:?}", result.error_message);
 
         let parsed = read_yaml(&path);
@@ -4485,7 +4485,7 @@ mqtt:
         let path = write_config(dir.path());
         let applier = ConfigApplier::new(dir.path()).unwrap();
 
-        let mut line = sticker_line("ext_temperature_1");
+        let mut line = node_line("ext_temperature_1");
         line.format.decimals = Some(2);
         line.format.status_char = false;
         assert!(

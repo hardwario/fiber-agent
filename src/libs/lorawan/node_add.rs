@@ -1,13 +1,13 @@
-//! Shared "add a LoRaWAN sticker" path.
+//! Shared "add a LoRaWAN node" path.
 //!
 //! This is the single canonical full add: ChirpStack provision + save-and-feed
 //! provisioning-epoch bump + sensor-config YAML + optimistic shared-state stub.
 //! It is called both by the MQTT command handler
-//! (`MqttCommand::AddLoRaWANSticker`) and by the BLE FB0D Sticker-Add
+//! (`MqttCommand::AddLoRaWANNode`) and by the BLE FB0D Node-Add
 //! characteristic, so the two transports stay byte-for-byte identical.
 //!
 //! Extracted verbatim from the former inline match arm in `mqtt/monitor.rs` —
-//! callers pass their handles via [`StickerAddDeps`]; everything else is read
+//! callers pass their handles via [`NodeAddDeps`]; everything else is read
 //! from disk by the provisioning functions, so it is not a dependency here. That
 //! includes the ChirpStack API credentials, which
 //! `provisioning::chirpstack_credentials` reads from `lorawan.chirpstack` in
@@ -27,21 +27,21 @@ use crate::libs::storage::StorageHandle;
 /// Handles the full add path needs. All optional — a missing handle degrades
 /// the same way the original handler did (e.g. no config applier → hard error).
 #[derive(Clone, Default)]
-pub struct StickerAddDeps {
+pub struct NodeAddDeps {
     pub config_applier: Option<Arc<ConfigApplier>>,
     pub storage: Option<StorageHandle>,
     pub lorawan_configs: Option<SharedLoRaWANSensorConfigs>,
     pub lorawan_state: Option<SharedLoRaWANState>,
 }
 
-/// Provision a sticker in ChirpStack and persist its sensor config.
+/// Provision a node in ChirpStack and persist its sensor config.
 ///
 /// Returns `Ok(())` once the sensor config is saved. ChirpStack provisioning is
-/// best-effort (logged but not fatal — the device may be down or the sticker
+/// best-effort (logged but not fatal — the device may be down or the node
 /// may already exist); the hard failure is an absent config applier or a failed
 /// config save. Mirrors the original `monitor.rs` behaviour exactly.
-pub fn add_lorawan_sticker(
-    deps: &StickerAddDeps,
+pub fn add_lorawan_node(
+    deps: &NodeAddDeps,
     dev_eui: String,
     name: String,
     serial_number: String,
@@ -62,7 +62,7 @@ pub fn add_lorawan_sticker(
         ActivationMode::Abp { .. } => "ABP",
     };
     eprintln!(
-        "[sticker_add] Provisioning sticker {} in ChirpStack ({})...",
+        "[node_add] Provisioning node {} in ChirpStack ({})...",
         dev_eui, mode_label
     );
     let provision_result = match &activation {
@@ -70,7 +70,7 @@ pub fn add_lorawan_sticker(
             app_key,
             join_eui,
             profile_id,
-        } => crate::libs::lorawan::provisioning::provision_sticker_otaa(
+        } => crate::libs::lorawan::provisioning::provision_node_otaa(
             &dev_eui,
             &name,
             &serial_number,
@@ -82,7 +82,7 @@ pub fn add_lorawan_sticker(
             devaddr,
             nwkskey,
             appskey,
-        } => crate::libs::lorawan::provisioning::provision_sticker(
+        } => crate::libs::lorawan::provisioning::provision_node(
             &dev_eui,
             &name,
             &serial_number,
@@ -93,35 +93,32 @@ pub fn add_lorawan_sticker(
     };
     match provision_result {
         Ok(()) => {
-            eprintln!(
-                "[sticker_add] ✓ Sticker {} provisioned in ChirpStack",
-                dev_eui
-            );
+            eprintln!("[node_add] ✓ Node {} provisioned in ChirpStack", dev_eui);
 
             // Save-and-feed: bump the provisioning epoch only when this
             // dev_eui was previously absent OR its most recent event was
-            // a sticker_removed marker. That way re-provisioning an
-            // already-active sticker is idempotent (no spurious epoch
+            // a node_removed marker. That way re-provisioning an
+            // already-active node is idempotent (no spurious epoch
             // change), while a remove → re-add cycle creates a new
             // epoch so the downstream pipeline can tell the new
-            // sticker apart from the old one.
+            // node apart from the old one.
             if let Some(storage) = deps.storage.as_ref() {
                 match storage.dev_eui_last_event_was_removal_or_absent(dev_eui.clone()) {
                     Ok(true) => match storage.bump_provisioning_epoch(dev_eui.clone()) {
                         Ok(new_epoch) => eprintln!(
-                            "[sticker_add] sticker {} provisioning epoch bumped to {}",
+                            "[node_add] node {} provisioning epoch bumped to {}",
                             dev_eui, new_epoch
                         ),
                         Err(e) => eprintln!(
-                            "[sticker_add] bump_provisioning_epoch({}) failed: {}",
+                            "[node_add] bump_provisioning_epoch({}) failed: {}",
                             dev_eui, e
                         ),
                     },
                     Ok(false) => {
-                        // Re-provision of an already-active sticker; no bump.
+                        // Re-provision of an already-active node; no bump.
                     }
                     Err(e) => eprintln!(
-                        "[sticker_add] dev_eui_last_event lookup for {} failed: {}",
+                        "[node_add] dev_eui_last_event lookup for {} failed: {}",
                         dev_eui, e
                     ),
                 }
@@ -130,7 +127,7 @@ pub fn add_lorawan_sticker(
         Err(e) => {
             // Log but continue - ChirpStack may be down or device may already exist
             eprintln!(
-                "[sticker_add] ⚠ ChirpStack provisioning for {}: {}",
+                "[node_add] ⚠ ChirpStack provisioning for {}: {}",
                 dev_eui, e
             );
         }
@@ -161,7 +158,7 @@ pub fn add_lorawan_sticker(
                 }
             }
             // Insert a stub in shared state so the next periodic publish
-            // includes the sticker even before its first uplink arrives.
+            // includes the node even before its first uplink arrives.
             // Without this, the backend's sync would consider the
             // optimistic entry stale and drop it.
             if let Some(state) = deps.lorawan_state.as_ref() {
@@ -189,7 +186,7 @@ pub fn add_lorawan_sticker(
                         });
                 }
             }
-            eprintln!("[sticker_add] ✓ LoRaWAN sticker {} config saved", dev_eui);
+            eprintln!("[node_add] ✓ LoRaWAN node {} config saved", dev_eui);
             Ok(())
         } else {
             Err(result

@@ -185,12 +185,12 @@ pub fn default_label(
             Some(idx) if idx < ds_names.len() => ds_names[idx].clone(),
             _ => UNKNOWN_FIELD_VALUE.to_string(),
         },
-        DisplayLineSource::Sticker => {
+        DisplayLineSource::Node => {
             let dev_eui = line.dev_eui.as_deref().unwrap_or_default();
-            match find_sticker(lorawan, dev_eui) {
+            match find_node(lorawan, dev_eui) {
                 Some(sensor) => sensor.name.clone(),
                 // Last 4 hex digits, so an unprovisioned row is still
-                // traceable back to the sticker the user meant.
+                // traceable back to the node the user meant.
                 None => unknown_tail(dev_eui),
             }
         }
@@ -230,9 +230,9 @@ pub fn fit_label_and_value(label: &str, value: &str, has_status: bool) -> (Strin
     (truncate_chars(label, label_max), value.to_string())
 }
 
-/// Find a sticker by DevEUI. Both sides are lowercased on config load and on
+/// Find a node by DevEUI. Both sides are lowercased on config load and on
 /// uplink parse, so this is a plain comparison.
-fn find_sticker<'a>(
+fn find_node<'a>(
     lorawan: &'a [LoRaWANSensorState],
     dev_eui: &str,
 ) -> Option<&'a LoRaWANSensorState> {
@@ -241,7 +241,7 @@ fn find_sticker<'a>(
 
 /// Find an EYE tag by MAC. Both sides are uppercased — the config on load, the
 /// tag map by construction — so this is a plain comparison, same as
-/// [`find_sticker`].
+/// [`find_node`].
 fn find_tag<'a>(tags: &'a [BeaconTagState], mac: &str) -> Option<&'a BeaconTagState> {
     tags.iter().find(|t| t.mac == mac)
 }
@@ -277,17 +277,17 @@ fn build_ds18b20_line(
     (value, status, is_alarm)
 }
 
-/// Resolve one sticker line against live state.
-fn build_sticker_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (String, char, bool) {
+/// Resolve one node line against live state.
+fn build_node_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (String, char, bool) {
     let dev_eui = line.dev_eui.as_deref().unwrap_or_default();
-    let Some(sensor) = find_sticker(lorawan, dev_eui) else {
+    let Some(sensor) = find_node(lorawan, dev_eui) else {
         // Configured but never seen: show the placeholder rather than dropping
         // the row, so a provisioning mistake is visible instead of invisible.
         return (placeholder_for(&line.field, &line.format), '?', false);
     };
 
     // Prefer the per-field alarm state so a humidity row can read NORM while a
-    // temperature row on the same sticker reads CRIT.
+    // temperature row on the same node reads CRIT.
     let field_state = sensor
         .field_alarm_states
         .get(&line.field)
@@ -306,7 +306,7 @@ fn build_sticker_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (St
     } else if disconnected {
         // `LoRaWANSensorState.fields` is never cleared, so the last uplink's
         // value would otherwise sit on the panel indefinitely, looking live.
-        // A dead sticker must not display a plausible temperature.
+        // A dead node must not display a plausible temperature.
         placeholder_for(&line.field, &line.format)
     } else {
         let raw = match line.field.as_str() {
@@ -333,7 +333,7 @@ fn build_sticker_line(line: &DisplayLine, lorawan: &[LoRaWANSensorState]) -> (St
 
 /// Resolve one EYE BLE tag line against live state.
 ///
-/// Mirrors [`build_sticker_line`], including the rule that a tag we have lost
+/// Mirrors [`build_node_line`], including the rule that a tag we have lost
 /// shows the placeholder rather than its last-known reading.
 ///
 /// `tags` is expected to carry an `alarm_state` already escalated to
@@ -408,7 +408,7 @@ pub fn build_custom_lines(
         .map(|line| {
             let (value, status, is_alarm) = match line.source {
                 DisplayLineSource::Ds18b20 => build_ds18b20_line(line, ds_readings),
-                DisplayLineSource::Sticker => build_sticker_line(line, lorawan),
+                DisplayLineSource::Node => build_node_line(line, lorawan),
                 DisplayLineSource::Ble => build_ble_line(line, tags),
             };
 
@@ -490,9 +490,9 @@ mod tests {
         }
     }
 
-    fn sticker_line(dev_eui: &str, field: &str) -> DisplayLine {
+    fn node_line(dev_eui: &str, field: &str) -> DisplayLine {
         DisplayLine {
-            source: DisplayLineSource::Sticker,
+            source: DisplayLineSource::Node,
             line: None,
             dev_eui: Some(dev_eui.to_string()),
             mac: None,
@@ -518,14 +518,14 @@ mod tests {
         Default::default()
     }
 
-    /// No EYE tags, for the probe/sticker tests that predate the `ble` source.
+    /// No EYE tags, for the probe/node tests that predate the `ble` source.
     fn no_tags() -> Vec<BeaconTagState> {
         Vec::new()
     }
 
     /// [`build_custom_lines`] with no EYE tags — the four-argument shape every
-    /// probe/sticker test used before the `ble` source existed. Those tests are
-    /// about probes and stickers, so spelling `&[]` for tags in each of them
+    /// probe/node test used before the `ble` source existed. Those tests are
+    /// about probes and nodes, so spelling `&[]` for tags in each of them
     /// would be noise.
     fn rows_of(
         lines: &[DisplayLine],
@@ -563,9 +563,9 @@ mod tests {
         })
     }
 
-    /// Builder for a sticker fixture — `fields`/`counters` are generic maps, so
+    /// Builder for a node fixture — `fields`/`counters` are generic maps, so
     /// tests have to be explicit about which map a value lands in.
-    fn sticker(dev_eui: &str, name: &str, alarm: LoRaWANAlarmState) -> LoRaWANSensorState {
+    fn node(dev_eui: &str, name: &str, alarm: LoRaWANAlarmState) -> LoRaWANSensorState {
         LoRaWANSensorState {
             dev_eui: dev_eui.to_string(),
             name: name.to_string(),
@@ -780,14 +780,14 @@ mod tests {
         assert_eq!(rows[0].value, "CRIT");
     }
 
-    // ---- sticker lines ----------------------------------------------------
+    // ---- node lines ----------------------------------------------------
 
     #[test]
-    fn build_lines_sticker_ext_temperature_1_resolves_from_fields_map() {
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+    fn build_lines_node_ext_temperature_1_resolves_from_fields_map() {
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.fields.insert("ext_temperature_1".to_string(), -18.26);
         let rows = rows_of(
-            &[sticker_line(EUI1, "ext_temperature_1")],
+            &[node_line(EUI1, "ext_temperature_1")],
             &no_readings(),
             &names(),
             &[s],
@@ -797,11 +797,11 @@ mod tests {
     }
 
     #[test]
-    fn build_lines_sticker_voltage_two_decimals_volt_unit() {
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+    fn build_lines_node_voltage_two_decimals_volt_unit() {
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.fields.insert("voltage".to_string(), 3.02);
         let rows = rows_of(
-            &[sticker_line(EUI1, "voltage")],
+            &[node_line(EUI1, "voltage")],
             &no_readings(),
             &names(),
             &[s],
@@ -811,12 +811,12 @@ mod tests {
 
     #[test]
     fn build_lines_counter_field_reads_counters_map_not_fields() {
-        let mut s = sticker(EUI1, "Door", LoRaWANAlarmState::Normal);
+        let mut s = node(EUI1, "Door", LoRaWANAlarmState::Normal);
         s.counters.insert("motion_count".to_string(), 417);
         // A stray same-named entry in `fields` must not win.
         s.fields.insert("motion_count".to_string(), 1.0);
         let rows = rows_of(
-            &[sticker_line(EUI1, "motion_count")],
+            &[node_line(EUI1, "motion_count")],
             &no_readings(),
             &names(),
             &[s],
@@ -826,13 +826,13 @@ mod tests {
 
     #[test]
     fn build_lines_rssi_and_snr_read_from_sensor_not_fields() {
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.rssi = Some(-72);
         // Not 9.25 — that's an exact tie and rounds to 9.2, which would make
         // this test about float rounding rather than about field lookup.
         s.snr = Some(9.26);
         let rows = rows_of(
-            &[sticker_line(EUI1, "rssi"), sticker_line(EUI1, "snr")],
+            &[node_line(EUI1, "rssi"), node_line(EUI1, "snr")],
             &no_readings(),
             &names(),
             &[s],
@@ -844,24 +844,24 @@ mod tests {
     #[test]
     fn build_lines_unknown_dev_eui_renders_placeholder_and_question_status() {
         let rows = rows_of(
-            &[sticker_line(EUI2, "temperature")],
+            &[node_line(EUI2, "temperature")],
             &no_readings(),
             &names(),
-            &[sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal)],
+            &[node(EUI1, "Chiller", LoRaWANAlarmState::Normal)],
         );
         assert_eq!(rows[0].value, "--.-°C");
         assert_eq!(rows[0].status_char, Some('?'));
         assert!(!rows[0].is_alarm);
-        // Still traceable to the sticker the user meant.
+        // Still traceable to the node the user meant.
         assert_eq!(rows[0].label, "?1f31");
     }
 
     #[test]
-    fn build_lines_missing_field_on_known_sticker_renders_placeholder() {
-        // Registry field, but this sticker has no external probe attached.
-        let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+    fn build_lines_missing_field_on_known_node_renders_placeholder() {
+        // Registry field, but this node has no external probe attached.
+        let s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         let rows = rows_of(
-            &[sticker_line(EUI1, "ext_temperature_1")],
+            &[node_line(EUI1, "ext_temperature_1")],
             &no_readings(),
             &names(),
             &[s],
@@ -870,13 +870,13 @@ mod tests {
     }
 
     #[test]
-    fn build_lines_disconnected_sticker_hides_stale_value() {
+    fn build_lines_disconnected_node_hides_stale_value() {
         // `fields` is never cleared, so without suppression this row would show
-        // a plausible 22.0°C for a sticker that stopped reporting days ago.
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
+        // a plausible 22.0°C for a node that stopped reporting days ago.
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
         s.fields.insert("temperature".to_string(), 22.0);
         let rows = rows_of(
-            &[sticker_line(EUI1, "temperature")],
+            &[node_line(EUI1, "temperature")],
             &no_readings(),
             &names(),
             &[s],
@@ -887,14 +887,14 @@ mod tests {
 
     #[test]
     fn build_lines_uses_field_alarm_state_not_sensor_alarm_state() {
-        // Sticker is critical on temperature but fine on humidity: the humidity
+        // Node is critical on temperature but fine on humidity: the humidity
         // row must not inherit the alarm.
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Critical);
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Critical);
         s.fields.insert("humidity".to_string(), 48.0);
         s.field_alarm_states
             .insert("humidity".to_string(), LoRaWANAlarmState::Normal);
         let rows = rows_of(
-            &[sticker_line(EUI1, "humidity")],
+            &[node_line(EUI1, "humidity")],
             &no_readings(),
             &names(),
             &[s],
@@ -906,12 +906,12 @@ mod tests {
 
     #[test]
     fn build_lines_critical_field_sets_is_alarm() {
-        let mut s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let mut s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s.fields.insert("temperature".to_string(), 41.0);
         s.field_alarm_states
             .insert("temperature".to_string(), LoRaWANAlarmState::Critical);
         let rows = rows_of(
-            &[sticker_line(EUI1, "temperature")],
+            &[node_line(EUI1, "temperature")],
             &no_readings(),
             &names(),
             &[s],
@@ -921,26 +921,18 @@ mod tests {
     }
 
     #[test]
-    fn build_lines_sticker_status_field_renders_state_text() {
-        let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Warning);
-        let rows = rows_of(
-            &[sticker_line(EUI1, "status")],
-            &no_readings(),
-            &names(),
-            &[s],
-        );
+    fn build_lines_node_status_field_renders_state_text() {
+        let s = node(EUI1, "Chiller", LoRaWANAlarmState::Warning);
+        let rows = rows_of(&[node_line(EUI1, "status")], &no_readings(), &names(), &[s]);
         assert_eq!(rows[0].value, "WARN");
     }
 
     #[test]
     fn build_lines_unknown_field_reads_as_misconfigured() {
         // Only reachable from a hand-edited config; the command path rejects it.
-        let s = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let s = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         let rows = rows_of(
-            &[
-                sticker_line(EUI1, "battery_percent"),
-                ds_line(0, "humidity"),
-            ],
+            &[node_line(EUI1, "battery_percent"), ds_line(0, "humidity")],
             &no_readings(),
             &names(),
             &[s],
@@ -953,21 +945,21 @@ mod tests {
 
     #[test]
     fn build_lines_preserves_config_order_and_length() {
-        let mut s1 = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let mut s1 = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s1.fields.insert("ext_temperature_1".to_string(), -18.2);
         s1.fields.insert("voltage".to_string(), 3.02);
-        let mut s2 = sticker(EUI2, "Store", LoRaWANAlarmState::Normal);
+        let mut s2 = node(EUI2, "Store", LoRaWANAlarmState::Normal);
         s2.fields.insert("humidity".to_string(), 48.0);
 
         let mut readings = no_readings();
         readings[0] = reading(4.5, true, AlarmState::Normal);
 
-        // Two rows on the same sticker (EUI1) — the headline use case.
+        // Two rows on the same node (EUI1) — the headline use case.
         let lines = vec![
-            sticker_line(EUI1, "ext_temperature_1"),
+            node_line(EUI1, "ext_temperature_1"),
             ds_line(0, "temperature"),
-            sticker_line(EUI2, "humidity"),
-            sticker_line(EUI1, "voltage"),
+            node_line(EUI2, "humidity"),
+            node_line(EUI1, "voltage"),
         ];
         let rows = rows_of(&lines, &readings, &names(), &[s1, s2]);
 
@@ -1013,24 +1005,24 @@ mod tests {
 
     #[test]
     fn custom_overview_ascii_snapshot_matches_expected_layout() {
-        let mut s1 = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let mut s1 = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s1.fields.insert("ext_temperature_1".to_string(), -18.2);
         s1.fields.insert("voltage".to_string(), 3.02);
-        let mut s2 = sticker(EUI2, "Store", LoRaWANAlarmState::Normal);
+        let mut s2 = node(EUI2, "Store", LoRaWANAlarmState::Normal);
         s2.fields.insert("humidity".to_string(), 48.0);
 
         let mut readings = no_readings();
         readings[0] = reading(4.5, true, AlarmState::Normal);
 
-        let mut battery = sticker_line(EUI1, "voltage");
+        let mut battery = node_line(EUI1, "voltage");
         battery.label = Some("Stkr1 bat".to_string());
         battery.format.status_char = false;
 
-        let mut ext = sticker_line(EUI1, "ext_temperature_1");
+        let mut ext = node_line(EUI1, "ext_temperature_1");
         ext.label = Some("Stkr1 ext".to_string());
         let mut probe = ds_line(0, "temperature");
         probe.label = Some("Probe 1".to_string());
-        let mut hum = sticker_line(EUI2, "humidity");
+        let mut hum = node_line(EUI2, "humidity");
         hum.label = Some("Stkr2 RH".to_string());
 
         let rows = rows_of(&[ext, probe, hum, battery], &readings, &names(), &[s1, s2]);
@@ -1046,13 +1038,13 @@ Stkr1 bat       3.02V";
 
     #[test]
     fn ascii_snapshot_shows_degraded_rows_distinctly() {
-        let mut stale = sticker(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
+        let mut stale = node(EUI1, "Chiller", LoRaWANAlarmState::Disconnected);
         stale.fields.insert("temperature".to_string(), 22.0);
 
         let rows = rows_of(
             &[
-                sticker_line(EUI1, "temperature"),
-                sticker_line(EUI2, "temperature"),
+                node_line(EUI1, "temperature"),
+                node_line(EUI2, "temperature"),
                 ds_line(3, "temperature"),
             ],
             &no_readings(),
@@ -1222,16 +1214,16 @@ Probe4       --.-°C ?";
     }
 
     #[test]
-    fn ascii_snapshot_mixes_probe_sticker_and_ble_rows() {
+    fn ascii_snapshot_mixes_probe_node_and_ble_rows() {
         let mut readings = no_readings();
         readings[0] = reading(4.5, true, AlarmState::Normal);
-        let mut s1 = sticker(EUI1, "Chiller", LoRaWANAlarmState::Normal);
+        let mut s1 = node(EUI1, "Chiller", LoRaWANAlarmState::Normal);
         s1.fields.insert("temperature".to_string(), -18.25);
 
         let rows = build_custom_lines(
             &[
                 ds_line(0, "temperature"),
-                sticker_line(EUI1, "temperature"),
+                node_line(EUI1, "temperature"),
                 ble_line(MAC1, "temperature"),
                 ble_line(MAC1, "battery"),
             ],

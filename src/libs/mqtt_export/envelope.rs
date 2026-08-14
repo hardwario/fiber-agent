@@ -7,10 +7,10 @@
 //! the natural per-record identifier (dev_eui, sensor line, or `sys`).
 
 use crate::libs::storage::models::{
-    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, SensorReading, StickerReadingRow,
+    AlarmEvent, BeaconReadingRow, MinuteAggregateRow, NodeReadingRow, SensorReading,
 };
 
-pub fn sticker_envelope(row: &StickerReadingRow) -> (String, String) {
+pub fn node_envelope(row: &NodeReadingRow) -> (String, String) {
     let topic = format!("export/sticker/{}", row.dev_eui);
     let payload = serde_json::to_string(&serde_json::json!({
         "message_id":     row.message_id,
@@ -123,11 +123,11 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libs::storage::models::StickerReadingRow;
+    use crate::libs::storage::models::NodeReadingRow;
 
     #[test]
-    fn sticker_envelope_includes_required_fields() {
-        let row = StickerReadingRow {
+    fn node_envelope_includes_required_fields() {
+        let row = NodeReadingRow {
             id: 7,
             dev_eui: "abc".into(),
             provisioning_epoch: 2,
@@ -138,7 +138,7 @@ mod tests {
             payload_json: r#"{"fields":{"t":21}}"#.into(),
             created_at: 1001,
         };
-        let (topic, payload) = sticker_envelope(&row);
+        let (topic, payload) = node_envelope(&row);
         assert_eq!(topic, "export/sticker/abc");
         assert!(payload.contains("\"message_id\":\"abc-1000-3\""));
         assert!(payload.contains("\"stream\":\"sticker\""));

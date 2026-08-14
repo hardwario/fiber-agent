@@ -1,25 +1,25 @@
 //! LoRaWAN gateway integration module
 //!
-//! Bridges ChirpStack MQTT uplinks from HARDWARIO STICKER sensors
+//! Bridges ChirpStack MQTT uplinks from HARDWARIO NODE sensors
 //! into the FIBER MQTT topic hierarchy.
 
 pub mod chirpstack;
 pub mod cluster;
 pub mod detector;
 pub mod monitor;
+pub mod node_add;
+pub mod node_alarm;
+pub mod node_command;
+pub mod node_config;
+pub mod node_payload;
+pub mod node_proto;
+pub mod node_reassembly;
+pub mod node_response;
 pub mod provisioning;
 pub mod registry;
 pub mod state;
-pub mod sticker_add;
-pub mod sticker_alarm;
-pub mod sticker_command;
-pub mod sticker_config;
-pub mod sticker_payload;
-pub mod sticker_proto;
-pub mod sticker_reassembly;
-pub mod sticker_response;
 
-pub use sticker_add::{add_lorawan_sticker, StickerAddDeps};
+pub use node_add::{add_lorawan_node, NodeAddDeps};
 
 pub use detector::detect_gateway;
 pub use monitor::{LoRaWANHandle, LoRaWANMonitor};

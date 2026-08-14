@@ -21,16 +21,16 @@ pub struct RetentionPolicy {
 }
 
 impl Default for RetentionPolicy {
-    /// Default 5GB capacity policy. Convenience for sticker-stream sweeping
+    /// Default 5GB capacity policy. Convenience for Node-stream sweeping
     /// where caller does not have a configured `max_size_gb` to pass in.
     fn default() -> Self {
         Self::new(5)
     }
 }
 
-/// Result of a `sweep_sticker_readings` pass.
+/// Result of a `sweep_node_readings` pass.
 #[derive(Debug, Clone, Default)]
-pub struct StickerRetentionResult {
+pub struct NodeRetentionResult {
     /// Total rows deleted from `sticker_readings`.
     pub purged: i64,
     /// Of those deleted, how many had `id > min(cursor)` — i.e. were dropped
@@ -289,11 +289,11 @@ impl RetentionPolicy {
     /// had `id > min(last_exported_id across all destinations for the
     /// "sticker" stream)`; those are data losses for at least one
     /// destination and are logged at WARN level.
-    pub fn sweep_sticker_readings(
+    pub fn sweep_node_readings(
         &self,
         conn: &mut Connection,
         retention_seconds: i64,
-    ) -> StorageResult<StickerRetentionResult> {
+    ) -> StorageResult<NodeRetentionResult> {
         let cutoff = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -325,12 +325,12 @@ impl RetentionPolicy {
                 "DELETE FROM sticker_readings WHERE ts < ?",
                 rusqlite::params![cutoff],
             )
-            .map_err(|e| StorageError::DeleteError(format!("sweep_sticker_readings: {}", e)))?
+            .map_err(|e| StorageError::DeleteError(format!("sweep_node_readings: {}", e)))?
             as i64;
 
         if unexported_dropped > 0 {
             eprintln!(
-                "WARN [retention] dropped {} un-exported sticker rows (min_cursor={}, cutoff={})",
+                "WARN [retention] dropped {} un-exported Node rows (min_cursor={}, cutoff={})",
                 unexported_dropped, min_cursor, cutoff,
             );
         }
@@ -345,7 +345,7 @@ impl RetentionPolicy {
             );
         }
 
-        Ok(StickerRetentionResult {
+        Ok(NodeRetentionResult {
             purged,
             unexported_dropped,
         })
@@ -355,7 +355,7 @@ impl RetentionPolicy {
     /// `retention_seconds` (by `ts`). Reports how many of the deleted rows
     /// had `id > min(last_exported_id across all destinations for the "eye"
     /// stream)`; those are data losses for at least one destination and are
-    /// logged at WARN level. Mirrors `sweep_sticker_readings`.
+    /// logged at WARN level. Mirrors `sweep_node_readings`.
     pub fn sweep_beacon_readings(
         &self,
         conn: &mut Connection,
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn sticker_retention_purges_old_rows_and_warns_when_unexported() {
+    fn node_retention_purges_old_rows_and_warns_when_unexported() {
         use crate::libs::storage::writer::StorageWriter;
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -498,7 +498,7 @@ mod tests {
         let day = 86400i64;
 
         // Old row (35 days ago)
-        StorageWriter::write_sticker_reading(
+        StorageWriter::write_node_reading(
             &mut conn,
             "abc",
             1,
@@ -510,7 +510,7 @@ mod tests {
         )
         .unwrap();
         // Fresh row (1 day ago)
-        StorageWriter::write_sticker_reading(
+        StorageWriter::write_node_reading(
             &mut conn,
             "abc",
             1,
@@ -525,7 +525,7 @@ mod tests {
         // Cursor is at 0 (no destinations have exported anything) → both
         // un-exported. Sweep should drop the old row and warn.
         let policy = RetentionPolicy::default();
-        let dropped = policy.sweep_sticker_readings(&mut conn, 30 * day).unwrap();
+        let dropped = policy.sweep_node_readings(&mut conn, 30 * day).unwrap();
         assert_eq!(dropped.purged, 1);
         assert_eq!(dropped.unexported_dropped, 1);
 

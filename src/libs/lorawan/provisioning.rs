@@ -1,6 +1,6 @@
 //! ChirpStack gRPC-web device provisioning
 //!
-//! Registers HARDWARIO STICKER devices in ChirpStack via gRPC-web API.
+//! Registers HARDWARIO NODE devices in ChirpStack via gRPC-web API.
 //! Manual protobuf encoding - same pattern as chirpstack-provision.py.
 
 use std::io::{Read, Write};
@@ -362,7 +362,7 @@ fn decode_chunked(data: &[u8]) -> Result<Vec<u8>, String> {
 /// re-reads [`LORAWAN_CONFIG_PATH`]) and what `detector::has_external_gateway` and
 /// `monitor::publish_lorawan_gateways` do for their own config. That matters
 /// here for a specific reason: provisioning is also reachable from the BLE
-/// Sticker-Add characteristic, which can fire on a device where
+/// Node-Add characteristic, which can fire on a device where
 /// `LoRaWANMonitor::new` never ran — so credentials cached at monitor init
 /// would be missing on exactly the path that needs them. It also means a
 /// re-provisioned password takes effect without restarting the agent.
@@ -490,10 +490,10 @@ fn activate_device_abp(
     Ok(())
 }
 
-/// Provision a HARDWARIO STICKER in ChirpStack: login + create device + ABP activate.
+/// Provision a HARDWARIO NODE in ChirpStack: login + create device + ABP activate.
 ///
 /// Reads application_id and device_profile_id from /data/lorawan/config.json.
-pub fn provision_sticker(
+pub fn provision_node(
     dev_eui: &str,
     name: &str,
     serial_number: &str,
@@ -528,9 +528,9 @@ pub fn provision_sticker(
 
     // Create device (handle ALREADY_EXISTS gracefully)
     let description = if serial_number.is_empty() {
-        "HARDWARIO STICKER".to_string()
+        "HARDWARIO NODE".to_string()
     } else {
-        format!("HARDWARIO STICKER S/N: {}", serial_number)
+        format!("HARDWARIO NODE S/N: {}", serial_number)
     };
 
     match create_device(
@@ -567,12 +567,12 @@ pub fn provision_sticker(
     Ok(())
 }
 
-/// Pick the ChirpStack OTAA device profile for a sticker.
+/// Pick the ChirpStack OTAA device profile for a node.
 ///
 /// The factory QR label carries a vendor `profile_id` (1-99) that says which
-/// profile the sticker was built for — which is what fixes its region, and
+/// profile the node was built for — which is what fixes its region, and
 /// therefore whether it can talk to this gateway at all. Until now that number
-/// was decoded and thrown away, so a US915 sticker registered cleanly against an
+/// was decoded and thrown away, so a US915 node registered cleanly against an
 /// EU868 gateway and then simply never joined, with nothing anywhere saying why.
 ///
 /// Resolution, in order:
@@ -581,7 +581,7 @@ pub fn provision_sticker(
 ///    `device_profile_id_otaa`, exactly as before.
 /// 2. **`device_profile_ids_otaa` maps it** — that profile.
 /// 3. **The map exists and does NOT list it** — refuse. This is the whole point:
-///    a sticker built for a profile this gateway has no answer for is a mistake
+///    a node built for a profile this gateway has no answer for is a mistake
 ///    worth stopping at registration rather than discovering as silence.
 /// 4. **No map configured at all** — `device_profile_id_otaa`, so every gateway
 ///    already in the field keeps working untouched.
@@ -630,7 +630,7 @@ fn resolve_otaa_profile(
     ))
 }
 
-/// Can this gateway serve a sticker built for `profile_id`?
+/// Can this gateway serve a node built for `profile_id`?
 ///
 /// Split out from provisioning so the answer is known **before** anything is
 /// written. A profile this gateway has no answer for is a permanent refusal, not
@@ -655,11 +655,11 @@ pub fn check_otaa_profile(profile_id: Option<u32>) -> Result<(), String> {
     resolve_otaa_profile(&config, profile_id).map(|_| ())
 }
 
-/// Provision a HARDWARIO STICKER in ChirpStack via OTAA: login + create device + set keys.
+/// Provision a HARDWARIO NODE in ChirpStack via OTAA: login + create device + set keys.
 ///
 /// Reads application_id and the device profile from /data/lorawan/config.json;
 /// see `resolve_otaa_profile` for how `profile_id` selects between profiles.
-pub fn provision_sticker_otaa(
+pub fn provision_node_otaa(
     dev_eui: &str,
     name: &str,
     serial_number: &str,
@@ -687,9 +687,9 @@ pub fn provision_sticker_otaa(
     let token = login()?;
 
     let description = if serial_number.is_empty() {
-        "HARDWARIO STICKER".to_string()
+        "HARDWARIO NODE".to_string()
     } else {
-        format!("HARDWARIO STICKER S/N: {}", serial_number)
+        format!("HARDWARIO NODE S/N: {}", serial_number)
     };
 
     match create_device(
@@ -722,9 +722,9 @@ pub fn provision_sticker_otaa(
     Ok(())
 }
 
-/// Remove a HARDWARIO STICKER from ChirpStack: login + DeviceService/Delete.
+/// Remove a HARDWARIO NODE from ChirpStack: login + DeviceService/Delete.
 /// NOT_FOUND is treated as success (idempotent — device already absent is fine).
-pub fn deprovision_sticker(dev_eui: &str) -> Result<(), String> {
+pub fn deprovision_node(dev_eui: &str) -> Result<(), String> {
     let token = login()?;
     match delete_device(&token, dev_eui) {
         Ok(()) => {
@@ -1134,7 +1134,7 @@ mod tests {
 
         #[test]
         fn a_profile_the_gateway_does_not_have_is_refused() {
-            // The failure this exists to prevent: a US915 sticker registering
+            // The failure this exists to prevent: a US915 node registering
             // cleanly against an EU868 gateway and then never joining.
             let err = resolve_otaa_profile(&cfg(MAPPED), Some(9)).unwrap_err();
             assert!(err.contains("device profile 9"), "{err}");

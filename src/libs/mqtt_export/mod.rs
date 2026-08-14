@@ -14,7 +14,7 @@ pub mod replay;
 pub use config::{DestinationConfig, ExportConfig, TlsConfig};
 pub use destination::RumqttcDestination;
 pub use drain::{drain_one_batch, DrainConfig, Publisher, Stream};
-pub use envelope::{alarm_envelope, beacon_envelope, probe_envelope, sticker_envelope};
+pub use envelope::{alarm_envelope, beacon_envelope, node_envelope, probe_envelope};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -205,7 +205,7 @@ impl MqttExportThread {
                             Some(ExportCommand::Shutdown) | None => break,
                             Some(ExportCommand::FlushDevEui { .. }) => {
                                 // For now, the natural drain loop will pick up
-                                // the sticker_removed marker row on its next
+                                // the node_removed marker row on its next
                                 // tick. A targeted flush is future work — see
                                 // spec Section 4.
                             }
@@ -216,7 +216,7 @@ impl MqttExportThread {
                                 // replay.
                                 let _ = storage.reset_export_cursor(broker_id.clone(), stream.clone());
                                 for s in [
-                                    Stream::Sticker,
+                                    Stream::Node,
                                     Stream::Probe,
                                     Stream::Probe1m,
                                     Stream::Alarm,

@@ -1,7 +1,7 @@
-//! Generated protobuf types for the STICKER protocol.
+//! Generated protobuf types for the NODE protocol.
 //!
 //! Compiled by `build.rs` (prost-build) from `proto/app_config.proto`, copied
-//! verbatim from sticker-firmware v1.4.0 `app/src/app_config.proto` — the single
+//! verbatim from node-firmware v1.4.0 `app/src/app_config.proto` — the single
 //! source of truth. Covers `Telemetry` (fPort 2), `AlarmReport` (fPort 3),
 //! `Command`/`Response` (fPort 85) and `AppConfigMessage`.
 //!
