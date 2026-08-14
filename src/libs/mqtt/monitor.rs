@@ -233,14 +233,6 @@ fn create_mqtt_options(config: &MqttConfig, hostname: &str, client_id: &str) -> 
     let mut mqttoptions =
         MqttOptions::new(client_id, config.broker.host.clone(), config.broker.port);
 
-    // Explicit rather than relying on rumqttc's unconfigured 10240-byte
-    // default coinciding with what this app happens to publish — the
-    // combined lorawan/sensors snapshot is now capped well under this by
-    // build_lorawan_sensors_payload (mqtt/publisher.rs), but every publish
-    // path shares this ceiling, so keep it generous and documented.
-    const MQTT_MAX_PACKET_SIZE_BYTES: usize = 20 * 1024;
-    mqttoptions.set_max_packet_size(MQTT_MAX_PACKET_SIZE_BYTES, MQTT_MAX_PACKET_SIZE_BYTES);
-
     // Set connection parameters
     mqttoptions.set_keep_alive(Duration::from_secs(config.connection.keep_alive_sec));
     mqttoptions.set_clean_session(config.connection.clean_session);
