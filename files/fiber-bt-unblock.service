@@ -1,0 +1,12 @@
+[Unit]
+Description=Unblock Bluetooth at boot (Pi OS often boots it soft-blocked)
+Before=bluetooth.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

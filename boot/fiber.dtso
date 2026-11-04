@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: MIT
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711";
+
+	fragment@0 {
+		target = <&i2c0if>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&i2c0mux>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@2 {
+		target = <&i2c_csi_dsi>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			pcf85063a@51 {
+				compatible = "nxp,pcf85063a";
+				reg = <0x51>;
+			};
+
+			ds2482@18 {
+				compatible = "maxim,ds2482";
+				reg = <0x18>;
+			};
+		};
+	};
+
+	fragment@3 {
+		target = <&xhci>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@4 {
+		target = <&uart3>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@5 {
+		target = <&uart4>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@6 {
+		target = <&i2c1>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@7 {
+		target = <&spi6>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			cs-gpios = <&gpio 18 1>;
+
+			spidev@0 {
+				compatible = "spidev";
+				reg = <0>;
+				spi-max-frequency = <400000>;
+			};
+		};
+	};
+
+	fragment@8 {
+		target = <&uart0>;
+		__overlay__ {
+			pinctrl-0 = <&uart0_pins &uart0_ctsrts_gpio30 &bt_pins>;
+		};
+	};
+};

@@ -1,0 +1,8 @@
+upstream/
+build/
+*.dtbo
+.secrets/
+.superpowers/
+.vscode-ctags
+__pycache__/
+dist/

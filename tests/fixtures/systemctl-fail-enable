@@ -1,0 +1,5 @@
+#!/bin/sh
+# Like systemctl-stub, but "enable" fails as systemd does for a missing unit.
+printf "%s %s\n" "$(basename "$0")" "$*" >> "${SYSTEMCTL_LOG:?}"
+case "$1" in enable) echo "Failed to enable unit: Unit file x.service does not exist." >&2; exit 1 ;; esac
+exit 0

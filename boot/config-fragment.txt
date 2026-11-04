@@ -1,0 +1,8 @@
+# Lines fiber setup guarantees in /boot/firmware/config.txt (spec §4.3).
+# arm_64bit and otg_mode are already in the stock Bookworm file; listed so a
+# hand-edited file gets them back.
+arm_64bit=1
+otg_mode=1
+enable_uart=1
+dtparam=i2c_arm=on
+dtoverlay=fiber

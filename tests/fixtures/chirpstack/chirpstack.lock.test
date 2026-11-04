@@ -1,0 +1,4 @@
+# test twin of chirpstack.lock: same names, fixture hashes
+chirpstack 4.19.1 chirpstack/chirpstack_4.19.1_sqlite_linux_arm64.tar.gz dcc12baf114c57fb906bab06945f14d31d0dd8593b12bfad82dd6238a7b22aad chirpstack
+chirpstack-concentratord 4.7.1 chirpstack-concentratord/chirpstack-concentratord-sx1302_4.7.1_linux_arm64.tar.gz f049507bce07789c2d3826f6376797610132f8690ad6fe2a698dfcc7539c1d97 chirpstack-concentratord-sx1302
+chirpstack-mqtt-forwarder 4.6.1 chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder_4.6.1_linux_arm64.tar.gz d3fd63920ac4a48f43addc88c26b7ab9674dae5d07fd5ee9deff0d41a2bf3ccf chirpstack-mqtt-forwarder

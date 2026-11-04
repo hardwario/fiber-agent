@@ -1,0 +1,5 @@
+#!/bin/sh
+# Logs "<name> <args>" to $SYSTEMCTL_LOG and succeeds. Stands in for
+# systemctl, systemd-sysusers and systemd-tmpfiles in the setup tests.
+printf '%s %s\n' "$(basename "$0")" "$*" >> "${SYSTEMCTL_LOG:?}"
+exit 0

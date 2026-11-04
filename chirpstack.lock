@@ -1,0 +1,5 @@
+# name version tarball-path-under-base sha256 binary-inside
+# The pins of proximos-v2 system/meta-proximos/recipes-connectivity/*.bb.
+chirpstack 4.19.1 chirpstack/chirpstack_4.19.1_sqlite_linux_arm64.tar.gz a107ac4fbb2302af90319788a454252cc517dac4943825b3ac35f8765c6853d0 chirpstack
+chirpstack-concentratord 4.7.1 chirpstack-concentratord/chirpstack-concentratord-sx1302_4.7.1_linux_arm64.tar.gz 328faf7e6fe6fcc9f5a50f8368fd520807ac2939214c607593318e017e857345 chirpstack-concentratord-sx1302
+chirpstack-mqtt-forwarder 4.6.1 chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder_4.6.1_linux_arm64.tar.gz 2aa3d4b6d36020354f0997ea634eebdd2b0cffccfd57d79846fdebe4cc55a398 chirpstack-mqtt-forwarder

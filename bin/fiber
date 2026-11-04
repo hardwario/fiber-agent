@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# fiber — the FIBER Hub command-line front-end (design §4.10).
+#
+#   fiber setup            apply the Pi OS configuration (root)
+#   fiber doctor | status  health checks and a hardware report
+#   fiber radio ARGS…      proximosctl control.radio ARGS…
+#   fiber ble ARGS…        proximosctl control.ble ARGS…
+#   fiber version          the proximos-v2 tag this install came from
+#   fiber help
+#
+# FIBER_LIBDIR: where the libraries live (default /usr/lib/fiber, or the
+# checkout's lib/fiber when run from the repository).
+set -euo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+if [ -z "${FIBER_LIBDIR:-}" ]; then
+    if [ -d "$(dirname "$self")/../lib/fiber" ]; then FIBER_LIBDIR="$(cd "$(dirname "$self")/../lib/fiber" && pwd)"
+    else FIBER_LIBDIR=/usr/lib/fiber; fi
+fi
+export FIBER_LIBDIR
+
+# shellcheck source=../lib/fiber/common.sh
+source "${FIBER_LIBDIR}/common.sh"
+# shellcheck source=../lib/fiber/config-txt.sh
+source "${FIBER_LIBDIR}/config-txt.sh"
+# shellcheck source=../lib/fiber/setup.sh
+source "${FIBER_LIBDIR}/setup.sh"
+# shellcheck source=../lib/fiber/doctor.sh
+[ -f "${FIBER_LIBDIR}/doctor.sh" ] && source "${FIBER_LIBDIR}/doctor.sh"
+
+usage() {
+    cat <<'USAGE'
+usage: fiber <command> [args]
+
+  setup            apply the Pi OS configuration for the Hub (needs root; reboot after)
+  doctor, status   run the health checks and report the hardware
+  radio ARGS...    forward to `proximosctl control.radio ARGS...`
+  ble ARGS...      forward to `proximosctl control.ble ARGS...`
+  version          print the proximos-v2 tag this install came from
+  help             this text
+USAGE
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    help|-h|--help) usage ;;
+    setup)
+        [ "$(id -u)" -eq 0 ] || [ -n "$FIBER_ROOT" ] || fiber_die "setup needs root: sudo fiber setup"
+        fiber_setup_all ;;
+    doctor|status) fiber_doctor ;;
+    radio) exec proximosctl control.radio "$@" ;;
+    ble) exec proximosctl control.ble "$@" ;;
+    version) sed -n 's/^tag: //p' "${FIBER_ROOT}/usr/share/fiber/upstream.lock" ;;
+    '') usage >&2; exit 2 ;;
+    *) fiber_warn "unknown command: $cmd"; usage >&2; exit 2 ;;
+esac

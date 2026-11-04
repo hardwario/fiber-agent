@@ -1,0 +1,5 @@
+i2c-dev
+spi-bcm2835
+spidev
+ds2482
+cdc_acm
