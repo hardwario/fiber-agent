@@ -27,6 +27,8 @@ source "${FIBER_LIBDIR}/config-txt.sh"
 source "${FIBER_LIBDIR}/setup.sh"
 # shellcheck source=../lib/fiber/doctor.sh
 [ -f "${FIBER_LIBDIR}/doctor.sh" ] && source "${FIBER_LIBDIR}/doctor.sh"
+# shellcheck source=../lib/fiber/mqtt.sh
+[ -f "${FIBER_LIBDIR}/mqtt.sh" ] && source "${FIBER_LIBDIR}/mqtt.sh"
 
 usage() {
     cat <<'USAGE'
@@ -36,6 +38,9 @@ usage: fiber <command> [args]
   doctor, status   run the health checks and report the hardware
   radio ARGS...    forward to `proximosctl control.radio ARGS...`
   ble ARGS...      forward to `proximosctl control.ble ARGS...`
+  mqtt enable-lan [--user U] [--password P]
+                   open the broker on the LAN (port 1884, password) for development
+  mqtt disable-lan close it again
   version          print the proximos-v2 tag this install came from
   help             this text
 USAGE
@@ -50,6 +55,22 @@ case "$cmd" in
         fiber_setup_all ;;
     doctor|status) fiber_doctor ;;
     radio) exec proximosctl control.radio "$@" ;;
+    mqtt)
+        [ "$(id -u)" -eq 0 ] || [ -n "$FIBER_ROOT" ] || fiber_die "mqtt needs root: sudo fiber mqtt ..."
+        sub="${1:-}"; [ $# -gt 0 ] && shift
+        user=dev; pass=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --user) user="${2:?}"; shift 2 ;;
+                --password) pass="${2:?}"; shift 2 ;;
+                *) fiber_die "mqtt: unknown option $1" ;;
+            esac
+        done
+        case "$sub" in
+            enable-lan) fiber_mqtt_enable_lan "$user" "$pass" ;;
+            disable-lan) fiber_mqtt_disable_lan ;;
+            *) fiber_die "usage: fiber mqtt enable-lan [--user U] [--password P] | disable-lan" ;;
+        esac ;;
     ble) exec proximosctl control.ble "$@" ;;
     version) sed -n 's/^tag: //p' "${FIBER_ROOT}/usr/share/fiber/upstream.lock" ;;
     '') usage >&2; exit 2 ;;

@@ -121,6 +121,21 @@ create the administrator on `/setup`, and check the certificate says
 `O=FIBER`. If it shows another organisation (a Hub installed before the FIBER build):
 `sudo rm /data/tls/*.crt /data/tls/*.key && sudo systemctl restart proximos-tls-cert nginx`.
 
+## MQTT from your laptop (development)
+
+The broker listens on `127.0.0.1:1883` only, for the portal, the agent and
+ChirpStack. To reach it from the LAN:
+
+```sh
+sudo fiber mqtt enable-lan --user dev            # prints a generated password
+# or: sudo fiber mqtt enable-lan --user dev --password <yours>
+mosquitto_sub -h fiber-<serial8>.local -p 1884 -u dev -P <password> -t '#' -v
+sudo fiber mqtt disable-lan                      # local-only again
+```
+
+Port 1884, password required; 1883 stays closed to the network. On the Hub
+itself `mosquitto_sub -t '#' -v` works without a password.
+
 ## 5. STM32 firmware
 
 The firmware packages are installed by step 3 under

@@ -55,6 +55,7 @@ setup_mosquitto() {
         install -D -m 0644 "$ours" "$main" || return 1
         changed="mosquitto.conf replaced (Debian's kept as mosquitto.conf.fiber-backup); "
     fi
+    mkdir -p "${FIBER_ROOT}/etc/mosquitto/fiber.d"   # mosquitto.conf includes it; must exist
     if _install_if_changed "${FIBER_ROOT}/usr/share/fiber/mosquitto-proximos.conf" "${FIBER_ROOT}/etc/mosquitto/conf.d/proximos.conf"; then
         changed="${changed}conf.d/proximos.conf installed"
     fi
@@ -133,7 +134,7 @@ setup_units() {
     _step units "enabled: $FIBER_UNITS"
 }
 
-FIBER_APT_PACKAGES="mosquitto nginx-light redis-server bluez network-manager avahi-daemon nftables openssl i2c-tools gpiod rfkill util-linux-extra openocd"
+FIBER_APT_PACKAGES="mosquitto mosquitto-clients nginx-light redis-server bluez network-manager avahi-daemon nftables openssl i2c-tools gpiod rfkill util-linux-extra openocd"
 
 setup_apt() {
     if [ -n "$FIBER_ROOT" ]; then _step apt "skipped (FIBER_ROOT is set)"; return 0; fi

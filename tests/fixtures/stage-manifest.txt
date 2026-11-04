@@ -86,3 +86,5 @@ usr/share/fiber/config-fragment.txt
 usr/lib/systemd/system/proximos-data-dirs.service.d/10-fiber.conf
 usr/share/fiber/stm32/nb_uart_flash.py
 usr/share/fiber/stm32/an3155_probe.py
+usr/lib/systemd/system/fiber-mqtt-lan.service
+usr/lib/fiber/mqtt.sh

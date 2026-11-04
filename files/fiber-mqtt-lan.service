@@ -1,0 +1,19 @@
+[Unit]
+Description=Open the FIBER development MQTT listener (port 1884) in the firewall
+Documentation=man:nft(8)
+# Only when `fiber mqtt enable-lan` has written the listener.
+ConditionPathExists=/etc/mosquitto/fiber.d/lan.conf
+After=proximos-firewall.service
+Requires=proximos-firewall.service
+# proximos-firewall reloads with `flush ruleset`, which empties the set; follow it.
+ReloadPropagatedFrom=proximos-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft add element inet proximos server_tcp { 1884 }
+ExecReload=/usr/sbin/nft add element inet proximos server_tcp { 1884 }
+ExecStop=-/usr/sbin/nft delete element inet proximos server_tcp { 1884 }
+
+[Install]
+WantedBy=multi-user.target

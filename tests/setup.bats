@@ -59,7 +59,7 @@ setup() {
   setup_mosquitto
   [ -f "$FIBER_ROOT/etc/mosquitto/mosquitto.conf.fiber-backup" ]
   grep -q '^persistence true$' "$FIBER_ROOT/etc/mosquitto/mosquitto.conf.fiber-backup"
-  [ "$(cat "$FIBER_ROOT/etc/mosquitto/mosquitto.conf")" = $'include_dir /etc/mosquitto/conf.d\ninclude_dir /run/proximos/mosquitto' ]
+  [ "$(cat "$FIBER_ROOT/etc/mosquitto/mosquitto.conf")" = $'include_dir /etc/mosquitto/conf.d\ninclude_dir /run/proximos/mosquitto\ninclude_dir /etc/mosquitto/fiber.d' ]
 }
 
 @test "setup_mosquitto does not overwrite an existing backup on the second run" {
@@ -173,4 +173,9 @@ setup() {
   [ -f "$cfg" ]
   grep -q '^manage_etc_hosts: false$' "$cfg"
   grep -q '^preserve_hostname: true$' "$cfg"
+}
+
+@test "setup_mosquitto creates fiber.d, which mosquitto.conf includes" {
+  setup_mosquitto
+  [ -d "$FIBER_ROOT/etc/mosquitto/fiber.d" ]
 }

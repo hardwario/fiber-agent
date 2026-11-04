@@ -61,6 +61,7 @@ for u in chirpstack.service chirpstack-bootstrap.service; do put 0644 "$M/recipe
 put 0644 "$M/recipes-connectivity/chirpstack-concentratord/files/chirpstack-concentratord.service" "$UNIT/chirpstack-concentratord.service"
 put 0644 "$M/recipes-connectivity/chirpstack-mqtt-forwarder/files/chirpstack-mqtt-forwarder.service" "$UNIT/chirpstack-mqtt-forwarder.service"
 put 0644 "$REPO_ROOT/files/fiber-bt-unblock.service" "$UNIT/fiber-bt-unblock.service"
+put 0644 "$REPO_ROOT/files/fiber-mqtt-lan.service" "$UNIT/fiber-mqtt-lan.service"
 put 0644 "$M/recipes-connectivity/mosquitto/files/10-proximos.conf" "$UNIT/mosquitto.service.d/10-proximos.conf"
 put 0644 "$M/recipes-connectivity/redis/files/10-proximos.conf" "$UNIT/redis-server.service.d/10-proximos.conf"
 put 0644 "$REPO_ROOT/files/bluetooth-experimental.conf" "$UNIT/bluetooth.service.d/10-fiber.conf"
