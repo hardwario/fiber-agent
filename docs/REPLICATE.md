@@ -121,20 +121,37 @@ create the administrator on `/setup`, and check the certificate says
 `O=FIBER`. If it shows another organisation (a Hub installed before the FIBER build):
 `sudo rm /data/tls/*.crt /data/tls/*.key && sudo systemctl restart proximos-tls-cert nginx`.
 
+## Test MQTT
+
+On the Hub (over SSH), no password. Listen to everything:
+
+```sh
+mosquitto_sub -t '#' -v
+```
+
+Within seconds the Hub's own messages appear (`proximos/fiber-<serial8>/radio/lorawan`,
+`.../radio/northbridge`, sensors, ...). To see one of yours, publish from a
+second terminal; it shows up in the first as `test/hello it works`:
+
+```sh
+mosquitto_pub -t test/hello -m "it works"
+```
+
 ## MQTT from your laptop (development)
 
 The broker listens on `127.0.0.1:1883` only, for the portal, the agent and
 ChirpStack. To reach it from the LAN:
 
 ```sh
-sudo fiber mqtt enable-lan --user dev            # prints a generated password
+sudo fiber mqtt enable-lan --user dev            # on the Hub; prints a generated password
 # or: sudo fiber mqtt enable-lan --user dev --password <yours>
+# on the laptop (sudo apt install mosquitto-clients):
 mosquitto_sub -h fiber-<serial8>.local -p 1884 -u dev -P <password> -t '#' -v
 sudo fiber mqtt disable-lan                      # local-only again
 ```
 
-Port 1884, password required; 1883 stays closed to the network. On the Hub
-itself `mosquitto_sub -t '#' -v` works without a password.
+Port 1884, password required; 1883 stays closed to the network. Use the Hub's
+IP address instead of `fiber-<serial8>.local` if mDNS does not resolve on your network.
 
 ## 5. STM32 firmware
 
