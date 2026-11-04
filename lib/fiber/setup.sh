@@ -124,7 +124,7 @@ setup_firewall() {
     _step firewall "enabled (ssh 22 and https 443 open, everything else dropped)"
 }
 
-FIBER_UNITS="hostname-serial proximos-data-dirs proximos-data-migrate proximos-render proximos-tls-cert fiber-portal fiber proximos-control radio-setup proximos-first-run.path rtc-save.timer proximos-journal-prune fiber-bt-unblock mosquitto nginx redis-server avahi-daemon bluetooth"
+FIBER_UNITS="hostname-serial proximos-data-dirs proximos-data-migrate proximos-render proximos-tls-cert fiber-portal fiber proximos-control radio-setup proximos-first-run.path rtc-save.timer proximos-journal-prune fiber-bt-unblock mosquitto nginx redis-server avahi-daemon bluetooth chirpstack-bootstrap chirpstack"
 
 setup_units() {
     "$FIBER_SYSTEMCTL" daemon-reload || { fiber_warn "setup: units: daemon-reload failed"; return 1; }

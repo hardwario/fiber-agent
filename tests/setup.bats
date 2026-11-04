@@ -137,7 +137,12 @@ setup() {
   for u in hostname-serial proximos-data-dirs proximos-data-migrate proximos-render proximos-tls-cert fiber-portal fiber proximos-control radio-setup proximos-first-run.path rtc-save.timer proximos-journal-prune fiber-bt-unblock mosquitto nginx redis-server avahi-daemon bluetooth; do
     grep -q "enable.* $u" "$SYSTEMCTL_LOG" || { echo "not enabled: $u"; false; }
   done
-  ! grep -q 'enable.*chirpstack' "$SYSTEMCTL_LOG"
+  # The network server and its credential bootstrap start at boot, as on the image;
+  # the concentrator and the forwarder are started by udev when the RAK5146 appears.
+  grep -qE 'enable.* chirpstack( |$)' "$SYSTEMCTL_LOG"
+  grep -q 'enable.* chirpstack-bootstrap' "$SYSTEMCTL_LOG"
+  ! grep -q 'enable.*chirpstack-concentratord' "$SYSTEMCTL_LOG"
+  ! grep -q 'enable.*chirpstack-mqtt-forwarder' "$SYSTEMCTL_LOG"
 }
 
 @test "setup_bluetooth keeps the -E drop-in and setup_rtc disables fake-hwclock" {
