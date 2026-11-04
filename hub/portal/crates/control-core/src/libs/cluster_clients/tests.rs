@@ -116,7 +116,7 @@ fn hostnames_follow_decision_17() {
         "proximos-5e6f7a8",
         "proximos-5e6f7a8bc",
         "proximos-5e6f7a8g",
-        "fiber-5e6f7a8b",
+        "hub-5e6f7a8b",
         "proximos-5e6f7a8b/#",
         "proximos-5e6f7a8b\nuser x",
         "proximos_5e6f7a8b",
@@ -729,7 +729,7 @@ fn a_malformed_request_touches_nothing() {
     let bench = Bench::new(FakeGateways::lorawan());
     assert!(add("proximos-xyz", None, &reply(), "test", &bench.env()).is_err());
     assert!(add(A, Some("nope"), &reply(), "test", &bench.env()).is_err());
-    assert!(remove("fiber-5e6f7a8b", "test", &bench.env()).is_err());
+    assert!(remove("hub-5e6f7a8b", "test", &bench.env()).is_err());
     assert_eq!(bench.broker.reloads.load(Ordering::SeqCst), 0);
     assert!(bench.journal.audits.lock().unwrap().is_empty());
 }

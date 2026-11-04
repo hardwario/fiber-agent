@@ -1342,7 +1342,7 @@ mod tests {
         let rid = || Some("cli-0123456789abcdef".to_string());
         for cmd in [
             Command::ClusterClientAdd {
-                hostname: "fiber-5e6f7a8b".into(),
+                hostname: "hub-5e6f7a8b".into(),
                 gateway_eui: None,
                 reply_key: key(),
                 request_id: rid(),

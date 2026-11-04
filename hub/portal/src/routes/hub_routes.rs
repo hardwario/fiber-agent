@@ -5725,7 +5725,10 @@ mod route_tests {
         // second name for it, so it is not asserted away here.
         let detail = body_of(get(&app, "/hubs/hub1/overview", &token).await).await;
         assert!(
-            detail.contains("<title>Sklad B - ProXimos</title>"),
+            detail.contains(&format!(
+                "<title>Sklad B - {}</title>",
+                proximos_brand::PRODUCT
+            )),
             "{detail}"
         );
         assert!(detail.contains(">Sklad B</h2>"), "{detail}");

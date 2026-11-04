@@ -1720,7 +1720,7 @@ mod tests {
         });
         for (body, error_key) in [
             (
-                "hostname=fiber-1a2b3c4d&gateway_eui=70b3d54900aa0002",
+                "hostname=hub-1a2b3c4d&gateway_eui=70b3d54900aa0002",
                 "add_hub_err_hostname",
             ),
             (

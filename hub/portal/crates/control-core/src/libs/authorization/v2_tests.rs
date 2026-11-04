@@ -1749,7 +1749,7 @@ fn a_signed_cluster_client_add_confirms_into_the_request_and_needs_its_own_permi
 
     // A hostname that is not decision #17's never becomes a command.
     for (i, params) in [
-        json!({"hostname": "fiber-5e6f7a8b", "reply_key": REPLY_KEY}),
+        json!({"hostname": "hub-5e6f7a8b", "reply_key": REPLY_KEY}),
         json!({"hostname": "proximos-5e6f7a8b", "gateway_eui": "nope", "reply_key": REPLY_KEY}),
         json!({"reply_key": REPLY_KEY}),
         // No clear-text fallback: an add without a usable reply key is refused.

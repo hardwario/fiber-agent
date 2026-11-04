@@ -39,11 +39,26 @@ pub fn expand(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// The eight-hex serial of a Hub hostname of this brand, `<HOSTNAME_PREFIX><serial8>`
-/// (decision #17, plan/portal/branding.md §5), or `None`. Expects the hostname lowercased.
+/// decision #17's prefix, which every Hub image names its units with.
+pub const DEFAULT_HOSTNAME_PREFIX: &str = "proximos-";
+
+/// The prefixes a Hub hostname may carry in this build: decision #17's `proximos-`, and the
+/// brand's own when it is another (plan/portal/branding.md §5). The default build accepts
+/// exactly what it did before the brand switch.
+pub fn hostname_prefixes() -> &'static [&'static str] {
+    if HOSTNAME_PREFIX == DEFAULT_HOSTNAME_PREFIX {
+        &[DEFAULT_HOSTNAME_PREFIX]
+    } else {
+        &[HOSTNAME_PREFIX, DEFAULT_HOSTNAME_PREFIX]
+    }
+}
+
+/// The eight-hex serial of a Hub hostname, `<prefix><serial8>` for one of
+/// [`hostname_prefixes`] (decision #17), or `None`. Expects the hostname lowercased.
 pub fn hostname_serial(hostname: &str) -> Option<&str> {
-    hostname
-        .strip_prefix(HOSTNAME_PREFIX)
+    hostname_prefixes()
+        .iter()
+        .find_map(|p| hostname.strip_prefix(p))
         .filter(|s| s.len() == 8 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }
 
@@ -153,11 +168,10 @@ mod tests {
     fn a_hostname_of_this_brand_has_a_serial() {
         let p = HOSTNAME_PREFIX;
         assert_eq!(hostname_serial(&format!("{p}1a2b3c4d")), Some("1a2b3c4d"));
-        let other = if p == "proximos-" {
-            "fiber-"
-        } else {
-            "proximos-"
-        };
+        // decision #17's prefix is a Hub hostname in every build; another brand's is one only
+        // in that brand's build.
+        assert_eq!(hostname_serial("proximos-1a2b3c4d"), Some("1a2b3c4d"));
+        let other = if p == "proximos-" { "fiber-" } else { "hub-" };
         for bad in [
             format!("{p}1a2b3c4"),
             format!("{p}1a2b3c4d5"),

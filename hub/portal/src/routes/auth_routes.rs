@@ -363,9 +363,14 @@ mod tests {
         assert!(!body.contains("invalid_credentials"));
         assert!(body.contains("Invalid username or password"));
         // The healthcare tagline, back until the MDR owner reviews it
-        // (status.md 2026-09-26).
+        // (status.md 2026-09-26). ProXimos' only: a FIBER build replaces it
+        // (branding/fiber/i18n, plan/portal/branding.md §2).
         assert!(body.contains("Temperature Monitoring<br>"), "{body}");
-        assert!(body.contains(">for Healthcare<"), "{body}");
+        if proximos_brand::ID == "proximos" {
+            assert!(body.contains(">for Healthcare<"), "{body}");
+        } else {
+            assert!(!body.contains("Healthcare"), "{body}");
+        }
     }
 
     /// UX-027: the open-redirect guard on `next`.

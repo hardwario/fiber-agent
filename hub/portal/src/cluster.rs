@@ -761,7 +761,7 @@ mod tests {
             "",
             "proximos-1a2b3c4",
             "proximos-1a2b3c4d5",
-            "fiber-1a2b3c4d",
+            "hub-1a2b3c4d",
             "proximos-1a2b3c4g",
             "proximos-1a2b 3c4d",
             "proximos_1a2b3c4d",
