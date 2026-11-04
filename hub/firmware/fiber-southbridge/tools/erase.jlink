@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Mass-erase the STM32C031 flash. Use to put the southbridge into a
+// known-empty state for testing wlprog / the UART bootloader.
+//
+// After erase, the chip's first reset will jump straight into the
+// system bootloader regardless of BOOT0 pin state (STM32C0's empty-
+// flash auto-detect kicks in when the vector at 0x08000000 reads
+// 0xFFFFFFFF).
+//
+//     JLinkExe -CommanderScript erase.jlink
+
+si SWD
+speed 4000
+device STM32C031C6
+connect
+halt
+erase
+exit

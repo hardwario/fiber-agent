@@ -1,0 +1,26 @@
+[logging]
+level = "info"
+
+[postgresql]
+dsn = "postgres://chirpstack:chirpstack@postgres/chirpstack?sslmode=disable"
+
+[redis]
+servers = ["redis://redis:6379"]
+
+[network]
+net_id = "000000"
+# Only EU868 ships, and only region_eu868.toml is installed — US915/AU915 are not merely
+# unused, they are not loadable.
+enabled_regions = ["eu868"]
+
+[api]
+# Explicit, because upstream's default is 0.0.0.0:8080 and the device's contract is loopback.
+bind = "0.0.0.0:8080"
+secret = "integration-stack-only-not-a-device-secret"
+
+[integration]
+enabled = ["mqtt"]
+
+[integration.mqtt]
+server = "tcp://mosquitto:1883"
+json = true

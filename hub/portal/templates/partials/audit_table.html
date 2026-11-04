@@ -1,0 +1,212 @@
+{#
+  Audit log table + pagination (M2-T context contract, P2 v1-style restyle).
+
+  Context: {
+    entries: [ { kind: "log"|"alarm"|"warning", key, sort_ts,
+      log: the shape below | none, alarm: render::AlarmCtx | none }, ... ]
+      — the log shape: [ { id, ts, event_type: string, username: string|none,
+      user_label: string|none (display form of username, "Jan Novák (admin)"
+      or the bare username, render::person_label), ip: string|none, target: string|none,
+      target_href: string|none, details: string|none,
+      success: bool }, ... ], total: int, limit: int, offset: int,
+    filter: { event_type, username, q, success, since, until — all string|none }
+  } (`ts` assumed a pre-formatted display string, per M1's render.rs
+  convention of formatting timestamps server-side, not in templates).
+
+  Root id="audit-table" is a plain anchor; there is no SSE/htmx swap target
+  contract here, unlike the alarms table. It used to exist so the page's
+  client-side search box had rows to filter, and the rows carried a
+  `data-search` haystack for it — both gone since the search became a SQL
+  clause (2026-09-14). On a paginated log the old one could only ever search
+  the fifty rows on screen.
+
+  Prev/next are plain GET forms carrying hidden inputs for the current
+  filter + limit + the recomputed offset, rather than hand-built query
+  strings — lets the browser URL-encode filter values instead of needing
+  minijinja's `urlencode` filter, which Cargo.toml doesn't enable (only the
+  `loader` feature is on).
+
+  Each row opens its record dialog (pages/audit.html `#audit-record`) on
+  click or Enter: the row carries its full record in a `<template>`, so the
+  dialog needs no second request and survives the live-search swap
+  (amendment 2026-10-15, plan/portal/user_admin.md §4). The result cell no
+  longer folds `details` open inline; the dialog shows it, JSON re-indented.
+
+  M9: "User"/Prev/Next/the range summary reuse `auth.users.table.user` and
+  the `common.pagination.*` keys — pagination words are seeded in `common`
+  specifically so every table in the app (this one included) shares them.
+#}
+{% import "partials/ui.html" as ui %}
+<div id="audit-table" class="space-y-3">
+	{% call ui.table_card() %}
+	<table class="w-full caption-bottom text-sm">
+		<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+			<tr>
+				{#- The columns order in SQL — "oldest first" is a real request when
+				    an operator walks an incident forward through the log. A view
+				    that merges alarms with the log orders by time (the merge is by
+				    time); the other headers sort the operator log alone. -#}
+				{{ ui.sort_th_link("auth.audit.table.time"|t, "time", "/audit", sort_qs, sort, dir, "", "time") }}
+				{{ ui.th("auth.audit.table.type"|t, "", "type") }}
+				{{ ui.sort_th_link("auth.audit.table.event"|t, "event", "/audit", sort_qs, sort, dir, "", "event") }}
+				{{ ui.sort_th_link("auth.users.table.user"|t, "user", "/audit", sort_qs, sort, dir, "", "user") }}
+				{{ ui.sort_th_link("auth.audit.table.ip"|t, "ip", "/audit", sort_qs, sort, dir, "", "ip") }}
+				{{ ui.sort_th_link("auth.audit.table.target"|t, "target", "/audit", sort_qs, sort, dir, "", "target") }}
+				{{ ui.sort_th_link("auth.audit.table.result"|t, "result", "/audit", sort_qs, sort, dir, "", "result") }}
+			</tr>
+		</thead>
+		<tbody>
+			{% for row in entries %}
+			<tr class="border-b border-base-300 last:border-0 hover:bg-muted/50 cursor-pointer [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle"
+				data-audit-row="{{ row.key }}" data-kind="{{ row.kind }}" tabindex="0">
+				{% if row.kind == "log" %}{% set e = row.log %}
+				<td data-column="time" class="whitespace-nowrap text-sm tabular-nums">{{ e.ts|short_dt("full") }}</td>
+				<td data-column="type"><span class="badge-status badge-status-neutral">{{ "auth.audit.kind.log"|t }}</span></td>
+				{#- The event in words; the wire name stays in the tooltip for anyone
+				    matching it against logs. An untranslated one shows as is. -#}
+				{% set ek = "auth.audit.event." ~ e.event_type %}{% set el = ek|t %}
+				<td data-column="event" class="text-sm" title="{{ e.event_type }}">{{ e.event_type if el == ek else el }}</td>
+				<td data-column="user">
+					{% if e.username %}
+					<span class="badge-outline-v1">{{ e.user_label }}</span>
+					{% elif e.scheduled %}
+					{#- A scheduled rewrite has no actor by design: "–" would read as
+					    missing evidence rather than as "the timer did it". -#}
+					<span class="badge-outline-v1 text-muted-fg">{{ "auth.audit.actor_scheduled"|t }}</span>
+					{% else %}
+					<span class="text-muted-fg">–</span>
+					{% endif %}
+				</td>
+				<td data-column="ip" class="font-mono text-xs text-muted-fg">{{ e.ip | default("–", true) }}</td>
+				{#- Targets that name one alarm, or a Node or Beacon that still
+				    exists, open it (`audit_routes::target_href`); the rest stay
+				    text. -#}
+				<td data-column="target" class="text-sm text-muted-fg">{% if e.target_href %}<a class="link" href="{{ e.target_href }}">{{ e.target }}</a>{% else %}{{ e.target | default("–", true) }}{% endif %}</td>
+				<td data-column="result">
+					<span class="badge-status {% if e.success %}badge-status-normal{% else %}badge-status-critical{% endif %}">
+						{% if e.success %}{{ "auth.audit.result_success"|t }}{% else %}{{ "auth.audit.result_error"|t }}{% endif %}
+					</span>
+					{% if e.details %}<span class="ml-1 text-xs text-muted-fg">· {{ "auth.audit.details_toggle"|t }}</span>{% endif %}
+					<template data-audit-record>
+						<h3 class="font-bold text-lg pr-8">{{ e.event_type if el == ek else el }}</h3>
+						<dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+							<dt class="text-muted-fg">{{ "auth.audit.table.type"|t }}</dt>
+							<dd>{{ "auth.audit.kind.log"|t }}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.table.time"|t }}</dt>
+							<dd class="tabular-nums">{{ e.ts|short_dt("full") }} <span class="text-xs text-muted-fg">({{ e.ts }} UTC)</span></dd>
+							<dt class="text-muted-fg">{{ "auth.audit.table.event"|t }}</dt>
+							<dd>{{ e.event_type if el == ek else el }} <code class="text-xs text-muted-fg">{{ e.event_type }}</code></dd>
+							<dt class="text-muted-fg">{{ "auth.users.table.user"|t }}</dt>
+							<dd>{% if e.username %}{{ e.user_label }}{% elif e.scheduled %}{{ "auth.audit.actor_scheduled"|t }}{% else %}–{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.table.ip"|t }}</dt>
+							<dd class="font-mono text-xs">{{ e.ip | default("–", true) }}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.table.target"|t }}</dt>
+							<dd class="break-all">{% if e.target_href %}<a class="link" href="{{ e.target_href }}">{{ e.target }}</a>{% else %}{{ e.target | default("–", true) }}{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.table.result"|t }}</dt>
+							<dd><span class="badge-status {% if e.success %}badge-status-normal{% else %}badge-status-critical{% endif %}">{% if e.success %}{{ "auth.audit.result_success"|t }}{% else %}{{ "auth.audit.result_error"|t }}{% endif %}</span></dd>
+							<dt class="text-muted-fg">ID</dt>
+							<dd class="font-mono text-xs">#{{ e.id }}</dd>
+						</dl>
+						{% if e.details %}
+						<div class="mt-4 text-xs font-semibold uppercase tracking-wide text-muted-fg">{{ "auth.audit.details_toggle"|t }}</div>
+						<pre class="text-xs bg-muted rounded-box p-3 mt-1 whitespace-pre-wrap break-all max-h-80 overflow-auto">{{ e.details_pretty or e.details }}</pre>
+						{% endif %}
+					</template>
+				</td>
+				{% else %}{% set a = row.alarm %}
+				{%- set kind_label = ("auth.audit.kind." ~ row.kind)|t -%}
+				{%- set kind_badge = "badge-status-critical" if row.kind == "alarm" else "badge-status-warning" -%}
+				<td data-column="time" class="whitespace-nowrap text-sm tabular-nums">{{ a.triggered_at_raw|short_dt("full") }}</td>
+				<td data-column="type"><span class="badge-status {{ kind_badge }}">{{ kind_label }}</span></td>
+				<td data-column="event" class="text-sm" title="{{ a.alarm_type }}">{{ ui.alarm_type_label(a.alarm_type) }}</td>
+				<td data-column="user">{% if a.acknowledged_by %}<span class="badge-outline-v1">{{ a.acknowledged_by }}</span>{% else %}<span class="text-muted-fg">–</span>{% endif %}</td>
+				<td data-column="ip" class="font-mono text-xs text-muted-fg">–</td>
+				<td data-column="target" class="text-sm text-muted-fg">{% if a.device_href %}<a class="link" href="{{ a.device_href }}">{{ ui.alarm_name(a) }}</a>{% else %}{{ ui.alarm_name(a) }}{% endif %}</td>
+				<td data-column="result">
+					{% if a.cleared_at_raw %}<span class="badge-status badge-status-normal">{{ "auth.audit.alarm_cleared"|t }}</span>{% else %}<span class="badge-status {{ kind_badge }}">{{ "auth.audit.alarm_active"|t }}</span>{% endif %}
+					<template data-audit-record>
+						<h3 class="font-bold text-lg pr-8">{{ ui.alarm_type_label(a.alarm_type) }} · {{ ui.alarm_name(a) }}</h3>
+						<dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+							<dt class="text-muted-fg">{{ "auth.audit.table.type"|t }}</dt>
+							<dd><span class="badge-status {{ kind_badge }}">{{ kind_label }}</span></dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_item"|t }}</dt>
+							<dd>{% if a.device_href %}<a class="link" href="{{ a.device_href }}">{{ ui.alarm_name(a) }}</a>{% else %}{{ ui.alarm_name(a) }}{% endif %} <code class="text-xs text-muted-fg">{{ a.hostname }} · {{ a.sensor_id }}</code></dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_quantity"|t }}</dt>
+							<dd>{% if a.field %}{% set fk = "common.field." ~ a.field %}{% set fl = fk|t %}{{ a.field if fl == fk else fl }}{% else %}{{ ui.alarm_type_label(a.alarm_type) }}{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_value"|t }}</dt>
+							<dd class="tabular-nums">{% if a.value is not none %}{{ a.value }}{% if a.unit %} {{ a.unit }}{% endif %}{% else %}–{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_limit"|t }}</dt>
+							<dd class="tabular-nums">{% if a.threshold is not none %}{{ a.threshold }}{% if a.unit %} {{ a.unit }}{% endif %}{% else %}–{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_transition"|t }}</dt>
+							<dd>{% for st in [a.from_state, a.to_state] %}{% if not loop.first %} → {% endif %}{% if st %}{% set sk = "alarms.state." ~ (st|lower) %}{% set sl = sk|t %}{{ st if sl == sk else sl }}{% else %}–{% endif %}{% endfor %}</dd>
+							<dt class="text-muted-fg">{{ "alarms.table.activated"|t }}</dt>
+							<dd class="tabular-nums">{{ a.triggered_at_raw|short_dt("full") }}</dd>
+							<dt class="text-muted-fg">{{ "alarms.table.end"|t }}</dt>
+							<dd class="tabular-nums">{% if a.cleared_at_raw %}{{ a.cleared_at_raw|short_dt("full") }}{% if a.duration %} <span class="text-muted-fg">({{ a.duration }})</span>{% endif %}{% else %}{{ "auth.audit.alarm_active"|t }}{% endif %}</dd>
+							<dt class="text-muted-fg">{{ "auth.audit.alarm_ack"|t }}</dt>
+							<dd>{% if a.acknowledged_at %}{{ a.acknowledged_at }}{% if a.acknowledged_by %} · {{ a.acknowledged_by }}{% endif %}{% else %}–{% endif %}</dd>
+						</dl>
+						{% if a.message %}<pre class="text-xs bg-muted rounded-box p-3 mt-4 whitespace-pre-wrap break-all">{{ a.message }}</pre>{% endif %}
+						<p class="mt-4 text-sm"><a class="link" href="/alarms/{{ a.id }}">{{ "auth.audit.alarm_open"|t }}</a>{% if a.chart_href %} · <a class="link" href="{{ a.chart_href }}">{{ "alarms.detail.open_chart"|t }}</a>{% endif %}</p>
+					</template>
+				</td>
+				{% endif %}
+			</tr>
+			{% else %}
+			{#- Filtered-to-nothing and an empty log are different facts; the
+			    server ran the filter, so it can say which one this is. -#}
+			<tr><td colspan="7" class="py-10 text-center text-muted-fg">{% if filtered %}{{ "common.list.no_match"|t }}{% else %}{{ "auth.audit.empty"|t }}{% endif %}</td></tr>
+			{% endfor %}
+		</tbody>
+	</table>
+	{% endcall %}
+
+	<div class="flex items-center justify-between">
+		{% if total > 0 %}
+		{% set range_end = offset + limit if offset + limit < total else total %}
+		<span class="text-sm text-muted-fg">
+			{{ "common.pagination.range"|t|replace("{a}", offset + 1)|replace("{b}", range_end)|replace("{total}", total) }}
+		</span>
+		{% else %}
+		<span class="text-sm text-muted-fg">{{ "common.pagination.none"|t }}</span>
+		{% endif %}
+		<div class="flex gap-2">
+			<form method="get" action="/audit">
+				<input type="hidden" name="event_type" value="{{ filter.event_type | default('', true) }}">
+				{#- The search joins the other filters in both page links: it is
+				    a SQL clause now, so dropping it here would silently widen
+				    the list under a paging click. -#}
+				<input type="hidden" name="q" value="{{ filter.q | default('', true) }}">
+				<input type="hidden" name="success" value="{{ filter.success | default('', true) }}">
+				<input type="hidden" name="since" value="{{ filter.since | default('', true) }}">
+				<input type="hidden" name="until" value="{{ filter.until | default('', true) }}">
+				<input type="hidden" name="username" value="{{ filter.username | default('', true) }}">
+				{% if filter.window %}<input type="hidden" name="window" value="{{ filter.window }}">{% endif %}
+				{% if filter.kind %}<input type="hidden" name="type" value="{{ filter.kind }}">{% endif %}
+				<input type="hidden" name="sort" value="{{ sort }}">
+				<input type="hidden" name="dir" value="{{ dir }}">
+				<input type="hidden" name="limit" value="{{ limit }}">
+				<input type="hidden" name="offset" value="{{ offset - limit if offset - limit > 0 else 0 }}">
+				<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm" {% if offset <= 0 %}disabled{% endif %}>{{ "common.pagination.prev"|t }}</button>
+			</form>
+			<form method="get" action="/audit">
+				<input type="hidden" name="event_type" value="{{ filter.event_type | default('', true) }}">
+				{#- The search joins the other filters in both page links: it is
+				    a SQL clause now, so dropping it here would silently widen
+				    the list under a paging click. -#}
+				<input type="hidden" name="q" value="{{ filter.q | default('', true) }}">
+				<input type="hidden" name="success" value="{{ filter.success | default('', true) }}">
+				<input type="hidden" name="since" value="{{ filter.since | default('', true) }}">
+				<input type="hidden" name="until" value="{{ filter.until | default('', true) }}">
+				<input type="hidden" name="username" value="{{ filter.username | default('', true) }}">
+				{% if filter.window %}<input type="hidden" name="window" value="{{ filter.window }}">{% endif %}
+				{% if filter.kind %}<input type="hidden" name="type" value="{{ filter.kind }}">{% endif %}
+				<input type="hidden" name="sort" value="{{ sort }}">
+				<input type="hidden" name="dir" value="{{ dir }}">
+				<input type="hidden" name="limit" value="{{ limit }}">
+				<input type="hidden" name="offset" value="{{ offset + limit }}">
+				<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm" {% if offset + limit >= total %}disabled{% endif %}>{{ "common.pagination.next"|t }}</button>
+			</form>
+		</div>
+	</div>
+</div>

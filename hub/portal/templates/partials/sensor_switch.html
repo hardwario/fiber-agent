@@ -1,0 +1,64 @@
+{#
+  "Čidlo zapnuto" block under a sensor's Upravit (GitLab #120, devices.node.md and
+  devices.beacon.md, amendment 2026-10-13). Under the bounds form, apart from it: it
+  acts at once and does not wait for "Uložit meze".
+
+  Context: {
+    sensor_action: string,   -- "/nodes/{key}/sensors/{field}" | "/beacons/{mac}/sensors/{field}"
+    sensor_enabled: bool,
+    sensor_label: string,    -- the sensor's name, for the dialog
+    sensor_has_band: bool,   -- a Node sensor whose bound the Node holds too: switching it
+                                off drafts a new alarm table, and the dialog says so
+  }
+
+  Switching off deletes the sensor's history, bounds and alarms, so it goes through a
+  dialog; switching on deletes nothing and posts straight away. Both are htmx POSTs:
+  a refusal lands in #command-status, success answers HX-Redirect to the page.
+#}
+{% import "partials/icons.html" as ic %}
+{% set sensor_dialog = "sensor-off" ~ (sensor_action | replace("/", "-") | replace(":", "-")) %}
+<div class="flex flex-col gap-1 {% if sensor_enabled %}mt-4 pt-4 border-t border-base-300{% endif %}">
+	<div class="flex items-center justify-between gap-3">
+		<label class="flex items-center gap-3">
+			<input type="checkbox" class="checkbox-v1" disabled {% if sensor_enabled %}checked{% endif %}>
+			<span class="text-sm">{{ "monitoring.sensor_switch.label"|t }}</span>
+		</label>
+		{% if sensor_enabled %}
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5 text-critical"
+			onclick="var p = document.getElementById('{{ sensor_dialog }}'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+			{{ ic.icon("power", "h-4 w-4") }}{{ "monitoring.sensor_switch.disable_button"|t }}
+		</button>
+		{% else %}
+		<form hx-post="{{ sensor_action }}" hx-target="#command-status" hx-swap="outerHTML">
+			<input type="hidden" name="enabled" value="true">
+			<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5">
+				{{ ic.icon("power", "h-4 w-4") }}{{ "monitoring.sensor_switch.enable_button"|t }}
+			</button>
+		</form>
+		{% endif %}
+	</div>
+	<p class="text-xs text-base-content/60">
+		{% if sensor_enabled %}{{ "monitoring.sensor_switch.hint_on"|t }}{% else %}{{ "monitoring.sensor_switch.hint_off"|t }}{% endif %}
+	</p>
+</div>
+{% if sensor_enabled %}
+<div id="{{ sensor_dialog }}" hidden data-confirm-panel class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+		<h3 class="font-bold text-lg">{{ "monitoring.sensor_switch.confirm_heading"|t|replace("{sensor}", sensor_label) }}</h3>
+		<div role="alert" class="alert alert-warning mt-3">
+			{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+			<span class="text-sm">{{ "monitoring.sensor_switch.confirm_delete"|t }}</span>
+		</div>
+		{% if sensor_has_band %}
+		<p class="text-sm mt-3">{{ "monitoring.sensor_switch.confirm_send"|t }}</p>
+		{% endif %}
+		<p class="text-sm mt-3 text-muted-fg">{{ "monitoring.sensor_switch.confirm_device"|t }}</p>
+		<form hx-post="{{ sensor_action }}" hx-target="#command-status" hx-swap="outerHTML"
+			hx-on::after-request="if (event.detail.successful) { this.closest('[data-confirm-panel]').hidden = true; }"
+			class="flex justify-end gap-2 mt-4">
+			<input type="hidden" name="enabled" value="false">
+			<button type="button" class="btn-v1 btn-v1-outline"
+				onclick="this.closest('[data-confirm-panel]').hidden = true;">{{ "common.actions.cancel"|t }}</button>
+			<button type="submit" class="btn-v1 btn-v1-destructive">{{ "monitoring.sensor_switch.confirm_button"|t }}</button>
+		</form>
+</div>
+{% endif %}

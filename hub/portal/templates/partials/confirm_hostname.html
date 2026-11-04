@@ -1,0 +1,17 @@
+{#- The typed hostname confirmation for an action on a whole Hub (factory reset, unpair, radio
+    change, moving Nodes, removing a cluster Client). The hostname is shown, the field must
+    equal it, and a mismatch says so in the portal's own words instead of the browser's
+    "match the requested format". The server checks the value again where the route takes it;
+    this is a courtesy to the person typing. No browser confirm() anywhere: this replaces it. -#}
+{% macro confirm_hostname(hostname) -%}
+<label class="grid gap-1 text-sm" data-confirm-hostname>
+	<span class="text-xs text-muted-fg">{{ "monitoring.device.confirm_hostname_prompt"|t }}
+		<code class="font-mono font-medium text-fg select-all">{{ hostname }}</code></span>
+	<input type="text" name="confirm_hostname" class="input-v1 input-v1-sm font-mono" required
+		pattern="{{ hostname | default('', true) | replace('.', '\\.') }}"
+		placeholder="{{ "monitoring.device.confirm_hostname_placeholder"|t }}"
+		data-invalid="{{ "monitoring.device.confirm_hostname_invalid"|t }}"
+		oninvalid="this.setCustomValidity(this.dataset.invalid)" oninput="this.setCustomValidity('')"
+		autocomplete="off" spellcheck="false">
+</label>
+{%- endmacro %}

@@ -1,0 +1,1561 @@
+[
+ {
+  "id": "overview",
+  "title": "System overview",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} monitors temperature and other quantities in cold rooms, warehouses and laboratories. The {brand} Hub measures with wired probes, receives data from wireless {brand} Nodes and {brand} Beacons, checks the limits, and the portal shows live values, alarms and history."
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-overview.svg",
+     "alt": "{brand} Hub front view",
+     "pdf_width": 0.82,
+     "cutout": false,
+     "caption": "The {brand} Hub: display with live readings, control buttons and status LEDs.",
+     "boxes": [
+      {
+       "x": 0.2277,
+       "y": 0.5263,
+       "w": 0.402,
+       "h": 0.2092,
+       "label": "Live probe readings",
+       "badge": "left"
+      },
+      {
+       "x": 0.696,
+       "y": 0.5198,
+       "w": 0.0772,
+       "h": 0.2286,
+       "label": "Control buttons",
+       "labelPos": "tr"
+      },
+      {
+       "x": 0.1931,
+       "y": 0.8046,
+       "w": 0.6059,
+       "h": 0.0756,
+       "label": "Status LEDs"
+      }
+     ]
+    }
+   },
+   {
+    "type": "featureCards",
+    "data": [
+     {
+      "icon": "Cpu",
+      "title": "8× wired probe",
+      "desc": "Ports for DS18B20 temperature probes (1-Wire)."
+     },
+     {
+      "icon": "Radio",
+      "title": "{brand} Node (LoRaWAN or LoRa P2P)",
+      "desc": "Wireless sensors: temperature, humidity, illuminance and more, depending on the model."
+     },
+     {
+      "icon": "Wifi",
+      "title": "{brand} Beacon (Bluetooth)",
+      "desc": "Temperature and humidity sensors the {brand} Hub picks up within range."
+     }
+    ]
+   },
+   {
+    "type": "modeCards",
+    "data": [
+     {
+      "icon": "Server",
+      "title": "Server",
+      "intro": "The {brand} Hub that runs the portal.",
+      "text": "It collects data from its probes, {brand} Nodes and {brand} Beacons and hosts the MQTT broker and the web portal. An installation has one Server."
+     },
+     {
+      "icon": "MonitorSmartphone",
+      "title": "Client",
+      "intro": "A {brand} Hub without a portal of its own.",
+      "text": "It connects to the Server and is managed from the Server's portal. See {brand} Hub in Client mode."
+     }
+    ]
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Portal navigation",
+     "rows": [
+      {
+       "tab": "Monitoring",
+       "desc": "Groups of probes with live values."
+      },
+      {
+       "tab": "Alarms",
+       "desc": "Active and ended alarms, and acknowledging them."
+      },
+      {
+       "tab": "History",
+       "desc": "Charts of one or more probes, CSV export."
+      },
+      {
+       "tab": "Limits",
+       "desc": "Every channel's limits and whether they are in force; bulk setting (Manager and Admin)."
+      },
+      {
+       "tab": "Hubs",
+       "desc": "List of {brand} Hubs; the detail has the Overview, Sensors, Unit and System tabs."
+      },
+      {
+       "tab": "Nodes",
+       "desc": "Registration, status and limits of {brand} Nodes (LoRaWAN or LoRa P2P)."
+      },
+      {
+       "tab": "Beacons",
+       "desc": "Adding {brand} Beacons, their status and limits."
+      },
+      {
+       "tab": "Users",
+       "desc": "Accounts and roles. Admin only."
+      },
+      {
+       "tab": "Settings",
+       "desc": "Notifications, MQTT ingest and Maintenance. Manager and Admin."
+      },
+      {
+       "tab": "Audit",
+       "desc": "Log of user and system actions. Manager and Admin."
+      },
+      {
+       "tab": "Documentation",
+       "desc": "This page."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "The account menu at the bottom of the sidebar switches the language (cs / en), changes your own password (Change password) and logs you out. An Admin also finds My profile there."
+    }
+   }
+  ]
+ },
+ {
+  "id": "quickstart",
+  "title": "Quick start",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "From the box to monitoring",
+     "intro": "The whole setup in eight steps. Each one names the section that explains it in full.",
+     "steps": [
+      "Connect power: one cable from the router to the PoE adapter's LAN port, another from its PoE port to the {brand} Hub (see Hardware setup).",
+      "Plug the wired probes into ports 1–8. The LED above the port lights green (see Hardware setup).",
+      "Wait 1–2 minutes. The indicators light green and the display shows the probe readings (see Starting the device).",
+      "Find the IP address: hold ▼ for 5 s and press ▼ to reach page 3/3, Eth row (see Starting the device).",
+      "Open the portal: in a browser on the same network, enter https://<IP_address>. If the browser warns about the certificate, see Troubleshooting.",
+      "On the first visit, create the administrator account on the Set up page and sign in (see Setting up the Server).",
+      "Pair the {brand} Hub: on its display ▲ 5 s → Pairing mode; enter the code under Hubs → View → System → Pairing (see Pairing the {brand} Hub).",
+      "Set the alarm recipients in Settings → Notifications and create a probe group in Monitoring (see Notifications, Monitoring and groups)."
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "hardware",
+  "title": "Hardware setup",
+  "blocks": [
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-wiring.svg",
+     "alt": "{brand} Hub connectors",
+     "pdf_width": 0.82,
+     "cutout": false,
+     "caption": "Connectors: PoE/Ethernet input and 8 ports for DS18B20 wired probes. Each port has its LED above it; here probes are in ports 2, 5 and 8 and their LEDs light green.",
+     "front": "/static/doc-images/device-wiring-cables.svg",
+     "boxes": [
+      {
+       "x": 0.1515,
+       "y": 0.5101,
+       "w": 0.1149,
+       "h": 0.1269,
+       "label": "PoE / Ethernet"
+      },
+      {
+       "x": 0.2723,
+       "y": 0.5101,
+       "w": 0.5723,
+       "h": 0.1242,
+       "label": "Wired probe ports 1–8"
+      },
+      {
+       "x": 0.1931,
+       "y": 0.3887,
+       "w": 0.6059,
+       "h": 0.0594,
+       "label": "Status LEDs (power, ports 1–8)"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Power over Ethernet",
+     "intro": "The {brand} Hub needs no separate power adapter. One Ethernet cable carries both power and data.",
+     "steps": [
+      "Connect an Ethernet cable from the router or switch to the PoE adapter (LAN port).",
+      "Connect a second Ethernet cable from the PoE adapter (PoE port) to the {brand} Hub.",
+      "The {brand} Hub powers on and connects to the network."
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Connecting DS18B20 wired probes",
+     "intro": "The {brand} Hub has 8 ports for DS18B20 temperature probes (1-Wire protocol). The portal calls a port Line 1 to Line 8.",
+     "steps": [
+      "Find the probe ports on the {brand} Hub (marked 1–8).",
+      "Plug the probe connector into a port.",
+      "Repeat for each probe."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Once the probes are connected correctly, the power and probe indicators light green and the display shows the temperature."
+    }
+   }
+  ]
+ },
+ {
+  "id": "startup",
+  "title": "Starting the device",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Startup",
+     "steps": [
+      "Connect the PoE cable. The {brand} Hub starts on its own.",
+      "Check that the probes are connected correctly.",
+      "Wait 1–2 minutes for the system to start.",
+      "The indicators light green and the display shows data."
+     ]
+    }
+   },
+   {
+    "type": "btnRows",
+    "data": {
+     "title": "Control buttons on the {brand} Hub",
+     "rows": [
+      {
+       "btn": "▼  (5 s)",
+       "action": "Opens the system information on three pages: {brand} Hub ID, network, IP addresses, firmware version. Press ▲ or ▼ to page, □ to go back to the overview."
+      },
+      {
+       "btn": "▲  (5 s)",
+       "action": "Opens the menu Pairing mode / Power / Back; Power opens Reboot / Sleep / Shutdown / Back. ▲ and ▼ select, □ confirms. Back on Power returns to the menu, Back on the menu or a double press of □ closes it. Reboot, Sleep and Shutdown ask for confirmation. In sleep mode the display is dark and the sensors are off; plugging PoE in again or holding a button wakes the Hub. After Shutdown the Hub is dark and stays off; only the button on the back starts it again."
+      },
+      {
+       "btn": "□  (5 s)",
+       "action": "Shows a QR code for the {mobile_app} mobile app (Bluetooth connection, Wi-Fi setup). □ closes it."
+      },
+      {
+       "btn": "▲ ▼ □",
+       "action": "When the {brand} Hub beeps for an alarm, pressing any button silences it for 30 minutes."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Pairing mode",
+     "steps": [
+      "Hold ▲ for at least 5 s. The menu opens.",
+      "Select Pairing mode with ▲ ▼.",
+      "Confirm with □.",
+      "The display shows the pairing code, valid for 5 minutes. Enter it in the portal (see Pairing the {brand} Hub)."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-menu.svg",
+     "alt": "{brand} Hub menu",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "The menu: Pairing mode, Power (Reboot, Sleep, Shutdown, Back), Back. Without a press for 15 s it closes on its own.",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.2957,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Hold ▲ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2426,
+       "y": 0.3971,
+       "w": 0.3772,
+       "h": 0.0623,
+       "label": "Select Pairing mode ▲ ▼",
+       "badge": "left"
+      },
+      {
+       "x": 0.696,
+       "y": 0.4174,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Confirm □",
+       "labelPos": "tr",
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-pairing-code.svg",
+     "alt": "Pairing code on the {brand} Hub display",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "The pairing code: six characters, valid for 5 minutes. It never contains O, 0, I, 1 or L. “Viewer” on the display means the portal.",
+     "boxes": [
+      {
+       "x": 0.3,
+       "y": 0.4522,
+       "w": 0.2574,
+       "h": 0.0812,
+       "label": "Pairing code",
+       "num": 4,
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "QR code for the mobile app",
+     "steps": [
+      "Hold □ for at least 5 s.",
+      "The display shows a QR code. Scan it in the {mobile_app} mobile app (Bluetooth connection, Wi-Fi setup).",
+      "□ closes it."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-qr.svg",
+     "alt": "QR code on the {brand} Hub display",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "QR code for the {mobile_app} mobile app (Scan WiFi Config).",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.4174,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Hold □ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2277,
+       "y": 0.3058,
+       "w": 0.402,
+       "h": 0.329,
+       "label": "QR code for the mobile app"
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "The {mobile_app} mobile app is on Google Play."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "System information",
+     "steps": [
+      "Hold ▼ for at least 5 s.",
+      "The display shows page 1/3 with the {brand} Hub's ID.",
+      "Page through the three pages with ▲ ▼; □ returns to the overview."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-info-1.svg",
+     "alt": "System information 1/3",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "System information 1/3. The ID row is the {brand} Hub's name: {hostname_prefix} and eight hex digits.",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.5391,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Hold ▼ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2277,
+       "y": 0.3058,
+       "w": 0.402,
+       "h": 0.329,
+       "label": "System information 1/3"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Opening the portal",
+     "intro": "Press ▼ to reach page 3/3 with the {brand} Hub's IP address (Eth row for Ethernet, WiFi for Wi-Fi) and enter it in a browser:",
+     "steps": []
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-info-3.svg",
+     "alt": "System information 3/3 with the IP address",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "Page 3/3 shows the {brand} Hub's IP address (Eth row).",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.5391,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "▼ to page 3/3",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2446,
+       "y": 0.5072,
+       "w": 0.2416,
+       "h": 0.0522,
+       "label": "IP address",
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "code",
+    "data": {
+     "code": "https://<IP_address>",
+     "note": "Example: https://10.0.0.147. An http:// address redirects to https://. On a network with mDNS, https://{hostname_prefix}c23e465c.local works too."
+    }
+   }
+  ]
+ },
+ {
+  "id": "server",
+  "title": "Setting up the Server",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "The Server is the {brand} Hub that runs the portal. The network (Ethernet or Wi-Fi) and the {brand} Hub's role are set during setup in the {mobile_app} mobile app, not in the portal. The {brand} Hub detail in the portal then shows a Setup row: done or pending, and the role server or client."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "First sign-in",
+     "steps": [
+      "Open the portal at the {brand} Hub's address (see Starting the device).",
+      "On the first visit the portal shows the Set up page. Create the administrator account: it becomes the first Superuser and manages the other users.",
+      "Sign in with that account.",
+      "In Hubs, open your {brand} Hub and pair it with the portal on the System tab (see Pairing the {brand} Hub).",
+      "In Users, create accounts for your colleagues (see Users and roles).",
+      "In Settings → Notifications, set who receives alarm e-mails (see Notifications)."
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "client",
+  "title": "{brand} Hub in Client mode",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "A Client is a {brand} Hub without a portal of its own. It connects to the Server, forwards radio data to it and is managed from the Server's portal. It gets the Client role during setup in the mobile app; its only local interface is Bluetooth."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Adding a Client {brand} Hub (Add hub)",
+     "steps": [
+      "On the Server's portal, as an Admin, open Hubs and choose Add hub. Enter the Client's hostname ({hostname_prefix} and eight hex digits, as on its display) and, on LoRaWAN, its gateway EUI. A name is optional.",
+      "The Server creates the Client's broker account and registers its gateway, and the portal shows the Server's address and certificate fingerprint. Show then reveals the join bundle, as a QR code and as text. It works once, within 5 minutes, and only in the session that added the Client; the reveal is recorded in the audit log.",
+      "In the {mobile_app} mobile app, connect to the Client over Bluetooth and scan the QR code. The Client checks the Server's certificate, joins and restarts.",
+      "Until its first connection the Client is listed in Hubs as registered — waiting for the Client to connect. Once it is online, pair it on its System tab like any other {brand} Hub."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "The password in the join bundle is held only in the Server's memory until it is shown, can be shown only once, and is stored nowhere. If one of the two steps failed (Registration incomplete), use Retry on the Client's row. If the bundle is lost or its 5 minutes have passed, use Retry on the screen that says the password is no longer available, or New password next to the Client in the Cluster card on the Server's System tab. Each issues a new password and the old one stops working."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "To take a Client out of the cluster, open its System tab and choose Remove from cluster (Admin, with a reason). Its broker account, its sessions and its gateway registration end, and the portal drops its pairing. {brand} Nodes heard through it lose that coverage but stay registered. The Server itself is never removed."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Neither the {brand} Hub's role nor the radio transport (LoRaWAN or LoRa P2P) can be switched while running. A change needs a factory reset ({brand} Hub detail → System, Admin only). The new mode is then chosen when the {brand} Hub is set up again in the mobile app. A factory reset also deletes the {brand} Node and {brand} Beacon registrations."
+    }
+   }
+  ]
+ },
+ {
+  "id": "pairing",
+  "title": "Pairing the {brand} Hub",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Pairing lets the portal send the {brand} Hub signed commands, for example wired probe limits, display settings or a restart. An unpaired {brand} Hub carries a Not paired badge in the list and the detail. Pairing is for Admins."
+    }
+   },
+   {
+    "type": "twoColStepCards",
+    "data": {
+     "left": {
+      "title": "1. Pairing code on the {brand} Hub",
+      "steps": [
+       "On the {brand} Hub, hold ▲ for at least 5 seconds. The menu opens.",
+       "Select Pairing mode and confirm with □.",
+       "The display shows a six-character code of letters and digits. The code is valid for 5 minutes."
+      ]
+     },
+     "right": {
+      "title": "2. Pairing in the portal",
+      "steps": [
+       "Open Hubs and click View next to your {brand} Hub.",
+       "Go to the System tab, Pairing card.",
+       "Enter the pairing code and click Pair device.",
+       "The card then shows Paired, with who paired the {brand} Hub and when."
+      ]
+     }
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "When the portal runs on this very {brand} Hub, the code field is not shown. Open pairing mode on the display (▲ 5 s → Pairing mode) and click Pair device. An expired code is replaced by a new one from the same menu."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Unpair removes the keys from this portal only. The {brand} Hub keeps trusting certificates it has already issued."
+    }
+   }
+  ]
+ },
+ {
+  "id": "hubs",
+  "title": "{brand} Hubs",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "The Hubs list shows each {brand} Hub's name, connection state, radio and faults. View opens the detail with four tabs. Every role sees the content; actions show only for a role allowed to perform them."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "{brand} Hub detail",
+     "rows": [
+      {
+       "tab": "Overview",
+       "desc": "Name and description (Manager), system status (power, network, disk, version), active faults and the Radio & gateways card."
+      },
+      {
+       "tab": "Sensors",
+       "desc": "The eight wired lines: value, name, location and limits (Manager)."
+      },
+      {
+       "tab": "Unit",
+       "desc": "Display label, display and LED brightness, screen timeout, buzzer volume, which sensors the display shows (Manager). Restart and power off (Admin)."
+      },
+      {
+       "tab": "System",
+       "desc": "Pairing, factory reset, transport switch and the system info interval (Admin)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Set the buzzer volume in the {brand} Hub detail → Unit → Display and buzzer (0 to 100, zero is silent). The {brand} Hub has to accept it, so it must be paired."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "A restart asks for confirmation. Power off needs a reason, and the {brand} Hub can then only be switched on in person. A factory reset needs the {brand} Hub's name typed in and a reason of at least 8 characters, and cannot be undone."
+    }
+   }
+  ]
+ },
+ {
+  "id": "stickers",
+  "title": "{brand} Nodes (LoRaWAN)",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} Nodes are wireless sensors that report to the {brand} Hub over LoRaWAN or LoRa P2P. The portal registers them with the {brand} Hub using OTAA (over-the-air activation). Managers and Admins may register a {brand} Node; only an Admin may remove one."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Registering a {brand} Node",
+     "steps": [
+      "Open Nodes and click Register a Node.",
+      "If more than one {brand} Hub is online, pick the {brand} Hub that should register the {brand} Node.",
+      "Fill in the serial number, DevEUI and AppKey from the {brand} Node's documentation. JoinEUI is prefilled with the {brand} Hub's default.",
+      "Optionally enter a name and a description. Without a name the {brand} Node shows under its serial number.",
+      "Click Register a Node. The {brand} Node appears as registered, waiting for join.",
+      "Once the {brand} Node joins the network and sends data, it shows values."
+     ]
+    }
+   },
+   {
+    "type": "fieldCard",
+    "data": {
+     "title": "Registration fields",
+     "intro": "OTAA activation",
+     "fields": [
+      {
+       "name": "Serial number",
+       "example": "2159032691",
+       "desc": "Digits only, from the device label."
+      },
+      {
+       "name": "DevEUI",
+       "example": "0025CA0A00021234",
+       "desc": "16 hexadecimal characters."
+      },
+      {
+       "name": "JoinEUI",
+       "example": "0102030405060708",
+       "desc": "Optional, 16 hexadecimal characters. Blank uses the {brand} Hub's default."
+      },
+      {
+       "name": "AppKey",
+       "example": "(32 hex characters)",
+       "desc": "Goes straight to the {brand} Hub. The portal neither stores it nor writes it to the audit log."
+      },
+      {
+       "name": "Name",
+       "example": "Freezer 1, top shelf",
+       "desc": "Optional."
+      },
+      {
+       "name": "Description",
+       "example": "Freezer, back room",
+       "desc": "Optional."
+      }
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "{brand} Node detail",
+     "rows": [
+      {
+       "tab": "Overview",
+       "desc": "Channel values, battery, signal, charts and Channel limits."
+      },
+      {
+       "tab": "Configuration",
+       "desc": "Metadata, device parameters (Read from device, edits into a draft), Keys and session, service functions (Admin)."
+      },
+      {
+       "tab": "Diagnostics",
+       "desc": "Radio and gateways, Message history (JSON download)."
+      },
+      {
+       "tab": "History",
+       "desc": "History backfill: a quick choice or a From–To period and Request backfill; Missing history and the download progress."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Changes to a {brand} Node's parameters and limits are first saved as unsent configuration. They reach the {brand} Node when you click Send configuration on its page; Discard drops them."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Remove the Node (Admin) unregisters it from the {brand} Hub and deletes its description and unsent configuration. The recorded history stays. To confirm, you type the identifier the dialog shows."
+    }
+   },
+   {
+    "type": "tagList",
+    "data": {
+     "title": "{brand} Node channels (depending on the model)",
+     "tags": [
+      "Temperature",
+      "Humidity",
+      "Illuminance",
+      "Pressure",
+      "External probe 1",
+      "External probe 2",
+      "Machine probe",
+      "Motion",
+      "Tilt",
+      "Hall sensor",
+      "Inputs A / B"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "beacons",
+  "title": "{brand} Beacons (Bluetooth)",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} Beacons are Bluetooth sensors with temperature and humidity. They broadcast on their own and the {brand} Hub picks them up within range. Registration binds a {brand} Beacon to a {brand} Hub by its MAC address. A {brand} Beacon does not broadcast its serial number; you copy it from the label. Managers and Admins may add a {brand} Beacon; only an Admin may remove one."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Adding a {brand} Beacon",
+     "steps": [
+      "Open Beacons and click Add Beacon.",
+      "The Discovered beacons table shows what the {brand} Hub heard in the last few minutes, with temperature, humidity and signal.",
+      "Click Add next to your {brand} Beacon. The form at the top is prefilled with its MAC address.",
+      "Copy the serial number from the {brand} Beacon's label. It is required.",
+      "Optionally enter a name and a description, then click Register.",
+      "The {brand} Beacon appears in the list as registered, waiting for its first message. The {brand} Hub uploads its configuration over Bluetooth."
+     ]
+    }
+   },
+   {
+    "type": "fieldCard",
+    "data": {
+     "title": "Registration fields",
+     "fields": [
+      {
+       "name": "Hub",
+       "example": "(select)",
+       "desc": "Only when more than one {brand} Hub is online."
+      },
+      {
+       "name": "Serial number",
+       "example": "(from the label)",
+       "desc": "Required. The {brand} Beacon does not broadcast it."
+      },
+      {
+       "name": "MAC address",
+       "example": "AA:BB:CC:DD:EE:FF",
+       "desc": "Prefilled by Add in the discovered table."
+      },
+      {
+       "name": "Name",
+       "example": "Cold box 2, door",
+       "desc": "Optional."
+      },
+      {
+       "name": "Description",
+       "example": "Freezer, back room",
+       "desc": "Optional."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "The {brand} Beacon detail shows which {brand} Hubs hear it and how strongly, its last message and its BLE parameters (read-only). A Manager can send a reconfiguration request or request the history from the {brand} Beacon's archive."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Removing a {brand} Beacon (Admin) is confirmed by typing its MAC address. Its description and limits are deleted, the history stays. The {brand} Beacon keeps broadcasting, so it shows up among the discovered ones again. That is expected."
+    }
+   }
+  ]
+ },
+ {
+  "id": "gateway",
+  "title": "Radio and gateways",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "The Radio & gateways card on the Overview tab of the {brand} Hub detail shows the state of the {brand} Hub's radio (concentrator and LoRaWAN network server) and the list of gateways with when each was last seen. The data is read-only."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "This version does not support connecting a third-party LoRaWAN gateway (Semtech UDP packet forwarder). The {brand} Hub receives {brand} Nodes with its own radio."
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "Radio troubleshooting",
+     "rows": [
+      {
+       "q": "A {brand} Node shows no data",
+       "a": "Cause: the {brand} Node is not registered or out of range. Check in Nodes that it is registered with the right DevEUI and whether it is still waiting for join."
+      },
+      {
+       "q": "Radio API unreachable",
+       "a": "Cause: the {brand} Hub's radio service does not answer. Gateway data may be stale. Try again shortly; if that does not help, restart the {brand} Hub (Unit → Restart)."
+      },
+      {
+       "q": "LoRaWAN: waiting / no concentrator",
+       "a": "Cause: the {brand} Hub does not report its LoRaWAN concentrator yet. Wait a moment after the {brand} Hub starts. If it persists, contact service. LoRa P2P does not depend on the concentrator and has its own chip."
+      },
+      {
+       "q": "No radio control",
+       "a": "Cause: the portal has no radio control configured. Send {brand} Node commands from the portal of the {brand} Hub the {brand} Node belongs to."
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "monitoring",
+  "title": "Monitoring and groups",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Monitoring shows live values of the probes you placed in groups. A probe outside any group is not shown here; find it in Nodes, Beacons or on the Sensors tab of the {brand} Hub detail."
+    }
+   },
+   {
+    "type": "statusCards",
+    "data": [
+     {
+      "color": "success",
+      "label": "Normal",
+      "desc": "The value is within the limits."
+     },
+     {
+      "color": "warning",
+      "label": "Warning",
+      "desc": "The value crossed a warning limit."
+     },
+     {
+      "color": "error",
+      "label": "Critical",
+      "desc": "The value crossed a critical limit."
+     },
+     {
+      "color": "neutral",
+      "label": "Offline / unknown",
+      "desc": "The probe does not report, or its {brand} Hub is offline."
+     }
+    ]
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Tiles at the top",
+     "rows": [
+      {
+       "tab": "Sensors",
+       "desc": "Number of probes in groups. A click clears the filter."
+      },
+      {
+       "tab": "Online",
+       "desc": "Probes that are reporting."
+      },
+      {
+       "tab": "Out of range",
+       "desc": "Probes with a value out of range. A click shows only Warning and Critical."
+      },
+      {
+       "tab": "Faults",
+       "desc": "Operational problems: offline, low battery. A click shows only probes with a fault."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "New group",
+     "intro": "Managers and Admins create and edit groups.",
+     "steps": [
+      "On Monitoring, click New Group.",
+      "Enter the group name and, optionally, a description.",
+      "Pick the probes. For a {brand} Node or {brand} Beacon you can tick single channels; with none ticked, all of the probe's channels belong to the group.",
+      "Save. The group appears on the page."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "A channel can be in one group only: a {brand} Node's temperature can be in the Cold box group and its humidity in the Warehouse group. A taken channel is greyed out in the picker with the group's name. You can pick at most two channels from one probe."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Working with groups",
+     "rows": [
+      {
+       "tab": "Collapse",
+       "desc": "The arrow in the header collapses the group; a collapsed group still shows the Out of range and Faults badges. The browser remembers the state."
+      },
+      {
+       "tab": "Order",
+       "desc": "Up and down arrows (Manager). All users see the same order."
+      },
+      {
+       "tab": "Edit",
+       "desc": "The pencil edits or deletes the group. Deleting keeps the probes, they are just no longer grouped."
+      },
+      {
+       "tab": "CSV",
+       "desc": "Export of the group's values for a chosen period."
+      },
+      {
+       "tab": "Layout",
+       "desc": "Cards or table, detailed or simplified. The choice is saved to your account."
+      },
+      {
+       "tab": "Filters",
+       "desc": "Type, status, connection and search. The filters live in the page address, so a link carries them."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Clicking a probe opens the Probe detail: a chart for 24 h, 3 days or 7 days, minimum, maximum and average, events in the range and a CSV or PNG export. A Manager can add a manual event, such as probe maintenance. The Full history link leads to the History page."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "When a {brand} Hub is offline, its group shows a banner with the time it went offline, and the {brand} Nodes and {brand} Beacons behind it read unknown."
+    }
+   }
+  ]
+ },
+ {
+  "id": "limits",
+  "title": "Limits",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "A channel has up to four limits: warning low and high, and critical low and high. A value beyond a warning limit means Warning, beyond a critical limit Critical; both open an alarm. A limit that is not set shows as no limit set. Managers and Admins set limits."
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "The Limits page lists every channel with its limits and state: in force, no limit set, off, drafted, not sent, waiting for the device, Hub offline, send failed or not delivered to the Node. Rows can be grouped by group, location or sensor type, and you can show all channels, only those without limits, or only those waiting and not sent. Everyone can see the page; a Manager or Admin sets limits on it. The Limits button in Monitoring, Nodes and Beacons leads there too."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Where to set limits",
+     "rows": [
+      {
+       "tab": "Wired probe",
+       "desc": "{brand} Hub detail → Sensors, the Edit limits button on a line, or in bulk on the Limits page. All four limits are required, in °C. The limits live on the {brand} Hub; the row repaints once the {brand} Hub accepts them."
+      },
+      {
+       "tab": "{brand} Node",
+       "desc": "{brand} Node detail → Overview → Channel limits. A blank field unsets the limit; Limit on switches the evaluation off or on. The change is saved as unsent configuration and applies after Send configuration."
+      },
+      {
+       "tab": "{brand} Beacon",
+       "desc": "{brand} Beacon detail or the Limits button in the Beacons list. A blank field unsets the limit. Limits are not sent to the {brand} Beacon and apply as soon as they are saved."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Bulk limits",
+     "intro": "The same limits for several channels at once, on the Limits page. The panel always works with one {brand} Hub; you pick it in the panel.",
+     "steps": [
+      "On the Limits page, tick the channels that should get the limits. One tick in a section's header selects the whole section.",
+      "Click Set limits for selected.",
+      "In the panel, tick temperature, humidity or both and fill in the limits. At least one value is required; leaving all four blank would delete the limits.",
+      "Check the selection in the Channels list and click Apply to selected. Each channel shows its result."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Wired probes and {brand} Beacons take bulk limits as soon as the {brand} Hub answers. The portal sends them to {brand} Nodes straight away; they apply once the {brand} Node accepts them. When a {brand} Node has other drafted changes too, the portal sends nothing and the row stays drafted; send the change from the {brand} Node detail with Send configuration."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "A new temperature or humidity channel on a {brand} Node or {brand} Beacon starts with the default limits from the {brand} Hub's configuration (as shipped: temperature −10 / 0 / 40 / 50 °C, humidity 0 / 10 / 80 / 90 %), switched off: nothing is evaluated or sent until you tick Limit on and, on a {brand} Node, send the configuration. A {brand} Node's critical limits are always a range, so the {brand} Node can watch them too; a side at its extreme (−99 / +199) means no limit on that side. Warning limits are evaluated by the portal only. The battery is not a channel with limits: a low battery is the {brand} Node's own alarm."
+    }
+   }
+  ]
+ },
+ {
+  "id": "alarms",
+  "title": "Alarms",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "An alarm is a record on the Alarms page. It opens when a channel's value crosses a limit, when a probe disconnects or stops reporting, and when a {brand} Hub loses its connection (offline, Wi-Fi, Ethernet or power outage). The badge on the Alarms menu item shows the number of active alarms. A new alarm or an escalation also shows a pop-up."
+    }
+   },
+   {
+    "type": "statusCards",
+    "data": [
+     {
+      "color": "error",
+      "label": "Active",
+      "desc": "The alarm goes on and nobody has acknowledged it."
+     },
+     {
+      "color": "warning",
+      "label": "Acknowledged",
+      "desc": "A user took the alarm over and gave a reason. Acknowledging does not resolve it: it goes on until the value is back within the limits."
+     },
+     {
+      "color": "neutral",
+      "label": "Ended",
+      "desc": "The alarm is over. It is not necessarily resolved and may still be unacknowledged."
+     }
+    ]
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Acknowledging an alarm",
+     "intro": "Managers and Admins acknowledge alarms.",
+     "steps": [
+      "Open Alarms and click View next to the alarm.",
+      "Click Acknowledge alarm.",
+      "Write a reason. It is required and is stored with the acknowledgement and in the audit log.",
+      "Confirm. The detail shows who acknowledged the alarm and when."
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Several alarms at once: tick them in the list, write a reason and click Acknowledge. Alarms that are already acknowledged are skipped."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "An ended alarm that nobody acknowledged can still be acknowledged from the list and the detail. The record of the event is then complete."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "When an acknowledged alarm escalates from warning to critical, the acknowledgement is cleared and the alarm needs a new one. The list shows the worst level the alarm reached."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "List and detail",
+     "rows": [
+      {
+       "tab": "Show",
+       "desc": "Open, Unacknowledged only, or Including ended."
+      },
+      {
+       "tab": "Filters",
+       "desc": "Severity, type, device, state and search by probe, location or identifier."
+      },
+      {
+       "tab": "Detail",
+       "desc": "Measured value and limit, start, end, duration, highest and lowest value and the Open chart link."
+      },
+      {
+       "tab": "Notes",
+       "desc": "A Manager can add a note to the alarm."
+      },
+      {
+       "tab": "State unknown",
+       "desc": "The portal has no word from the {brand} Hub, so it cannot tell whether the alarm goes on. Such an alarm is not counted as active."
+      }
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "{brand} Node alarms",
+     "rows": [
+      {
+       "tab": "Limit alarm (channel)",
+       "desc": "The portal compares every measured value with the limits you set. Beyond a warning limit is Warning, beyond a critical limit Critical. The alarm ends by itself once a value is back within the limits. A {brand} Node restart does not end it."
+      },
+      {
+       "tab": "{brand} Node alarm",
+       "desc": "Reported by the {brand} Node itself in a separate alarm message: a critical limit crossed, a sensor that stopped delivering data, or a low battery. It is always Critical and is named “Node · <quantity>” in Alarms. It ends when the {brand} Node sends its deactivation, or when the {brand} Node restarts; a condition that still holds is reported again after the restart."
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "notifications",
+  "title": "Notifications",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Notifications are set in Settings → Notifications. A Manager edits the alarm recipients; an Admin also edits the delivery channels and Faults."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Parts of the Notifications page",
+     "rows": [
+      {
+       "tab": "Delivery channels",
+       "desc": "Admin. E-mail through SendGrid or SMTP, e-mail language, test e-mail. Webhook: an HTTP call for every notification, optionally also on escalation, end and acknowledgement."
+      },
+      {
+       "tab": "Default alarm recipients",
+       "desc": "Receive alarms and escalations to critical from every {brand} Hub without recipients of its own."
+      },
+      {
+       "tab": "Hub alarm notifications",
+       "desc": "One {brand} Hub's recipients and when to write to them: on alarm and escalation, when it ends, on acknowledgement. A {brand} Hub's own recipients replace the defaults."
+      },
+      {
+       "tab": "Faults",
+       "desc": "Admin. The state of the {brand} Hub itself: device offline, low battery, storage used, network issues, firmware version mismatch. Battery and storage take a limit in percent."
+      },
+      {
+       "tab": "Alarm pop-ups",
+       "desc": "A pop-up on every page for a new alarm or an escalation. Muting for 1 hour applies to this browser only."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Setting alarm recipients",
+     "steps": [
+      "Open Settings → Notifications.",
+      "Under Default alarm recipients, add the addresses that should get alarms from every {brand} Hub, one per line.",
+      "If a {brand} Hub should write elsewhere, pick it under Hub alarm notifications, turn on Enabled and enter its recipients.",
+      "Save. An Admin can check delivery with Send test email."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "A {brand} Hub whose alarm e-mails reach nobody shows a warning in its detail with a Set up recipients link."
+    }
+   }
+  ]
+ },
+ {
+  "id": "history",
+  "title": "History and exports",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Charting in History",
+     "steps": [
+      "Open History.",
+      "In the panel on the right, pick probes by device or by group. Only a limited number of probes can be compared at once.",
+      "Choose the time window (last hour up to last year, or a custom range) and the aggregation.",
+      "Below the chart are the recent alarms of the selected probes."
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Exports",
+     "rows": [
+      {
+       "tab": "History",
+       "desc": "CSV export of the selected probes for the chosen period."
+      },
+      {
+       "tab": "Group",
+       "desc": "CSV in the group header on Monitoring, for a period you enter."
+      },
+      {
+       "tab": "Probe detail",
+       "desc": "CSV of the values and PNG of the chart."
+      },
+      {
+       "tab": "{brand} Node",
+       "desc": "Diagnostics → Message history → Download JSON: the raw messages as they arrived."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Times you type (export period, manual events) are read in the portal's time zone. CSV carries times in UTC. Every export is written to the audit log."
+    }
+   }
+  ]
+ },
+ {
+  "id": "users",
+  "title": "Users and roles",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Admins manage users on the Users page."
+    }
+   },
+   {
+    "type": "roleRows",
+    "data": {
+     "title": "Roles",
+     "rows": [
+      {
+       "role": "Admin",
+       "color": "primary",
+       "desc": "Everything a Manager can do, plus removing {brand} Nodes and {brand} Beacons, pairing, restarting and turning devices off, factory resets, user management and system maintenance."
+      },
+      {
+       "role": "Manager",
+       "color": "info",
+       "desc": "Day-to-day work with devices: limits, probe names and groups, registering {brand} Nodes and {brand} Beacons, acknowledging alarms, notification recipients. Can't remove, restart, turn off or reset devices, or manage users."
+      },
+      {
+       "role": "Viewer",
+       "color": "muted",
+       "desc": "Sees everything (dashboards, alarms, history and device status) but can't change anything or acknowledge alarms."
+      },
+      {
+       "role": "Superuser",
+       "color": "primary",
+       "desc": "The account created when the portal was first set up. The only one allowed to delete Admin accounts."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "New user",
+     "steps": [
+      "Open Users and click Create user.",
+      "Fill in the username (3 to 50 characters), password (8 to 128 characters) and role, and optionally the full name and job title.",
+      "Save. The user can sign in right away."
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "User detail",
+     "rows": [
+      {
+       "tab": "Deactivate",
+       "desc": "The user can't sign in until you activate the account again."
+      },
+      {
+       "tab": "Reset password",
+       "desc": "Sets a new password and ends the user's sessions."
+      },
+      {
+       "tab": "Delete",
+       "desc": "Cannot be undone. Only a Superuser may delete an Admin account."
+      },
+      {
+       "tab": "Your own account",
+       "desc": "Can't be deactivated or deleted."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Every user changes their own password in the account menu → Change password. Reset password in a user's detail is for someone else's account."
+    }
+   }
+  ]
+ },
+ {
+  "id": "settings",
+  "title": "Settings and audit",
+  "blocks": [
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Settings tabs",
+     "rows": [
+      {
+       "tab": "Notifications",
+       "desc": "Manager and Admin. See Notifications."
+      },
+      {
+       "tab": "MQTT ingest",
+       "desc": "Manager and Admin. The portal's connection to the broker, subscribed topics and message counts, for diagnostics."
+      },
+      {
+       "tab": "Maintenance",
+       "desc": "Admin. The portal's time zone and the database rebuild."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Time zone",
+     "intro": "The portal shows every time in one zone for the whole installation (default Europe/Prague) and writes e-mails the same way. Data is stored in UTC; webhooks and CSV carry UTC times.",
+     "steps": [
+      "Open Settings → Maintenance.",
+      "In the Time zone card, pick the zone and save."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Rebuild database returns free space to the disk. It needs about twice the database size in free space. While it runs, readings and alarms are delayed, not lost."
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "The audit log records sign-ins, changes to settings, limits and groups, alarm acknowledgements, device commands, exports and refused actions. Entries can be filtered by event type, period and result, and searched."
+    }
+   }
+  ]
+ },
+ {
+  "id": "troubleshooting",
+  "title": "Troubleshooting",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "The most common situations and what to do about them. Each answer names the section that explains it in full."
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "The {brand} Hub and its display",
+     "rows": [
+      {
+       "q": "The display is dark and the power LED is off.",
+       "a": "The {brand} Hub has no power. Check that its cable comes from the adapter's PoE port (not the LAN port) and that the PoE adapter is powered. Try another Ethernet cable (see Hardware setup)."
+      },
+      {
+       "q": "The display does not show readings yet.",
+       "a": "Startup takes 1–2 minutes. Then the indicators light green and the data appears (see Starting the device)."
+      },
+      {
+       "q": "The LED above a port is off and the probe is missing from the display.",
+       "a": "The probe connector is not seated. Pull it out and plug it back into port 1–8; the LED above the port lights green."
+      },
+      {
+       "q": "The {brand} Hub beeps.",
+       "a": "It is reporting an alarm. Pressing any button silences it for 30 minutes. The alarm is in the portal under Alarms, where you can acknowledge it (see Alarms)."
+      },
+      {
+       "q": "The menu disappeared from the display.",
+       "a": "Without a press it closes after 15 s. Hold ▲ for at least 5 s to open it again."
+      },
+      {
+       "q": "How do I get back to the readings?",
+       "a": "From the system information, press □; a double press of □ closes the menu."
+      },
+      {
+       "q": "The {brand} Hub needs a restart.",
+       "a": "On the display, hold ▲ for 5 s, select Reboot and confirm with □; the restart asks for confirmation once more. In the portal, Restart is on the Unit tab of the {brand} Hub detail (Admin)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "The portal and pairing",
+     "rows": [
+      {
+       "q": "I do not know the {brand} Hub's IP address.",
+       "a": "Hold ▼ for 5 s and press ▼ to reach page 3/3. The address is in the Eth (Ethernet) or WiFi row."
+      },
+      {
+       "q": "The Eth row has no IP address.",
+       "a": "The {brand} Hub did not get an address from the network. Check that the cable from the router or switch goes into the PoE adapter's LAN port. Wi-Fi is set up in the {mobile_app} mobile app (see Starting the device, QR code for the mobile app)."
+      },
+      {
+       "q": "The browser says the connection is not private.",
+       "a": "The {brand} Hub uses its own certificate, which the browser does not know; the connection is encrypted all the same. Check that the address matches the IP on the display, then choose to proceed to the page."
+      },
+      {
+       "q": "The page does not load.",
+       "a": "The computer must be on the same network as the {brand} Hub. Type the address with https://. On a network with mDNS, try https://<ID>.local, where ID is the name in the ID row on the display (▼ 5 s)."
+      },
+      {
+       "q": "The portal does not accept the pairing code.",
+       "a": "The code is valid for 5 minutes. Get a new one: ▲ 5 s → Pairing mode. A code never contains O, 0, I, 1 or L."
+      },
+      {
+       "q": "The portal shows no field for the pairing code.",
+       "a": "The portal runs on this very {brand} Hub. Open pairing mode on the display (▲ 5 s → Pairing mode) and click Pair device."
+      },
+      {
+       "q": "The {brand} Hub carries a Not paired badge.",
+       "a": "The portal cannot send it commands yet (wired probe limits, display settings, restart). Pair it; pairing is for Admins (see Pairing the {brand} Hub)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "Probes, alarms and notifications",
+     "rows": [
+      {
+       "q": "A probe is missing from Monitoring.",
+       "a": "Monitoring shows only the probes placed in groups. Find the probe in Nodes, Beacons or on the Sensors tab of the {brand} Hub detail; a Manager or Admin adds it to a group (see Monitoring and groups)."
+      },
+      {
+       "q": "A {brand} Node shows no data.",
+       "a": "Check in Nodes that it is registered with the right DevEUI and whether it is still waiting for join. Other radio states are described in Radio and gateways."
+      },
+      {
+       "q": "A change to a {brand} Node's limits or parameters did not take effect.",
+       "a": "Changes are first saved as unsent configuration. On the {brand} Node's page, click Send configuration (see {brand} Nodes)."
+      },
+      {
+       "q": "A new channel does not evaluate its limits.",
+       "a": "The default limits of a new {brand} Node or {brand} Beacon channel are switched off. Tick Limit on and, on a {brand} Node, send the configuration (see Limits)."
+      },
+      {
+       "q": "I do not know which channels have no limits.",
+       "a": "On the Limits page, choose No limits under Show (see Limits)."
+      },
+      {
+       "q": "A removed {brand} Beacon shows up among the discovered ones again.",
+       "a": "That is expected: the {brand} Beacon keeps broadcasting. Removing it deletes its description and limits, the history stays (see {brand} Beacons)."
+      },
+      {
+       "q": "Alarm e-mails reach nobody.",
+       "a": "Set the recipients in Settings → Notifications. An Admin can check delivery with Send test email. A {brand} Hub without recipients shows a warning in its detail with a Set up recipients link (see Notifications)."
+      },
+      {
+       "q": "An alarm's state is unknown.",
+       "a": "The portal has no word from the {brand} Hub, so it cannot tell whether the alarm goes on; such an alarm is not counted as active. Check in Hubs that the {brand} Hub is online."
+      },
+      {
+       "q": "An acknowledged alarm is active again.",
+       "a": "When an acknowledged alarm goes from warning to critical, the acknowledgement is cleared and the alarm needs acknowledging again (see Alarms)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "None of this helped? Write to {support_email}. Include the {brand} Hub's ID (▼ 5 s, ID row) and a photo of the display."
+    }
+   }
+  ]
+ }
+]

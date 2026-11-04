@@ -1,0 +1,48 @@
+{#
+  One group's rows as a card grid — the `card-detailed` and `card-simplified`
+  layouts, ported from v1's ThermometerCard and SimpleSensorCard.
+
+  Context:
+    rows        [ monitoring::GroupRowCtx, ... ]
+    view_simple bool — read off the root context, not a local the page sets;
+                see partials/group_table.html's header for why
+
+  Tone comes from v1's `lib/sensor-alarm-config.ts`, and the weights there are
+  deliberate: an alarming card gets a strong fill and a full 2px border while
+  Normal stays calm, because these are read on a medical device in glare. That
+  contrast is the whole point of the colour, so it is copied rather than
+  softened.
+
+  DETAILED is variant B (monitoring.md, amendment 2026-10-15): one card per
+  sensor, header with device · location, name, state badge and data age;
+  then one stacked row per channel:
+
+    ┌──────────────────────────────────────┐
+    │ MOCK DEVICE 1 · ZONE A      [Varování]│
+    │ Probe 1                       ⏱ před 40 s │
+    │ Teplota                              │
+    │ 30.8 °C  31.2  ╱╲__╱‾‾╲_              │  value, 24 h max/min, line
+    │          19.8                        │
+    │ ▬▬▬▬▬▬▬▬▬▬▬▬|▬▬▬▬▬▬▬▬               │  limits bar + marker
+    └──────────────────────────────────────┘
+
+  SIMPLIFIED is v1's SimpleSensorCard: one line, name and Hub on the left,
+  the readings and a status dot on the right, two per row on a phone.
+
+  A row with several fields (a Node reporting three) stacks one reading block
+  per field, sharing the header and the footer — the same merge the table
+  does, so a Node is one card rather than three.
+
+  Since MB2 both card shapes live in `partials/group_row.html`, which this
+  file only lays out in a grid. The row route renders that same partial for
+  one row, so the page and an htmx swap cannot drift apart.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+<div class="grid gap-2 {% if view_simple %}grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4{% else %}grid-cols-[repeat(auto-fill,minmax(min(100%,17rem),1fr))]{% endif %}">
+	{% for r in rows %}
+	{% include "partials/group_row.html" %}
+	{% endfor %}
+</div>
+{% include "partials/age_tick.html" %}

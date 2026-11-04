@@ -1,0 +1,21 @@
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Put per-device overrides in /data/proximos/config/proximos.config.yaml
+# (its `portal:` section) or /data/portal/config.yaml instead.
+bind_addr: "127.0.0.1:8088"
+mqtt_host: "localhost"
+mqtt_port: 1883
+topic_prefix: "proximos"
+mqtt_client_id: "proximos-portal"
+data_dir: "/data/portal"
+templates_dir: "/usr/share/fiber-portal/templates"
+static_dir: "/usr/share/fiber-portal/static"
+db_key: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+cookie_secure: true
+maintenance_window:
+  start_utc: "02:30"
+  duration_minutes: 90
+mqtt_username: "hub"
+mqtt_password: "secret"
+experimental_features_enabled: true
+thresholds: {"defaults":{"humidity":{"critical_high":90,"critical_low":0,"hysteresis":3,"warning_high":80,"warning_low":10},"temperature":{"critical_high":50,"critical_low":-10,"hysteresis":0.5,"warning_high":40,"warning_low":0}}}

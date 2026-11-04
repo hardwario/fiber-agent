@@ -1,0 +1,802 @@
+{#
+  Hub (FIBER) detail — plan/portal/devices.hub.md §3: one page, four tabs,
+  each its own route `/hubs/{hub}/{overview|sensors|unit|system}`. Replaces
+  pages/device.html and its `?tab=` pair.
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "hubs",
+    active_tab: "overview"|"sensors"|"unit"|"system",
+    hostname: string,
+    online: bool,
+    device_label: string|none,        -- render::hub_display_name: the
+                                        -- operator's `device_meta.name`
+                                        -- (§3.1) before the reported label
+    meta: render::DeviceMetaCtx,        -- the Hub's name and description
+    can_edit_meta: bool,                -- manager+ (§7)
+    di: render::DeviceInfoCtx|none,     -- overview only: partials/device_info.html
+    no_alarm_recipients: bool,          -- overview only: nobody gets this
+                                        -- Hub's alarm e-mails (UX-059)
+    version: string|none,
+    local_device: bool,                 -- this portal runs ON this Hub, so
+                                        -- pairing needs no typed code
+    pairing: {
+      paired: bool,
+      ca_fingerprint: string|none,      -- set when paired
+      paired_by: string|none,           -- username; set when paired
+      paired_via_invite: bool,          -- paired on the Hub's own pair/invite,
+                                        -- so there is no user to name (#61)
+      paired_at: string|none            -- pre-formatted display string
+    },
+    device: render::DeviceCtx,          -- hostname/online/version/
+                                        -- display_version/last_seen/standby/
+                                        -- sensors
+    status: render::SystemStatusCtx,    -- the status cards' data
+    radio: render::RadioCardCtx|none,   -- partials/hub_radio_card.html
+    sb_firmware: render::SbFirmwareCtx|none,  -- partials/hub_sb_firmware.html
+    system_info_interval_s: int|none,   -- config/state, for the System tab
+    read_interval_s: int|none,          -- config/state intervals, 1-Wire read (System tab)
+    is_admin: bool,
+    can_manage: bool,                   -- manager+; gates the Unit tab's
+                                        -- display controls (§3.3)
+    display_config: render::DisplayConfigCtx|none,   -- partials/hub_unit_settings.html
+    sensor_catalog: [display_catalog::SensorCatalogEntry]|none,
+    max_selected: int,                  -- both per display-config.md §4/§5
+    error: string|none, ok: string|none -- flash from the pairing redirect
+    hub_kind: "server"|"client"|none,   -- C5: the header's type badge
+    client: render::ClusterRowCtx|none, -- C5: set for a registered Client
+    cluster_card: {clients, add_hub}|none   -- C5: the Server's System tab
+  }
+  plus optionally `cmd` (defaults to none inside
+  partials/command_status.html) for rendering the page mid-command.
+
+  Tabs are plain `<a>` links (§3: server-driven, no client router); the
+  active one carries `aria-current="page"`. All four render for every role;
+  the elements a role cannot use are not rendered at all (§7), and the
+  handlers gate again server-side — the template is not the gate.
+
+  Wiring:
+  - Pair: full-page POST /hubs/{hub}/pair (field `pairing_code`, exactly 6
+    chars, browser-pattern-validated — the server revalidates); the result
+    comes back as `error`/`ok` on the System tab.
+  - Unpair: POST /hubs/{hub}/unpair as an hx-boost form, from a dialog with the typed hostname
+    while the handler stays a normal POST → redirect. The note under the
+    button is deliberate honesty (mqtt.md quirk #8): unpairing removes keys
+    from this portal only — the device keeps trusting certificates already
+    issued.
+  - System commands: htmx POST /hubs/{hub}/system/{restart|power-off|
+    factory-reset} → hx-target "#command-status" (the shell included below;
+    progress then streams over SSE from the app shell). Fields: restart →
+    `reason` optional; power-off → `reason` required; factory-reset →
+    `reason` ≥ 8 chars, `confirm_hostname` must equal `hostname` (browser
+    pattern is UX only, the server re-checks), `post_action` =
+    "reboot"|"power_off". All three are <fieldset disabled> while unpaired,
+    with one notice row saying why.
+  - Thresholds: partials/limits_editor.html posts to
+    /hubs/{hub}/sensors/{line}/threshold (§3.2).
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% from "partials/pair_form.html" import pair_form %}
+{% from "partials/confirm_hostname.html" import confirm_hostname %}
+
+{% block title %}{{ device_label | default(hostname, true) }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set tabs = [
+	("overview", "monitoring.hubs.tab_overview"|t, "activity"),
+	("sensors", "monitoring.hubs.tab_sensors"|t, "thermometer"),
+	("unit", "monitoring.hubs.tab_unit"|t, "router"),
+	("system", "monitoring.hubs.tab_system"|t, "settings"),
+] %}
+{% set device_or_fallback = hostname | default(("monitoring.device.the_device"|t), true) %}
+<div data-sse-refresh class="space-y-4">
+	<div class="flex items-center justify-between gap-2 flex-wrap">
+		{{ ui.back_link("/hubs", "monitoring.hubs.back_to_hubs"|t) }}
+		{#- #162: a registered Client is removed from the header, as Node and
+		    Beacon are. Server-side only, so it works for a Client that never
+		    connected. -#}
+		{% if is_admin and client %}
+		<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm text-critical"
+			onclick="var p = document.getElementById('remove-client-dialog'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+			{{ "monitoring.hubs.remove_button"|t }}
+		</button>
+		{% endif %}
+	</div>
+
+	{% if is_admin and client %}
+	{% include "partials/hub_remove_client_dialog.html" %}
+	{% endif %}
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+	{% if ok %}
+	<div role="alert" class="alert alert-success"><span>{{ ok }}</span></div>
+	{% endif %}
+
+	{# --- Identity header (§3.1) ----------------------------------------- #}
+	<div class="card-v1 p-4 flex flex-wrap items-center justify-between gap-3">
+		<div class="flex items-center gap-3 min-w-0">
+			{{ ui.status_dot(online, "h-2.5 w-2.5") }}
+			{{ ic.icon("router", "h-6 w-6 text-primary shrink-0") }}
+			<div class="min-w-0">
+				<h2 class="text-lg font-bold truncate">{{ device_label | default(hostname, true) }}</h2>
+				<p class="text-xs font-mono text-muted-fg truncate">{{ hostname }}</p>
+			</div>
+		</div>
+		<div class="flex items-center gap-2">
+			{#- §3.1: Server / Klient — on a Client always, the detail is not a
+			    mixed list. -#}
+			{% if hub_kind %}<span class="badge-outline-v1">{{ ("monitoring.hubs.kind_" ~ hub_kind)|t }}</span>{% endif %}
+			{#- UX-035: every command on this Hub depends on the pairing, so
+			    its absence shows on every tab, linked to where it is fixed. -#}
+			{% if not pairing.paired %}
+			<a href="/hubs/{{ hostname }}/system#pairing" class="badge-status badge-status-warning"
+				title="{{ "monitoring.device.not_paired_title"|t }}">{{ "monitoring.device.not_paired_badge"|t }}</a>
+			{% endif %}
+			<span class="badge-status {% if online %}badge-status-normal{% else %}badge-status-offline{% endif %}">
+				{{ ("monitoring.shared.online"|t) if online else ("monitoring.shared.offline"|t) }}
+			</span>
+		</div>
+	</div>
+
+	{# --- Tabs (§3) ------------------------------------------------------- #}
+	<div class="border-b border-base-300">
+		<nav class="flex gap-6 -mb-px">
+			{% for id, label, icon in tabs %}
+			<a href="/hubs/{{ hostname }}/{{ id }}"
+				{% if active_tab == id %}aria-current="page"{% endif %}
+				class="flex items-center gap-1.5 pb-2.5 text-sm font-medium border-b-2 transition-colors {% if active_tab == id %}border-primary text-primary{% else %}border-transparent text-muted-fg hover:text-base-content{% endif %}">
+				{{ ic.icon(icon, "h-4 w-4") }}{{ label }}
+			</a>
+			{% endfor %}
+		</nav>
+	</div>
+
+	{% include "partials/command_status.html" %}
+
+	{#- GitLab #109: the badge in the header was the only sign on most tabs.
+	    The notice the Unit tab alone carried is lifted here, so every tab
+	    says it — to every role, as the badge does; the link for manager+
+	    (the gate the Unit tab's notice had), and not on the System tab,
+	    where the pairing card is right below. -#}
+	{#- Amended 2026-10-13: an admin pairs from the banner itself and stays on
+	    this tab; on the System tab the card right below is the form. -#}
+	{% with unpaired = {
+		"hubs": ([] if pairing.paired else [{"hostname": hostname, "local": local_device}]),
+		"can_pair": (is_admin and active_tab != "system"),
+		"link": (can_manage and not is_admin and active_tab != "system"),
+		"return_to": "/hubs/" ~ hostname ~ "/" ~ active_tab } %}
+	{% include "partials/unpaired_banner.html" %}
+	{% endwith %}
+
+	{#- C5, §2.5/§3: a registered Client that has not connected yet. Every
+	    tab renders from what the registry knows; the device-side cards wait
+	    for its first status. -#}
+	{#- cluster.md amendments 2026-10-13 and 2026-10-28: a Client's LoRaWAN
+	    gateway that the Server's broker drops is flagged on the Client only. -#}
+	{% if client and client.gateway_gap %}
+	<div role="alert" class="alert alert-warning" data-gateway-gap="{{ client.gateway_gap.kind }}">
+		{{ ic.icon("triangle-alert", "h-4 w-4 shrink-0") }}
+		<span>
+			{%- if client.gateway_gap.kind == "mismatch" -%}
+			{{ "monitoring.hubs.client_gateway_mismatch"|t|replace("{reported}", client.gateway_gap.reported_eui)|replace("{registered}", client.gateway_gap.registered_eui) }}
+			{%- else -%}
+			{{ "monitoring.hubs.client_gateway_unregistered"|t }}
+			{%- if client.gateway_gap.reported_eui %} ({{ "monitoring.hubs.column_gateway_eui"|t }} <span class="font-mono">{{ client.gateway_gap.reported_eui }}</span>){% endif %}
+			{%- endif -%}
+		</span>
+		{#- #164: the admin grants the EUI the Client reports; never automatic. The click is the
+		    decision: no browser confirm() (popups are being removed portal-wide). -#}
+		{% if is_admin and client.gateway_gap.reported_eui %}
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm"
+			hx-post="/hubs/{{ hostname }}/cluster/gateway" hx-vals='{"gateway_eui": "{{ client.gateway_gap.reported_eui }}"}'
+			hx-target="#command-status" hx-swap="outerHTML" hx-disabled-elt="this">
+			{{ "monitoring.hubs.gateway_grant_button"|t }}
+		</button>
+		{% endif %}
+	</div>
+	{% endif %}
+	{% if client and client.never_connected %}
+	<div role="status" class="alert alert-info">
+		{{ ic.icon("clock", "h-4 w-4 shrink-0") }}
+		<span>{{ "monitoring.hubs.client_never_connected"|t }}</span>
+	</div>
+	{% endif %}
+
+	{# ================= Overview ========================================= #}
+	{% if active_tab == "overview" %}
+
+	{#- UX-059: nobody gets this Hub's alarm e-mails (no report config and
+	    no default recipients, or its own config off or without recipients),
+	    and the notifier would skip them in silence. -#}
+	{% if no_alarm_recipients %}
+	<div role="alert" class="alert alert-warning mb-4">
+		{{ ic.icon("triangle-alert", "h-4 w-4 shrink-0") }}
+		<span>{{ "monitoring.hubs.no_alarm_recipients_alert"|t }}</span>
+		{#- The notifications page is manager+; a viewer is told, not linked. -#}
+		{% if can_edit_meta %}<a href="/settings/notifications?hub={{ hostname }}" class="btn-v1 btn-v1-outline btn-v1-sm">{{ "monitoring.hubs.set_alarm_recipients"|t }}</a>{% endif %}
+	</div>
+	{% endif %}
+
+	{#- #181: live like the radio card; re-fetched on the Hub's own SSE events. -#}
+	<div id="hub-live-banner" hx-get="/hubs/{{ hostname }}/overview" hx-select="#hub-live-banner" hx-swap="outerHTML"
+		hx-trigger="sse:device-{{ hostname }}-status throttle:5s, sse:radio-{{ hostname }} throttle:5s">
+	{#- #181: the RAK5146 slot is fed from the battery, so a flat cell takes
+	    LoRaWAN down even on DC power. -#}
+	{% if status and status.rak_low_power %}
+	<div role="alert" class="alert alert-warning mb-4" data-rak-low-power>
+		{{ ic.icon("triangle-alert", "h-4 w-4 shrink-0") }}
+		<span>{{ "monitoring.hubs.rak_low_power_alert"|t|replace("{voltage}", ((status.power.voltage_mv / 1000)|round(2))|string) }}</span>
+	</div>
+	{% endif %}
+	</div>
+
+	{#- Device information (metadata.cs.md §5, amendment 2026-10-15): name,
+	    description and location with the facts of the former "Device
+	    description" card and the Unit tab's metadata card. Facts the Hub has
+	    not reported render "—". -#}
+	{% if di %}{% include "partials/device_info.html" %}{% endif %}
+
+	{# --- Status (§3.1, amended 2026-10-15): one ui.collapsible_card below
+	    Device information, variant C of the Hub Overview mockup —
+	    Connection, Power and System as three columns of label | mono value
+	    rows; the collapsed header carries link · power · version · /data
+	    and the worst connection state as its badge. -#}
+	<div id="hub-live-status" hx-get="/hubs/{{ hostname }}/overview" hx-select="#hub-live-status" hx-swap="outerHTML"
+		hx-trigger="sse:device-{{ hostname }}-status throttle:5s, sse:radio-{{ hostname }} throttle:5s">
+	{% if status %}
+	{% macro srow(label, value, dot="", mono=true) %}
+	<div class="flex items-center justify-between gap-3 py-1 text-sm">
+		<span class="min-w-0 truncate text-muted-fg">{{ label }}</span>
+		<span class="flex items-center gap-2 min-w-0">
+			{%- if value %}<span class="truncate{% if mono %} font-mono text-xs{% endif %} tabular-nums">{{ value }}</span>{% endif -%}
+			{%- if dot %}<span class="h-2 w-2 rounded-full shrink-0 {{ dot }}"></span>{% endif -%}
+		</span>
+	</div>
+	{% endmacro %}
+	{% set net_connected = status.network.wifi_connected or status.network.ethernet_connected %}
+	{#- #181: a low battery also takes the LoRaWAN card down, so it is not "all working". -#}
+	{#- #181: a Hub that lost its DC input runs down its cell: critical, ahead of the rest. -#}
+	{% if status.mqtt_connected and not status.power.dc_connected %}
+		{% set conn_badge = "badge-status-critical" %}{% set conn_text = "monitoring.device.no_power_badge"|t %}
+	{% elif status.mqtt_connected and status.network.has_internet and status.power.percentage is not none and status.power.percentage < 10 %}
+		{% set conn_badge = "badge-status-critical" %}{% set conn_text = "monitoring.device.critical_battery_badge"|t %}
+	{% elif status.mqtt_connected and status.network.has_internet and status.power.percentage is not none and status.power.percentage < 20 %}
+		{% set conn_badge = "badge-status-warning" %}{% set conn_text = "monitoring.device.low_battery_badge"|t %}
+	{% elif status.mqtt_connected and status.network.has_internet %}
+		{% set conn_badge = "badge-status-normal" %}{% set conn_text = "monitoring.device.all_operational"|t %}
+	{% elif status.mqtt_connected and net_connected %}
+		{% set conn_badge = "badge-status-warning" %}{% set conn_text = "monitoring.device.no_internet_badge"|t %}
+	{% else %}
+		{% set conn_badge = "badge-status-warning" %}{% set conn_text = "monitoring.device.connection_issues"|t %}
+	{% endif %}
+	{% set has_battery = status.power.percentage is not none %}
+	{%- set link = (("monitoring.device.ethernet_label"|t) ~ " " ~ (status.network.ethernet_ip or "")) if status.network.ethernet_connected
+		else ((("monitoring.device.wifi_label"|t) ~ " " ~ (status.network.wifi_ip or "")) if status.network.wifi_connected else "monitoring.device.connection_issues"|t) -%}
+	{%- set pwr = (("monitoring.device.dc_label"|t) if status.power.dc_connected else ("monitoring.device.battery_label"|t)) ~ ((" · " ~ status.power.percentage ~ " %") if has_battery else "") -%}
+	{%- set disk = ("/data " ~ ((status.system.disk_used_percent|round(0)|int) ~ " %")) if status.system.disk_used_percent is not none else "" -%}
+	{%- set ssum = [link | trim, pwr, device.display_version or "", disk] | select | join(" · ") -%}
+	{% set head_end %}<span class="badge-status {{ conn_badge }} shrink-0" data-hub-status-badge>{{ conn_text }}</span>{% endset %}
+	{% call ui.collapsible_card("hub-status-" ~ hostname, "activity", "monitoring.hubs.status_heading"|t, head_end=head_end, summary=ssum) %}
+	<div class="grid gap-x-8 gap-y-4 md:grid-cols-3" data-hub-status>
+		<div class="min-w-0">
+			<p class="text-xs uppercase tracking-wide text-muted-fg flex items-center gap-1.5">{{ ic.icon("radio", "h-3.5 w-3.5") }}{{ "monitoring.device.connection_label"|t }}</p>
+			<div class="mt-1 divide-y divide-base-300">
+				{{ srow("monitoring.device.mqtt_broker_label"|t, "", "bg-success" if status.mqtt_connected else "bg-critical") }}
+				{{ srow("monitoring.device.ethernet_label"|t, status.network.ethernet_ip if status.network.ethernet_connected else "",
+					"bg-success" if status.network.ethernet_connected else "bg-muted-fg") }}
+				{{ srow("monitoring.device.wifi_label"|t, status.network.wifi_ip if status.network.wifi_connected else "",
+					"bg-success" if status.network.wifi_connected else "bg-muted-fg") }}
+				{% if status.network.wifi_connected and status.network.wifi_signal_dbm is not none %}
+				{{ srow("monitoring.hubs.wifi_signal_label"|t, status.network.wifi_signal_dbm ~ " dBm") }}
+				{% endif %}
+				{{ srow("monitoring.hubs.radio_row.card"|t,
+					"monitoring.hubs.rak_card_low_power"|t if status.rak_low_power else
+					(("monitoring.hubs.rak_card_present" if status.rak_card else "monitoring.hubs.rak_card_missing")|t if status.rak_card is not none else "–"),
+					"bg-muted-fg" if status.lorawan_disabled else
+					("bg-warning" if status.rak_low_power else
+					("bg-success" if status.rak_card else ("bg-critical" if status.rak_card is false else "bg-muted-fg")))) }}
+			</div>
+			{% if not status.mqtt_connected and status.mqtt_reason %}
+			<p class="mt-1 text-xs text-muted-fg">{{ status.mqtt_reason }}</p>
+			{% endif %}
+		</div>
+		<div class="min-w-0">
+			<p class="text-xs uppercase tracking-wide text-muted-fg flex items-center gap-1.5">{{ ic.icon("battery-charging", "h-3.5 w-3.5") }}{{ "monitoring.device.power_label"|t }}</p>
+			<div class="mt-1 divide-y divide-base-300">
+				{#- #181: red below 10 % (~3.5 V, the RAK5146 slot loses power), amber below 20 %. -#}
+				{% set mv = status.power.voltage_mv %}
+				{% set batt_dot = none if mv is none else ("bg-critical" if (has_battery and status.power.percentage < 10) or mv < 3500 else ("bg-warning" if has_battery and status.power.percentage < 20 else "bg-success")) %}
+				{% if has_battery %}
+				{{ srow("monitoring.device.battery_label"|t, status.power.percentage ~ " %" ~ ((" · " ~ ((mv / 1000)|round(2)) ~ " V") if mv is not none else ""), batt_dot) }}
+				{% elif mv is not none %}
+				{{ srow("monitoring.device.battery_label"|t, ((mv / 1000)|round(2)) ~ " V", batt_dot) }}
+				{% endif %}
+				{{ srow("monitoring.device.dc_label"|t,
+					(("monitoring.device.on_label"|t) if status.power.dc_connected else ("monitoring.device.no_power_badge"|t)) ~ ((" · " ~ ((status.power.dc_voltage_mv / 1000)|round(2)) ~ " V") if status.power.dc_connected and status.power.dc_voltage_mv is not none else ""),
+					"bg-success" if status.power.dc_connected else "bg-critical") }}
+			</div>
+		</div>
+		<div class="min-w-0">
+			<p class="text-xs uppercase tracking-wide text-muted-fg flex items-center gap-1.5">{{ ic.icon("server", "h-3.5 w-3.5") }}{{ "monitoring.device.system_label"|t }}</p>
+			<div class="mt-1 divide-y divide-base-300">
+				{{ srow("monitoring.device.host_label"|t, status.system.host | default("–", true)) }}
+				{% if status.system.label %}{{ srow("monitoring.device.label_label"|t, status.system.label, mono=false) }}{% endif %}
+				{{ srow("monitoring.device.version_label"|t, device.display_version | default(("monitoring.shared.version_unknown"|t), true)) }}
+				{{ srow("monitoring.device.uptime_label"|t, status.system.uptime | default("–", true)) }}
+				{#- GitLab #58: the Hub's own `setup:` key, as it published it. Three states, and the
+				    third one matters: a Hub that has not reported is "not reported", never "not
+				    completed". The portal keeps no copy of this (decision #4). -#}
+				{% if status.system.setup_provisioned is none %}
+				{{ srow("monitoring.device.setup_label"|t, "monitoring.device.setup_unknown"|t, mono=false) }}
+				{% elif status.system.setup_provisioned %}
+				{{ srow("monitoring.device.setup_label"|t,
+					("monitoring.device.setup_done"|t) ~ (
+						(" · " ~ ("monitoring.device.setup_role_server"|t)) if status.system.setup_role == "server"
+						else ((" · " ~ ("monitoring.device.setup_role_client"|t)) if status.system.setup_role == "client" else "")
+					), mono=false) }}
+				{% else %}
+				{{ srow("monitoring.device.setup_label"|t, "monitoring.device.setup_pending"|t, mono=false) }}
+				{% endif %}
+				{% if status.system.disk_available_bytes is not none %}
+				{{ srow("monitoring.device.disk_free_label"|t,
+					(status.system.disk_available_bytes / 1073741824)|round(1) ~ " GB (" ~ (100 - (status.system.disk_used_percent | default(0, true)))|round(0) ~ "%)") }}
+				{% else %}
+				{{ srow("monitoring.device.disk_free_label"|t, "–") }}
+				{% endif %}
+			</div>
+			{% if status.system.disk_used_percent is not none %}
+			<div class="mt-1 h-1.5 rounded-full bg-muted overflow-hidden" title="/data"><div class="h-full rounded-full bg-primary" style="width:{{ status.system.disk_used_percent|round(0) }}%"></div></div>
+			{% endif %}
+		</div>
+	</div>
+	{% endcall %}
+	{% endif %}
+	</div>
+
+
+	{% if radio %}{% include "partials/hub_radio_card.html" %}{% endif %}
+
+
+	{# ================= Sensors ========================================== #}
+	{% elif active_tab == "sensors" %}
+	{#- §3.2, amendment 2026-10-14: the shared list (stat row, toolbar,
+	    device row) like /nodes. A row opens the probe's own page
+	    /hubs/{hub}/sensors/line-{n}; name, location, limits and calibration
+	    are edited there, the list edits nothing. Each row refetches itself
+	    on the device's `config/state` echo (§6). -#}
+	{% set sensors = device.sensors if device else [] %}
+	{#- Amended 2026-10-15 (Hynek): the layout's Hub stat row stays on this
+	    tab too, and the tab's own probe tiles are gone — one row per page. -#}
+	<div data-list-key="hub-sensors">
+		{% set list_key = "hub-sensors" %}
+		{% set search_placeholder = "monitoring.hub_sensor.search"|t %}
+		{% set entity_label = "monitoring.hub_sensor.entity"|t %}
+		{% set show_location = true %}
+		{% set show_gateway = false %}
+		{% set show_kind = false %}
+		{% set show_proto = false %}
+		{% set oor_alarming = true %}
+		{% set columns = [
+			["loc", "monitoring.dashboard.location_column"|t, true],
+			["overview", "monitoring.list.overview_column"|t, true],
+			["values", "monitoring.shared.value_column"|t, true],
+			["bounds", "monitoring.dashboard.thresholds_column"|t, true],
+		] %}
+		{% set extra_filters %}
+		<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-hub-sensors-field">{{ "monitoring.limits.quantity"|t }}</label>
+				<select id="f-hub-sensors-field" data-list-filter="field" class="input-v1 select-v1 w-full">
+						<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+						{% for name, label in [["temperature", "Temperature"|field_label("temperature")]] %}<option value="{{ name }}">{{ label }}</option>{% endfor %}
+				</select>
+		</div>
+		{% endset %}
+		{% include "partials/list_toolbar.html" %}
+		<div class="card-v1 mt-3">
+			<div class="relative w-full overflow-x-auto overflow-y-clip rounded-xl">
+				<table data-list-table class="w-full caption-bottom text-sm">
+					<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+						<tr>
+							{{ ui.sort_th("monitoring.list.item_column"|t, "name", "sticky left-0 z-30") }}
+							{{ ui.sort_th("monitoring.dashboard.location_column"|t, "loc", "", "loc") }}
+							{{ ui.sort_th("monitoring.list.overview_column"|t, "seen", "", "overview") }}
+							{{ ui.th("monitoring.shared.value_column"|t, "", "values") }}
+							{{ ui.th("monitoring.dashboard.thresholds_column"|t, "", "bounds") }}
+							{{ ui.th("") }}
+						</tr>
+					</thead>
+					<tbody>
+						<tr data-list-nomatch class="hidden"><td colspan="6" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td></tr>
+						{% for s in sensors %}
+						{% include "partials/hub_sensor_row.html" %}
+						{% endfor %}
+						{% if not sensors %}
+						<tr><td colspan="6" class="py-10 text-center text-sm text-muted-fg">{{ "monitoring.dashboard.no_probes"|t }}</td></tr>
+						{% endif %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+	<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+
+	{# ================= Unit ============================================= #}
+	{% elif active_tab == "unit" %}
+	{#- Display, buzzer, the unit label and the LCD sensor picker (§3.3,
+	    plan/portal/display-config.md WP-A/WP-B) — manager+, one tier below
+	    the two power actions underneath them, which stay admin. -#}
+	{% if can_manage %}
+	<div class="space-y-4 mb-4">
+		{% include "partials/hub_unit_settings.html" %}
+	</div>
+	{% endif %}
+	{% if not can_manage %}
+	<div class="card-v1 p-5 text-sm text-muted-fg">{{ "monitoring.hubs.unit_viewer_note"|t }}</div>
+	{% endif %}
+	{#- Unit diagnostics (ui_components.md, amendment 2026-10-15): the Hub's own
+	    system alarms (`sys:*`), the Node/Beacon Alarm messages card. -#}
+	{% if diag_alarms is defined and diag_alarms is not none %}
+	<div class="mt-4">
+	{% with diag_id = "diag-alarms-" ~ hostname, alarms = diag_alarms %}{% include "partials/diag_alarms_card.html" %}{% endwith %}
+	</div>
+	{% endif %}
+	{% if is_admin %}
+	{#- Service functions (ui_components.md §7, 2026-10-15; last on
+	    the tab, amended 2026-10-15): Restart through
+	    /system/restart (`restart_application`: the application restarts,
+	    the Hub does not reboot) and Standby through /system/power-off
+	    (`power_off`, which the Hub carries out as standby: the process and
+	    MQTT stay up). Each behind the card's lock with an inline confirm.
+	    Power-off's `reason` is required; the server answers with
+	    `power_off_reason_required` if the browser let an empty one through. -#}
+	{% import "partials/service_card.html" as svc %}
+	{% set unpaired_note = none if pairing.paired else "monitoring.service.hub_unpaired"|t %}
+	<div class="mt-4">
+	{% call svc.card("hub-service-" ~ hostname) %}
+		{% call svc.row("restart", "monitoring.device.restart_heading"|t, "monitoring.device.restart_desc"|t,
+			"monitoring.device.restart_button"|t, tone="text-critical border-critical/50",
+			disabled_note=unpaired_note) %}
+		<form hx-post="/hubs/{{ hostname }}/system/restart" hx-target="#command-status" hx-swap="outerHTML"
+			@htmx:after-request="done($event)" class="flex flex-col gap-3">
+			<p class="text-sm">{{ "monitoring.service.restart_confirm"|t|replace("{name}", device_or_fallback) }}</p>
+			<input type="text" name="reason" class="input-v1 input-v1-sm" placeholder="{{ "monitoring.device.reason_optional_placeholder"|t }}">
+			{{ svc.actions("monitoring.device.restart_button"|t, "btn-v1-destructive") }}
+		</form>
+		{% endcall %}
+		{% call svc.row("standby", "monitoring.service.standby"|t, "monitoring.device.power_off_desc"|t,
+			"monitoring.service.standby_button"|t, disabled_note=unpaired_note) %}
+		<form hx-post="/hubs/{{ hostname }}/system/power-off" hx-target="#command-status" hx-swap="outerHTML"
+			@htmx:after-request="done($event)" class="flex flex-col gap-3">
+			<p class="text-sm">{{ "monitoring.device.power_off_confirm"|t|replace("{device}", device_or_fallback) }}</p>
+			<input type="text" name="reason" class="input-v1 input-v1-sm" placeholder="{{ "monitoring.device.reason_placeholder"|t }}" required>
+			{{ svc.actions("monitoring.device.power_off_label"|t, "btn-v1-destructive") }}
+		</form>
+		{% endcall %}
+	{% endcall %}
+	</div>
+	{% endif %}
+
+	{# ================= System =========================================== #}
+	{% else %}
+	{#- System settings (§3.4): the facts the Hub reports; the `system/info`
+	    interval is the one admin-editable row. -#}
+	{#- Amended 2026-10-15: the shared "Device configuration" card; the read
+	    interval (config_sync.md §13 Q18: saved in the Portal, pulled by the Hub) and the
+	    `system/info` interval are the admin-editable rows (pencil, each posted alone). -#}
+	{% set dc = {
+		"kind": "hub-system",
+		"heading": "monitoring.hubs.system_settings_heading",
+		"icon": "server",
+		"multi": true,
+		"items": [
+			{"name": "host", "label": "monitoring.device.host_label", "value": hostname, "unit": "", "editable": false},
+			{"name": "radio_mode", "label": "monitoring.hubs.radio_mode_label", "value": radio_mode or "",
+			 "display": (("monitoring.hubs.radio_mode_" ~ radio_mode)|t) if radio_mode else none, "unit": "", "editable": false},
+		] + ([{"name": "p2p_modulation", "data": "p2p-modulation", "label": "monitoring.hubs.p2p_modulation_label", "help": "monitoring.hubs.p2p_modulation_readonly",
+			 "value": p2p_modulation, "display": ("monitoring.hubs.p2p_modulation_" ~ p2p_modulation)|t, "unit": "", "editable": false}] if p2p_modulation else []) + [
+			{"name": "sample_interval_s", "label": "monitoring.hubs.read_interval_label", "help": "monitoring.hubs.system_settings_note",
+			 "value": (read_interval_s|string) if read_interval_s is not none else "", "unit": "s", "editable": true,
+			 "action": "/hubs/" ~ hostname ~ "/system/read-interval", "min": 1, "max": 3600},
+			{"name": "interval_seconds", "label": "monitoring.hubs.info_interval_label", "help": "monitoring.hubs.system_settings_note",
+			 "value": (system_info_interval_s|string) if system_info_interval_s is not none else "", "unit": "s", "editable": true,
+			 "action": "/hubs/" ~ hostname ~ "/system/info-interval", "min": 10, "max": 86400},
+			{"name": "version", "label": "monitoring.device.version_label", "value": device.display_version or "", "unit": "", "editable": false},
+		],
+	} %}
+	{% with can_edit = is_admin %}{% include "partials/device_config.html" %}{% endwith %}
+
+	{#- Pairing: a banner, not a settings row — it is the state every command
+	    on this Hub depends on. State glyph and the one-line story on the
+	    left, the single action right-aligned on the same line, the details
+	    underneath full width. `#pairing` is where the unpaired banner and the
+	    header badge link to (#109). -#}
+	{#- Amended 2026-10-15 (ui_components.md §8): every System card is a
+	    ui.collapsible_card with its icon and a collapsed-header summary;
+	    Pairing alone starts open while the Hub is unpaired. -#}
+	{% set head_end %}
+		{% if pairing.paired %}
+		<span class="badge-status badge-status-normal shrink-0">{{ "monitoring.device.paired_badge"|t }}</span>
+		{% else %}
+		<span class="badge-status badge-status-neutral shrink-0">{{ "monitoring.device.not_paired_badge"|t }}</span>
+		{% endif %}
+	{% endset %}
+	{% call ui.collapsible_card("pairing", "shield-check" if pairing.paired else "key", "monitoring.device.pairing_heading"|t,
+		head_end=head_end, open=(not pairing.paired),
+		summary=(pairing.paired_by or "") ~ ((" · " ~ (pairing.paired_at | short_dt)) if pairing.paired_at else "")) %}
+		<div>
+			<div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+				<div class="flex items-center gap-3 min-w-0">
+					<span class="flex h-9 w-9 items-center justify-center rounded-lg shrink-0 {% if pairing.paired %}bg-success/10 text-success{% else %}bg-warning/10 text-warning{% endif %}">
+						{{ ic.icon("shield-check" if pairing.paired else "key", "h-5 w-5") }}
+					</span>
+					<div class="min-w-0">
+						<p class="text-sm text-muted-fg">
+							{%- if pairing.paired and pairing.paired_via_invite -%}
+							{#- Nobody signed in for this one: the Hub asked the portal to pair
+							    over pair/invite (#61). Naming no user is the record; "unknown"
+							    would be indistinguishable from a lost one. -#}
+							{{ "monitoring.device.paired_via_invite_line"|t
+								|replace("{at}", pairing.paired_at | short_dt("full") | default(("monitoring.device.unknown"|t), true)) }}
+							{%- elif pairing.paired -%}
+							{{ "monitoring.device.paired_by_line"|t
+								|replace("{user}", pairing.paired_by | default(("monitoring.device.unknown"|t), true))
+								|replace("{at}", pairing.paired_at | short_dt("full") | default(("monitoring.device.unknown"|t), true)) }}
+							{%- elif local_device -%}
+							{{ "monitoring.device.pair_local_hint"|t }}
+							{%- else -%}
+							{{ "monitoring.device.pairing_code_hint"|t|capitalize }}
+							{%- endif -%}
+						</p>
+					</div>
+				</div>
+				{% if is_admin %}
+				{% if pairing.paired %}
+				<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm text-error border-error/40 shrink-0" onclick="var p = document.getElementById('unpair-dialog'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">{{ "monitoring.device.unpair_button"|t }}</button>
+				{% else %}
+				{{ pair_form(hostname, local_device) }}
+				{% endif %}
+				{% endif %}
+			</div>
+			{% if is_admin and pairing.paired %}
+				<div id="unpair-dialog" hidden class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+						<h3 class="font-bold text-lg">{{ "monitoring.device.unpair_button"|t }}</h3>
+						<p class="text-sm mt-2">{{ "monitoring.device.unpair_confirm"|t|replace('{device}', device_or_fallback) }}</p>
+						<form method="post" action="/hubs/{{ hostname }}/unpair" hx-boost="true" class="grid gap-2 mt-3">
+							{{ confirm_hostname(hostname) }}
+							<div class="flex justify-end gap-2 mt-2">
+								<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="document.getElementById('unpair-dialog').hidden = true">{{ "common.actions.cancel"|t }}</button>
+								<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.device.unpair_button"|t }}</button>
+							</div>
+						</form>
+</div>
+			{% endif %}
+			{% if pairing.paired %}
+			<div class="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-t border-base-300 pt-3 text-xs">
+				<span class="font-semibold uppercase tracking-wide text-muted-fg">{{ "monitoring.device.ca_fingerprint_label"|t }}</span>
+				<code class="font-mono break-all">{{ pairing.ca_fingerprint | default("–", true) }}</code>
+				<span class="text-muted-fg sm:ml-auto">{{ "monitoring.device.unpair_note"|t }}</span>
+			</div>
+			{% endif %}
+		</div>
+	{% endcall %}
+
+	{#- §3.4 "Cluster" (third on the tab, amended 2026-10-15; was last, C5): the Server's Clients, or this
+	    Client's facts and its removal. -#}
+	{% include "partials/hub_cluster_card.html" %}
+
+	{#- "Firmware SB" (southbridge_update.md §3.7; devices.hub.md, dodatek
+	    2026-10-09): what the Southbridge runs against what the image bundles,
+	    the last update's state and error, and for an admin „Aktualizovat
+	    firmware SB“. The card refetches itself; the dialog is out here so an
+	    open one survives that. The signed `southbridge-update {force}` flashes
+	    the bundled image; `force` also flashes the image the SB already runs. -#}
+	{% if sb_firmware %}
+	{% include "partials/hub_sb_firmware.html" %}
+	{% if sb_firmware.update_allowed and sb_firmware.sb and sb_firmware.sb.has_update and sb_firmware.sb.bundled %}
+	{% set sbf = sb_firmware.sb %}
+	<div id="sb-update-dialog" hidden data-confirm-panel class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+			<h3 class="font-bold text-lg">{{ "monitoring.hubs.sb_update_button"|t }}</h3>
+			<div class="mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+				{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+				<p>{{ "monitoring.hubs.sb_update_warning"|t }}</p>
+			</div>
+			<dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+				<dt class="text-muted-fg">{{ "monitoring.hubs.sb_fw_running"|t }}</dt>
+				<dd class="font-mono" data-sb-dialog-running>{{ sbf.version or "—" }}</dd>
+				<dt class="text-muted-fg">{{ "monitoring.hubs.sb_fw_bundled"|t }}</dt>
+				<dd class="font-mono" data-sb-dialog-bundled>{{ sbf.bundled or "—" }}</dd>
+			</dl>
+			<form hx-post="/hubs/{{ hostname }}/system/southbridge-update" hx-target="#command-status" hx-swap="outerHTML"
+				hx-on::after-request="if (event.detail.successful) { this.closest('[data-confirm-panel]').hidden = true; }"
+				class="mt-4">
+				<fieldset class="grid gap-2" {% if not pairing.paired %}disabled{% endif %}>
+					<label class="flex items-start gap-2 text-sm">
+						<input type="checkbox" name="force" value="on" class="mt-0.5">
+						<span>{{ "monitoring.hubs.sb_update_force"|t }}
+							<span class="block text-xs text-muted-fg">{{ "monitoring.hubs.sb_update_force_hint"|t }}</span></span>
+					</label>
+					<div class="flex justify-end gap-2 mt-2">
+						<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="this.closest('[data-confirm-panel]').hidden = true">{{ "common.actions.cancel"|t }}</button>
+						<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.hubs.sb_update_confirm_button"|t }}</button>
+					</div>
+				</fieldset>
+			</form>
+</div>
+	{% endif %}
+	{% endif %}
+
+	{#- "Northbridge firmware" (northbridge_update.md §3.4; ui_components.md
+	    §13, 2026-10-15): moved here from the Overview Radio card. -#}
+	{#- Shown on every Hub, like Southbridge (2026-10-16): without a
+	    radio/northbridge document the card says the Hub reports nothing. -#}
+	{% if radio %}
+	{% include "partials/hub_nb_firmware.html" %}
+	{% endif %}
+	{#- „Aktualizovat firmware NB“ (northbridge_update.md §3.4, amended 2026-10-09;
+	    devices.hub.md, dodatek 2026-10-09): out here, not in the card, which
+	    refetches itself and would close an open dialog. Admin only, and only when
+	    the Hub's image bundles Northbridge firmware (`update` present; the row
+	    is the firmware card's, which a Hub without P2P fills from its idle
+	    Northbridge task, #158). The signed `northbridge-update {force}`
+	    flashes the bundled image; `force` also flashes the image the Northbridge
+	    already runs, and past a spent retry budget. -#}
+	{% if radio and radio.nb_update_allowed and radio.nb_firmware and radio.nb_firmware.update %}
+	{% set nbu = radio.nb_firmware.update %}
+	<div id="nb-update-dialog" hidden data-confirm-panel class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+			<h3 class="font-bold text-lg">{{ "monitoring.hubs.nb_update_button"|t }}</h3>
+			<div class="mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+				{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+				<p>{{ "monitoring.hubs.nb_update_warning"|t }}</p>
+			</div>
+			<dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+				<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_fw_running"|t }}</dt>
+				<dd class="font-mono" data-nb-dialog-running>{{ nbu.running or "—" }}</dd>
+				<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_fw_bundled"|t }}</dt>
+				<dd class="font-mono" data-nb-dialog-bundled>{{ nbu.bundled or "—" }}</dd>
+			</dl>
+			<form hx-post="/hubs/{{ hostname }}/radio/northbridge-update" hx-target="#command-status" hx-swap="outerHTML"
+				hx-on::after-request="if (event.detail.successful) { this.closest('[data-confirm-panel]').hidden = true; }"
+				class="mt-4">
+				<fieldset class="grid gap-2" {% if not pairing.paired %}disabled{% endif %}>
+					<label class="flex items-start gap-2 text-sm">
+						<input type="checkbox" name="force" value="on" class="mt-0.5">
+						<span>{{ "monitoring.hubs.nb_update_force"|t }}
+							<span class="block text-xs text-muted-fg">{{ "monitoring.hubs.nb_update_force_hint"|t }}</span></span>
+					</label>
+					<div class="flex justify-end gap-2 mt-2">
+						<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="this.closest('[data-confirm-panel]').hidden = true">{{ "common.actions.cancel"|t }}</button>
+						<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.hubs.nb_update_confirm_button"|t }}</button>
+					</div>
+				</fieldset>
+			</form>
+</div>
+	{% endif %}
+
+	{#- "System management" (ui_components.md §13, amended 2026-10-15): the
+	    former Radio mode and Danger zone cards as one locked service card
+	    (partials/service_card.html), admin only. Change radio first, the
+	    destructive factory reset last; each keeps its own confirm.
+
+	    The Hub's radio (§3.4, UI-24 as amended 2026-09-27;
+	    plan/control/radio/node_registry.md §11): the signed `radio-set-mode`
+	    changes `radio.mode` in place and the Hub restarts its radio services
+	    and this Portal. Nothing is deleted. Only the Hub this Portal runs on
+	    (the Server). After a change the card offers "Přesunout všechny Nody na
+	    <rádio>" (`move_nodes`, R6). Factory reset: `confirm_hostname` must
+	    equal `hostname` (browser pattern is UX only — the server re-checks). -#}
+	{% if is_admin %}
+	{% import "partials/service_card.html" as svc %}
+	{% call svc.card("hub-system-mgmt-" ~ hostname, heading="monitoring.hubs.system_mgmt_heading"|t, icon="settings") %}
+		{% if local_device %}
+		{% call svc.row("radio-mode", "monitoring.hubs.radio_change_heading"|t, (("monitoring.hubs.radio_change_desc"|t) ~ " · " ~ ("monitoring.hubs.radio_mode_label"|t) ~ ": " ~ ((("monitoring.hubs.radio_mode_" ~ radio_mode)|t) if radio_mode else "—")),
+			"monitoring.hubs.radio_select_button"|t, disabled_note=(none if pairing.paired else "monitoring.service.hub_unpaired"|t)) %}
+			{#- The Node question (node_registry.md §12): shown for a mode that
+			    switches off a carrier this Hub's registry holds Nodes on
+			    (`radio_switch`), one choice for all of them. The Node step runs
+			    before the switch, one signed command per Node. A mode that
+			    switches nothing off with Nodes on it asks nothing; move is not
+			    offered when the new mode runs no carrier (`off`). A hidden
+			    fieldset is disabled, so only the shown one is posted. -#}
+			<form hx-post="/hubs/{{ hostname }}/system/radio-mode" hx-target="#command-status" hx-swap="outerHTML" @htmx:after-request="done($event)"
+				x-data="{ mode: '' }">
+				<fieldset class="grid gap-2" {% if not pairing.paired %}disabled{% endif %} :disabled="!unlocked">
+					<div class="grid gap-1" role="radiogroup" aria-label="{{ "monitoring.hubs.radio_mode_label"|t }}">
+						{#- `dual` is service-only (set over SSH with `radio-set-mode`): shown as the current
+						    mode, never offered here. -#}
+						{% for m in ["off", "lorawan", "p2p"] %}
+						<label class="flex items-center gap-2 text-sm {% if m == radio_mode %}opacity-50{% endif %}">
+							<input type="radio" name="mode" value="{{ m }}" required x-model="mode" {% if m == radio_mode %}disabled{% endif %}>
+							<span>{{ ("monitoring.hubs.radio_mode_" ~ m)|t }}</span>
+						</label>
+						{% endfor %}
+					</div>
+					{% for sw in radio_switch %}
+					<fieldset class="grid gap-2 rounded-lg border border-base-300 px-3 py-2"
+						x-show="mode === '{{ sw.mode }}'" :disabled="mode !== '{{ sw.mode }}'"
+						style="display:none" disabled data-nodes-for="{{ sw.mode }}">
+						<legend class="px-1 text-sm font-medium">{{ "monitoring.hubs.radio_change_nodes_legend"|t|replace("{count}", sw.count|string)|replace("{from}", sw.from_label) }}</legend>
+						<p class="text-xs text-muted-fg">{{ "monitoring.hubs.radio_change_nodes_order"|t }}</p>
+						{% if sw.move_to %}
+						<label class="flex items-start gap-2 text-sm">
+							<input type="radio" name="nodes" value="move" required class="mt-0.5">
+							<span>{{ "monitoring.hubs.radio_change_nodes_move"|t|replace("{to}", ("monitoring.transport." ~ sw.move_to)|t) }}
+								<span class="block text-xs text-muted-fg">{{ "monitoring.hubs.radio_change_nodes_move_hint"|t }}</span></span>
+						</label>
+						{% else %}
+						<p class="text-xs text-muted-fg">{{ "monitoring.hubs.radio_change_nodes_move_off"|t }}</p>
+						{% endif %}
+						<label class="flex items-start gap-2 text-sm">
+							<input type="radio" name="nodes" value="remove" required class="mt-0.5">
+							<span>{{ "monitoring.hubs.radio_change_nodes_remove"|t }}
+								<span class="block text-xs text-muted-fg">{{ "monitoring.hubs.radio_change_nodes_remove_hint"|t }}</span></span>
+						</label>
+						<label class="flex items-start gap-2 text-sm">
+							<input type="radio" name="nodes" value="keep" required class="mt-0.5">
+							<span>{{ "monitoring.hubs.radio_change_nodes_keep"|t }}
+								<span class="block text-xs text-muted-fg">{{ "monitoring.hubs.radio_change_nodes_keep_hint"|t }}</span></span>
+						</label>
+					</fieldset>
+					{% endfor %}
+					<input type="text" name="reason" class="input-v1 input-v1-sm" maxlength="256"
+						placeholder="{{ "monitoring.hubs.radio_change_reason_placeholder"|t }}">
+					{{ confirm_hostname(hostname) }}
+					<div class="flex justify-end gap-2 mt-2">
+						<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.hubs.radio_change_confirm_button"|t }}</button>
+					</div>
+				</fieldset>
+			</form>
+		{% endcall %}
+		{% else %}
+		<div class="svc-row" data-svc-row="radio-mode">
+			<div class="min-w-0">
+				<div class="text-sm font-medium">{{ "monitoring.hubs.radio_change_heading"|t }}</div>
+				<div class="text-xs text-muted-fg">
+					{{- "monitoring.hubs.radio_change_server_only"|t }}
+					· {{ "monitoring.hubs.radio_mode_label"|t }}: {% if radio_mode %}{{ ("monitoring.hubs.radio_mode_" ~ radio_mode)|t }}{% else %}—{% endif %}</div>
+			</div>
+			<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" disabled>{{ "monitoring.hubs.radio_select_button"|t }}</button>
+		</div>
+		{% endif %}
+		{% if local_device and move_nodes %}
+		{% call svc.row("move-nodes", "monitoring.hubs.move_nodes_button"|t|replace("{to}", ("monitoring.transport." ~ move_nodes.to)|t),
+			"monitoring.hubs.move_nodes_summary"|t|replace("{from}", ("monitoring.transport." ~ move_nodes.from)|t)|replace("{count}", move_nodes.count|string),
+			"monitoring.hubs.radio_select_button"|t) %}
+			<div class="mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+				{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+				<p>{{ "monitoring.hubs.move_nodes_warning"|t|replace("{from}", ("monitoring.transport." ~ move_nodes.from)|t)|replace("{to}", ("monitoring.transport." ~ move_nodes.to)|t)|replace("{count}", move_nodes.count|string) }}</p>
+			</div>
+			<form hx-post="/hubs/{{ hostname }}/radio/move-nodes" hx-target="#command-status" hx-swap="outerHTML" @htmx:after-request="done($event)">
+				<input type="hidden" name="to" value="{{ move_nodes.to }}">
+				<fieldset class="grid gap-2" {% if not pairing.paired %}disabled{% endif %} :disabled="!unlocked">
+					{{ confirm_hostname(hostname) }}
+					<div class="flex justify-end gap-2 mt-2">
+						<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.hubs.move_nodes_confirm_button"|t }}</button>
+					</div>
+				</fieldset>
+			</form>
+		{% endcall %}
+		{% endif %}
+		{% call svc.row("factory-reset", "monitoring.device.factory_reset_label"|t, "monitoring.device.factory_reset_desc"|t,
+			"monitoring.device.factory_reset_label"|t, tone="text-critical border-critical/50",
+			disabled_note=(none if pairing.paired else "monitoring.service.hub_unpaired"|t)) %}
+				<form hx-post="/hubs/{{ hostname }}/system/factory-reset" hx-target="#command-status" hx-swap="outerHTML" @htmx:after-request="done($event)">
+					<fieldset class="grid gap-2 sm:grid-cols-2" {% if not pairing.paired %}disabled{% endif %} :disabled="!unlocked">
+						<input type="text" name="reason" class="input-v1 input-v1-sm"
+							placeholder="{{ "monitoring.device.factory_reset_reason_placeholder"|t }}" required minlength="8">
+						{{ confirm_hostname(hostname) }}
+						<select name="post_action" class="input-v1 input-v1-sm select-v1" required>
+							<option value="reboot">{{ "monitoring.device.then_reboot"|t }}</option>
+							<option value="power_off">{{ "monitoring.device.then_power_off"|t }}</option>
+						</select>
+						<button type="submit" class="btn-v1 btn-v1-destructive btn-v1-sm">{{ "monitoring.device.factory_reset_label"|t }}</button>
+					</fieldset>
+				</form>
+		{% endcall %}
+	{% endcall %}
+	{% endif %}
+	{% endif %}
+</div>
+{% endblock %}

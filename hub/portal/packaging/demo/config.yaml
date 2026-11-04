@@ -1,0 +1,25 @@
+# Demo portal config, mounted over PORTAL_CONFIG by docker-compose.yml.
+# Field names match src/config.rs::RawConfig; dev/config.yaml documents them.
+bind_addr: "0.0.0.0:8088"
+mqtt_host: "mosquitto"
+mqtt_port: 1883
+# The mock publishes under `proximos` (dev/mock/mock_publisher.py TOPIC_PREFIX)
+# and so does control-radio's northbound family; `fiber` here was a leftover
+# from the old naming and left every Hub topic unsubscribed.
+topic_prefix: "proximos"
+data_dir: "/data/portal"
+templates_dir: "/usr/share/fiber-portal/templates"
+static_dir: "/usr/share/fiber-portal/static"
+
+# false while DEMO_SITE is `:80`; flip to true the moment Caddy serves TLS,
+# or the browser will refuse the session cookie over https.
+cookie_secure: false
+
+# The server Hub of the mock cluster pairs without a code, as on real hardware.
+local_hostname: "FIBER-MOCK-001"
+experimental_features_enabled: false
+
+# Caddy reaches the Portal over the compose network, not loopback; its
+# X-Real-IP is the visitor's address (login throttle, audit). Docker's default
+# bridge pools are in 172.16.0.0/12.
+trusted_proxies: ["172.16.0.0/12"]

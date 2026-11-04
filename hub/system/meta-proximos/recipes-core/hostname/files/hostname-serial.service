@@ -1,0 +1,18 @@
+[Unit]
+Description=Set the hostname from the CM4 serial number
+Documentation=man:hostnamectl(1)
+After=dbus.socket
+Wants=dbus.socket
+Before=avahi-daemon.service NetworkManager.service
+# /etc/hosts is a link to /run/proximos/net/hosts, which tmpfiles seeds
+# (proximos-hosts.conf). Already implied by the default sysinit.target
+# dependency; spelled out because this script edits that file.
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/set-hostname.sh
+
+[Install]
+WantedBy=multi-user.target

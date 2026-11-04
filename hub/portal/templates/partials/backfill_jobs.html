@@ -1,0 +1,283 @@
+{#
+  Backfill jobs table for one Node (M5-T context contract), and the same
+  table for a Beacon's archive history (plan/portal/beacon_history.md §7.1:
+  the Beacon's History tab is the Node's page, so this partial is shared
+  rather than copied).
+
+  Context: {
+    node_key: string,      -- lowercase 16-hex (Node)
+    swap_id: string,       -- optional: element id + SSE event name; default
+                           -- "backfill-jobs-{node_key}"
+    post_url: string,      -- optional: where Download posts a window and
+                           -- "{post_url}/{job_id}/cancel" cancels; default
+                           -- "/nodes/{node_key}/backfill"
+    can_edit: bool,       -- true shows the Cancel button on pending jobs
+    gaps: [ {             -- B3: holes still open, newest first, <= 16 rows
+      time_from: string, time_to: string,   -- pre-formatted display strings
+      duration: string,   -- pre-formatted "3 h 20 min" (h/min in both langs)
+      samples_expected: int  -- estimate from the cadence, not the device's answer
+    }, ... ]
+    jobs: [ {             -- ws.md `job_response` shape, newest first
+      job_id: int|string,  -- a Beacon job's id is "bh-<ulid>"
+      label: string,       -- optional: what the "#" column shows instead of job_id
+      status: "pending"|"requested"|"receiving"|"done"|"failed"|"cancelled",
+      time_from: string, time_to: string,   -- pre-formatted display strings
+      trigger: "manual"|"auto-on-reconnect"|"scheduled"|
+               "auto-before-recording-change",
+      samples_received: int, samples_expected: int|none,
+      samples_interval_min: int|none, samples_interval_assumed: bool,
+                           -- optional (Beacon): the recording interval the
+                           -- expected count was counted at, for the line
+                           -- under it
+      retry_count: int, device_refused: bool,
+      error_message: string|none, created_at: string,
+      reason: string|none, -- optional (Beacon): failure reason,
+                           -- worded by monitoring.beacon_history.reason.*
+    }, ... ]
+  }
+
+  Outer element is the SSE swap target: id/sse-swap
+  "backfill-jobs-{node_key}", hx-swap="outerHTML" — the server re-renders
+  the WHOLE table on every backfill_job lifecycle frame (ws.md: request
+  sent/unsent/failed, each credited history frame, refusal, reconciler
+  retry/give-up). Per-row swaps aren't worth the id bookkeeping at this
+  table's size.
+
+  Cancel: only `pending` is freely cancellable (ws.md status machine), so
+  the button renders only on pending rows and only when can_edit. It's an
+  htmx POST /nodes/{node_key}/backfill/{job_id}/cancel targeting this same
+  table (hx-swap outerHTML) — the wave-2 handler responds with this partial
+  re-rendered, exactly like the POST /nodes/{node_key}/backfill submit in
+  pages/node_detail.html.
+
+  Amended 2026-10-15 (ui_components.md §9): the partial draws two of the
+  History tab's three collapsible cards, Coverage (bar + open gaps) and
+  Downloads (jobs). Both sit inside the one swap target so one SSE frame
+  repaints both; the cards keep their open state across the swap. Extra
+  context: `history_off: bool` (Node keeps no history: the warning at the
+  top of Coverage). Job rows also carry `from_unix`/`to_unix`, so the bar
+  paints a hole a running job covers blue. Coverage is computed in the
+  browser from the gap rows (the same detector, <= 16 newest holes, its
+  look-back window), so a range longer than that look-back reads high.
+
+  The gap list renders above the table because it is the "why": these are
+  the holes the jobs below exist to fill, and a hole leaves the list the
+  moment the backfill filling it credits its last frame. Both are
+  recomputed on every nudge for exactly that reason (devices.backend.md §6,
+  devices.node.md §3.9 item 1).
+#}{% import "partials/ui.html" as ui %}{% import "partials/icons.html" as ic %}
+{%- set bf_id = swap_id if swap_id is defined else "backfill-jobs-" ~ node_key %}{% set bf_url = post_url if post_url is defined else "/nodes/" ~ node_key ~ "/backfill" %}
+{%- set jobs = jobs if jobs is defined and jobs else [] %}{% set gaps = gaps if gaps is defined and gaps else [] %}
+{%- set ns = namespace(run=0, ref=0, fail=0, rw="") %}
+{%- for j in jobs %}
+{%- if j.status in ["pending", "requested", "receiving"] %}{% set ns.run = ns.run + 1 %}{% if j.to_unix > j.from_unix %}{% set ns.rw = ns.rw ~ "[" ~ j.from_unix ~ "," ~ j.to_unix ~ "]," %}{% endif %}{% endif %}
+{%- if j.device_refused %}{% set ns.ref = ns.ref + 1 %}{% elif j.status == "failed" %}{% set ns.fail = ns.fail + 1 %}{% endif %}
+{%- endfor %}
+<div id="{{ bf_id }}" sse-swap="{{ bf_id }}" hx-swap="outerHTML" class="flex flex-col gap-4 [&>*]:min-w-0"
+	x-data='{
+		id: {{ bf_id|tojson }},
+		range: (window.__bfRange || {})[{{ bf_id|tojson }}] || "7d",
+		sel: null,
+		older: false,
+		now: Math.floor(Date.now() / 1000),
+		gaps: {{ gaps | map(attribute="from_unix") | list | tojson }}.map((f, i) => [f, {{ gaps | map(attribute="to_unix") | list | tojson }}[i]]),
+		runs: [{{ ns.rw }}],
+		t_gap: {{ "monitoring.backfill.coverage_gap"|t|tojson }},
+		t_dl: {{ "monitoring.backfill.coverage_downloading"|t|tojson }},
+		spans: { "24h": 86400, "7d": 604800, "30d": 2592000 },
+		labels: { "24h": {{ "monitoring.backfill.range_24h"|t|tojson }}, "7d": {{ "monitoring.backfill.range_7d"|t|tojson }}, "30d": {{ "monitoring.backfill.range_30d"|t|tojson }} },
+		setRange(r) { this.range = r; this.sel = null; (window.__bfRange ||= {})[this.id] = r; },
+		start() { return this.now - this.spans[this.range]; },
+		busy(i) { const g = this.gaps[i]; return this.runs.some(r => r[0] < g[1] && r[1] > g[0]); },
+		shown(i) { return this.gaps[i][1] > this.start(); },
+		segs() {
+			const s = this.start(), w = this.spans[this.range];
+			return this.gaps.map((g, i) => ({ i, a: Math.max(g[0], s), b: Math.min(g[1], this.now) }))
+				.filter(x => x.b > x.a)
+				.map(x => ({ i: x.i, l: (x.a - s) / w * 100, w: (x.b - x.a) / w * 100, busy: this.busy(x.i) }));
+		},
+		pct() { return Math.max(0, 100 - this.segs().reduce((a, x) => a + x.w, 0)); },
+		pctText() { return this.pct().toLocaleString(document.documentElement.lang, { minimumFractionDigits: 1, maximumFractionDigits: 1 }); },
+		summary() {
+			const n = this.segs().length;
+			const gaps = n === 1 ? {{ "monitoring.backfill.coverage_gaps_one"|t|tojson }} : {{ "monitoring.backfill.coverage_gaps_n"|t|tojson }}.replace("{n}", n);
+			return this.pctText() + " % · " + gaps + " · " + this.labels[this.range];
+		},
+		pick(i) { this.sel = this.sel === i ? null : i; if (this.sel !== null) this.$nextTick(() => document.getElementById(this.id + "-gap-" + i)?.scrollIntoView({ block: "nearest" })); }
+	}'>
+	{#- 1. Coverage: how much of the range the Portal holds, and the holes. -#}
+	{% call ui.collapsible_card(bf_id ~ "-coverage", "chart-bar", "monitoring.backfill.coverage_heading"|t, summary_x="summary()") %}
+		{% if history_off is defined and history_off %}
+		<div role="alert" class="alert alert-warning">
+			<span>{{ "monitoring.history_switch.node_keeps_none"|t }}
+			<a class="link" href="/nodes/{{ node_key }}/settings#device-config-node">{{ "monitoring.history_switch.to_settings"|t }}</a></span>
+		</div>
+		{% endif %}
+		<div class="flex items-center justify-between gap-3 flex-wrap">
+			<div class="pill-group" role="group" aria-label="{{ "monitoring.backfill.coverage_range"|t }}">
+				{% for r in ["24h", "7d", "30d"] %}
+				<button type="button" class="pill" :class="range === '{{ r }}' && 'is-active'" :aria-pressed="(range === '{{ r }}').toString()" @click="setRange('{{ r }}')">{{ ("monitoring.backfill.range_" ~ r)|t }}</button>
+				{% endfor %}
+			</div>
+			<p class="text-sm"><span class="font-semibold tabular-nums" x-text="pctText() + ' %'"></span> <span class="text-muted-fg">{{ "monitoring.backfill.coverage_in_portal"|t }}</span></p>
+		</div>
+		{#- Green = the Portal holds data, red = a hole, blue = a hole a running
+		    job is downloading. A hole is at least 2 px wide so a one-hour hole
+		    in thirty days still shows; clicking it selects its row below. -#}
+		<div class="relative h-4 w-full rounded bg-success overflow-hidden" role="img" :aria-label="summary()">
+			<template x-for="s in segs()" :key="s.i">
+				<button type="button" class="absolute inset-y-0 min-w-[2px] cursor-pointer"
+					:class="[s.busy ? 'bg-info' : 'bg-error', sel === s.i ? 'ring-2 ring-base-content ring-inset' : '']"
+					:style="`left: ${s.l}%; width: ${s.w}%`" @click="pick(s.i)"
+					:title="s.busy ? t_dl : t_gap"></button>
+			</template>
+		</div>
+		<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-fg">
+			<span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm bg-success"></span>{{ "monitoring.backfill.coverage_legend_data"|t }}</span>
+			<span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm bg-error"></span>{{ "monitoring.backfill.coverage_legend_gap"|t }}</span>
+			<span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded-sm bg-info"></span>{{ "monitoring.backfill.coverage_legend_downloading"|t }}</span>
+		</div>
+		{#- Open holes inside the range: window | approx samples | Download.
+		    Scrolls at eight rows. -#}
+		<p class="text-sm font-medium">{{ "monitoring.backfill.gaps_heading"|t }}</p>
+		{% if gaps %}
+		<p class="text-sm text-muted-fg" x-show="!segs().length" x-cloak>{{ "monitoring.backfill.coverage_no_gaps"|t }}</p>
+		<div class="max-h-64 overflow-y-auto rounded-lg border border-base-300" x-show="segs().length">
+			<table class="w-full text-sm">
+				<thead class="sticky top-0 bg-base-100 [&_tr]:border-b [&_tr]:border-base-300">
+					<tr class="[&>th]:py-1.5 [&>th]:px-3 [&>th]:text-left [&>th]:text-xs [&>th]:font-medium [&>th]:text-muted-fg">
+						<th>{{ "monitoring.backfill.window_column"|t }}</th>
+						<th class="text-right">{{ "monitoring.backfill.samples_column"|t }}</th>
+						{% if can_edit %}<th class="w-px"></th>{% endif %}
+					</tr>
+				</thead>
+				<tbody>
+					{% for g in gaps %}
+					<tr id="{{ bf_id }}-gap-{{ loop.index0 }}" class="border-b border-base-300 last:border-0 [&>td]:py-1.5 [&>td]:px-3 cursor-pointer"
+						x-show="shown({{ loop.index0 }})" :class="sel === {{ loop.index0 }} && 'bg-primary/10'" @click="pick({{ loop.index0 }})">
+						<td class="font-mono text-xs tabular-nums"><span class="whitespace-nowrap">{{ g.time_from }}</span> <span class="whitespace-nowrap">→ {{ g.time_to }}</span>
+							<span class="text-muted-fg hidden sm:inline">· {{ g.duration }}</span></td>
+						<td class="text-right tabular-nums whitespace-nowrap">≈ {{ g.samples_expected }}</td>
+						{% if can_edit %}
+						<td class="text-right" @click.stop>
+							{%- if g.unavailable %}
+							<span class="text-xs text-muted-fg whitespace-nowrap" title="{{ ("monitoring.backfill.gap_unavailable_hint." ~ g.unavailable)|t }}">{{ ("monitoring.backfill.gap_unavailable." ~ g.unavailable)|t }}</span>
+							{%- else %}
+							<span class="text-xs text-info whitespace-nowrap" x-show="busy({{ loop.index0 }})" x-cloak>{{ "monitoring.backfill.coverage_downloading"|t }}</span>
+							<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" x-show="!busy({{ loop.index0 }})"
+								hx-post="{{ bf_url }}"
+								hx-vals='{"from_unix": {{ g.from_unix }}, "to_unix": {{ g.to_unix }}}'
+								hx-target="#{{ bf_id }}" hx-swap="outerHTML">{{ "monitoring.backfill.gap_download_button"|t }}</button>
+							{%- endif %}
+						</td>
+						{% endif %}
+					</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+		{% else %}
+		<p class="text-sm text-muted-fg">{{ "monitoring.backfill.coverage_no_gaps"|t }}</p>
+		{% endif %}
+	{% endcall %}
+
+	{#- 2. Downloads: the jobs, newest three, the rest behind "Show N older". -#}
+	{%- set dl_summary = (("monitoring.backfill.summary_running"|t|replace("{n}", ns.run|string)) if ns.run else "") %}
+	{%- if ns.ref %}{% set dl_summary = dl_summary ~ (" · " if dl_summary else "") ~ ("monitoring.backfill.summary_refused"|t|replace("{n}", ns.ref|string)) %}{% endif %}
+	{%- if ns.fail %}{% set dl_summary = dl_summary ~ (" · " if dl_summary else "") ~ ("monitoring.backfill.summary_failed"|t|replace("{n}", ns.fail|string)) %}{% endif %}
+	{%- if not dl_summary %}{% set dl_summary = "monitoring.backfill.summary_n"|t|replace("{n}", jobs|length|string) %}{% endif %}
+	{% call ui.collapsible_card(bf_id ~ "-downloads", "list", "monitoring.backfill.downloads_heading"|t, summary=dl_summary) %}
+		{% if not jobs %}
+		<p class="text-sm text-muted-fg">{{ "monitoring.backfill.empty"|t }}</p>
+		{% else %}
+		{#- Same scroll box as the gap table above it. An auto-reconnect run
+		    leaves hundreds of one-window jobs behind, and before 2026-09-15 every
+		    one of them was a full row on the page: three columns of the same
+		    refusal, repeated down half a screen. The status cell now carries ONE
+		    badge and the reason as a muted line — "selhalo" + "odmítnuto" + a
+		    truncated red error said the same thing three times. The reason
+		    wraps (two lines at most) rather than holding the column at its full
+		    width (hardware test 2026-10-09). -#}
+		<div class="max-h-[28rem] overflow-y-auto rounded-lg border border-base-300">
+			<table class="w-full text-sm">
+				<thead class="sticky top-0 bg-base-100 [&_tr]:border-b [&_tr]:border-base-300">
+					<tr class="[&>th]:py-1.5 [&>th]:px-3 [&>th]:text-left [&>th]:text-xs [&>th]:font-medium [&>th]:text-muted-fg">
+						<th class="w-px">#</th>
+						<th>{{ "monitoring.backfill.window_column"|t }}</th>
+						<th>{{ "monitoring.backfill.trigger_column"|t }}</th>
+						<th>{{ "monitoring.backfill.status_column"|t }}</th>
+						<th class="text-right">{{ "monitoring.backfill.samples_column"|t }}</th>
+						<th class="text-right">{{ "monitoring.backfill.created_column"|t }}</th>
+						<th class="w-px"></th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for j in jobs %}
+					{% if j.status == "done" %}
+						{% set jbadge = "badge-status-normal" %}
+					{% elif j.status == "failed" %}
+						{% set jbadge = "badge-status-critical" %}
+					{% elif j.status == "cancelled" %}
+						{% set jbadge = "badge-status-offline" %}
+					{% elif j.status == "pending" %}
+						{% set jbadge = "badge-status-neutral" %}
+					{% else %}
+						{% set jbadge = "badge-status-warning" %}
+					{% endif %}
+					<tr class="border-b border-base-300 last:border-0 [&>td]:py-1.5 [&>td]:px-3 [&>td]:align-top"{% if loop.index > 3 %} x-show="older" x-cloak{% endif %}>
+						<td class="font-mono text-xs text-muted-fg tabular-nums">{{ j.label | default(j.job_id) }}</td>
+						{#- The two ends may break onto two lines: a month-long window as one
+						    unbreakable line took the width the status cell needed
+						    (hardware test 2026-10-09). -#}
+						<td class="tabular-nums"><span class="whitespace-nowrap">{{ j.time_from }}</span> <span class="whitespace-nowrap">→ {{ j.time_to }}</span></td>
+						<td class="text-xs text-muted-fg min-w-[6rem]">{{ ("monitoring.job_trigger." ~ j.trigger)|t }}</td>
+						{#- The badge on a line of its own and never broken; the reason and
+						    the cross-check warning each on their own line under it. -#}
+						<td class="min-w-[10rem]">
+							<div><span class="badge-status {{ jbadge }} whitespace-nowrap">{{ ("monitoring.job_status." ~ j.status)|t }}</span></div>
+							{#- One muted line for why, whatever the reason was: refusal,
+							    retries, or the device's own message. -#}
+							{% if j.device_refused or j.retry_count > 0 or j.error_message or j.reason %}
+							<div class="mt-0.5 text-xs text-muted-fg line-clamp-2 max-w-[18rem]" title="{{ j.error_message | default('', true) }}">
+								{%- if j.reason %}{{ ("monitoring.beacon_history.reason." ~ j.reason)|t }}{% endif -%}
+								{%- if j.device_refused %}{{ "monitoring.backfill.refused_badge"|t }}{% endif -%}
+								{%- if j.retry_count > 0 %}{% if j.device_refused or j.reason %} · {% endif %}{{ "monitoring.backfill.retry_label"|t|replace("{n}", j.retry_count) }}{% endif -%}
+								{%- if j.refusal %} · {{ ("monitoring.backfill.refusal." ~ j.refusal)|t }}
+								{%- elif j.error_message %}{% if j.device_refused or j.retry_count > 0 %} · {% endif %}{{ j.error_message }}{% endif -%}
+							</div>
+							{% endif %}
+						</td>
+						<td class="text-right tabular-nums whitespace-nowrap">
+							{{ j.samples_received }}{% if j.samples_expected is not none %} <span class="text-muted-fg">/ {{ j.samples_expected }}</span>{% endif %}
+							{#- A Beacon's expected count is the most its window can hold at
+							    the recording interval (beacon_history::job_ctx); the line says
+							    which interval, so 7381 at 5 min and 2460 at 15 min read as
+							    the same rule. A Node row carries no interval. -#}
+							{% if j.samples_expected is not none and j.samples_interval_min is defined %}
+							<div class="text-xs text-muted-fg" title="{{ "monitoring.beacon_history.expected_hint"|t }}">
+								{%- if j.samples_interval_min is none %}{{ "monitoring.beacon_history.expected_at_most"|t }}
+								{%- elif j.samples_interval_assumed %}{{ "monitoring.beacon_history.expected_assumed"|t|replace("{min}", j.samples_interval_min|string) }}
+								{%- else %}{{ "monitoring.beacon_history.expected_at_interval"|t|replace("{min}", j.samples_interval_min|string) }}{% endif -%}
+							</div>
+							{% endif %}
+						</td>
+						<td class="text-right text-xs text-muted-fg tabular-nums whitespace-nowrap">{{ j.created_at }}</td>
+						<td class="text-right">
+							{% if can_edit and j.status == "pending" %}
+							<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+								hx-post="{{ bf_url }}/{{ j.job_id }}/cancel"
+								hx-target="#{{ bf_id }}" hx-swap="outerHTML">{{ "common.actions.cancel"|t }}</button>
+							{% endif %}
+						</td>
+					</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+		{% if jobs|length > 3 %}
+		<button type="button" class="link text-sm self-start" x-show="!older" @click="older = true">{{ "monitoring.backfill.show_older"|t|replace("{n}", (jobs|length - 3)|string) }}</button>
+		{% endif %}
+		{% endif %}
+
+	{% endcall %}
+</div>

@@ -1,0 +1,6 @@
+board:
+  name: fiber_southbridge
+  full_name: Fiber Southbridge (STM32C031C6)
+  vendor: st
+  socs:
+    - name: stm32c031xx

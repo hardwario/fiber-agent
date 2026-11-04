@@ -1,0 +1,93 @@
+fdt addr ${fdt_addr} && fdt get value bootargs /chosen bootargs
+
+test -n "${BOOT_ORDER}" || setenv BOOT_ORDER "A B"
+test -n "${BOOT_A_LEFT}" || setenv BOOT_A_LEFT 3
+test -n "${BOOT_B_LEFT}" || setenv BOOT_B_LEFT 3
+test -n "${BOOT_DEV}" || setenv BOOT_DEV "mmc 0:1"
+
+setenv bootpart
+setenv raucslot
+
+for BOOT_SLOT in "${BOOT_ORDER}"; do
+  if test "x${bootpart}" != "x"; then
+  elif test "x${BOOT_SLOT}" = "xA"; then
+    if itest ${BOOT_A_LEFT} -gt 0; then
+      setexpr BOOT_A_LEFT ${BOOT_A_LEFT} - 1
+      echo "Found valid RAUC slot A"
+      setenv bootpart "/dev/mmcblk0p2"
+      setenv raucslot "A"
+      setenv BOOT_DEV "mmc 0:2"
+    fi
+  elif test "x${BOOT_SLOT}" = "xB"; then
+    if itest ${BOOT_B_LEFT} -gt 0; then
+      setexpr BOOT_B_LEFT ${BOOT_B_LEFT} - 1
+      echo "Found valid RAUC slot B"
+      setenv bootpart "/dev/mmcblk0p3"
+      setenv raucslot "B"
+      setenv BOOT_DEV "mmc 0:3"
+    fi
+  fi
+done
+
+if test -n "${bootpart}"; then
+  setenv bootargs "${bootargs} root=${bootpart} rauc.slot=${raucslot}"
+  saveenv
+else
+  echo "No RAUC slot with attempts left - booting the first slot in recovery mode"
+  for BOOT_SLOT in "${BOOT_ORDER}"; do
+    if test "x${bootpart}" != "x"; then
+    elif test "x${BOOT_SLOT}" = "xA"; then
+      setenv bootpart "/dev/mmcblk0p2"
+      setenv raucslot "A"
+      setenv BOOT_DEV "mmc 0:2"
+    elif test "x${BOOT_SLOT}" = "xB"; then
+      setenv bootpart "/dev/mmcblk0p3"
+      setenv raucslot "B"
+      setenv BOOT_DEV "mmc 0:3"
+    fi
+  done
+  if test -z "${bootpart}"; then
+    echo "BOOT_ORDER empty or unrecognised - falling back to slot A"
+    setenv bootpart "/dev/mmcblk0p2"
+    setenv raucslot "A"
+    setenv BOOT_DEV "mmc 0:2"
+  fi
+  setenv bootargs "${bootargs} root=${bootpart} rauc.slot=${raucslot} proximos.recovery=1"
+fi
+
+load ${BOOT_DEV} ${kernel_addr_r} boot/@@KERNEL_IMAGETYPE@@
+setenv bootfdt ${fdt_addr}
+setenv dtbo_addr ${pxefile_addr_r}
+
+setenv board_serial
+if fdt addr ${fdt_addr} && fdt get value board_serial / serial-number; then
+  echo "Board serial ${board_serial}"
+else
+  echo "No /serial-number in the firmware device tree"
+fi
+
+setenv dtb_ok
+setenv dtb_why "boot/bcm2711-rpi-cm4.dtb did not load from ${BOOT_DEV}, or is not a device tree"
+if load ${BOOT_DEV} ${fdt_addr_r} boot/bcm2711-rpi-cm4.dtb && fdt addr ${fdt_addr_r}; then
+  fdt resize 0x2000
+  setenv dtb_why "the board serial could not be written into the slot device tree"
+  if test -z "${board_serial}" || fdt set / serial-number "${board_serial}"; then
+    setenv dtb_why "boot/proximos.dtbo did not load from ${BOOT_DEV}"
+    if load ${BOOT_DEV} ${dtbo_addr} boot/proximos.dtbo; then
+      setenv dtb_why "fdt apply rejected boot/proximos.dtbo - the slot device tree is left half-merged"
+      if fdt apply ${dtbo_addr}; then
+        setenv dtb_ok 1
+      fi
+    fi
+  fi
+fi
+
+if test -n "${dtb_ok}"; then
+  echo "Device tree: bcm2711-rpi-cm4.dtb + proximos.dtbo from slot ${raucslot}"
+  setenv bootfdt ${fdt_addr_r}
+else
+  echo "Device tree: firmware fallback - ${dtb_why}"
+  echo "  no RTC on this boot: rtc-sync stays inert and proximos-health decides"
+fi
+
+@@KERNEL_BOOTCMD@@ ${kernel_addr_r} - ${bootfdt}

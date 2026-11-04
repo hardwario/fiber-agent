@@ -1,0 +1,102 @@
+{#
+  The one sensor/channel picker: /trends and the monitoring group form
+  (new and edit). The shared list toolbar (partials/list_toolbar.html,
+  portal-list.js: fulltext, filters, columns) over one table in selection
+  mode (portal-select.js: row click, header box, Shift-range).
+
+  Context:
+    rows       [ sensor_picker::SensorPickRow ] -- built in src/sensor_picker.rs
+    sp_key     list key ("history" | "groupform")
+    sp_mode    "trends" | "group"
+                 trends: the series colour tag after the name of a charted
+                         row (pages/history.html repaints `[data-swatch]`)
+                 group:  each box posts `input_name=id`; a row another
+                         group also holds names it (informational only,
+                         channels are not exclusive since 2026-10-15)
+    fields     [[name, label]] -- the Quantity filter's options
+    many_hubs  bool            -- the Hub column and filter
+    descs      optional {id: description} for the fulltext
+
+  Columns: checkbox, Item, Location, Quantity, Value, Hub. Offline rows are
+  listed like any other (the Connection filter narrows them).
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/device_row.html" as dr %}
+{% set list_key = sp_key %}
+{% set search_placeholder = "monitoring.limits.search"|t %}
+{% set entity_label = "monitoring.history.entity"|t %}
+{% set show_kind = true %}
+{% set show_location = true %}
+{% set show_gateway = many_hubs %}
+{% set gw_label = "monitoring.list.column_hub"|t %}
+{% set columns = [
+	["loc", "monitoring.dashboard.location_column"|t, true],
+	["qty", "monitoring.limits.quantity"|t, true],
+	["value", "monitoring.shared.value_column"|t, true],
+] + ([["hub", "monitoring.list.column_hub"|t, true]] if many_hubs else []) %}
+{% set extra_filters %}
+<div class="flex flex-col gap-1.5">
+	<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ sp_key }}-field">{{ "monitoring.limits.quantity"|t }}</label>
+	<select id="f-{{ sp_key }}-field" data-list-filter="field" class="input-v1 select-v1 w-full">
+		<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+		{% for name, label in fields %}<option value="{{ name }}">{{ label }}</option>{% endfor %}
+	</select>
+</div>
+{% endset %}
+{% if sp_mode == "trends" and groups is defined and groups %}
+{% set toolbar_lead %}
+{% set gns = namespace(o=[["", "—"]], v="") %}
+{% for g in groups %}{% set gns.o = gns.o + [[g.tokens, g.label ~ " (" ~ g.count ~ ")"]] %}{% if g.selected %}{% set gns.v = g.tokens %}{% endif %}{% endfor %}
+{{ ui.single_select("history-group-select", "monitoring.history.group_select"|t, gns.o, value=gns.v,
+	icon="monitor", select_attrs="data-group-select", class="flex-1 min-w-[9rem] sm:flex-none") }}
+{% endset %}
+{% endif %}
+{% include "partials/list_toolbar.html" %}
+
+{% set ncols = 5 + (1 if many_hubs else 0) %}
+{#- The scroll area fits the viewport (portal-select.js data-fit-viewport):
+    `sp_below` names the buttons under the picker, so they stay on screen. -#}
+<div class="mt-3 relative w-full overflow-auto rounded-xl border border-base-300 h-[28rem]"
+	data-fit-viewport{% if sp_below is defined and sp_below %} data-fit-below="{{ sp_below }}"{% endif %}>
+	<table data-list-table class="w-full caption-bottom text-sm">
+		<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+			<tr>
+				<th class="h-12 px-4 w-10 text-left align-middle" data-select-col><input type="checkbox" class="checkbox-v1" data-select-all aria-label="{{ "monitoring.limits.select_all"|t }}"></th>
+				{{ ui.sort_th("monitoring.list.item_column"|t, "name", "sticky left-0 z-30 w-[30%]") }}
+				{{ ui.sort_th("monitoring.dashboard.location_column"|t, "loc", "w-[22%]", "loc") }}
+				{{ ui.sort_th("monitoring.limits.quantity"|t, "qty", "w-[18%]", "qty") }}
+				{{ ui.sort_th("monitoring.shared.value_column"|t, "value", "text-right w-[12%]", "value") }}
+				{% if many_hubs %}{{ ui.sort_th("monitoring.list.column_hub"|t, "hub", "", "hub") }}{% endif %}
+			</tr>
+		</thead>
+		<tbody>
+			<tr data-list-nomatch class="hidden"><td colspan="{{ ncols }}" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td></tr>
+			{% for r in rows %}
+			{% set locked = sp_mode == "group" and r.locked_by %}
+			{% set taken = "monitoring.groups.taken_by"|t|replace("{group}", r.locked_by) if locked else "" %}
+			<tr data-kind="{{ r.kind }}" data-oor="normal" data-connected="{{ 1 if r.connected else 0 }}"
+				data-location="{{ r.location | default('', true) }}" data-gw="{{ r.hub | lower }}"
+				data-field="{{ r.field }}" data-owner="{{ r.owner }}"
+				data-select-id="{{ r.id }}"{% if locked %} title="{{ taken }}"{% endif %}
+				data-search="{{ (r.name ~ ' ' ~ r.quantity ~ ' ' ~ (r.location | default('', true)) ~ ' ' ~ r.hub ~ ' ' ~ taken ~ ' ' ~ (descs[r.id] if descs is defined and descs and r.id in descs else ''))|lower }}"
+				data-sort-name="{{ (r.name ~ ' ' ~ r.quantity) | lower }}" data-sort-loc="{{ (r.location | default('', true))|lower }}"
+				data-sort-qty="{{ r.quantity | lower }}" data-sort-hub="{{ r.hub | lower }}"
+				data-sort-value="{% if r.value is not none %}{{ r.value }}{% endif %}"
+				class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 data-[selected]:bg-primary/5 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+				<td class="w-10" data-select-col><input type="checkbox" class="checkbox-v1" data-select-box
+					{% if sp_mode == "group" and r.input_name %}name="{{ r.input_name }}" value="{{ r.id }}"{% endif %}
+					{% if r.selected %}checked{% endif %} aria-label="{{ r.name }} {{ r.quantity }}"></td>
+				{%- set extra %}{% if sp_mode == "trends" %}<span data-swatch class="inline-block h-2.5 w-2.5 rounded-full shrink-0{% if not r.color %} hidden{% endif %}"{% if r.color %} style="background-color:{{ r.color }}"{% endif %} aria-hidden="true"></span>{% endif %}{% endset %}
+				{{ dr.item_cell("base-300", "", r.name, "", sub=taken, name_extra=extra) }}
+				{{ dr.location_cell(r.location) }}
+				<td data-column="qty" class="text-sm text-muted-fg whitespace-nowrap">{{ r.quantity | default("—", true) }}</td>
+				<td data-column="value" class="text-right font-mono tabular-nums whitespace-nowrap">{% if r.value is not none %}{{ r.value | round(0 if r.unit == "%" else 1) }}&nbsp;{{ r.unit }}{% else %}—{% endif %}</td>
+				{% if many_hubs %}<td data-column="hub" class="text-sm text-muted-fg whitespace-nowrap">{{ r.hub }}</td>{% endif %}
+			</tr>
+			{% endfor %}
+			{% if not rows %}
+			<tr><td colspan="{{ ncols }}" class="py-10 text-center text-muted-fg">{{ (sp_empty if sp_empty is defined else "monitoring.limits.empty")|t }}</td></tr>
+			{% endif %}
+		</tbody>
+	</table>
+</div>

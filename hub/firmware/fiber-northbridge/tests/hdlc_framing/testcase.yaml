@@ -1,0 +1,8 @@
+tests:
+  firmware.northbridge.hdlc_framing:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags:
+      - northbridge

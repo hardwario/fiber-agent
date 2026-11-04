@@ -1,0 +1,91 @@
+{
+  "boot": {
+    "at": "2026-09-26T04:20:00Z",
+    "reset_cause": [
+      "pin"
+    ]
+  },
+  "build_flags": [],
+  "counters": {
+    "ack_ctrl_req": 0,
+    "ack_ctrl_sent": null,
+    "ack_time_missed": 0,
+    "ack_time_no_anchor": null,
+    "acks_late": 116,
+    "acks_sent": 115,
+    "acks_suppressed": 117,
+    "crc_err": 109,
+    "dl_delivered": 119,
+    "dl_expired": 121,
+    "dl_not_delivered": 120,
+    "dl_sent": 118,
+    "evt_relearn": 0,
+    "evt_resent": 124,
+    "evt_reserved_ack": 0,
+    "evt_seq_gap": 0,
+    "evt_seq_gap_seen": 0,
+    "link_crc_err": 122,
+    "link_err": 123,
+    "outbox_overflow": 0,
+    "outbox_pending": 0,
+    "radio_hdr_err": 110,
+    "rx": 100,
+    "rx_bad_hdr": 108,
+    "rx_dup": 102,
+    "rx_fresh": 101,
+    "rx_join_fwd": 106,
+    "rx_mic_fail": 104,
+    "rx_not_for_us": 107,
+    "rx_overrun": 111,
+    "rx_rearm_fail": 112,
+    "rx_replay": 103,
+    "rx_time_fallback": 0,
+    "rx_unknown_src": 105,
+    "time_sync_failed": 0,
+    "time_sync_sent": 0,
+    "tx": 113,
+    "tx_radio_err": 114,
+    "tx_refused": 0
+  },
+  "err_flags": [],
+  "fw_version": "0.3.0",
+  "gateway": {
+    "ack_turnaround_us": {
+      "last": 20150,
+      "max": 21400
+    },
+    "airtime_ms_last_hour": 5210,
+    "ctr_last": 4096,
+    "ctr_next": 5,
+    "dl_gap_ms": 20,
+    "evt_ring_max": 0,
+    "evt_ring_used": 0,
+    "net_id": 1831111266,
+    "peers": 2,
+    "peers_max": 64,
+    "queue_max": 32,
+    "queue_used": 1,
+    "turnaround_ms": 20
+  },
+  "git_sha": "c05b8d3e",
+  "last_error": null,
+  "last_seen": "2026-09-26T05:20:00Z",
+  "proto_version": 0,
+  "radio": {
+    "freq_hz": 869525000,
+    "sf": 7,
+    "state": "gateway",
+    "tx_power_dbm": 14
+  },
+  "state": "alive",
+  "timestamp": "2026-09-26T05:20:00Z",
+  "uart": "/dev/ttyAMA3",
+  "update": {
+    "attempts": 0,
+    "bundled": "0.3.0+c05b8d3e",
+    "last_error": null,
+    "note": null,
+    "state": "idle"
+  },
+  "uptime_s": 3600
+}

@@ -1,0 +1,191 @@
+{#
+  Audit log page (M2-T context contract, P2 v1-style restyle).
+
+  Context: {
+    current_user, nav_active = "audit",
+    entries: [ partials/audit_table.html's row shape, ... ], total: int,
+    filter: { event_type: string|none, username: string|none, q: string|none },
+    limit: int, offset: int
+  }.
+
+  Filter form is a plain GET (no htmx) — the query string is the only state,
+  so filtering + pagination stay bookmarkable/shareable and survive reload.
+  v1 has no audit screen of its own, so this follows the alarms-table
+  toolbar pattern (pages/alarms.html) instead: filter inputs left, search +
+  refresh right. Table + pagination live in partials/audit_table.html.
+
+  Search is a SQL clause (`AuditFilter::search`), not a pass over the rendered
+  rows. It was the latter until 2026-09-14, and on a paginated log that is a
+  lie: anything outside the fifty rows on screen came back "not found", in the
+  same silence as a genuine miss. The input carried `name="q"` the whole time,
+  so it LOOKED like it reached the server; the handler ignored it.
+
+  M9: `Username` reuses `auth.fields.username` (same word, same group).
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "auth.audit.heading"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4" data-list-key="audit">
+	{#- The same toolbar every other list wears (ui.toolbar_shell), in its
+	    SERVER mode: the log paginates, so the fields are form controls that
+	    auto-submit and the count arrives rendered. See pages/alarms.html for
+	    the two modes.
+
+	    The two free-text boxes this replaces were a trap of the shape issue
+	    #43 named: the repo matches `event_type = ?` and `username = ?` on
+	    exact equality while the operator types prose, so a near-miss returned
+	    an empty table in the same silence a real absence uses. Both are now
+	    selects over what the log actually holds.
+
+	    Period and Result are new controls over filters `AuditFilter` has
+	    carried all along and nothing offered. On an evidence trail "what
+	    happened between these two days" is the first question anyone asks. -#}
+	<form method="get" action="/audit" id="audit-filter-form">
+		{% set active_filters = 0 %}
+		{% if filter.event_type %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.username %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.success %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.since %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.until %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.q %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.window %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.kind %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% set count_text = ("monitoring.list.count"|t)
+			|replace("{visible}", entries|length)
+			|replace("{total}", total)
+			|replace("{entity}", "auth.audit.heading"|t) %}
+		{% set columns = [
+			["time", "auth.audit.table.time"|t, true],
+			["type", "auth.audit.table.type"|t, true],
+			["event", "auth.audit.table.event"|t, true],
+			["user", "auth.users.table.user"|t, true],
+			["target", "auth.audit.table.target"|t, true],
+			["result", "auth.audit.table.result"|t, true],
+			["ip", "auth.audit.table.ip"|t, false],
+		] %}
+		{% call ui.toolbar_shell(
+			key="audit",
+			columns=columns,
+			search_placeholder="auth.audit.search_placeholder"|t,
+			search_name="q",
+			search_value=filter.q | default("", true),
+			count_text=count_text,
+			clear_href="/audit",
+			active=active_filters
+		) %}
+			{#- One log of alarms, warnings and the operator log since
+			    2026-10-15 (plan/portal/user_admin.md); the tiles link these. -#}
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-audit-type">{{ "auth.audit.table.type"|t }}</label>
+				<select id="f-audit-type" name="type" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="">{{ "monitoring.list.filter_all"|t }}</option>
+					{% for k in ["alarm", "warning", "log"] %}
+					<option value="{{ k }}" {% if filter.kind == k %}selected{% endif %}>{{ ("auth.audit.kind." ~ k)|t }}</option>
+					{% endfor %}
+				</select>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-audit-window">{{ "auth.audit.window_label"|t }}</label>
+				<select id="f-audit-window" name="window" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="">{{ "monitoring.list.filter_all"|t }}</option>
+					<option value="24h" {% if filter.window == "24h" %}selected{% endif %}>{{ "auth.audit.window_24h"|t }}</option>
+				</select>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-audit-event">{{ "auth.audit.event_type_label"|t }}</label>
+				<select id="f-audit-event" name="event_type" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="">{{ "monitoring.list.filter_all"|t }}</option>
+					{% for e in event_types %}
+					{% set ek = "auth.audit.event." ~ e %}{% set el = ek|t %}<option value="{{ e }}" {% if filter.event_type == e %}selected{% endif %}>{{ e if el == ek else el }}</option>
+					{% endfor %}
+				</select>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-audit-user">{{ "auth.fields.username"|t }}</label>
+				<select id="f-audit-user" name="username" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="">{{ "monitoring.list.filter_all"|t }}</option>
+					{% for u in usernames %}
+					<option value="{{ u }}" {% if filter.username == u %}selected{% endif %}>{{ u }}</option>
+					{% endfor %}
+				</select>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-audit-result">{{ "auth.audit.table.result"|t }}</label>
+				<select id="f-audit-result" name="success" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="">{{ "monitoring.list.filter_all"|t }}</option>
+					<option value="1" {% if filter.success == "1" %}selected{% endif %}>{{ "auth.audit.result_ok"|t }}</option>
+					<option value="0" {% if filter.success == "0" %}selected{% endif %}>{{ "auth.audit.result_fail"|t }}</option>
+				</select>
+			</div>
+
+			{#- Two inputs, one field: a period is one idea and reads worse as
+			    two dropdown-shaped controls sitting apart. -#}
+			<div class="flex flex-col gap-1.5 md:col-span-2">
+				<span class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg">{{ "auth.audit.period_label"|t }}</span>
+				<div class="flex items-center gap-2">
+					<input type="date" name="since" value="{{ filter.since | default('', true) }}"
+						class="input-v1" onchange="this.form.submit()"
+						aria-label="{{ "auth.audit.period_from"|t }}">
+					<span class="shrink-0 text-muted-fg">–</span>
+					<input type="date" name="until" value="{{ filter.until | default('', true) }}"
+						class="input-v1" onchange="this.form.submit()"
+						aria-label="{{ "auth.audit.period_to"|t }}">
+				</div>
+			</div>
+		{#- The order survives a filter change: the sort headers are links
+		    outside this form, so without these two the first filter click
+		    would silently drop the column the operator sorted by. -#}
+		<input type="hidden" name="sort" value="{{ sort }}">
+		<input type="hidden" name="dir" value="{{ dir }}">
+		{% endcall %}
+	</form>
+
+	<div data-list-results>
+	{% include "partials/audit_table.html" %}
+	</div>
+</div>
+
+{#- One record dialog for the page; a row's `<template data-audit-record>`
+    fills it (partials/audit_table.html). Delegated on document so rows the
+    live search swaps in open it too. -#}
+<dialog id="audit-record" class="modal">
+	<div class="modal-box card-v1 max-w-2xl">
+		<form method="dialog"><button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" aria-label="{{ "common.actions.close"|t }}">✕</button></form>
+		<div data-audit-record-body></div>
+		<div class="modal-action"><form method="dialog"><button class="btn-v1 btn-v1-outline btn-v1-sm">{{ "common.actions.close"|t }}</button></form></div>
+	</div>
+	<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+</dialog>
+<script>
+(function () {
+	function open(row) {
+		var tpl = row.querySelector('template[data-audit-record]');
+		var dlg = document.getElementById('audit-record');
+		if (!tpl || !dlg) return;
+		var body = dlg.querySelector('[data-audit-record-body]');
+		body.replaceChildren(tpl.content.cloneNode(true));
+		dlg.showModal();
+	}
+	document.addEventListener('click', function (ev) {
+		var row = ev.target.closest('tr[data-audit-row]');
+		// A link in the row (the target) navigates; it does not open the dialog.
+		if (!row || ev.target.closest('a, button, input, select')) return;
+		open(row);
+	});
+	document.addEventListener('keydown', function (ev) {
+		if (ev.key !== 'Enter') return;
+		var row = ev.target.closest && ev.target.closest('tr[data-audit-row]');
+		if (row && ev.target === row) { ev.preventDefault(); open(row); }
+	});
+})();
+</script>
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

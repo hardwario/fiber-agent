@@ -1,0 +1,29 @@
+-- Cadence-aware backfill retries (plan/portal/devices.backend.md §6.2 as
+-- decided in §16.1, B3).
+--
+-- The reconciler used to be purely wall-clock driven: a requested/receiving
+-- job whose `updated_at` was older than `stall_timeout_s` (120 s) got
+-- republished. That number is a guess about a fleet, not about the Node in
+-- front of it — a Node on a 20-minute `application.interval_report` was
+-- getting a fresh downlink every two minutes, nine of them before its first
+-- scheduled uplink could possibly answer.
+--
+-- §6.2 replaces it with "wait for 3 incoming interval_report ticks, then
+-- re-send", which is a per-job deadline rather than a per-fleet timeout, and
+-- so has to be stored per job. `backfill_jobs` (V4; V6 renamed its
+-- `dev_eui` column and index) has nowhere to put one: `requested_at` is
+-- stamped once on entry to `requested` and read by no scheduling logic, and
+-- `updated_at` moves on every credited frame, which is exactly the event
+-- that should NOT postpone a retry deadline.
+--
+-- A column rather than in-memory watcher state, per §16.1: the deadline
+-- survives a restart (watcher state does not) and `reconcile_pass` is
+-- already a time-driven sweep over `active_jobs`, so it needs no new sweep
+-- to read one more column. V6 is the ALTER precedent.
+--
+-- NULL means "no deadline set" and is the pre-B3 shape: rows written before
+-- this migration, and jobs still `pending` (nothing has been sent, so there
+-- is nothing to wait for). The reconciler treats NULL on an in-flight job as
+-- `updated_at + 3 x the Node's cadence`, which is the same rule computed
+-- from what the old rows do carry.
+ALTER TABLE backfill_jobs ADD COLUMN not_before INTEGER;

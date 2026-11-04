@@ -1,0 +1,1110 @@
+{#
+  Shared UI macros — the v1 look (viewer/frontend/components/ui/*) as
+  server-rendered markup. Import, don't include:
+
+      {% import "partials/ui.html" as ui %}
+
+  Every macro takes plain scalars so a caller never has to build a nested
+  context just to render chrome. One line per macro says what it is for;
+  the parameter list is the contract.
+#}
+{% import "partials/icons.html" as ic %}
+
+{# Section heading: tinted icon square + title + optional subtitle. Wrap in
+   {% call %} to put actions (buttons) on the right. #}
+{% macro page_header(icon, title, subtitle="") -%}
+<div class="flex items-start justify-between gap-3">
+	<div class="flex items-center gap-3 min-w-0">
+		{%- if icon %}
+		<span class="flex items-center justify-center h-9 w-9 rounded-lg bg-primary/10 text-primary shrink-0">
+			{{ ic.icon(icon, "h-5 w-5") }}
+		</span>
+		{%- endif %}
+		<div class="min-w-0">
+			<h2 class="text-lg font-semibold tracking-tight truncate">{{ title }}</h2>
+			{%- if subtitle %}
+			<p class="text-sm text-muted-fg truncate">{{ subtitle }}</p>
+			{%- endif %}
+		</div>
+	</div>
+	{%- if caller is defined %}
+	<div class="flex items-center justify-end gap-2 flex-wrap min-w-0">{{ caller() }}</div>
+	{%- endif %}
+</div>
+{%- endmacro %}
+
+{# Metric tile (v1 components/ui/metric-card.tsx): label, big value, tinted
+   icon square. tone = neutral | success | warning | alarm | critical, and it
+   colours both the icon square and the card border. #}
+{# One card of metrics with hairlines between them (enerooo-spark's metric
+   strip), not a card per metric. `gap-px` over a `bg-base-300` ground draws
+   the dividers, so the strip can wrap to two columns on a phone without any
+   cell having to know whether it starts a row; `lg:grid-flow-col` +
+   `auto-cols-fr` then puts however many tiles the page has on one line.
+   Every child must be a `stat_tile`, whose `bg-base-100` covers the ground. #}
+{% macro stat_row(id=none, oob=false) -%}
+<div {% if id %}id="{{ id }}" {% endif %}{% if oob %}hx-swap-oob="true" {% endif %}class="card-v1 overflow-hidden grid grid-cols-2 lg:grid-flow-col lg:auto-cols-fr gap-px bg-base-300">{{ caller() }}</div>
+{%- endmacro %}
+
+{# One cell of a `stat_row`: a small caps label over the value, the icon
+   tinted by `tone` beside it. A cell with `href` is a link and says so on
+   hover; the others are plain. #}
+{% macro stat_tile(label, value, icon, tone="neutral", href=none, title=none) -%}
+{%- if tone == "success" %}{% set tint = "text-success" %}
+{%- elif tone == "warning" %}{% set tint = "text-warning" %}
+{%- elif tone == "alarm" %}{% set tint = "text-alarm" %}
+{%- elif tone == "critical" %}{% set tint = "text-critical" %}
+{%- else %}{% set tint = "text-primary" %}{% endif %}
+{%- if href %}<a href="{{ href }}" class="block bg-base-100 px-4 py-3 sm:px-5 transition-colors hover:bg-muted/60"{% if title %} title="{{ title }}"{% endif %}>{% else %}<div class="bg-base-100 px-4 py-3 sm:px-5"{% if title %} title="{{ title }}"{% endif %}>{% endif %}
+	<p class="text-[11.5px] font-semibold uppercase tracking-wider text-muted-fg truncate">{{ label }}</p>
+	<div class="mt-1 flex items-center gap-2">
+		{%- if icon %}<span class="shrink-0 {{ tint }}">{{ ic.icon(icon, "h-4 w-4") }}</span>{% endif %}
+		<span class="text-2xl font-bold tracking-tight tabular-nums">{{ value }}</span>
+	</div>
+{%- if href %}</a>{% else %}</div>{% endif %}
+{%- endmacro %}
+
+{# Filter/search row above a table. Wrap the left-hand controls in
+   toolbar_group("left") (it prepends the funnel icon) and the search box plus
+   primary action in toolbar_group("right"). #}
+{% macro toolbar() -%}
+<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">{{ caller() }}</div>
+{%- endmacro %}
+
+{% macro toolbar_group(side="left") -%}
+{%- if side == "left" %}
+<div class="flex items-center gap-2 flex-wrap">
+	{{ ic.icon("filter", "h-4 w-4 text-muted-fg shrink-0 hidden sm:block") }}
+	{{ caller() }}
+</div>
+{%- else %}
+<div class="flex items-center gap-2 shrink-0">{{ caller() }}</div>
+{%- endif %}
+{%- endmacro %}
+
+{# Search input with a leading magnifier, sized like v1's toolbar search. #}
+{% macro search_input(name, placeholder, value="", extra="") -%}
+<div class="relative w-full sm:w-[21rem]">
+	{{ ic.icon("search", "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-fg pointer-events-none") }}
+	<input type="search" name="{{ name }}" value="{{ value }}" placeholder="{{ placeholder }}"
+		class="input-v1 input-v1-sm pl-9" {{ extra|safe }}>
+</div>
+{%- endmacro %}
+
+{# White card that holds a table edge to edge (v1 Card + Table). #}
+{% macro table_card() -%}
+<div class="card-v1 overflow-hidden">
+	{#- `overflow-y-clip` beside `overflow-x-auto`: a bare `overflow-x`
+	    computes the other axis to `auto`, which would make this element the
+	    scroll container and strand a sticky table head inside it. Same fix
+	    the /nodes wrapper carries, so every list keeps its header on screen
+	    while the rows scroll. -#}
+	<div class="relative w-full overflow-x-auto overflow-y-clip">{{ caller() }}</div>
+</div>
+{%- endmacro %}
+
+{# Table head cell / body cell, v1 components/ui/table.tsx.
+
+   `col` names an optional column: the head cell and every body cell of that
+   column carry the same `data-column`, which is the handle the column picker
+   shows and hides them by (enerooo-spark's `static/js/smart-list.js` rule,
+   ported in /static/js/portal-list.js). Omitted, the column is permanent. #}
+{% macro th(label, class="", col="") -%}
+<th class="h-12 px-4 text-left align-middle font-medium text-muted-fg {{ class }}"{% if col %} data-column="{{ col }}"{% endif %}>{{ label }}</th>
+{%- endmacro %}
+
+{# Filled status pill; `state` is the mixed-case alarm state the render layer
+   emits (Normal/Warning/Critical/Disconnected/Reconnecting/NeverConnected). #}
+{% macro status_badge(state, label) -%}
+{%- if state == "Normal" %}{% set cls = "badge-status-normal" %}
+{%- elif state == "Warning" %}{% set cls = "badge-status-warning" %}
+{%- elif state == "Critical" %}{% set cls = "badge-status-critical" %}
+{%- elif state == "Disconnected" %}{% set cls = "badge-status-offline" %}
+{%- else %}{% set cls = "badge-status-neutral" %}{% endif %}
+<span class="badge-status {{ cls }}">{{ label }}</span>
+{%- endmacro %}
+
+{# Filled role pill (v1 users table's role chip, legacy-19-users.png):
+   shield-check icon + role label on a solid primary background. #}
+{% macro role_pill(label) -%}
+<span class="inline-flex items-center gap-1 shrink-0 rounded-full bg-primary px-2.5 py-0.5 text-xs font-medium text-primary-content">
+	{{ ic.icon("shield-check", "h-3 w-3") }}{{ label }}
+</span>
+{%- endmacro %}
+
+{# Small round status dot (v1 components/ui/status-indicator.tsx). `tone`, when
+   given, overrides the two-state colour with `bg-{tone}` — the device lists'
+   four-state link dot (partials/device_row.html). #}
+{% macro status_dot(online, size="h-2 w-2", tone=none) -%}
+<span class="rounded-full shrink-0 {{ size }} {% if tone %}bg-{{ tone }}{% elif online %}bg-success{% else %}bg-muted-fg{% endif %}"></span>
+{%- endmacro %}
+
+{# The list toolbar's chrome, shared by every list that has one: a search box
+   spanning the row, a Filters disclosure and (when there are optional columns)
+   a Columns dropdown, then a panel whose header always states the result count
+   while its field grid collapses. Ported from enerooo-spark's smart list.
+
+   The FIELDS are the caller's — `{% call ui.toolbar_shell(...) %}…{% endcall %}`
+   — because the four lists that use this have almost nothing in common there.
+   Everything above the fields is identical and lives here exactly once.
+
+   Two mechanisms behind one look:
+
+   * The device lists and Monitoring filter CLIENT-side over rows already in the
+     DOM. They leave `search_name` empty and the count blank; portal-list.js
+     fills both and owns the disclosure.
+   * `/alarms` filters SERVER-side and paginates, so its fields are form
+     controls that auto-submit and its numbers come rendered. It passes
+     `search_name`/`count_text`/`active` and wraps the whole call in its own
+     `<form method="get">`; the script then only works the disclosure.
+
+   Params:
+     key                 the `data-list-key` namespace (also localStorage)
+     search_placeholder  translated string
+     search_title        optional tooltip naming what the search matches, for a
+                         placeholder too short to say it
+     search_name         form field name -> server mode; "" -> client mode
+     search_value        prefill, server mode only
+     search_id           optional id; naming the input also means the CALLER
+                         owns the search, so the shell does not mark it for
+                         portal-list.js
+     columns             [[id, label, default_on], ...]; empty = no dropdown
+     count_text          rendered count; "" leaves it to the script
+     clear_href          target for "Clear all"; "" hides it (client mode
+                         clears in place instead)
+     chips               [[label, value, remove_href], ...], server mode only
+     active              number of filters set, server mode only — non-zero
+                         also forces the panel open, so a filter that is
+                         changing what you see can never sit collapsed
+     view_modes/view_mode  the four-layout picker joins the row when set
+     action_label        the page's primary action ("New group", "Add Beacon");
+                         empty renders no button, which is how a caller gates
+                         it on the role
+     action_href         renders it as a link…
+     action_onclick      …or, without an href, as a dialog opener (or a
+                         mode switch: "Set limits" on /limits)
+     action_icon         the button's icon, "plus" unless the action is not an add
+     action_disabled     non-empty disables that opener, with this text as its
+                         tooltip: a reason that is not the role (#109) #}
+{% macro toolbar_shell(key, search_placeholder, search_title="", search_name="", search_value="", search_id="", columns=[], count_text="", clear_href="", active=0, chips=[], view_modes=none, view_mode=none, oor_param="oor", action_label="", action_href="", action_onclick="", action_disabled="", action_icon="plus", secondary_label="", secondary_onclick="", secondary_icon="sliders-horizontal", secondary_controls="", lead="", action_html="") -%}
+{#- Below `sm` the search takes a line of its own and the controls wrap under
+    it: with the layout picker and three buttons on one line the search
+    squeezed to an icon and the last button ran off a 375 px screen. -#}
+<div class="flex flex-wrap sm:flex-nowrap gap-2 items-center" data-list-oor-param="{{ oor_param }}">
+	<div class="relative flex-1 min-w-0 basis-full sm:basis-auto">
+		{{ ic.icon("search", "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-fg pointer-events-none") }}
+		<input type="search" class="input-v1 w-full pl-9"
+			{% if search_id %}id="{{ search_id }}"{% endif %}
+			{#- A NAMED input is a form field: the caller filters on the
+			    server and this box submits. An unnamed one is handed to
+			    portal-list.js, which filters the rendered rows. Those are the
+			    only two options, and which one a list gets is decided by
+			    whether its whole set is on the page. -#}
+			{% if search_name %}name="{{ search_name }}" value="{{ search_value }}"{% else %}data-list-search{% endif %}
+			placeholder="{{ search_placeholder }}" aria-label="{{ search_title or search_placeholder }}"{% if search_title %} title="{{ search_title }}"{% endif %}>
+	</div>
+
+	{#- Enter in the search box submits. The visible controls all auto-submit
+	    on change, so without this the form has no submit button at all and a
+	    typed query would need a trip to a dropdown to take effect. -#}
+	{#- In server mode portal-list.js also re-runs the query as you type
+	    (debounced) and swaps in the `[data-list-results]` it gets back. -#}
+	{% if search_name %}<button type="submit" class="sr-only" tabindex="-1">{{ search_placeholder }}</button>{% endif %}
+
+	{% if view_modes %}
+	{#- The layout picker is a POST, not a client-side toggle: the choice is a
+	    per-account preference (monitoring.md §2.3). -#}
+	{#- The shared single-select (2026-10-15), as Trends' aggregation; its
+	    hidden native select is still what the form posts. -#}
+	{%- set vm = namespace(o=[]) %}
+	{%- for mode in view_modes %}{% set vm.o = vm.o + [[mode, ("monitoring.groups.view_" ~ mode)|t]] %}{% endfor %}
+	<form method="post" action="/monitoring/view-mode" class="flex-1 min-w-0 sm:flex-none sm:shrink-0">
+		{{ single_select("monitoring-view-mode", "monitoring.groups.view_mode_label"|t, vm.o, value=view_mode, name="mode", icon="eye", select_attrs='onchange="this.form.submit()"', class="w-full") }}
+	</form>
+	{% endif %}
+
+	{#- `lead`: optional caller markup placed right before Filters (the
+	    Trends group select), sized like the buttons beside it. -#}
+	{% if lead %}{{ lead }}{% endif %}
+
+	<button type="button" data-list-filters-toggle class="btn-v1 btn-v1-outline h-10 gap-2 shrink-0" aria-expanded="false">
+		{{ ic.icon("filter", "h-4 w-4") }}
+		<span class="hidden sm:inline">{{ "monitoring.list.filters_button"|t }}</span>
+		{{ ic.icon("chevron-down", "h-4 w-4 transition-transform list-chevron") }}
+	</button>
+
+	{% if columns %}
+	<div class="relative shrink-0">
+		<button type="button" class="btn-v1 btn-v1-outline h-10 gap-2" aria-expanded="false">
+			{{ ic.icon("sliders-horizontal", "h-4 w-4") }}
+			<span class="hidden sm:inline">{{ "monitoring.list.columns_button"|t }}</span>
+			{{ ic.icon("chevron-down", "h-4 w-4 transition-transform list-chevron") }}
+		</button>
+		{#- `checkbox-v1`, not daisyUI's: the theme has its own control and its
+		    CSS says why it is a rounded SQUARE — a circle reads as a radio
+		    button, i.e. a single-choice promise this list does not keep. The
+		    alarm table's row checkboxes are the same component. -#}
+		<div data-list-pop class="hidden absolute right-0 mt-2 z-40 w-60 rounded-xl border border-base-300 bg-base-100 shadow-card-hover overflow-hidden">
+			<div class="flex items-baseline justify-between gap-2 px-3.5 pt-2.5 pb-1.5">
+				<span class="text-[11px] font-semibold uppercase tracking-wide text-muted-fg">{{ "monitoring.list.columns_heading"|t }}</span>
+				<span data-list-cols-count class="text-[11px] tabular-nums text-muted-fg/70"></span>
+			</div>
+			{#- `[id, label, default_on]`. The default matters: a list whose
+			    optional columns are the diagnostic tail starts with them all
+			    off, and one where every column is toggleable starts with the
+			    useful ones on. Without it the second kind would open blank. -#}
+			<div class="px-1.5 pb-1.5">
+				{% for col in columns %}
+				<label class="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-muted/60 cursor-pointer select-none">
+					<input type="checkbox" class="checkbox-v1" data-col="{{ col[0] }}" data-col-default="{% if col[2] %}1{% else %}0{% endif %}">
+					<span class="text-sm truncate">{{ col[1] }}</span>
+				</label>
+				{% endfor %}
+			</div>
+			{#- Always there, unlike the filter panel's "Clear all". The picker
+			    is a per-browser preference with no other trace of itself, so a
+			    way back has to be findable at the moment you go looking — not
+			    only once the state already proves you changed something. -#}
+			<button type="button" data-list-cols-reset
+				class="flex w-full items-center gap-2 px-3.5 py-2.5 border-t border-base-300 text-left text-xs font-semibold uppercase tracking-wide text-primary hover:bg-muted/60">
+				{{ ic.icon("refresh-cw", "h-3.5 w-3.5") }}{{ "monitoring.list.columns_reset"|t }}
+			</button>
+		</div>
+	</div>
+	{% endif %}
+
+	{#- The page's one primary action, at the right end of the bar rather than
+	    floating on a line of its own above it. It belongs to the list, so it
+	    should read as part of the list's controls; on its own line it was a
+	    button with no visible owner. Either a link or a dialog opener —
+	    `/beacons` registers on its own page, the other two in a modal. The
+	    CALLER gates it on the role: not passing a label is how a viewer gets
+	    no button. -#}
+	{#- A SECOND action, left of the primary one and outlined rather than
+	    filled, for work that spans the whole list instead of adding to it —
+	    today that is only the bulk threshold dialog, which all three lists
+	    open. Gated by the caller the same way as the primary: no label, no
+	    button. -#}
+	{% if secondary_label %}
+	{#- `secondary_controls` names a collapsible this button toggles
+	    (/static/js/portal-list.js `proximosCollapse`, which finds the button
+	    back through `aria-controls`). With it the button grows the same
+	    chevron and open-state paint the Filters disclosure has; without it
+	    it is a plain action button. -#}
+	<button type="button" data-list-secondary class="btn-v1 btn-v1-outline h-10 gap-1.5 shrink-0"
+		title="{{ secondary_label }}" aria-label="{{ secondary_label }}" onclick="{{ secondary_onclick }}"
+		{% if secondary_controls %}aria-controls="{{ secondary_controls }}" aria-expanded="false"{% endif %}>
+		{{ ic.icon(secondary_icon, "h-4 w-4") }}<span class="hidden lg:inline">{{ secondary_label }}</span>
+		{%- if secondary_controls %}{{ ic.icon("chevron-down", "h-4 w-4 transition-transform list-chevron") }}{% endif %}
+	</button>
+	{% endif %}
+
+	{% if action_html %}
+	{{ action_html }}
+	{% elif action_label %}
+	{% if action_href and not action_disabled %}
+	<a data-list-action href="{{ action_href }}" class="btn-v1 btn-v1-primary h-10 gap-1.5 shrink-0" title="{{ action_label }}">
+		{{ ic.icon("plus", "h-4 w-4") }}<span class="hidden sm:inline">{{ action_label }}</span>
+	</a>
+	{% else %}
+	<button type="button" data-list-action class="btn-v1 btn-v1-primary h-10 gap-1.5 shrink-0"
+		title="{{ action_disabled or action_label }}" aria-label="{{ action_label }}" onclick="{{ action_onclick }}"
+		{%- if action_disabled %} disabled{% endif %}>
+		{{ ic.icon(action_icon, "h-4 w-4") }}<span class="hidden sm:inline">{{ action_label }}</span>
+	</button>
+	{% endif %}
+	{% endif %}
+</div>
+
+{#- The panel's header is always rendered — it is the only place the list says
+    how many rows survived the filter, and hiding that with the fields left a
+    filtered list looking simply short. The grid below it collapses. -#}
+<div data-list-panel class="{% if not active %}hidden {% endif %}card-v1 mt-3">
+	{#- The title is `h-6`, the chip's height, so a chip appearing does not
+	    make the header grow and shove the fields down. -#}
+	<div data-list-panel-head class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+		<span class="inline-flex items-center h-6 gap-2 text-sm font-semibold">
+			{{ ic.icon("filter", "h-4 w-4 text-muted-fg") }}{{ "monitoring.list.filters_button"|t }}
+		</span>
+		<span data-list-count data-entity="{{ entity_label | default('', true) }}"
+			data-tpl="{{ "monitoring.list.count"|t }}"
+			data-remove-label="{{ "monitoring.list.chip_remove"|t }}"
+			class="text-sm text-muted-fg tabular-nums">{{ count_text }}</span>
+		{#- Server mode renders its chips here; client mode leaves the span
+		    empty and portal-list.js fills it from the pass that just ran. Each
+		    chip is `[label, value, remove_href]` — data, so the caller keeps
+		    its own i18n and the macro keeps its own markup. -#}
+		{% for c in chips %}
+		<span data-list-chip class="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-lg text-xs font-medium bg-primary/12 text-primary">
+			{{ c[0] }}: {{ c[1] }}
+			<a href="{{ c[2] }}" class="p-0.5 rounded hover:bg-primary/20 leading-none"
+				title="{{ "monitoring.list.chip_remove"|t }}" aria-label="{{ "monitoring.list.chip_remove"|t }}">&times;</a>
+		</span>
+		{% endfor %}
+		<span data-list-chips class="contents"></span>
+		<span class="flex-1"></span>
+		{% if clear_href %}
+		<a href="{{ clear_href }}" class="{% if not active %}hidden {% endif %}text-xs font-semibold uppercase tracking-wide text-primary hover:underline">{{ "monitoring.list.clear_all"|t }}</a>
+		{% else %}
+		<button type="button" data-list-clear class="hidden text-xs font-semibold uppercase tracking-wide text-primary hover:underline">{{ "monitoring.list.clear_all"|t }}</button>
+		{% endif %}
+	</div>
+
+	<div data-list-grid class="hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-4 px-4 pb-4 pt-1">
+		{{ caller() }}
+	</div>
+</div>
+{%- endmacro %}
+
+{# Derived link quality (devices.node.md §2.5): ONE indicator built from RSSI
+   and SNR together, because either number alone lies — a strong carrier under
+   a noise floor reads fine on RSSI and drops packets anyway. The rungs are
+   `render::SignalLevel`, whose thresholds are configuration, not code; this
+   only paints them. `unknown` draws an empty meter rather than one bar: "not
+   measured" and "measured, bad" are different statements and must not look
+   alike. The label rides in `title`, so the bars stay decoration and the text
+   stays available to a screen reader. #}
+{% macro signal_bars(level) -%}
+{%- set level = level | default("unknown", true) -%}
+{%- if level == "excellent" %}{% set filled = 4 %}{% set tone = "bg-success" %}
+{%- elif level == "good" %}{% set filled = 3 %}{% set tone = "bg-success" %}
+{%- elif level == "weak" %}{% set filled = 2 %}{% set tone = "bg-warning" %}
+{%- elif level == "critical" %}{% set filled = 1 %}{% set tone = "bg-critical" %}
+{%- else %}{% set filled = 0 %}{% set tone = "bg-muted-fg" %}{% endif %}
+<span class="inline-flex items-end gap-[2px] h-3.5 shrink-0 align-middle"
+	title="{{ ("monitoring.signal." ~ level)|t }}" aria-label="{{ ("monitoring.signal." ~ level)|t }}">
+	{%- for bar in [1, 2, 3, 4] %}
+	<span class="w-[3px] rounded-[1px] {% if bar == 1 %}h-1{% elif bar == 2 %}h-2{% elif bar == 3 %}h-2.5{% else %}h-3.5{% endif %} {% if bar <= filled %}{{ tone }}{% else %}bg-base-300{% endif %}"></span>
+	{%- endfor %}
+</span>
+{%- endmacro %}
+
+{# Sortable table header (devices.node.md §2.4.1). Three-state, and the third
+   state is "off" rather than "back to ascending": the list's own default order
+   is newest-registered-first, which no column expresses, so a sort the
+   operator turns off has somewhere to return to. The chevron is hidden (not
+   absent) while off, so the header does not resize on the first click.
+
+   `data-sort-key` names the `data-sort-{key}` attribute the row carries; the
+   page script does the comparing, because the rows are already in the DOM and
+   sorting them server-side would cost a round trip per click. #}
+{% macro sort_th(label, key, class="", col="") -%}
+<th class="h-12 px-4 text-left align-middle font-medium text-muted-fg {{ class }}" data-sort-key="{{ key }}"{% if col %} data-column="{{ col }}"{% endif %} aria-sort="none">
+	<button type="button" class="inline-flex items-center gap-1 hover:text-base-content">
+		<span>{{ label }}</span>
+		{{ ic.icon("chevron-down", "h-3.5 w-3.5 sort-chevron invisible transition-transform") }}
+	</button>
+</th>
+{%- endmacro %}
+
+{# Sortable header for a SERVER-paginated list (/alarms, /audit). Same look as
+   `sort_th` above, but every header is a LINK: those lists hold one page of
+   rows, so the order has to come from the database and not from a pass over
+   the DOM.
+
+   `page` is the list's path and `base` its current filters as a query string
+   (built in Rust — `routes::filter_qs`), so a sort keeps the filter the
+   operator set. Clicking the active column flips the direction; clicking any
+   other one sends no `dir`, which lets the route apply that column's own
+   default — newest-first for a time, A-Z for a name. `offset` is dropped on
+   purpose: a re-sorted list starts at page one. #}
+{% macro sort_th_link(label, key, page, base, sort, dir, class="", col="") -%}
+{%- set active = sort is defined and sort == key -%}
+{%- set flip = "&dir=asc" if active and dir == "desc" else ("&dir=desc" if active else "") -%}
+{%- set href = page ~ "?" ~ (base ~ "&" if base else "") ~ "sort=" ~ key ~ flip -%}
+{%- set chevron = "h-3.5 w-3.5 transition-transform" if active else "h-3.5 w-3.5 transition-transform invisible" -%}
+{%- set chevron = chevron ~ " rotate-180" if active and dir == "asc" else chevron -%}
+<th class="h-12 px-4 text-left align-middle font-medium text-muted-fg {{ class }}"{% if col %} data-column="{{ col }}"{% endif %}
+	aria-sort="{% if active %}{{ "descending" if dir == "desc" else "ascending" }}{% else %}none{% endif %}">
+	<a href="{{ href }}" class="inline-flex items-center gap-1 hover:text-base-content">
+		<span>{{ label }}</span>
+		{{ ic.icon("chevron-down", chevron) }}
+	</a>
+</th>
+{%- endmacro %}
+
+{# Alarm Type pill text (v1 AlarmTable.tsx's `alarmTypeLabel` map, restyled):
+   a short translated word/phrase for `alarm_type` plus a severity word for
+   the sensor-threshold types ("HIGH WARNING", "LOW CRITICAL", "DISCONNECT
+   CRITICAL") — the three connectivity-outage types already read complete
+   on their own ("Wi-Fi outage") so no severity word is appended to them.
+   Falls back to the raw enum with underscores turned into spaces — never
+   truncated — for any `alarm_type` the `alarms.type.*` catalogue doesn't
+   cover yet (a future firmware alarm kind), detected by `t`'s documented
+   fallback-to-the-key-itself behavior (src/i18n.rs). Text only, no markup,
+   so the caller controls the pill's classes/CSS transform. #}
+{# What an alarm is about, as a reader names it: the Node's or Beacon's own
+   name, else the probe's, and for a Hub system alert (`sys:*`) the Hub
+   itself rather than the internal key. The raw id stays searchable (the
+   list's SQL search matches `sensor_id`). #}
+{% macro alarm_name(a) -%}
+{%- if a.device_name %}{{ a.device_name }}
+{%- elif a.sensor_id[:4] == "sys:" %}{{ "alarms.table.hub_system"|t }}
+{#- A liveness row (`eye:<mac>:liveness`) of a device the snapshot no
+    longer knows: its own id, not the internal key around it. -#}
+{%- elif a.sensor_id[-9:] == ":liveness" %}{{ a.sensor_name or a.sensor_id[4:-9] }}
+{%- else %}{{ a.sensor_name or a.sensor_id }}{% endif -%}
+{%- endmacro %}
+
+{# The pill carries the type alone: severity is already in the badge colour
+   (amber vs red), so spelling it out repeated one thing and pushed the long
+   Czech labels out of their cell. Unknown types fall back to the raw enum. #}
+{% macro alarm_type_label(alarm_type) -%}
+{%- set key = "alarms.type." ~ (alarm_type | lower) -%}
+{%- set label = key|t -%}
+{%- if label == key -%}
+{{- alarm_type | replace("_", " ") -}}
+{%- else -%}
+{{- label -}}
+{%- endif -%}
+{%- endmacro %}
+
+{# A calibration state's label (calibration.cs.md §2, amended 2026-10-13). The second
+   warning names the YAML's `calibration.second_warning_days` ("Vyprší do 7 dní", "Vyprší do
+   1 dne"). #}
+{% macro calibration_state_label(state) -%}
+{%- set days = calibration_second_warning_days() -%}
+{%- set key = "monitoring.calibration.state_" ~ state ~ ("_one" if state == "second_warning" and days == 1 else "") -%}
+{{- (key|t)|replace("{days}", days|string) -}}
+{%- endmacro %}
+
+{# The calendar icon of a calibration state (calibration.cs.md, UI amendment 2026-10-14),
+   drawn always: green = valid, ONE orange for both warnings, red = expired, grey
+   `calendar-off` for none (`state` none or "none"). `data-calibration` carries the state
+   for tests and styling. #}
+{% macro calibration_icon(state, cls="h-3.5 w-3.5") -%}
+{%- set st = state if state else "none" -%}
+{%- if st == "valid" %}{% set tint = "text-success" %}{% elif st == "expired" %}{% set tint = "text-critical" %}{% elif st in ["warning", "second_warning"] %}{% set tint = "text-warning" %}{% else %}{% set tint = "text-muted-fg" %}{% endif -%}
+{%- set title = "monitoring.calibration.icon_title"|t|replace("{state}", calibration_state_label(st)) -%}
+<span class="inline-flex items-center shrink-0 align-middle {{ tint }}" data-calibration="{{ st }}" title="{{ title }}" aria-label="{{ title }}">{{ ic.icon("calendar" if st != "none" else "calendar-off", cls) }}</span>
+{%- endmacro %}
+
+{# Horizontal threshold gauge (v1 components/groups/ThresholdGaugeInline.tsx):
+   five bands red/amber/green/amber/red from the four thresholds, with a marker
+   at `value`, and the four numbers underneath. Falls back to a muted empty bar
+   when no threshold is set. `t` is the thresholds dict
+   (critical_low/warning_low/warning_high/critical_high). `width` is the
+   bar's Tailwind width — the default is the probe table's fixed column;
+   the History summary cards pass `w-full` to fill their card. `field` is the
+   registry field name, when known: a critical bound on its open side
+   (`critical_open`, P-3) is drawn as no bound, not as a red band far away.
+   P-4: one to three bounds draw too. A missing critical bound lets its warning
+   band run to the edge, a missing warning bound leaves no amber, and a side
+   with neither is green to the edge. #}
+{% macro threshold_gauge(value, t, width="w-28 sm:w-32", field=none, labels=true) -%}
+{#- The bands answer "is a band set here", so they follow the band's own
+    `enabled` switch and NOT whether a reading has arrived: a device
+    registered a minute ago has thresholds and no measurement yet, and
+    drawing the muted bar for it said the opposite. A band switched off
+    draws nothing, whatever numbers are still stored behind it. The needle
+    is the part that needs a value, so only the needle waits for one.
+    A threshold shape with no `enabled` key at all (the wired probes'
+    `ThresholdsCtx`) counts as on. -#}
+{%- set on = true if (t and (t.enabled is not defined or t.enabled)) else false %}
+{%- set open = critical_open(field) if field else none %}
+{%- set cl = t.critical_low if on else none %}
+{%- set wl = t.warning_low if on else none %}
+{%- set wh = t.warning_high if on else none %}
+{%- set ch = t.critical_high if on else none %}
+{%- set cl = none if (open and cl is not none and cl <= open[0]) else cl %}
+{%- set ch = none if (open and ch is not none and ch >= open[1]) else ch %}
+{%- set present = [cl, wl, wh, ch]|reject("none")|list %}
+<div class="flex flex-col items-center gap-0.5">
+	{%- if present %}
+	{%- set lo = present|min %}
+	{%- set hi = present|max %}
+	{%- set base = (hi - lo) if hi > lo else [(lo|abs) * 0.4, 2]|max %}
+	{%- set rmin = lo - (base * 0.25 if (cl is not none or wl is not none) else base) %}
+	{%- set rmax = hi + (base * 0.25 if (wh is not none or ch is not none) else base) %}
+	{%- set span = rmax - rmin %}
+	{%- set e_cl = cl if cl is not none else rmin %}
+	{%- set e_wl = wl if wl is not none else e_cl %}
+	{%- set e_ch = ch if ch is not none else rmax %}
+	{%- set e_wh = wh if wh is not none else e_ch %}
+	{%- set p_cl = (e_cl - rmin) / span * 100 %}
+	{%- set p_wl = [(e_wl - rmin) / span * 100, p_cl]|max %}
+	{%- set p_wh = [(e_wh - rmin) / span * 100, p_wl]|max %}
+	{%- set p_ch = [(e_ch - rmin) / span * 100, p_wh]|max %}
+	<div class="relative isolate {{ width }} shrink-0">
+		<div class="relative h-2.5 rounded-full overflow-hidden flex">
+			<div style="width:{{ p_cl|round(2) }}%" class="bg-critical"></div>
+			<div style="width:{{ (p_wl - p_cl)|round(2) }}%" class="bg-warning"></div>
+			<div style="width:{{ (p_wh - p_wl)|round(2) }}%" class="bg-success"></div>
+			<div style="width:{{ (p_ch - p_wh)|round(2) }}%" class="bg-warning"></div>
+			<div style="width:{{ [100 - p_ch, 0]|max|round(2) }}%" class="bg-critical"></div>
+		</div>
+		{%- if value is not none %}
+		{%- set p_v = [[(value - rmin) / span * 100, 0]|max, 100]|min %}
+		<div class="absolute top-0 bottom-0 w-0.5 bg-base-content rounded-full z-10" style="left:calc({{ p_v|round(2) }}% - 1px)">
+			<div class="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-base-content border border-base-100"></div>
+		</div>
+		{%- endif %}
+	</div>
+	{%- if labels %}
+	<span class="text-[9px] text-muted-fg tabular-nums whitespace-nowrap">
+		{%- for b in [cl, wl, wh, ch] %}{{ " / " if not loop.first }}{{ (b|round(1) ~ "°") if b is not none else "—" }}{% endfor -%}
+	</span>
+	{%- endif %}
+	{%- else %}
+	<div class="{{ width }} h-2.5 rounded-full bg-muted"></div>
+	{%- if labels %}
+	<span class="text-[9px] text-muted-fg tabular-nums whitespace-nowrap">—</span>
+	{%- endif %}
+	{%- endif %}
+</div>
+{%- endmacro %}
+
+{#
+  The vertical twin of `threshold_gauge`, for the detailed card's left edge
+  (v1's ThermometerCard ThresholdGauge): a tick-label column and a bar whose
+  five bands run critical-high at the top down to critical-low at the bottom,
+  with a needle at the current value.
+
+  Same range and the same rules for missing bounds as the horizontal gauge
+  (P-4), so the needle has red to sit in at an extreme instead of pinning to
+  the edge. Falls back to a plain muted track of the same footprint when no
+  threshold is set, so cards without one stay the same size as their siblings.
+#}
+{% macro threshold_gauge_vertical(value, t, field=none) -%}
+{#- Same rule as the horizontal gauge: the bands follow `enabled`, the
+    needle follows the reading. -#}
+{%- set on = true if (t and (t.enabled is not defined or t.enabled)) else false %}
+{%- set open = critical_open(field) if field else none %}
+{%- set cl = t.critical_low if on else none %}
+{%- set wl = t.warning_low if on else none %}
+{%- set wh = t.warning_high if on else none %}
+{%- set ch = t.critical_high if on else none %}
+{%- set cl = none if (open and cl is not none and cl <= open[0]) else cl %}
+{%- set ch = none if (open and ch is not none and ch >= open[1]) else ch %}
+{%- set present = [cl, wl, wh, ch]|reject("none")|list %}
+{%- if present %}
+{%- set lo = present|min %}
+{%- set hi = present|max %}
+{%- set base = (hi - lo) if hi > lo else [(lo|abs) * 0.4, 2]|max %}
+{%- set rmin = lo - (base * 0.25 if (cl is not none or wl is not none) else base) %}
+{%- set rmax = hi + (base * 0.25 if (wh is not none or ch is not none) else base) %}
+{%- set span = rmax - rmin %}
+{%- set e_cl = cl if cl is not none else rmin %}
+{%- set e_wl = wl if wl is not none else e_cl %}
+{%- set e_ch = ch if ch is not none else rmax %}
+{%- set e_wh = wh if wh is not none else e_ch %}
+{#- `top` percentages: 0 is the top of the bar, so every value is inverted. -#}
+{%- set t_cl = 100 - (e_cl - rmin) / span * 100 %}
+{%- set t_wl = [100 - (e_wl - rmin) / span * 100, t_cl]|min %}
+{%- set t_wh = [100 - (e_wh - rmin) / span * 100, t_wl]|min %}
+{%- set t_ch = [100 - (e_ch - rmin) / span * 100, t_wh]|min %}
+<div class="relative flex shrink-0 py-4 pl-2 pr-1">
+	<div class="relative w-8 mr-0.5">
+		{%- for tick, tone in [(ch, "text-critical"), (wh, "text-warning"), (wl, "text-warning"), (cl, "text-critical")] if tick is not none %}
+		{%- set top = 100 - (tick - rmin) / span * 100 %}
+		<span class="absolute right-0 text-[9px] tabular-nums leading-none {{ tone }}"
+			style="top:{{ top|round(2) }}%; transform:translateY(-50%)">{{ tick|round(1) }}</span>
+		{%- endfor %}
+	</div>
+	<div class="relative w-3">
+		<div class="w-full h-full rounded-full overflow-hidden flex flex-col">
+			<div style="height:{{ [t_ch, 0]|max|round(2) }}%" class="bg-critical"></div>
+			<div style="height:{{ (t_wh - t_ch)|round(2) }}%" class="bg-warning"></div>
+			<div style="height:{{ (t_wl - t_wh)|round(2) }}%" class="bg-success"></div>
+			<div style="height:{{ (t_cl - t_wl)|round(2) }}%" class="bg-warning"></div>
+			<div style="height:{{ (100 - t_cl)|round(2) }}%" class="bg-critical"></div>
+		</div>
+		{%- if value is not none %}
+		{%- set t_v = [[100 - (value - rmin) / span * 100, 0]|max, 100]|min %}
+		<div class="absolute left-0 flex items-center" style="top:{{ t_v|round(2) }}%; transform:translateY(-50%)">
+			<span class="block h-0.5 w-2 bg-base-content"></span>
+			<span class="block w-2 h-2 rounded-full bg-base-content"></span>
+		</div>
+		{%- endif %}
+	</div>
+</div>
+{%- else %}
+<div class="relative flex shrink-0 py-4 pl-2 pr-1">
+	<div class="relative w-8 mr-0.5"></div>
+	<div class="relative w-3"><div class="w-full h-full rounded-full bg-muted"></div></div>
+</div>
+{%- endif %}
+{%- endmacro %}
+
+
+{#
+  alarm_event_badge(a) — a Node's last alarm event (render::LastAlarmCtx): a v2 alarm's side
+  and edge in the UI language (HS-13), anything else as the event type it came with.
+#}
+{% macro alarm_event_badge(a) -%}
+{%- if a.side in ["low", "high", "trigger", "no_data"] -%}
+<span class="badge-outline-v1">{{ ("monitoring.node_detail.alarm_side." ~ a.side)|t }}
+{%- if a.edge in ["activate", "deactivate"] %} · {{ ("monitoring.node_detail.alarm_edge." ~ a.edge)|t }}{% elif a.edge %} · {{ a.edge }}{% endif %}</span>
+{%- else -%}
+<span class="badge-outline-v1 font-mono">{{ a.event_type }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{#
+  One tickable entity in the group dialog's picker, plus its per-field
+  checkboxes (v1's GroupManagementDialog row).
+
+  `e` is a monitoring::PickerEntityCtx; `selected` and `selected_fields` are
+  the editing group's flat membership lists.
+
+  Exclusivity is per **field** since MB1, so there are two locks here, not
+  one. A single claimed field renders that box disabled and names the group
+  holding it, while the entity stays tickable; `e.in_group` is set only when
+  the group holds *all* of the entity (a `fields = NULL` membership, every
+  offered field taken, or any claim on a wired probe, which offers none) and
+  then the whole row locks as it did before. Disabled inputs post nothing, so
+  the form cannot move a sensor between groups by accident — and
+  `group_routes` refuses a hand-written POST that tries, against the same
+  claim map this renders from.
+#}
+{% macro picker_row(e, selected, selected_fields) -%}
+{%- set checked = e.token in selected %}
+{%- set locked = e.in_group is not none %}
+<div>
+	<label class="flex items-center gap-2 text-sm py-1.5 px-2 rounded {% if locked %}opacity-50{% else %}hover:bg-muted cursor-pointer{% endif %}">
+		<input type="checkbox" name="member[]" value="{{ e.token }}" class="checkbox-v1 member-box"
+			data-token="{{ e.token }}"
+			{% if checked or locked %}checked{% endif %} {% if locked %}disabled{% endif %}>
+		{{ status_dot(e.connected) }}
+		<span class="truncate min-w-0">
+			{{ e.name }}
+			{%- if e.detail %} <span class="text-xs text-muted-fg">({{ e.detail }})</span>{% endif -%}
+			{%- if not e.connected %} <span class="text-xs text-muted-fg">({{ "monitoring.groups.offline_label"|t }})</span>{% endif -%}
+		</span>
+		{#- The name keeps its width: the "in group" note gives up space first
+		    (its flex-shrink dwarfs the name's) and keeps its full text in `title`. -#}
+		{% if locked %}{% set taken = "monitoring.groups.taken_by"|t|replace("{group}", e.in_group) %}<span class="text-xs text-muted-fg ml-auto min-w-0 truncate shrink-[100]" title="{{ taken }}">({{ taken }})</span>{% endif %}
+	</label>
+	{% if e.fields and not locked %}
+	<div class="ml-7 mt-0.5 mb-1 grid grid-cols-2 gap-1 pl-2 border-l border-base-300 field-boxes"
+		data-owner="{{ e.token }}" {% if not checked %}hidden{% endif %}>
+		{% for f in e.fields %}
+		{%- set taken = f.in_group is not none %}
+		<label class="flex items-center gap-2 text-xs py-0.5 px-1 rounded {% if taken %}opacity-50{% else %}hover:bg-muted cursor-pointer{% endif %}"
+			{% if taken %}title="{{ "monitoring.groups.field_taken_by"|t|replace("{field}", f.label|field_label(f.name))|replace("{group}", f.in_group) }}"{% endif %}>
+			<input type="checkbox" name="field[]" value="{{ e.token }}|{{ f.name }}" class="checkbox-v1 checkbox-v1-xs"
+				{% if (e.token ~ "|" ~ f.name) in selected_fields %}checked{% endif %} {% if taken %}disabled{% endif %}>
+			<span class="truncate">{% if taken %}{{ "monitoring.groups.field_taken_by"|t|replace("{field}", f.label|field_label(f.name))|replace("{group}", f.in_group) }}{% else %}{{ f.label|field_label(f.name) }}{% endif %}</span>
+		</label>
+		{% endfor %}
+	</div>
+	{% endif %}
+</div>
+{%- endmacro %}
+
+{#
+  The detailed card's trend line — v1's TrendGraph: a filled area under the
+  line, viewfinder brackets in the corners, the series' own max above and min
+  below, and how long ago the last reading landed.
+
+  `s` is a monitoring::SparkCtx and `rel` the row's `last_seen_rel`. Both the
+  line and the fill take `currentColor`, so the wrapping element's alarm text
+  colour tints the graph — the same trick v1 uses to keep Tailwind's JIT from
+  having to see a dynamically built class. `uid` makes the gradient's id
+  unique, since a page carries one per card.
+#}
+{% macro sparkline(s, rel="", uid="") -%}
+<div class="relative px-1 pt-1 pb-0.5 {% if not s %}text-muted-fg/50{% endif %}">
+	<span class="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-current opacity-40"></span>
+	<span class="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-current opacity-40"></span>
+	<span class="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-current opacity-40"></span>
+	<span class="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-current opacity-40"></span>
+	{%- if s %}
+	<div class="text-[9px] text-muted-fg tabular-nums px-0.5 leading-none">{{ s.max|round(1) }}</div>
+	<svg width="100%" height="44" viewBox="0 0 100 32" preserveAspectRatio="none" class="block">
+		<defs>
+			<linearGradient id="spark-{{ uid }}" x1="0" y1="0" x2="0" y2="1">
+				<stop offset="0%" stop-color="currentColor" stop-opacity="0.35" />
+				<stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+			</linearGradient>
+		</defs>
+		<polygon points="0,32 {{ s.points }} 100,32" fill="url(#spark-{{ uid }})" stroke="none" />
+		<polyline points="{{ s.points }}" fill="none" stroke="currentColor" stroke-width="1.5"
+			vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" />
+	</svg>
+	<div class="text-[9px] text-muted-fg tabular-nums px-0.5 leading-none mt-0.5">{{ s.min|round(1) }}</div>
+	{%- if rel %}
+	{#- Wraps rather than truncates: it is the card's only staleness hint,
+	    and a narrow column cut it to "Poslední údaj pře…" (UX-056). -#}
+	<div class="text-[9px] text-muted-fg px-0.5 mt-1 leading-tight break-words">
+		{{ "monitoring.groups.last_update"|t }} {{ rel }}
+	</div>
+	{%- endif %}
+	{%- else %}
+	<div class="h-[9px]"></div>
+	<svg width="100%" height="44" viewBox="0 0 100 32" preserveAspectRatio="none" class="block">
+		<line x1="0" y1="16" x2="100" y2="16" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 4"
+			vector-effect="non-scaling-stroke" />
+	</svg>
+	<div class="text-[9px] text-center tabular-nums px-0.5 leading-none mt-0.5">{{ "monitoring.groups.no_data"|t }}</div>
+	{%- endif %}
+</div>
+{%- endmacro %}
+
+{#
+  One reading as v1's ValueCell: a tinted pill with the unit's icon and the
+  value, coloured by the field's own alarm state (`lib/status-colors.ts`
+  `alarmStateStyles`). Both table layouts use it; `big` is the simplified
+  one's larger type.
+
+  A missing reading keeps the pill's shape in muted grey rather than
+  collapsing to a bare dash, so an offline row does not shrink next to its
+  online neighbours. A unit with no icon of its own (volts, counters) falls
+  back to plain bold text — a pill with nothing in front of the number reads
+  as decoration.
+#}
+{% macro value_pill(value, unit, state, big=false) -%}
+{%- set text_size = "text-base" if big else "text-sm" %}
+{%- if value is none %}
+<div class="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 whitespace-nowrap bg-muted/40">
+	<span class="{{ text_size }} font-bold tabular-nums text-muted-fg">—</span>
+</div>
+{%- elif unit not in ["°C", "%"] %}
+<span class="{{ text_size }} font-bold tabular-nums whitespace-nowrap">{{ value|round(1) }} {{ unit }}</span>
+{%- else %}
+{%- if state == "Warning" %}{% set tint, tone = "bg-warning/10", "text-warning" %}
+{%- elif state == "Critical" %}{% set tint, tone = "bg-critical/10", "text-critical" %}
+{%- elif state == "Normal" %}{% set tint, tone = "bg-success/10", "text-success" %}
+{%- else %}{% set tint, tone = "bg-muted/40", "text-muted-fg" %}{% endif %}
+<div class="inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 whitespace-nowrap {{ tint }}">
+	{{ ic.icon("thermometer" if unit == "°C" else "droplet", "h-4 w-4 shrink-0 " ~ tone) }}
+	<span class="{{ text_size }} font-bold tabular-nums {{ tone }}">{{ value|round(1) }} {{ unit }}</span>
+</div>
+{%- endif %}
+{%- endmacro %}
+
+{# Free-text input with a styled suggestion list (a combobox): filter as you
+   type (focus first shows the whole list), Up/Down/Enter/Esc, click to pick. Replaces <input list>+<datalist>,
+   whose popup is drawn by the browser. `value` (the item's own current
+   value) always heads the suggestions; matching ignores case. Needs Alpine. #}
+{% macro combobox(name, value, options, maxlength=64, placeholder="", id=none, input_class="input-v1 w-full", attrs="") -%}
+<div class="dropdown w-full focus-within:z-50" x-data='{
+		q: {{ (value | default("", true)) | tojson }},
+		all: {{ ([value] + (options | list)) | tojson }},
+		open: false, typed: false, i: -1,
+		get items() {
+			const seen = new Set(), out = [], q = this.typed ? this.q.trim().toLowerCase() : "";
+			for (const o of this.all) {
+				const t = (o || "").trim(), k = t.toLowerCase();
+				if (!t || seen.has(k)) continue;
+				seen.add(k);
+				if (!q || k.includes(q)) out.push(t);
+			}
+			return out;
+		},
+		pick(v) { this.q = v; this.typed = false; this.open = false; this.i = -1; },
+		move(d) {
+			const n = this.items.length;
+			if (!n) return;
+			this.open = true;
+			this.i = (this.i + d + n) % n;
+			this.$nextTick(() => this.$refs.list?.children[this.i]?.scrollIntoView({ block: "nearest" }));
+		},
+		enter(e) {
+			if (this.open && this.i >= 0 && this.items[this.i] !== undefined) { e.preventDefault(); this.pick(this.items[this.i]); }
+			else this.open = false;
+		}
+	}' @click.outside="open = false">
+	<input type="text" name="{{ name }}" {% if id %}id="{{ id }}" {% endif %}maxlength="{{ maxlength }}" class="{{ input_class }}" {{ attrs }}
+		autocomplete="off" role="combobox" aria-autocomplete="list" :aria-expanded="open"
+		placeholder="{{ placeholder }}" value="{{ value | default('', true) }}" x-model="q"
+		@focus="open = true; typed = false" @click="open = true" @input="open = true; typed = true; i = -1"
+		@keydown.down.prevent="move(1)" @keydown.up.prevent="move(-1)"
+		@keydown.enter="enter($event)" @keydown.escape="if (open) { $event.preventDefault(); $event.stopPropagation(); open = false }"
+		@keydown.tab="open = false">
+	<ul x-ref="list" role="listbox" x-show="open && items.length" x-cloak
+		class="dropdown-content menu flex-nowrap bg-base-100 rounded-box shadow-lg border border-base-300 z-50 mt-1 w-full max-h-60 overflow-y-auto p-1">
+		<template x-for="(o, n) in items" :key="o">
+			<li role="option" :aria-selected="n === i">
+				<button type="button" class="text-sm" :class="{ 'bg-base-200': n === i }"
+					@mousedown.prevent="pick(o)" @mouseenter="i = n" x-text="o"></button>
+			</li>
+		</template>
+	</ul>
+</div>
+{%- endmacro %}
+
+{#- The detail and add pages' back link: "Back to <list>", one look everywhere. -#}
+{% macro back_link(href, label) -%}
+<a href="{{ href }}" class="inline-flex items-center gap-1 text-sm text-muted-fg hover:text-base-content">
+	<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>{{ label }}
+</a>
+{%- endmacro %}
+
+{# A card header's icon in a tinted rounded square (the Hub probe page's
+   "Intervals" / "Diagnostics", Device information, Calibration). #}
+{% macro card_icon(name) -%}
+<span class="flex items-center justify-center h-7 w-7 shrink-0 rounded-lg bg-primary/10 text-primary">{{ ic.icon(name, "h-4 w-4") }}</span>
+{%- endmacro %}
+
+{#- Set / Cancel + Save bar of an edit set (plan/portal/ui_components.md
+    §3, 2026-10-15). Idle: one "Set …" button. Editing: the change counter,
+    Cancel (silent discard) and Save, disabled until something changed.
+    The enclosing Alpine scope provides `editing`, `changes`, `busy`,
+    `start()`, `cancel()`, `save()` — `editSet` (static/js/portal-editset.js)
+    for a checkbox set, `limitsEditor` for the limits editor. `idle=false`
+    leaves the Set button out (the scope starts editing, e.g. a limits row
+    opened by its own Upravit). Nothing renders without `can_edit`. -#}
+{% macro edit_set(set_label, can_edit=true, idle=true, icon="sliders-horizontal") -%}
+{% if can_edit %}
+<div class="es-bar" data-edit-set-bar>
+	<span class="es-count" role="status" x-show="editing" x-cloak
+		x-text='changes ? (changes == 1 ? {{ "common.edit_set.one_change"|t|tojson }} : {{ "common.edit_set.n_changes"|t|tojson }}.replace("{n}", changes)) : {{ "common.edit_set.no_changes"|t|tojson }}'></span>
+	{% if idle %}
+	<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm gap-1.5" x-show="!editing" @click="start()" data-edit-set-start>
+		{{ ic.icon(icon, "h-4 w-4") }}<span>{{ set_label }}</span>
+	</button>
+	{% endif %}
+	<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" x-show="editing" x-cloak :disabled="busy" @click="cancel()" data-edit-set-cancel>{{ "common.actions.cancel"|t }}</button>
+	<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm gap-1.5" x-show="editing" x-cloak :disabled="!changes || busy" @click="save()" data-edit-set-save>
+		<span class="loading loading-spinner loading-xs" x-show="busy" x-cloak aria-hidden="true"></span>{{ "common.actions.save"|t }}
+	</button>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{#- Collapsible read-only card (ui_components.md §8): the Device information
+    header (chevron, card icon, title) with no edit block; `head_end` sits
+    at the right of the header (e.g. a read button). Collapsed on load. `tag`
+    "div" when the caller already provides the card element; `summary` is
+    shown in the header while collapsed. -#}
+{#- `open=false` starts it collapsed (ui_components.md, amendment 2026-10-15). The open state
+    survives an htmx/SSE outerHTML swap of the card: it is kept per card id in
+    `window.__diOpen`, so a live re-render does not snap a card the viewer closed back open.
+    `summary_x` is an Alpine expression for a summary the enclosing scope computes. -#}
+{% macro collapsible_card(id, icon, title, head_end="", bare=false, summary="", open=false, summary_x="") -%}
+<{{ "div" if bare else "section" }} class="{% if not bare %}card-v1 {% endif %}di" id="{{ id }}" x-data="{ open: ((window.__diOpen || {})['{{ id }}'] ?? {{ "true" if open else "false" }}) }" x-init="$watch('open', v => (window.__diOpen ||= {})['{{ id }}'] = v)" :class="open && 'di-open'">
+	<div class="di-head">
+		<button type="button" class="di-toggle" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ id }}-body">
+			{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+			{{ card_icon(icon) }}
+			<span class="text-base font-semibold whitespace-nowrap">{{ title }}</span>
+		</button>
+		<button type="button" class="di-rest" @click="open = !open" tabindex="-1" aria-hidden="true">
+			{%- if summary or summary_x %}<span class="text-sm text-muted-fg truncate min-w-0" x-show="!open" x-cloak{% if summary_x %} x-text="{{ summary_x }}"{% endif %}>{{ summary }}</span>{% endif -%}
+		</button>
+		{{ head_end }}
+	</div>
+	<div class="di-body flex flex-col gap-3" id="{{ id }}-body" x-show="open"{% if not open %} x-cloak{% endif %}>{{ caller() }}</div>
+</{{ "div" if bare else "section" }}>
+{%- endmacro %}
+
+{#- "Heard by gateways" rows: every gateway of the last uplink, strongest
+    first; the home one (HomeGateways::of — the best LoRaWAN gateway, or the
+    P2P home Hub) carries the house icon. -#}
+{% macro diag_heard_by(gws, home, best_is_home, last, snr=true, label="") -%}
+<div class="overflow-x-auto">
+	<table class="w-full text-sm">
+		<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+			<tr class="[&>th]:py-1.5 [&>th]:pr-4 [&>th]:text-left [&>th]:text-xs [&>th]:font-medium [&>th]:text-muted-fg">
+				<th class="w-full">{{ label or "monitoring.node_detail.gateway_column"|t }}</th>
+				<th class="text-right whitespace-nowrap">RSSI</th>
+				{% if snr %}<th class="text-right whitespace-nowrap">SNR</th>{% endif %}
+				<th class="text-right whitespace-nowrap !pr-0">{{ "monitoring.diag.last_column"|t }}</th>
+			</tr>
+		</thead>
+		<tbody>
+			{% for g in gws %}
+			{%- set is_home = g.home or (home and (g.gateway_id or g.hostname) == home) or (best_is_home and loop.first) %}
+			<tr class="border-b border-base-300 last:border-0 [&>td]:py-1.5 [&>td]:pr-4{% if is_home %} font-medium{% endif %}{% if g.connected == false %} text-muted-fg{% endif %}">
+				<td class="font-mono text-xs"><span class="inline-flex items-center gap-1.5">{% if is_home %}<span title="{{ "monitoring.diag.home_label"|t }}" class="text-primary">{{ ic.icon("home", "h-4 w-4") }}</span><span class="sr-only">{{ "monitoring.diag.home_label"|t }}</span>{% endif %}{{ g.gateway_id or g.hostname or "–" }}</span></td>
+				<td class="text-right tabular-nums whitespace-nowrap">{% if g.rssi is not none %}{{ g.rssi }} dBm{% else %}–{% endif %}</td>
+				{% if snr %}<td class="text-right tabular-nums whitespace-nowrap">{% if g.snr is not none %}{{ g.snr }} dB{% else %}–{% endif %}</td>{% endif %}
+				<td class="text-right tabular-nums whitespace-nowrap text-muted-fg !pr-0">{{ (g.last_seen or last) | short_dt | default("–", true) }}</td>
+			</tr>
+			{% endfor %}
+		</tbody>
+	</table>
+</div>
+{%- endmacro %}
+
+{#- Inline text edit (plan/portal/ui_components.md §1). An edit block is
+    everything one request saves: `head` is the card title markup, the
+    pencil (manager+, `can_edit`) sits right after it, `head_end` after
+    that. Pencil -> the fields turn into inputs and the pencil becomes
+    save (check) + cancel (x); Enter / Ctrl+Enter in a textarea saves, Esc
+    cancels. `htmx` posts with hx-post (`hx_target` / `hx_swap`), else a
+    plain POST + redirect; `saved` shows "Saved" for 2 s after it.
+    The body (`caller()`) holds ui.text_field rows; anything else in it
+    (alerts, facts) is fine, it is just inside the form.
+    `multi=true` (amendment 2026-10-15, the Hub Unit settings): every field
+    keeps its own route — each changed `[data-te-action]` input is posted
+    alone as `data-te-post` (default its name), one after another, by
+    `proximosMultiPost` (static/js/portal-editset.js); `action` is unused. -#}
+{% macro edit_block(id, action, htmx=false, can_edit=false, head="", head_end="", hidden={}, saved=false, body_class="", body_attrs="", class="", head_class="te-head", hx_target="#command-status", hx_swap="outerHTML", multi=false) -%}
+<div class="te-block {{ class }}" id="{{ id }}" data-edit-block
+	x-data='{
+		editing: false, busy: false, saved: {{ saved | tojson }}, rev: 0,
+		init() { if (this.saved) setTimeout(() => this.saved = false, 2000); },
+		fields() { return [...this.$refs.form.querySelectorAll("[data-te-in]")]; },
+		start() {
+			if (this.open === false) this.open = true;
+			// A textarea opens at the height of its view (ui_components.md §1).
+			for (const e of this.fields()) {
+				if (e.tagName !== "TEXTAREA") continue;
+				const v = this.$refs.form.querySelector("[data-te-view=" + e.name + "]");
+				if (v && v.offsetHeight) e.style.height = v.offsetHeight + "px";
+			}
+			this.saved = false; this.editing = true;
+			this.$nextTick(() => { const e = this.fields().find(e => !e.disabled); if (e) e.focus(); });
+		},
+		done() { this.editing = false; this.$nextTick(() => this.$refs.pencil && this.$refs.pencil.focus()); },
+		mark(e, msg) {
+			const m = document.getElementById(e.id + "-err");
+			if (msg) { e.setAttribute("aria-invalid", "true"); if (m) { m.textContent = msg; m.hidden = false; } }
+			else { e.removeAttribute("aria-invalid"); if (m) { m.hidden = true; m.textContent = ""; } }
+		},
+		check() {
+			let first = null;
+			for (const e of this.fields()) {
+				const bad = e.required && !e.value.trim();
+				this.mark(e, bad ? e.dataset.teRequired : null);
+				if (bad && !first) first = e;
+			}
+			if (first) first.focus();
+			return !first;
+		},
+		cancel() {
+			if (!this.editing || this.busy) return;
+			this.$refs.form.reset();
+			for (const e of this.fields()) {
+				this.mark(e, null);
+				e.dispatchEvent(new Event("input", { bubbles: true }));
+				if (e.getAttribute("role") === "combobox" && window.Alpine) Alpine.$data(e).open = false;
+			}
+			this.done();
+		},
+		save() {
+			if (!this.editing || this.busy || !this.check()) return;
+			this.busy = true;
+			{% if multi %}window.proximosMultiPost(this.$refs.form).then(ok => { if (ok) this.applied(); else this.busy = false; });{% elif htmx %}htmx.trigger(this.$refs.form, "te-save");{% else %}this.$refs.form.submit();{% endif %}
+		},
+		applied() {
+			for (const e of this.fields()) {
+				const v = e.value.trim(), view = this.$refs.form.querySelector("[data-te-view=" + e.name + "]");
+				// A select shows its option text, a number its unit, a blank its inherited value.
+				let t = v;
+				if (e.tagName === "SELECT") { const o = e.options[e.selectedIndex]; t = o ? o.text : v; for (const x of e.options) x.defaultSelected = x.selected; }
+				else if (v && e.dataset.teUnit) t = v + " " + e.dataset.teUnit;
+				else if (!v && e.dataset.teEmpty) t = e.dataset.teEmpty;
+				if (e.tagName !== "SELECT") e.defaultValue = e.value;
+				if (view) { view.textContent = t || "\u2014"; view.classList.toggle("text-muted-fg", !v); }
+			}
+			this.busy = false; this.rev++; this.saved = true;
+			setTimeout(() => this.saved = false, 2000);
+			this.done();
+		}
+	}'
+	@keydown.escape="cancel()">
+	<div class="{{ head_class }}">
+		{{ head }}
+		{%- if can_edit %}
+		<span class="te-tools">
+			<button type="button" x-ref="pencil" class="btn-v1 btn-v1-ghost btn-v1-icon te-pencil" x-show="!editing"
+				@click.stop="start()" title="{{ "common.actions.edit"|t }}" aria-label="{{ "common.actions.edit"|t }}">{{ ic.icon("pencil", "h-4 w-4") }}</button>
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon te-cancel" x-show="editing" x-cloak :disabled="busy"
+				@click.stop="cancel()" title="{{ "common.actions.cancel"|t }}" aria-label="{{ "common.actions.cancel"|t }}">{{ ic.icon("x", "h-4 w-4") }}</button>
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon te-save" x-show="editing" x-cloak :disabled="busy"
+				@click.stop="save()" title="{{ "common.actions.save"|t }}" aria-label="{{ "common.actions.save"|t }}" :aria-busy="busy.toString()">
+				<span x-show="!busy">{{ ic.icon("check", "h-4 w-4") }}</span><span x-show="busy" x-cloak class="loading loading-spinner loading-xs" aria-hidden="true"></span><span x-show="busy" x-cloak class="sr-only">{{ "common.edit.saving"|t }}</span></button>
+			<span class="te-saved" role="status" x-show="saved" x-transition.opacity.duration.300ms{% if not saved %} x-cloak{% endif %}>{{ "common.edit.saved"|t }}</span>
+		</span>
+		{%- endif %}
+		{{ head_end }}
+	</div>
+	{% if can_edit %}
+	<form x-ref="form" class="te-form {{ body_class }}" {{ body_attrs }} novalidate data-te-form
+		{% if multi %}data-te-multi{% elif htmx %}hx-post="{{ action }}" hx-trigger="te-save" hx-target="{{ hx_target }}" hx-swap="{{ hx_swap }}"
+		x-init="$el.addEventListener('htmx:afterRequest', e => { if (e.detail.elt !== $el) return; if (e.detail.successful) applied(); else busy = false; })"
+		{% else %}method="post" action="{{ action }}"{% endif %}
+		@submit.prevent="save()"
+		@keydown.enter="if ($event.defaultPrevented || !editing) return; if ($event.target.tagName === 'INPUT' || $event.ctrlKey || $event.metaKey) { $event.preventDefault(); save(); }">
+		{% for k, v in hidden | items %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+		{{ caller() }}
+	</form>
+	{% else %}
+	<div x-ref="form" class="te-form {{ body_class }}" {{ body_attrs }}>{{ caller() }}</div>
+	{% endif %}
+</div>
+{%- endmacro %}
+
+{#- One `label | value` row of an edit block (ui_components.md §1.2). View
+    mode = plain text (empty: muted "-"); edit mode = the .te-in input in
+    the same 34 px box. `editable=false` draws the view only (viewers);
+    `embedded=true` draws only the input, for fields the caller's own form
+    saves (no view mode, no edit block). `suggestions` = ui.combobox.
+    `maxlength` on a multiline field shows the live "n / max" counter. -#}
+{% macro text_field(name, label, value, maxlength=none, multiline=false, required=false, placeholder="", suggestions=none, disabled=false, error=none, id=none, type="text", editable=true, embedded=false, display=none) -%}
+{%- set fid = id or ("te-" ~ name) -%}
+{%- set val = value | default("", true) -%}
+<div class="te-row" data-te-field="{{ name }}">
+	<label class="te-lbl" for="{{ fid }}">{{ label }}</label>
+	<div class="min-w-0"{% if multiline and maxlength %} x-data='{ n: {{ (val | length) | tojson }} }'{% endif %}>
+		{%- if not embedded %}
+		<div class="te-val{% if multiline %} whitespace-pre-line break-words{% else %} truncate{% endif %}{% if not val %} text-muted-fg{% endif %}"
+			data-te-view="{{ name }}"{% if editable %} x-show="!editing"{% endif %}>{{ (display or val) | default("—", true) }}</div>
+		{%- endif %}
+		{%- if editable or embedded %}
+		<div{% if multiline and maxlength %} class="te-area-wrap"{% endif %}{% if not embedded %} x-show="editing" x-cloak{% endif %}>
+			{%- set common = ('id="' ~ fid ~ '" data-te-in' ~ (' required' if required else '') ~ (' disabled' if disabled else '') ~ (' aria-invalid="true"' if error else '') ~ ' aria-describedby="' ~ fid ~ '-err"' ~ ' data-te-required="' ~ ("common.edit.required"|t) ~ '"') | safe -%}
+			{%- if suggestions is not none %}
+			{{ combobox(name, val, suggestions, maxlength=maxlength or 64, placeholder=placeholder, id=none, input_class="te-in", attrs=common) }}
+			{%- elif multiline %}
+			<textarea name="{{ name }}" {{ common }} rows="2" class="te-in te-area"{% if maxlength %} maxlength="{{ maxlength }}" @input="n = $el.value.length"{% endif %}
+				placeholder="{{ placeholder }}">{{ val }}</textarea>
+			{%- else %}
+			<input type="{{ type }}" name="{{ name }}" {{ common }} class="te-in"{% if maxlength %} maxlength="{{ maxlength }}"{% endif %}
+				placeholder="{{ placeholder }}" value="{{ val }}">
+			{%- endif %}
+			<p class="te-err" id="{{ fid }}-err"{% if not error %} hidden{% endif %}>{{ error or "" }}</p>
+			{%- if multiline and maxlength %}
+			<div class="te-count tabular-nums" x-text="n + ' / {{ maxlength }}'">{{ val | length }} / {{ maxlength }}</div>
+			{%- endif %}
+		</div>
+		{%- endif %}
+	</div>
+</div>
+{%- endmacro %}
+
+{#- Single-choice dropdown, the one-pick sibling of the toolbar's Columns /
+    Events multi-select (ui_components.md §4): same outline button (icon,
+    uppercase label, chevron) and the same panel, but each row is a radio
+    with a check mark and the button names the current value
+    ("Aggregation: 10 min"). `options` is `[[value, text], ...]`.
+
+    A hidden native SELECT (`id`, `name`, `select_attrs`) stays the source
+    of truth: a form submits it, `change` bubbles from it, and scripts that
+    set `.value` call `proximosSingleSelect.sync(select)` afterwards.
+    The panel is a native popover so a card's overflow cannot clip it.
+    portal-single-select.js does the wiring. -#}
+{% macro single_select(id, label, options, value="", name="", icon="sliders-horizontal", select_attrs="", class="") -%}
+<div class="relative shrink-0 {{ class }}" data-single-select>
+	<select {% if name %}name="{{ name }}"{% endif %} id="{{ id }}" class="hidden" tabindex="-1" aria-hidden="true" {{ select_attrs|safe }}>
+		{% for o in options %}
+		<option value="{{ o[0] }}"{% if o[0] == value %} selected{% endif %}>{{ o[1] }}</option>
+		{% endfor %}
+	</select>
+	<button type="button" popovertarget="{{ id }}-pop" style="anchor-name:--{{ id }}-btn"
+		class="btn-v1 btn-v1-outline h-10 gap-2 w-full justify-between" aria-haspopup="listbox" title="{{ label }}">
+		<span class="inline-flex items-center gap-2 min-w-0">
+			{{ ic.icon(icon, "h-4 w-4 shrink-0") }}
+			<span class="hidden sm:inline">{{ label }}:</span>
+			<span data-ss-current class="truncate normal-case">{% for o in options %}{% if o[0] == value %}{{ o[1] }}{% endif %}{% endfor %}</span>
+		</span>
+		{{ ic.icon("chevron-down", "h-4 w-4 shrink-0") }}
+	</button>
+	<div id="{{ id }}-pop" popover role="listbox" aria-label="{{ label }}" style="position-anchor:--{{ id }}-btn"
+		class="dropdown dropdown-end w-60 max-h-72 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-card-hover">
+		<div class="px-3.5 pt-2.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">{{ label }}</div>
+		<div class="px-1.5 pb-1.5" data-ss-items>
+			{% for o in options %}
+			<button type="button" role="option" data-ss-value="{{ o[0] }}" aria-selected="{{ 'true' if o[0] == value else 'false' }}"
+				class="flex w-full items-center gap-2.5 px-2 py-1 rounded-lg text-left hover:bg-muted/60 cursor-pointer select-none">
+				<span data-ss-check class="inline-flex h-4 w-4 shrink-0 items-center justify-center text-primary"{% if o[0] != value %} style="visibility:hidden"{% endif %}>{{ ic.icon("check", "h-4 w-4") }}</span>
+				<span class="text-sm truncate" data-ss-text>{{ o[1] }}</span>
+			</button>
+			{% endfor %}
+		</div>
+	</div>
+</div>
+{%- endmacro %}

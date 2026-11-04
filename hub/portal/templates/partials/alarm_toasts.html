@@ -1,0 +1,172 @@
+{#
+  Alarm activation pop-up shell — the always-present swap target for SSE
+  event `alarm-toast` (sse.rs `handle_alarm_nudge`). Included once by
+  layout/base.html, inside the app shell's sse-connect wrapper (sse-swap
+  targets must be descendants of the connected element), so every
+  authenticated page shows pop-ups. daisyUI `toast toast-end`
+  fixed-positions the stack bottom-right; `pointer-events-none` keeps the
+  fixed container from swallowing clicks — each toast restores
+  `pointer-events-auto` on itself.
+
+  The script below is the single owner of the toast lifecycle. htmx still
+  appends every incoming fragment (hx-swap="beforeend"), but the
+  MutationObserver immediately captures the node into a sessionStorage-
+  mirrored store and re-renders the visible view from that store:
+
+  - CONTINUITY: the store carries an absolute expiry per toast (20 s from
+    first appearance), so a page navigation replays what's still live with
+    its remaining lifetime, and a dismissed toast stays dismissed.
+  - COLLAPSE: up to two toasts render as-is; from three up, only the most
+    recent renders plus a "+ N more" chip linking to /alarms — toast
+    width, centered label, neutral fill so it reads as a counter under the
+    stack instead of a second alert (label supplied by data-more-label —
+    the only i18n this script needs).
+    Dismissing or expiring the visible one promotes the next newest.
+  - MUTE: `window.proximosAlarmToasts.mute()` stamps now+1h into
+    localStorage (per-browser, shared across tabs — a 'storage' listener
+    clears other tabs' stacks too), clears the stack, and incoming
+    fragments are dropped while the stamp is in the future.
+    `.unmute()` lifts it. The toast's own mute button and the Alarm
+    pop-ups card on pages/notifications.html (whose Alpine component
+    `alarmToastMute` is registered here, next to the state it fronts)
+    are the two callers.
+
+  Expiry is the store's job alone — the fragment carries no self-remove
+  timer (its ✕ just removes the node; the observer turns that into a store
+  removal). Re-rendering re-inserts nodes, so the observer is detached
+  around render() to keep its own DOM writes out of the event stream.
+#}
+<div id="alarm-toasts" sse-swap="alarm-toast" hx-swap="beforeend" class="toast toast-end z-50 pointer-events-none"
+	data-more-label="{{ "alarms.toast.more"|t }}"></div>
+<script>
+	(function () {
+		var box = document.getElementById('alarm-toasts');
+		if (!box) return;
+		var KEY = 'proximos_alarm_toasts';
+		var MUTE_KEY = 'proximos_alarm_toasts_muted_until';
+		var TTL_MS = 20000;
+		var MUTE_MS = 3600000;
+		var MAX_VISIBLE = 2;
+
+		function read() {
+			try { return JSON.parse(sessionStorage.getItem(KEY) || '[]'); } catch (e) { return []; }
+		}
+		function write(l) {
+			try { sessionStorage.setItem(KEY, JSON.stringify(l)); } catch (e) {}
+		}
+		function mutedUntil() {
+			try { return Number(localStorage.getItem(MUTE_KEY) || 0); } catch (e) { return 0; }
+		}
+		function muted() { return mutedUntil() > Date.now(); }
+
+		var list = read().filter(function (t) { return t.expires > Date.now(); });
+		var timer = null;
+
+		function idOf(n) { return n.getAttribute && n.getAttribute('data-alarm-id'); }
+
+		function render() {
+			// Our own DOM writes must not feed back into the observer; a
+			// disconnect also drops the already-queued records for the raw
+			// node an addFromNode() just captured and removed.
+			obs.disconnect();
+			box.innerHTML = '';
+			var visible = list.length > MAX_VISIBLE ? [list[list.length - 1]] : list;
+			visible.forEach(function (t) { box.insertAdjacentHTML('beforeend', t.html); });
+			if (list.length > MAX_VISIBLE) {
+				var chip = document.createElement('a');
+				chip.href = '/alarms';
+				chip.className = 'alert bg-neutral text-neutral-content border-transparent shadow-card-hover w-80 pointer-events-auto justify-center py-2 text-sm font-medium hover:brightness-125';
+				chip.textContent = (box.dataset.moreLabel || '+ {n} more').replace('{n}', list.length - 1);
+				box.appendChild(chip);
+			}
+			obs.observe(box, { childList: true });
+		}
+
+		function schedule() {
+			clearTimeout(timer);
+			if (!list.length) return;
+			var next = Math.min.apply(null, list.map(function (t) { return t.expires; }));
+			timer = setTimeout(prune, Math.max(next - Date.now(), 0) + 50);
+		}
+
+		function prune() {
+			var now = Date.now();
+			list = list.filter(function (t) { return t.expires > now; });
+			write(list); render(); schedule();
+		}
+
+		function addFromNode(n) {
+			n.remove();
+			if (muted()) return;
+			var id = idOf(n);
+			list = list.filter(function (t) { return t.id !== id; });
+			list.push({ id: id, expires: Date.now() + TTL_MS, html: n.outerHTML });
+			write(list); render(); schedule();
+		}
+
+		function removeId(id) {
+			list = list.filter(function (t) { return t.id !== id; });
+			write(list); render(); schedule();
+		}
+
+		var obs = new MutationObserver(function (mutations) {
+			mutations.forEach(function (m) {
+				Array.prototype.forEach.call(m.addedNodes, function (n) {
+					if (idOf(n)) addFromNode(n);
+				});
+				// A removal the observer still sees is a user dismissal (✕):
+				// render()'s own clears happen while it is disconnected.
+				Array.prototype.forEach.call(m.removedNodes, function (n) {
+					if (idOf(n)) removeId(idOf(n));
+				});
+			});
+		});
+		obs.observe(box, { childList: true });
+
+		window.proximosAlarmToasts = {
+			mutedUntil: mutedUntil,
+			muted: muted,
+			mute: function () {
+				try { localStorage.setItem(MUTE_KEY, String(Date.now() + MUTE_MS)); } catch (e) {}
+				list = []; write(list); render(); clearTimeout(timer);
+			},
+			unmute: function () {
+				try { localStorage.removeItem(MUTE_KEY); } catch (e) {}
+			},
+		};
+
+		// A mute set in another tab of this browser clears this one too.
+		window.addEventListener('storage', function (e) {
+			if (e.key === MUTE_KEY && muted()) {
+				list = []; write(list); render(); clearTimeout(timer);
+			}
+		});
+
+		// pages/notifications.html's "Alarm pop-ups" card — registered here
+		// so the mute state and its UI component live together. This inline
+		// script runs before the deferred alpine.min.js, so alpine:init is
+		// always caught.
+		document.addEventListener('alpine:init', function () {
+			Alpine.data('alarmToastMute', function () {
+				return {
+					until: mutedUntil(),
+					get isMuted() { return this.until > Date.now(); },
+					get untilLabel() {
+						var d = new Date(this.until);
+						return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+					},
+					mute: function () {
+						window.proximosAlarmToasts.mute();
+						this.until = mutedUntil();
+					},
+					unmute: function () {
+						window.proximosAlarmToasts.unmute();
+						this.until = 0;
+					},
+				};
+			});
+		});
+
+		render(); schedule();
+	})();
+</script>

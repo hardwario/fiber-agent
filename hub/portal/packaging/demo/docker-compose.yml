@@ -1,0 +1,110 @@
+# The public demo: one Droplet, this file, six containers. README.md next to
+# this file has the deploy steps. Images come from the portal:demo-image CI
+# job; only Caddy's 80/443 are published, the broker stays on the compose
+# network because it allows anonymous publishing.
+#
+# A `demo-*` tag is the whole release: the job pushes `:latest` and the
+# watchtower container below pulls it within the minute. Nobody logs in to
+# deploy. The alternative was a CI job holding an SSH key into this box —
+# more privilege, a second network path and a runner that has to reach a
+# public IP, to save a minute of latency on a demo.
+name: proximos-demo
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # `:80` until DNS exists; then the hostname, and Caddy fetches the
+      # certificate itself. Set in .env.
+      DEMO_SITE: ${DEMO_SITE:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+  portal:
+    image: ${PORTAL_IMAGE:-registry.hardwario.com/proximos/proximos-v2/portal-demo:latest}
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    volumes:
+      - ./config.yaml:/etc/fiber-portal/config.yaml:ro
+      - portal-data:/data/portal
+
+  # Pulls the images this repo publishes and restarts the containers running
+  # them, so a `demo-*` tag is the only deploy step there is.
+  #
+  # Label-scoped on purpose (`WATCHTOWER_LABEL_ENABLE`): only the four
+  # containers carrying the enable label are touched. Caddy and Mosquitto are
+  # pinned to a major (`caddy:2`, `eclipse-mosquitto:2`) and nobody asked for
+  # them to move under the demo; an unscoped watchtower would have updated
+  # those too, on its own schedule.
+  #
+  # The Droplet's own registry login is mounted read-only — the same
+  # credential `docker compose pull` uses, not a second one. The socket mount
+  # is what lets it recreate containers; it is the price of not holding an SSH
+  # key in CI, and this box has no other tenant.
+  # `nickfedor/watchtower`, the maintained continuation, not `containrrr`:
+  # the original's last release (1.7.1, 2024) speaks Docker API 1.25 and the
+  # Droplet's daemon refuses anything below 1.44 — it crash-looped on
+  # "client version 1.25 is too old". The fork is a drop-in: same
+  # `WATCHTOWER_*` variables and the same `com.centurylinklabs.watchtower.*`
+  # label namespace, verified against the 1.22.2 binary.
+  watchtower:
+    image: nickfedor/watchtower:1.22.2
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      # A demo is watched while it is being shown, so the gap between the tag
+      # and the new page is a minute rather than the default six hours.
+      WATCHTOWER_POLL_INTERVAL: "60"
+      TZ: Europe/Prague
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  # The demo cluster, one Hub per container (dev/mock/README.md).
+  mock-server:
+    image: ${MOCK_IMAGE:-registry.hardwario.com/proximos/proximos-v2/portal-demo-mock:latest}
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    command: ["--host", "mosquitto", "--hub", "server"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  mock-cold-store:
+    image: ${MOCK_IMAGE:-registry.hardwario.com/proximos/proximos-v2/portal-demo-mock:latest}
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    command: ["--host", "mosquitto", "--hub", "cold-store"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  mock-truck:
+    image: ${MOCK_IMAGE:-registry.hardwario.com/proximos/proximos-v2/portal-demo-mock:latest}
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    command: ["--host", "mosquitto", "--hub", "truck"]
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+volumes:
+  caddy-data:
+  portal-data:

@@ -1,0 +1,17 @@
+[package]
+name = "proximos-brand"
+version = "0.1.0"
+edition = "2021"
+# The floor of every crate that links it (control-radio's, via proximos-control).
+rust-version = "1.88"
+
+# The build-time brand (plan/portal/branding.md): `PROXIMOS_BRAND` (default
+# `proximos`) selects portal/branding/<brand>/, and build.rs turns its brand.toml,
+# logo, favicon, splash and string overrides into constants.
+#
+# NO DEPENDENCIES, normal or build, on purpose. proximos-control's dependency
+# list is deliberately narrow (its Cargo.toml says why), and a constants crate
+# that pulls nothing in is the only kind it can take without re-coupling the
+# tree or moving the lockfile. That is also why build.rs parses brand.toml by
+# hand: the file is flat `key = "string"`, and src/parse.rs is the whole grammar.
+[dependencies]

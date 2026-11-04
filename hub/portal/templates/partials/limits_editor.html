@@ -1,0 +1,139 @@
+{#
+  The limits editor — ONE component for every place a limit is set
+  (plan/portal/limits.cs.md §9.4, amended 2026-10-14): /limits, the Node and
+  Beacon detail pages and the wired probes on the Hub's page. Template plus
+  one Alpine component, `limitsEditor` (static/js/portal-limits.js), around
+  the shared slider (partials/threshold_slider.html, `thresholdSlider`).
+
+  Context (an include; the caller sets these with `{% with %}` / `{% set %}`).
+  Two ways in:
+
+  ONE target (a device page) — the editor builds the target itself:
+    le_post          the device's own threshold POST URL
+    le_kind          "node" | "beacon" | "probe"
+    le_scope         "node" | "eye" | "hub" — the defaults' scope
+    le_field         the registry field name
+    le_label         what the target is called in a result line
+    t                the STORED band {critical_low, warning_low, warning_high,
+                     critical_high, enabled, hysteresis} | none. The editor
+                     resolves what it opens on through `limits_band` (the
+                     default band switched off, the P-3 preset, the default
+                     hysteresis — limits_routes::editor_band)
+
+  MANY targets (/limits) — the page hands them in:
+    le_targets       [ { id, label, kind, post, unit, value, seed,
+                         t: {critical_low, warning_low, warning_high,
+                             critical_high}, enabled, hysteresis } ]
+                     -- already resolved (`limits_band`); empty = nothing
+                        selected yet: the editor is disabled and says
+                        "Select a sensor". The page fires `limits-select` on
+                        window with { targets } when the selection changes
+
+  Both:
+    le_id            string, unique on the page (input ids)
+    le_unit          "°C" | "%" | … ; the slider's axis and the inputs' unit
+    le_value         float|none, the reading drawn on the slider
+    le_show_enabled  bool (default true); every kind has the switch (the wired probe since #167)
+    le_send          bool (default false); a Node's draft is sent at once
+                     (posts `send=1`). Off on the Node page, which sends
+                     from its draft banner
+    le_close_js      JS run after a successful save of ONE target, and by
+                     Cancel there (collapse the row, close the dialog)
+    le_editing       bool (default false): open in edit mode and stay so
+                     (a device row opened by its Upravit, the /limits
+                     selection). Otherwise the editor is idle behind a
+                     "Set limits" button (ui.edit_set, ui_components.md §3)
+    can_edit         bool; nothing renders without it
+
+  Each target is written through its own device route, one POST per
+  target, so signing, drafting and auditing stay exactly where they were.
+  The answer is the `#command-status` fragment; its `data-status` says
+  how it went and its text is the per-target message. With one target the
+  fragment also replaces the page's `#command-status`, as the old forms did.
+#}
+{% if can_edit is defined and can_edit %}
+{% set le_unit = le_unit if le_unit is defined and le_unit else "" %}
+{% set le_value = le_value if le_value is defined else none %}
+{% set le_show_enabled = le_show_enabled if le_show_enabled is defined else true %}
+{% set le_send = le_send if le_send is defined else false %}
+{% set le_close_js = le_close_js if le_close_js is defined else "" %}
+{% set le_editing = le_editing if le_editing is defined else false %}
+{#- le_bar=false: the page draws the edit set elsewhere (/limits: in the
+    list toolbar, in the Set limits button's place). -#}
+{% set le_bar = le_bar if le_bar is defined else true %}
+{% import "partials/ui.html" as ui %}
+{% if le_post is defined and le_post %}
+{% set band = limits_band(le_scope, le_field, t if t is defined else none) %}
+{% set le_targets = [{
+	"id": le_post, "label": le_label | default(le_field, true), "kind": le_kind, "post": le_post,
+	"unit": le_unit, "value": le_value, "seed": threshold_seed(le_unit),
+	"t": {"critical_low": band.critical_low, "warning_low": band.warning_low,
+		"warning_high": band.warning_high, "critical_high": band.critical_high},
+	"enabled": band.enabled, "hysteresis": band.hysteresis }] %}
+{% else %}
+{% set le_targets = le_targets if le_targets is defined else [] %}
+{% endif %}
+{% set first = le_targets[0] if le_targets else none %}
+{% set t = first.t if first else {
+	"critical_low": none, "warning_low": none, "warning_high": none, "critical_high": none } %}
+{% set le_enabled = first.enabled if first else false %}
+{% set le_hysteresis = first.hysteresis if first else threshold_hysteresis_of_unit(le_unit) %}
+<form class="flex flex-col gap-2 mt-3" data-limits-editor="{{ le_id }}"
+	x-data='limitsEditor({
+		targets: {{ le_targets | tojson }},
+		send: {{ "true" if le_send else "false" }},
+		always: {{ "true" if le_editing else "false" }},
+		labels: {
+			ok: {{ "monitoring.limits_editor.result_ok"|t|tojson }},
+			error: {{ "monitoring.limits_editor.result_error"|t|tojson }},
+			saving: {{ "monitoring.limits_editor.saving"|t|tojson }},
+			applies: {{ "monitoring.limits_editor.applies_to"|t|tojson }}
+		}
+	})'
+	x-on:limits-select.window="select($event.detail)"
+	x-on:submit.prevent="save($el)" x-on:input="tick++" x-on:change="tick++" x-on:limits-done="{{ le_close_js }}"
+	{% if le_close_js %}x-on:limits-cancel="{{ le_close_js }}"{% endif %}>
+	{#- The card header: `le_head` (title markup) left, the edit set right,
+	    the same place as the Channels card (ui_components.md §3). -#}
+	{% if le_bar %}<div class="es-head es-head-plain">{% if le_head is defined and le_head %}{{ le_head }}{% endif %}{{ ui.edit_set("monitoring.limits.set_button"|t, idle=not le_editing) }}</div>{% endif %}
+	<p x-show="!targets.length" class="text-sm text-muted-fg" {% if le_targets %}hidden{% endif %}>{{ "monitoring.limits_editor.select_sensor"|t }}</p>
+	<p x-show="targets.length > 1" class="text-sm text-muted-fg" x-cloak
+		x-text="labels.applies.replace('{n}', targets.length)"></p>
+	<fieldset class="flex flex-col gap-2 disabled:opacity-60" :disabled="!targets.length || busy || !editing"
+		{% if not le_targets %}disabled{% endif %}>
+		<div x-ref="slider">
+		{% with slider_unit = le_unit, slider_value = le_value, slider_id = "le-" ~ le_id, slider_hysteresis = le_hysteresis %}
+		{% include "partials/threshold_slider.html" %}
+		{% endwith %}
+		</div>
+		{% if le_show_enabled %}
+		<label class="flex items-center gap-3 mt-1">
+			<input type="checkbox" name="enabled" value="true" class="checkbox-v1" x-ref="enabled"
+				{% if le_enabled %}checked{% endif %}>
+			<span class="text-sm">{{ "monitoring.threshold.enabled_checkbox"|t }}</span>
+		</label>
+		{% endif %}
+		{#- The help line of one target: the unit, the P-3 range rule of a
+		    quantity the Node watches itself (NT-2), and that a band switched
+		    off does nothing yet (threshold_defaults.md §3). -#}
+		{% if le_post is defined and le_post %}
+		<p class="text-xs text-muted-fg">
+			{{ "monitoring.threshold.hint_base"|t }}{% if le_unit %} {{ "monitoring.threshold.hint_unit_suffix"|t|replace("{unit}", le_unit) }}{% endif %}
+			{%- if le_scope == "node" and critical_open(le_field) %} {{ "monitoring.threshold.hint_critical_range"|t }}{% endif %}
+			{%- if le_show_enabled and not le_enabled %} {{ "monitoring.threshold.hint_off"|t }}{% endif %}
+		</p>
+		{% endif %}
+	</fieldset>
+	{#- One line per target after a save: its name, how it went and the
+	    device route's own message. -#}
+	<ul class="flex flex-col gap-1 text-sm" x-show="results.length" x-cloak data-limits-results>
+		<template x-for="r in results" :key="r.id">
+			<li class="flex flex-wrap items-baseline gap-2" :data-result="r.ok ? 'ok' : 'error'">
+				<span class="font-medium" x-text="r.label"></span>
+				<span :class="r.ok ? 'text-success' : 'text-critical'" x-text="r.ok ? labels.ok : labels.error"></span>
+				<span class="text-xs text-muted-fg" x-text="r.message"></span>
+			</li>
+		</template>
+	</ul>
+</form>
+{% endif %}

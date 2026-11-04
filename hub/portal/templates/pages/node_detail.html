@@ -1,0 +1,600 @@
+{#
+  Node (LoRaWAN STICKER) detail page (M5-T context contract).
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "nodes",
+    hostname: string,                   -- route 404s before render when no Hub / unknown node_key
+    n: {
+      node_key: string,                  -- lowercase 16-hex dev_eui (LoRaWAN)
+                                        -- or serial_number (P2P)
+      transport: "lorawan"|"p2p",       -- M8: drives the transport badge
+      dev_addr: string|none, net_id: string|none,
+      session_state: "joined"|"detach_pending"|"rejoin_pending"|"stale"|"gone"|none,
+      last_join_at: string|none,        -- RFC3339; P2P session identity (§3.1),
+                                        -- from the retained `info` document
+      name: string|none, serial_number: string|none, location: string|none,
+      last_seen: string|none,           -- pre-formatted display string
+      alarm_state: "Normal"|"Warning"|"Critical"|"Disconnected"
+        |"Reconnecting"|"NeverConnected",
+      rssi: int|none, snr: float|none,  -- best-gateway values
+      connected: bool,                  -- ONE liveness verdict, same rule as the
+                                        -- list row (render::node_connected):
+                                        -- B2's detector, alarm_state only as
+                                        -- the fallback where it holds none
+      fault: "offline"|"history_unavailable"|"missing_measurement"|none,
+                                        -- §3.1b operational fault; independent
+                                        -- of alarm_state (the value axis)
+      fault_since: string|none,         -- RFC3339, set for an offline fault
+                                        -- only — the other kinds have no
+                                        -- honest "since when"
+      gateways: [ {gateway_id: string, rssi: int|none, snr: float|none}, ... ],
+      counters: {name: int},            -- may be empty
+      info: dict|none,                  -- RAW device-info payload verbatim: the v2
+                                        -- `device_info` document's map, else the v1
+                                        -- retained info (ws.md lorawan_device_infos);
+                                        -- keys read defensively with `in` since
+                                        -- firmware owns the shape
+      info_received_at: string|none,    -- RFC3339, when the Hub received that info
+                                        -- (UI-9: cached state, show its age); none
+                                        -- on the v1 path
+      fields: [ { name: string, label: string, unit: string,
+                  value: float|none,    -- none = not reported since the portal started
+                  alarm_state: "NORMAL"|"WARNING"|"CRITICAL"|none,  -- firmware casing
+                  thresholdable: bool, chartable: bool,
+                  count: bool, enabled: bool }, ... ]  -- count: from counters, whole number
+        -- registry-ordered fields this Node has reported (live or stored;
+           devices.node.md §3.4), drives the metric rail, chart and threshold table
+    },
+    thresholds: { <field name>: { critical_low, warning_low, warning_high,
+                                  critical_high (each float|none),
+                                  enabled: bool } | none },
+      -- keys MAY be absent entirely (read with `in`), value none = no
+         threshold stored for that field
+    config: render::NodeConfigCtx      -- config info by group, read-only; only
+                                        -- `editable` rows (the two intervals,
+                                        -- nodes_phase1.cs.md WP5) get a dialog
+    jobs: [ partials/backfill_jobs.html's job shape, ... ],
+    gaps: [ partials/backfill_jobs.html's gap shape, ... ],
+    can_edit: bool                      -- gates threshold/config dialogs, backfill
+                                        -- form and job cancel buttons
+    can_remove: bool                    -- admin; gates the removal button and dialog
+    remove_error: string|none           -- the removal dialog's refusal, shown under the button
+    radio: { carrier: "lorawan"|"p2p",  -- node_registry.md §6: the carrier the Hub's
+             target: "lorawan"|"p2p",   -- registry holds the Node on (n.transport too);
+             target_enabled: bool }     -- target = where "Změnit rádio" moves it
+    carrier_off: "lorawan"|"p2p"|none   -- R7: the Node's carrier is off on this Hub
+    can_move: bool                      -- admin; gates "Změnit rádio" and its dialog
+  }
+  Optional keys (defaulted here, NOT part of the required contract):
+  - di: render::DeviceInfoCtx — Overview only, partials/device_info.html.
+  - active_tab: "overview"|"settings"|"diagnostics" (default "overview") —
+    from the path, `/nodes/{key}/{tab}`.
+  - raw_templates: [render::RawTemplateCtx] — the service card's set-config templates
+    (nodes_phase1.cs.md WP6). Only the card reads it, and it renders for admins only.
+  - pending — render::PendingCtx, defaulted to none inside
+    partials/pending_config.html. B4's §3.5 draft: the two configuration
+    forms below WRITE to it rather than relaying, and its Send button is
+    what reaches the device.
+  - selected_range: the Channels card's range ("24h"|"3d"|"7d").
+  - ch: routes::channels::ChannelsCtx|none — the Overview's Channels card
+    (plan/portal/ui_components.md §2), contract in
+    partials/channels_card.html.
+  - cmd — defaults to none inside partials/command_status.html.
+  - messages: [render::NodeMessageCtx] — the last-10 raw uplink ring
+    (§3.3a), the same rows GET /nodes/{key}/messages.json downloads.
+  - last_alarm: render::LastAlarmCtx|none — §3.3a's "last alarm message",
+    the newest alarm/fault event the node_events window holds.
+  - cal: render::CalibrationCardCtx|none — the Overview tab's calibration
+    card (plan/portal/calibration.cs.md §2), contract in
+    partials/calibration_card.html.
+  - move_ok: string|none — the flash after a successful "Změnit rádio",
+    which reminds the operator to switch the Node itself.
+
+  Three tabs (2026-09-15), same shape as pages/hub_detail.html: Overview
+  carries the values, the chart and the thresholds; Settings the metadata,
+  device configuration, keys and service functions; Diagnostics the radio,
+  device info and history backfill. The page was one 14-section scroll
+  before, which is what made it unusable rather than merely long. Tabs are
+  plain `<a>` links to `/nodes/{key}/{tab}`, so a reload (the SSE `refresh` event
+  reloads the whole page — layout/base.html) lands on the same tab.
+
+  The Overview's readings are the shared Channels card (2026-10-15): a
+  stats table per channel, the chart in Trends. It replaced the
+  metric rail + single-field chart of 2026-09-15.
+
+  Commands: since B4 the threshold dialogs
+  (partials/limits_editor.html → POST /nodes/{node_key}/thresholds/{field})
+  and the per-key config dialogs (POST /nodes/{node_key}/config with `key`
+  + `value`; value sent as text, server parses/validates the type) are
+  DRAFT writes — same validation, nothing published — and the banner's
+  "send configuration" button is what reaches the device. The
+  config-refresh button (hx-post /nodes/{node_key}/refresh-config) still
+  relays immediately; it is a read. All of them target the global
+  #command-status shell included below; progress then streams over SSE — the connection itself lives on layout/base.html's app
+  shell (same as pages/hub_detail.html). The threshold/config dialogs sit OUTSIDE any SSE
+  swap region (this page has no per-card swaps), so no hx-preserve needed
+  — contrast partials/beacon_card.html.
+
+  Backfill: the from/to form htmx-POSTs /nodes/{node_key}/backfill with
+  hx-target "#backfill-jobs-{node_key}" (hx-swap outerHTML) — the handler
+  responds with partials/backfill_jobs.html re-rendered (new job included);
+  later lifecycle updates arrive as SSE "backfill-jobs-{node_key}" events
+  carrying the same partial. The datetime-local values are read in the
+  installation's display zone and open on the last 24 hours
+  (`backfill_from`/`backfill_to`), like pages/history.html's export card
+  (decisions.md #32).
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "monitoring.node_detail.title_prefix"|t }} {{ n.name | default(n.node_key, true) }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set selected_range = selected_range if selected_range is defined else "24h" %}
+{% set active_tab = active_tab if active_tab is defined else "overview" %}
+{#- A switched-off sensor (GitLab #120) shows only in the sensor settings table. -#}
+{% set chartable_fields = n.fields | selectattr("chartable") | selectattr("enabled") | list %}
+{% set state = n.alarm_state %}
+{% if state == "Normal" %}
+	{% set state_tone = "success" %}
+{% elif state == "Warning" %}
+	{% set state_tone = "warning" %}
+{% elif state == "Critical" %}
+	{% set state_tone = "critical" %}
+{% else %}
+	{% set state_tone = "neutral" %}
+{% endif %}
+
+{% set tabs = [
+	("overview", "monitoring.node_detail.tab_overview"|t, "activity"),
+	("settings", "monitoring.node_detail.tab_settings"|t, "settings"),
+	("history", "monitoring.node_detail.tab_history"|t, "database-backup"),
+	("diagnostics", "monitoring.node_detail.tab_diagnostics"|t, "radio"),
+] %}
+
+<div data-sse-refresh class="space-y-4">
+	<div class="flex items-center justify-between gap-2 flex-wrap">
+		{{ ui.back_link("/nodes", "monitoring.nodes.back_to_list"|t) }}
+		<div class="flex items-center gap-2">
+			{#- §5's lifecycle caption. A Node registered a minute ago has no
+			    readings and no last_seen, and without this the page looks
+			    broken rather than new. Not a fault — see render::waiting_for_join. -#}
+			{% if n.waiting_for_join %}
+			<span class="badge-outline-v1">{{ "monitoring.nodes.registered_waiting"|t }}</span>
+			{% endif %}
+			{% if can_remove %}
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm text-critical"
+				onclick="var p = document.getElementById('node-remove'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+				{{ "monitoring.nodes.remove_button"|t }}
+			</button>
+			{% endif %}
+		</div>
+	</div>
+	{% if can_remove %}
+<div id="node-remove" hidden class="rounded-lg border border-base-300 bg-base-200/40 p-4">
+		<h3 class="font-bold text-lg">{{ "monitoring.nodes.remove_heading"|t }}</h3>
+		<p class="text-sm mt-2">{{ "monitoring.nodes.remove_body"|t }}</p>
+		<form method="post" action="/nodes/{{ n.node_key }}/remove" class="flex flex-col gap-3 mt-3">
+			<fieldset class="flex flex-col gap-1">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.nodes.remove_confirm_prompt"|t|replace("{key}", n.node_key) }}</legend>
+				<input type="text" name="confirm" class="input-v1 font-mono text-sm"
+					autocomplete="off" spellcheck="false" required>
+			</fieldset>
+			<div class="flex justify-end gap-2">
+				<button type="button" class="btn-v1 btn-v1-outline"
+					onclick="document.getElementById('node-remove').hidden = true">{{ "common.actions.cancel"|t }}</button>
+				<button type="submit" class="btn-v1 btn-v1-primary">{{ "monitoring.nodes.remove_button"|t }}</button>
+			</div>
+		</form>
+</div>
+	{% endif %}
+	{% if remove_error is defined and remove_error %}
+	<div role="alert" class="alert alert-error"><span>{{ remove_error }}</span></div>
+	{% endif %}
+
+	{# --- Identity header (§3.1) ----------------------------------------
+	   One row, the way pages/hub_detail.html opens: who this is and what
+	   state it is in. Radio and DeviceInfo moved to the Diagnostics tab —
+	   they answered a question nobody opens this page with. #}
+	<div class="card-v1 p-4 flex flex-wrap items-center justify-between gap-3">
+		<div class="flex items-center gap-3 min-w-0">
+			{{ ui.status_dot(n.connected, "h-2.5 w-2.5") }}
+			<div class="min-w-0">
+				<div class="flex items-baseline gap-2 flex-wrap">
+					<h1 class="text-lg font-bold truncate">{{ n.name | default(n.node_key, true) }}</h1>
+					{% if n.location %}
+					<span class="text-xs uppercase tracking-wide text-muted-fg">{{ n.location }}</span>
+					{% endif %}
+				</div>
+				<p class="text-xs font-mono text-muted-fg truncate">
+					{{ n.node_key }}{% if n.serial_number %} · SN {{ n.serial_number | node_serial }}{% endif %}
+				</p>
+			</div>
+		</div>
+		<div class="flex items-center gap-2">
+			<span class="flex items-center gap-1.5 text-xs text-muted-fg">
+				{{ ic.icon("clock", "h-3.5 w-3.5") }}
+				{{ n.last_seen | short_dt | default(("common.never"|t), true) }}
+			</span>
+			{#- "Normální" is a verdict only against a limit; with none set the
+			    badge says so, as the Monitoring card does (UX-033). `has_limits`
+			    is the Monitoring rule, `render::any_bounded` (D3). -#}
+			{% if state == "Normal" and not has_limits %}
+			{{ ui.status_badge("none", "monitoring.threshold_table.no_threshold_set"|t) }}
+			{% else %}
+			{{ ui.status_badge(state, ("monitoring.alarm_state." ~ state)|t) }}
+			{% endif %}
+			<span class="badge-outline-v1">{{ ("monitoring.transport." ~ n.transport)|t }}</span>
+			{#- §3.1/§6: the P2P session badge beside the protocol. `joined`
+			    is the quiet case and gets the neutral tone; a pending detach
+			    or rejoin is a warning because the node has not yet heard it;
+			    `stale` is a removal the node never confirmed. -#}
+			{% if n.session_state %}
+			<span class="badge-status {% if n.session_state in ['detach_pending', 'rejoin_pending'] %}badge-status-warning{% else %}badge-status-neutral{% endif %}">{{ ("monitoring.session_state." ~ n.session_state)|t }}</span>
+			{% endif %}
+		</div>
+	</div>
+
+	{# --- Tabs ------------------------------------------------------------ #}
+	<div class="border-b border-base-300">
+		<nav class="flex gap-6 -mb-px overflow-x-auto">
+			{% for id, label, icon in tabs %}
+			<a href="/nodes/{{ n.node_key }}/{{ id }}"
+				{% if active_tab == id %}aria-current="page"{% endif %}
+				class="flex items-center gap-1.5 pb-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors {% if active_tab == id %}border-primary text-primary{% else %}border-transparent text-muted-fg hover:text-base-content{% endif %}">
+				{{ ic.icon(icon, "h-4 w-4") }}{{ label }}
+			</a>
+			{% endfor %}
+		</nav>
+	</div>
+
+	{% include "partials/command_status.html" %}
+	{#- GitLab #109: one banner, one pairing form, on every page with signed actions. -#}
+	{% include "partials/unpaired_banner.html" %}
+
+	{#- F21: the removal dialog's refusal. Its form is a full-page POST that
+	    redirects back here, and the metadata card, the only other flash on
+	    this page, sits on one tab and speaks for the metadata form. -#}
+	{% if remove_error %}
+	<div role="alert" class="alert alert-error mb-4"><span>{{ remove_error }}</span></div>
+	{% endif %}
+
+	{#- "Změnit rádio" went through (node_registry.md §6). The move's own
+	    reminder, above the tabs: the Node itself still has to be switched. -#}
+	{% if move_ok is defined and move_ok %}
+	<div role="status" class="alert alert-success mb-4"><span>{{ move_ok }}</span></div>
+	{% endif %}
+
+	{# --- §3.5 the unsent-configuration banner (B4) ----------------------
+	   Directly under the command-status shell, because the two answer the
+	   same question in sequence: what is outstanding, and what happened
+	   when it was sent. Always-present shell — see the partial's own header
+	   for why it must render even with no draft. Both stay above the tabs'
+	   content: an unsent draft is the page's business, not one tab's. #}
+	{% include "partials/pending_config.html" %}
+
+	{# --- §3.1b operational fault banner (§19, F4/F12) -------------------
+	   The operational axis, kept apart from the status badge above, which is
+	   the value axis. `fault_since` is only ever set for an offline fault —
+	   the Node's own last_seen — so the second line is conditional rather
+	   than showing an invented timestamp for the other two kinds. #}
+	{% if n.fault %}
+	<div role="alert" class="alert alert-warning">
+		{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+		<div class="min-w-0">
+			<span class="font-medium">{{ ("monitoring.nodes.fault_" ~ n.fault)|t }}</span>
+			{% if n.fault_since %}
+			<span class="block text-xs opacity-80">{{ "monitoring.node_detail.fault_since"|t|replace("{value}", n.fault_since | short_dt) }}</span>
+			{% endif %}
+		</div>
+	</div>
+	{% endif %}
+
+	{# --- The Node's carrier is off on this Hub (node_registry.md §11) ------
+	   `radio.mode` changed and this Node's registry carrier is no longer one
+	   the Hub runs. It stays registered with its history; it is moved per
+	   Node, and switched on the Node too. On every tab, with "Změnit rádio"
+	   beside it for an admin (R6): nothing on any tab reaches the Node. #}
+	{% if carrier_off %}
+	<div role="status" class="alert alert-warning">
+		{{ ic.icon("radio", "h-5 w-5 shrink-0") }}
+		<div class="min-w-0 flex-1">
+			<span class="font-medium">{{ "monitoring.node_detail.carrier_off"|t|replace("{carrier}", ("monitoring.transport." ~ carrier_off)|t) }}</span>
+			<span class="block text-xs opacity-80">{{ "monitoring.node_detail.carrier_off_help"|t }}</span>
+		</div>
+		{% if can_move is defined and can_move %}
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm shrink-0"
+			onclick="var p = document.getElementById('node-move'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+			{{ "monitoring.node_detail.move_button"|t }}
+		</button>
+		{% endif %}
+	</div>
+	{% endif %}
+	{% if can_move is defined and can_move and radio is defined %}
+<div id="node-move" hidden class="rounded-lg border border-base-300 bg-base-200/40 p-4">
+		<h3 class="font-bold text-lg">{{ "monitoring.node_detail.move_heading"|t }}</h3>
+		<p class="text-sm mt-2">{{ "monitoring.node_detail.move_body"|t|replace("{from}", ("monitoring.transport." ~ radio.carrier)|t)|replace("{to}", ("monitoring.transport." ~ radio.target)|t) }}</p>
+		<div role="alert" class="alert alert-warning mt-3">
+			{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+			<span class="text-sm">{{ "monitoring.node_detail.move_node_warning"|t }}</span>
+		</div>
+		<form hx-post="/nodes/{{ n.node_key }}/move" hx-target="#command-status" hx-swap="outerHTML"
+			hx-on::after-request="if (event.detail.successful) document.getElementById('node-move').hidden = true"
+			class="flex flex-col gap-3 mt-3">
+			<fieldset class="flex flex-col gap-1">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.node_detail.move_target_label"|t }}</legend>
+				{% for c in ["lorawan", "p2p"] %}
+				<label class="flex items-center gap-2 text-sm">
+					<input type="radio" name="to" value="{{ c }}"
+						{% if c == radio.target %}checked required{% else %}disabled{% endif %}>
+					{{ ("monitoring.transport." ~ c)|t }}{% if c == radio.carrier %} <span class="text-muted-fg">({{ "monitoring.node_detail.move_current_marker"|t }})</span>{% endif %}
+				</label>
+				{% endfor %}
+				{% if not radio.target_enabled %}
+				<p class="text-xs text-muted-fg">{{ "monitoring.node_detail.move_target_off"|t|replace("{carrier}", ("monitoring.transport." ~ radio.target)|t) }}</p>
+				{% endif %}
+			</fieldset>
+			<fieldset class="flex flex-col gap-1">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.node_detail.move_confirm_prompt"|t|replace("{key}", n.node_key) }}</legend>
+				<input type="text" name="confirm" class="input-v1 font-mono text-sm"
+					autocomplete="off" spellcheck="false" required>
+			</fieldset>
+			<div class="flex justify-end gap-2">
+				<button type="button" class="btn-v1 btn-v1-outline"
+					onclick="document.getElementById('node-move').hidden = true">{{ "common.actions.cancel"|t }}</button>
+				<button type="submit" class="btn-v1 btn-v1-primary">{{ "monitoring.node_detail.move_button"|t }}</button>
+			</div>
+		</form>
+</div>
+	{% endif %}
+
+	{# ================= Overview ========================================= #}
+	{% if active_tab == "overview" %}
+
+	{#- Device information (metadata.cs.md §5, amendment 2026-10-15): name,
+	    description, location and the Node's facts; replaces the Settings
+	    tab's metadata card. -#}
+	{% if di %}<div class="mb-4">{% include "partials/device_info.html" %}</div>{% endif %}
+
+	{#- config_sync.md §13 Q20e: a limit the Node holds differently, nothing pending. -#}
+	{% if node_unsynced %}
+	<div role="alert" id="node-unsynced-{{ n.node_key }}" data-node-unsynced class="mb-4 alert alert-warning flex items-center justify-between gap-3 flex-wrap">
+		<div class="flex-1 min-w-0">
+			<div class="font-medium">{{ "monitoring.threshold_table.node_unsynced_heading"|t }}</div>
+			<div class="text-sm">{{ "monitoring.threshold_table.node_unsynced_body"|t }}</div>
+		</div>
+		{% if can_edit %}
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm"
+			hx-post="/nodes/{{ n.node_key }}/limits/resync"
+			hx-target="#command-status" hx-swap="outerHTML">{{ "monitoring.threshold_table.node_resync_button"|t }}</button>
+		{% endif %}
+	</div>
+	{% endif %}
+	{# --- Channels (plan/portal/ui_components.md §2, 2026-10-15): stats
+	   table over 24 h / 3 days / 7 days, the chart is in Trends. It
+	   replaced the metric rail + single-field chart (thresholds in the
+	   chart, fullscreen, 1h/6h/30d — all still in Trends). #}
+	{% if ch %}<div class="mb-4">{% include "partials/channels_card.html" %}</div>{% endif %}
+
+	{# --- Calibration (calibration.cs.md §2) ------------------------------
+	   Last on the tab: a certificate is looked at monthly, the chart and
+	   the bounds above it every visit. #}
+	{% if cal is defined and cal %}
+	{% include "partials/calibration_card.html" %}
+	{% endif %}
+
+	{# --- Events (ui_components.md §5): operator notes only --- #}
+	{% if evc is defined and evc %}{% include "partials/events_card.html" %}{% endif %}
+
+	{# ================= Settings ========================================= #}
+	{% elif active_tab == "settings" %}
+
+	{# --- Device configuration (ui_components.md §6, 2026-10-15): the two
+	   intervals, offline detection and the History switch in one card; the
+	   check drafts what changed and sends it at once. #}
+	{% set ns = namespace(items=[]) %}
+	{% for row in config.editable %}
+	{% set ns.items = ns.items + [{
+		"name": row.name, "label": "monitoring.device_config." ~ row.name,
+		"help": "monitoring.device_config." ~ row.name ~ "_help",
+		"value": row.value | string, "unit": "s", "editable": true}] %}
+	{% endfor %}
+	{% set k_default = (offline_k_default | string) if offline_k_default is not none else "" %}
+	{% set k_empty = "monitoring.device_config.inherited"|t|replace("{value}", k_default) %}
+	{% set k_val = (meta.offline_k_override | string) if meta and meta.offline_k_override is not none else "" %}
+	{% set dc_items = ns.items + [
+		{"name": "offline_k", "label": "monitoring.device_config.offline_k", "help": "monitoring.device_config.offline_k_help",
+		 "value": k_val, "unit": "", "editable": true, "placeholder": k_default, "empty": k_empty},
+		{"name": "history", "label": "monitoring.device_config.history", "help": "monitoring.device_config.history_help_node",
+		 "value": ("on" if history and history.checked else "off"), "editable": history is not none,
+		 "options": [["on", "monitoring.device_config.on"], ["off", "monitoring.device_config.off"]]}] %}
+	{% with dc = {"kind": "node", "action": "/nodes/" ~ n.node_key ~ "/device-config", "items": dc_items} %}
+	<div class="mb-4">{% include "partials/device_config.html" %}</div>
+	{% endwith %}
+	{% if meta_error %}<div role="alert" class="alert alert-error mb-4"><span>{{ meta_error }}</span></div>{% endif %}
+
+	{# --- The Node's reported configuration (B4: an SSE swap target), read-only -- #}
+	{% include "partials/node_config.html" %}
+
+	{#- "Změnit rádio" (node_registry.md §6) is a row of the Service functions
+	    card below since 2026-10-15 (ui_components.md §7). -#}
+
+	{#- §3.7 keys & sessions: the card was removed 2026-10-15 (Hynek); the
+	    reveal route stays. -#}
+
+	{# --- §3.6 service functions (admin only, B4) ------------------------
+	   Below the configuration card, per the spec's section order. The
+	   partial draws nothing at all for a manager. #}
+	{% include "partials/node_service_card.html" %}
+
+	{# ================= History ========================================== #}
+	{% elif active_tab == "history" %}
+
+	{#- devices.node.md §3.8b, amendment 2026-09-25: one tab for asking a Node for history and
+	    for every download in progress, manual or automatic. Amended 2026-10-15
+	    (ui_components.md §9): three collapsible cards, Coverage and Downloads
+	    (partials/backfill_jobs.html, one live swap target) and Request history
+	    (partials/backfill_request.html, collapsed on load). -#}
+	<div class="flex flex-col gap-4 [&>*]:min-w-0">
+		{% set node_key = n.node_key %}
+		{% set history_off = history.node_enabled == false %}
+		{% include "partials/backfill_jobs.html" %}
+		{% if can_edit %}
+		{% set req_url = "/nodes/" ~ n.node_key ~ "/backfill" %}
+		{% set req_target = "backfill-jobs-" ~ n.node_key %}
+		{% include "partials/backfill_request.html" %}
+		{% endif %}
+	</div>
+
+	{# ================= Diagnostics ======================================
+	   Four collapsible cards (ui_components.md, amendment 2026-10-15): Device
+	   (boot Info + ConfigDump), Radio, Alarm messages, Message history. All
+	   read storage or the retained state; the buttons only queue a request. #}
+	{% else %}
+	{%- set k = n.node_key %}
+	{%- set dg = diag or {} %}
+	<div class="flex flex-col gap-4 [&>*]:min-w-0">
+
+		{# --- Device: only what the Node sent at boot ------------------------ #}
+		{%- set fw = (n.info.fw_major ~ "." ~ n.info.fw_minor ~ "." ~ n.info.fw_patch) if (n.info is not none and "fw_major" in n.info and "fw_minor" in n.info and "fw_patch" in n.info) else "–" %}
+		{% set head_end %}
+			{#- GetInfo + GetSettings: the Node answers with a new Info and settings-info,
+			    which repaint the body below over SSE (nodes_phase1.cs.md WP7). -#}
+			{% if can_edit %}
+			<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm shrink-0" title="{{ "monitoring.node_detail.read_device_button"|t }}"
+				hx-post="/nodes/{{ k }}/read-device" hx-target="#command-status" hx-swap="outerHTML">
+				{{ "monitoring.diag.refresh"|t }}
+			</button>
+			{% endif %}
+		{% endset %}
+		{% call ui.collapsible_card("diag-device-" ~ k, "cpu", "monitoring.diag.device_heading"|t, head_end=head_end,
+			summary="monitoring.diag.device_summary"|t|replace("{when}", (n.info_received_at | short_dt) if n.info_received_at else "–")|replace("{fw}", fw)) %}
+		<div id="node-device-{{ k }}" sse-swap="node-device-{{ k }}" hx-swap="innerHTML">
+			{% include "partials/node_device_body.html" %}
+		</div>
+		{% endcall %}
+
+		{# --- Radio: carrier, session, device status, gateways ---------------- #}
+		{%- set gws = n.gateways | sort(attribute="rssi", reverse=true) %}
+		{% set head_end %}
+			{#- The DevStatusReq the radio seam can send today is P2P's (`node-send
+			    dev-status`, p2p_control_commands.md §5); a LoRaWAN Node has no route. -#}
+			{% if can_edit and n.transport == "p2p" %}
+			<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm shrink-0"
+				hx-post="/nodes/{{ k }}/dev-status" hx-target="#command-status" hx-swap="outerHTML">
+				{{ "monitoring.diag.get_status"|t }}
+			</button>
+			{% endif %}
+		{% endset %}
+		{% call ui.collapsible_card("diag-radio-" ~ k, "antenna", "monitoring.diag.radio_heading"|t, head_end=head_end,
+			summary=("monitoring.transport." ~ n.transport)|t ~ " · RSSI " ~ ((n.rssi ~ " dBm") if n.rssi is not none else "–") ~ " · " ~ "monitoring.diag.gateways_count"|t|replace("{n}", gws|length|string)) %}
+		<div class="flex items-center gap-2 flex-wrap">
+			<span class="badge-outline-v1">{{ ("monitoring.transport." ~ n.transport)|t }}</span>
+			{% if n.session_state %}<span class="badge-status {% if n.session_state in ['detach_pending', 'rejoin_pending'] %}badge-status-warning{% else %}badge-status-neutral{% endif %}">{{ ("monitoring.session_state." ~ n.session_state)|t }}</span>{% endif %}
+		</div>
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+			<dt class="text-muted-fg">RSSI</dt>
+			<dd class="font-mono text-xs tabular-nums">{% if n.rssi is not none %}{{ n.rssi }} dBm{% else %}–{% endif %}</dd>
+			<dt class="text-muted-fg">SNR</dt>
+			<dd class="font-mono text-xs tabular-nums">{% if n.snr is not none %}{{ n.snr }} dB{% else %}–{% endif %}</dd>
+			{#- §3.1 session identity: whatever the Hub published of it, on either
+			    carrier (decision #23: the page asks the data, not the carrier). -#}
+			{% if n.dev_addr %}<dt class="text-muted-fg">{{ "monitoring.node_keys.dev_addr_label"|t }}</dt><dd class="font-mono text-xs">{{ n.dev_addr }}</dd>{% endif %}
+			{% if n.net_id %}<dt class="text-muted-fg">{{ "monitoring.node_keys.net_id_label"|t }}</dt><dd class="font-mono text-xs">{{ n.net_id }}</dd>{% endif %}
+			{% if n.last_join_at %}<dt class="text-muted-fg">{{ "monitoring.node_detail.joined_at_label"|t }}</dt><dd class="font-mono text-xs tabular-nums">{{ n.last_join_at | short_dt }}</dd>{% endif %}
+			{% if dg.dr is number %}<dt class="text-muted-fg">{{ "monitoring.diag.data_rate"|t }}</dt><dd class="font-mono text-xs tabular-nums">DR{{ dg.dr }}</dd>{% endif %}
+			{% if dg.frequency is number %}<dt class="text-muted-fg">{{ "monitoring.diag.frequency"|t }}</dt><dd class="font-mono text-xs tabular-nums">{{ (dg.frequency / 1000000) | round(3) }} MHz</dd>{% endif %}
+			{% if n.uplink_counter is not none %}<dt class="text-muted-fg">{{ "monitoring.diag.uplink_counter"|t }}</dt><dd class="font-mono text-xs tabular-nums">{{ n.uplink_counter }}</dd>{% endif %}
+			<dt class="text-muted-fg">{{ "monitoring.list.column_home_hub"|t }}</dt>
+			<dd class="font-mono text-xs">{{ home_gateway | default("–", true) }}</dd>
+		</dl>
+
+		{#- The Node's answer to a DevStatusReq: battery, how it heard the downlink,
+		    its TX power and uptime. Asked for on demand, so it says when. -#}
+		{% if n.device_status is not none or n.transport == "p2p" %}
+		<div class="border-t border-base-300 pt-3 flex flex-col gap-1.5">
+			<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.dev_status_group"|t }}</p>
+			{% if n.device_status is not none %}
+			{%- set ds = n.device_status %}
+			<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.battery_label"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{% if ds.battery_mv is not none %}{{ ds.battery_mv }} mV{% if ds.battery_pct is not none %} ({{ ds.battery_pct }} %){% endif %}{% else %}{{ "monitoring.node_detail.dev_status_no_battery"|t }}{% endif %}</dd>
+				{% if ds.dl_rssi_dbm is not none %}
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.dev_status_downlink_label"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{{ ds.dl_rssi_dbm }} dBm{% if ds.dl_snr_db is not none %} &middot; SNR {{ ds.dl_snr_db }} dB{% endif %}</dd>
+				{% endif %}
+				{% if ds.tx_power_dbm is not none %}
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.dev_status_tx_power_label"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{{ ds.tx_power_dbm }} dBm</dd>
+				{% endif %}
+				{% if ds.uptime_s is not none %}
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.uptime_label"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{{ ds.uptime_s }} s</dd>
+				{% endif %}
+				{% if ds.received_at %}
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.device_info_received_at"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{{ ds.received_at | short_dt }}</dd>
+				{% endif %}
+			</dl>
+			{% else %}
+			<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.dev_status_none"|t }}</p>
+			{% endif %}
+		</div>
+		{% endif %}
+
+		<div class="border-t border-base-300 pt-3 flex flex-col gap-1.5">
+			<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.gateways_heading"|t }}</p>
+			{% if gws %}
+			{{ ui.diag_heard_by(gws, home_gateway, n.transport == "lorawan", n.last_seen) }}
+			{% else %}
+			<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.no_gateway_data"|t }}</p>
+			{% endif %}
+		</div>
+		{% endcall %}
+
+		{# --- Alarm messages + Message history (storage, never live state) ---- #}
+		{% with diag_id = "diag-alarms-" ~ k, alarms = dg.alarms or [] %}{% include "partials/diag_alarms_card.html" %}{% endwith %}
+		{% with diag_id = "diag-messages-" ~ k, messages = dg.messages or [], csv_name = "node-" ~ k ~ "-messages.csv",
+			json_url = "/nodes/" ~ k ~ "/messages.json",
+			trends_url = "/trends" ~ (("?s=node:" ~ k ~ ":" ~ chartable_fields[0].name) if chartable_fields else "") %}{% include "partials/diag_messages_card.html" %}{% endwith %}
+	</div>
+
+	{% endif %}
+</div>
+
+{% if active_tab == "overview" %}
+{# proximosCollapse/proximosToggleCollapse for the threshold accordion, the
+   same helper the Node and Beacon lists use. The file's own boot() only
+   touches `[data-list-key]` elements, of which this page has none. #}
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endif %}
+
+
+{% if can_remove %}
+{# --- §6 removal (B4) ------------------------------------------------
+   A typed confirmation, not an hx-confirm. Removing a Node deprovisions it
+   from the network server and is not undone by retyping a value — contrast
+   the draft's Discard, which is. The typed key is checked ON THE SERVER
+   (`remove_node` compares it against the node_key); the `required`
+   attribute here is a courtesy to the person typing.
+
+   A full-page POST + redirect, like registration: the row this page is
+   about will not exist afterwards, so there is nothing to swap. #}
+{% endif %}
+
+{% if can_move is defined and can_move and radio is defined %}
+{# --- "Změnit rádio" (node_registry.md §6; devices.node.md, dodatek
+   2026-09-27) ------------------------------------------------------------
+   The target is the other carrier; the current one is shown and cannot be
+   chosen. A typed confirm (the DevEUI), checked ON THE SERVER, because the
+   Node cannot reach the Hub until it is switched too — which the Hub does
+   not do (§10 Q1), and the dialog says so plainly.
+
+   An htmx POST, unlike removal: a refusal (the Hub's own sentence, e.g.
+   ChirpStack down) lands in #command-status, and success answers
+   HX-Redirect back to this tab, which then shows the new carrier. #}
+{% endif %}
+
+{% endblock %}

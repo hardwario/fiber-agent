@@ -1,0 +1,8 @@
+/target/
+/dev-data/
+/tools/
+*.sqlite*
+.DS_Store
+__pycache__/
+# `make check-linux`'s container target dir, kept out of the host target/
+/target-linux/

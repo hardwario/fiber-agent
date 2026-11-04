@@ -1,0 +1,112 @@
+[Unit]
+Description=ChirpStack MQTT Forwarder
+Documentation=https://www.chirpstack.io/
+Documentation=file:///run/proximos/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/system/design.md
+
+# THE RENDERED CONFIG IS THE GATE, exactly as on chirpstack.service. The static
+# /etc/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml this package used to ship
+# is gone; `proximosctl render` writes the file below instead, and only when
+# radio.mode ∈ {lorawan, dual}. On a P2P-only or radio-off Hub it is simply absent and
+# this unit reports "condition failed" rather than starting a forwarder that would
+# publish LoRaWAN traffic the device was not configured to speak.
+#
+# This is not redundant with the udev gate. The two conditions are independent and both
+# real: udev answers "is a concentrator fitted", the rendered config answers "was LoRaWAN
+# asked for". A Hub can be either without being both.
+ConditionPathExists=/run/proximos/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml
+
+# Requires, not Wants, and it is the Requires= that makes the udev path work rather than
+# merely tidy. This unit is started indirectly from a coldplug udev event, which can fire
+# before the renderer has run at all; a bare After= would then be satisfied vacuously
+# (nothing is queued, so there is nothing to order against) and the forwarder would start
+# with no config file and no condition met. Requires= puts proximos-render.service into
+# the same transaction, so the forwarder waits for the render instead of racing it — and
+# the renderer in turn RequiresMountsFor=/data, which is the thing a coldplug event is
+# genuinely early for.
+Requires=proximos-render.service
+After=proximos-render.service
+
+# No [Install] section, deliberately: this unit is pulled in by
+# chirpstack-concentratord.service's Wants=, and that unit is itself started from
+# udev when the RAK5146 appears. So the pair comes up with the card and goes away
+# with it, and a Hub with no concentrator fitted - a supported configuration, see
+# plan/control/radio/plan.md - never starts either.
+#
+# Requires + After: without the concentratord's two IPC sockets there is nothing
+# to forward, and the forwarder does not exit when they are missing, it waits. A
+# plain After= would therefore produce a running unit that silently forwards
+# nothing.
+#
+# PartOf: stopping or restarting the concentratord takes this with it. Needed
+# because the sockets are recreated by the daemon, and a forwarder that outlived a
+# concentratord restart would be the mismatch the rendered toml's own header warns
+# about (portal/packaging/templates/chirpstack-mqtt-forwarder/), only reached at
+# runtime instead of by editing.
+Requires=chirpstack-concentratord.service
+After=chirpstack-concentratord.service
+PartOf=chirpstack-concentratord.service
+
+# Wants, not Requires: the broker is loopback-only and the forwarder retries its
+# connection indefinitely, so a slow or briefly absent mosquitto costs uplinks,
+# not the unit. Making it Requires= would take the radio down whenever the broker
+# bounced.
+Wants=mosquitto.service
+After=mosquitto.service
+
+[Service]
+Type=simple
+# -c takes a FILE here, unlike chirpstack's own -c which takes a directory. The renderer
+# owns /run/proximos/chirpstack-mqtt-forwarder (it is one of proximos-render.service's
+# RuntimeDirectory= entries) and writes this file into it 0640 root:root — root because
+# this unit has no User= and therefore runs as root, which is a cross-file contract with
+# crates/proximos-render/src/lib.rs's run_paths::FORWARDER. Give this unit a service
+# account and that line has to change with it.
+# The concentratord is Type=simple and binds its IPC sockets only once the card is up, about
+# 3 s after it starts; a forwarder that asks for the gateway id before that panics ("Could not
+# read gateway id") and dumps core on every switch to LoRaWAN. Wait for the command socket.
+ExecStartPre=/bin/sh -c 'for i in $(seq 60); do [ -S /run/chirpstack-concentratord/command ] && exit 0; sleep 1; done; echo "concentratord command socket not up after 60 s" >&2; exit 1'
+ExecStart=/usr/bin/chirpstack-mqtt-forwarder -c /run/proximos/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml
+Restart=on-failure
+RestartSec=5
+
+# Hardening - MDR 2017/745 Annex I 17.4.
+#
+# PrivateDevices=true here but NOT on chirpstack-concentratord, and the asymmetry
+# is the point: this process touches no hardware at all. It speaks ZeroMQ IPC over
+# a unix socket under /run and MQTT to 127.0.0.1:1883, so a minimal /dev costs it
+# nothing, whereas the concentratord opens /dev/rak5146 and would break. See that
+# unit for the long version.
+#
+# PrivateTmp= namespaces /tmp only; /run is shared, so the IPC link survives it -
+# which is exactly why both .toml files put the sockets in /run.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# A unix socket and IPv4 loopback are the whole of this process's networking, so
+# no other family needs to be reachable. v1 did not restrict this. Same directive
+# and same spelling as portal/packaging/{fiber-portal,radio-setup}.service, minus
+# AF_INET6, which those need and this does not.
+#
+# Deliberately NOT paired with IPAddressAllow=/IPAddressDeny=, which would be the
+# stronger statement: those need cgroup-BPF support, nothing else in this product
+# uses them, and an unsupported directive is a warning per unit start rather than
+# an enforced rule. Worth adding once someone has confirmed the target kernel
+# carries it.
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+# A declaration of intent rather than a change, copied from chirpstack.service for the
+# same reason: ProtectSystem=strict has already made /run read-only. It is here so that
+# the day somebody relaxes ProtectSystem to `full`, the rendered configuration - which
+# this daemon must never rewrite - does not silently become writable with it.
+ReadOnlyPaths=/run/proximos/chirpstack-mqtt-forwarder

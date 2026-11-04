@@ -1,0 +1,13 @@
+{#
+  The answer to „Aktualizovat firmware SB“ (POST /hubs/{hub}/system/southbridge-update,
+  plan/system/southbridge_update.md §3.7).
+
+  Context: { cmd: the relay outcome (partials/command_status.html),
+             sb_firmware: render::SbFirmwareCtx | none (partials/hub_sb_firmware.html) }
+
+  `#command-status` is the form's hx-target; the "Firmware SB" card rides along
+  out of band, following the update, so it says „Probíhá aktualizace…“ and
+  polls itself without a reload.
+#}
+{% include "partials/command_status.html" %}
+{% if sb_firmware %}{% with oob = true %}{% include "partials/hub_sb_firmware.html" %}{% endwith %}{% endif %}

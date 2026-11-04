@@ -1,0 +1,32 @@
+{#
+  Add hub / Retry did not complete — devices.hub.md §4 step 3: "registrace
+  nedokončena", never a silent half (UI-25). No bundle is shown even when the
+  account was minted: the Client would join a half-registered cluster, and
+  the Retry that finishes it rotates the password anyway.
+
+  Context: {
+    server, client: string,
+    account: "ok"|"failed"|"unknown", gateway: "ok"|"skipped"|"failed"|"unknown",
+    reason: string|none,                -- what the registry row now says
+    error_code: string|none,            -- the relay's failure class, if any
+    status: string                      -- the relay outcome's status
+  }
+#}
+{% import "partials/icons.html" as ic %}
+<div data-reload-on-close class="grid gap-3">
+	<div class="flex items-start gap-2 rounded-lg border border-error/40 bg-error/5 px-3 py-2 text-sm">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-error") }}
+		<div>
+			<p class="font-medium">{{ "monitoring.hubs.registration_incomplete"|t }} — <span class="font-mono">{{ client }}</span></p>
+			{% if error_code %}<p class="mt-1">{{ ("monitoring.command_error." ~ error_code)|t }}</p>{% endif %}
+			<p class="mt-1 text-muted-fg">{{ "monitoring.hubs.effect_account_label"|t }}: {{ ("monitoring.hubs.effect_" ~ account)|t }} · {{ "monitoring.hubs.effect_gateway_label"|t }}: {{ ("monitoring.hubs.effect_" ~ gateway)|t }}</p>
+			{% if reason %}<p class="mt-1 font-mono text-xs break-all">{{ reason }}</p>{% endif %}
+		</div>
+	</div>
+	<p class="text-sm text-muted-fg">{{ "monitoring.hubs.registration_incomplete_hint"|t }}</p>
+	<div class="flex justify-end gap-2">
+		<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "common.actions.close"|t }}</button>
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm"
+			hx-get="/hubs/{{ server }}/cluster/clients/{{ client }}/retry" hx-target="#add-hub-body" hx-swap="innerHTML">{{ "monitoring.hubs.retry_button"|t }}</button>
+	</div>
+</div>

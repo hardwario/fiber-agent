@@ -1,0 +1,89 @@
+{#
+  Per-device offline-detection override (devices.backend.md §3, WP0.2).
+  The description moved to partials/meta_card.html (metadata.cs.md); this
+  form posts only `offline_k`, and the handler leaves absent fields alone.
+
+  Context: {
+    action: string,             -- POST target: /nodes/{key}/meta or
+                                   /beacons/{mac}/meta
+    meta: DeviceMetaCtx,        -- render::device_meta_ctx; an untouched
+                                   device renders as every default
+    can_edit: bool,             -- manager+; viewers get the read-only view
+    scope: "node"|"eye",        -- which of the two scope-specific fields
+                                   this device actually has
+    ok: string|none, error: string|none   -- flash from the redirect
+  }
+
+  Plain POST + redirect, deliberately not htmx into `#command-status`: that
+  shell renders a `CommandOutcome` from the relay, and this write never
+  leaves SQLite. Modelled on `POST /beacons/add`, which redirects with an
+  `?ok=`/`?error=` code for the same reason.
+
+  Blank is not zero in either number field — blank inherits the YAML
+  default, `0` in the offline field disables detection for this one device
+  (V9's header). The inputs are therefore text-with-inputmode rather than
+  `type=number` with a default.
+
+  The placeholder is the inherited VALUE, not the word "inherit": a greyed
+  `4` in an empty field answers "what happens if I leave this alone" where
+  the word only named the mechanism. The number comes from the page
+  (`offline_k_default`, from YAML through `AppState`); a page that passes
+  none still renders, with an empty placeholder rather than a misleading
+  number.
+
+  The read-only branch renders the SAME rows as the form. A Beacon has no
+  store-interval field any more (storage_intervals.md §6, S4): its history
+  is the Hub's storage window, set on the Hub.
+#}
+{% set meta = meta if meta is defined and meta is not none else {
+	"description": none, "created_at": none, "added_by": none,
+	"offline_k_override": none, "backfill_auto": true } %}
+{% set scope = scope if scope is defined else "node" %}
+{% set offline_k_default = offline_k_default if offline_k_default is defined else none %}
+<div class="card-v1">
+	<div class="p-4 flex flex-col gap-3">
+		<div class="flex items-center justify-between gap-2 flex-wrap">
+			<h2 class="text-base font-semibold">{{ "monitoring.meta.offline_heading"|t }}</h2>
+			{% if meta.created_at %}
+			<span class="text-xs text-muted-fg">
+				{{ "monitoring.shared.since"|t|replace("{value}", meta.created_at|short_dt) }}
+				{%- if meta.added_by %} · {{ meta.added_by }}{% endif %}
+			</span>
+			{% endif %}
+		</div>
+
+		{% if ok is defined and ok %}
+		<div role="alert" class="alert alert-success"><span>{{ ok }}</span></div>
+		{% endif %}
+		{% if error is defined and error %}
+		<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+		{% endif %}
+
+		{% if can_edit %}
+		{#- Capped width: on a wide screen a 1400px text input reads as a
+		    mistake, and the Save button ended up half a metre from the field
+		    it saves. -#}
+		<form method="post" action="{{ action }}" class="flex flex-col gap-4 max-w-2xl">
+			<label class="flex flex-col gap-1">
+				<span class="text-sm">{{ "monitoring.meta.offline_k_label"|t }}</span>
+				<input type="text" inputmode="numeric" name="offline_k"
+					class="input input-sm w-32 tabular-nums"
+					placeholder="{% if offline_k_default is not none %}{{ offline_k_default }}{% endif %}"
+					{% if meta.offline_k_override is not none %}value="{{ meta.offline_k_override }}"{% endif %}>
+				<span class="text-xs text-muted-fg">{{ "monitoring.meta.offline_k_hint"|t }}</span>
+			</label>
+
+			<div class="flex justify-end">
+				<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">{{ "monitoring.meta.save_button"|t }}</button>
+			</div>
+		</form>
+		{% else %}
+		<dl class="text-sm flex flex-col gap-1">
+			<div class="flex gap-2">
+				<dt class="text-muted-fg">{{ "monitoring.meta.offline_k_label"|t }}</dt>
+				<dd class="tabular-nums">{{ meta.offline_k_override if meta.offline_k_override is not none else "—" }}</dd>
+			</div>
+		</dl>
+		{% endif %}
+	</div>
+</div>

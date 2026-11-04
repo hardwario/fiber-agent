@@ -1,0 +1,96 @@
+{#-
+  /run/proximos/chirpstack/region_eu868.toml.
+
+  WHY THIS FILE IS SHIPPED AT ALL, since WP-C was only asked to emit it "if the
+  integration stack's region file differs from 4.19.1 defaults in ways that matter":
+  there are no 4.19.1 defaults to differ from. ChirpStack compiles in the config
+  template for chirpstack.toml (readable with `strings` over the binary) but NOT a
+  [[regions]] block — upstream ships region_*.toml as data, in the .deb and the docker
+  image, and the artifact this product pins
+  (chirpstack_4.19.1_sqlite_linux_arm64.tar.gz) contains exactly one file: the binary.
+  So `enabled_regions = ["eu868"]` with no region_eu868.toml beside it is a server that
+  refuses to start on "Region ID not found", and this file is mandatory rather than
+  optional.
+
+  Derived from crates/control-radio/tests/integration/region_eu868.toml, which is the
+  known-good configuration the tonic client was live-verified against on a 4.19.0 compose
+  stack. Two values change on the way to a device, both of them addresses: the broker
+  becomes loopback instead of the compose network's `mosquitto`. Everything else is
+  carried over unchanged, on purpose — a region file that diverges from the one the
+  client was verified against is a difference nobody measured.
+
+  Selected by name: the renderer looks for `chirpstack/region_<radio.region>.toml.j2`
+  and fails loudly if it is missing, so adding a region later is adding a template rather
+  than editing a match arm. Phase 1 has exactly one, because v2 physically ships and
+  supports only EU868.
+-#}
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+
+[[regions]]
+name = "{{ region }}"
+common_name = "{{ region_common_name }}"
+
+[regions.gateway]
+# Gateways are ours and are registered by `proximosctl control.radio create` after EUI
+# discovery. Marking them private would hide them from the tenant the same command
+# creates its application under.
+force_gws_private = false
+
+[regions.gateway.backend]
+enabled = "mqtt"
+
+[regions.gateway.backend.mqtt]
+# ⚠ CROSS-FILE CONTRACT. This must equal chirpstack-mqtt-forwarder.toml's [mqtt]
+# topic_prefix, and both come from the same radio.region — which is the only reason
+# they cannot drift. A mismatch is the quiet failure mode of this whole chain: the
+# forwarder publishes to <its prefix>/gateway/+/event/up, ChirpStack subscribes under
+# <its prefix>/, both processes stay running, both report healthy, and no uplink is ever
+# seen by the network server.
+topic_prefix = "{{ topic_prefix }}"
+
+# Loopback, plain TCP, anonymous — same broker, same reasoning, as every other MQTT
+# endpoint on this device.
+server = "{{ mqtt_server }}"
+
+[regions.network]
+installation_margin = 10
+rx_window = 0
+rx1_delay = 1
+rx2_frequency = 869525000
+rx2_dr = 0
+# ADR bounds (#95). ChirpStack's RegionNetwork defaults both to 0 when they are absent,
+# which clamps every ADR decision to DR0: the network server then only ever lowers TX
+# power, answers each join with LinkADRReq DR0, and pulls a Node that chose a faster rate
+# back to SF12. EU868 DR0-DR5 are its LoRa 125 kHz rates (RP002 §2.4.3).
+min_dr = 0
+max_dr = 5
+# The five optional EU868 channels (LoRaWAN Regional Parameters RP002, EU863-870 §2.4).
+# ChirpStack compiles in only the three mandatory join channels (868.1/868.3/868.5); a
+# device that also transmits on 867.1-867.9 — HARDWARIO's Node/Sticker do — has those
+# uplinks dropped ("No channel found for frequency: 867900000") until they are declared
+# here.
+[[regions.network.extra_channels]]
+frequency = 867100000
+min_dr = 0
+max_dr = 5
+
+[[regions.network.extra_channels]]
+frequency = 867300000
+min_dr = 0
+max_dr = 5
+
+[[regions.network.extra_channels]]
+frequency = 867500000
+min_dr = 0
+max_dr = 5
+
+[[regions.network.extra_channels]]
+frequency = 867700000
+min_dr = 0
+max_dr = 5
+
+[[regions.network.extra_channels]]
+frequency = 867900000
+min_dr = 0
+max_dr = 5

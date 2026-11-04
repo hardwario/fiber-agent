@@ -1,0 +1,75 @@
+{#
+  "Device information" — the one block every device detail page opens with
+  (plan/portal/metadata.cs.md §5): the editable name, description and
+  location, then the static facts of the kind.
+
+  Context: `di`, a render::DeviceInfoCtx (render/device_info.rs), plus
+  `locations` (routes::location_suggestions) for the location combobox.
+
+  - Always expanded on load; the header toggles it, nothing is remembered.
+    Collapsed it shows "name · location".
+  - The three fields are one ui.edit_block (plan/portal/ui_components.md
+    §1): a pencil beside the title (manager+), save / cancel in its place
+    while editing. One request saves all three; the probe's is one htmx
+    post into #command-status (set_sensor_name, then set_sensor_location).
+  - A viewer gets the plain values and no pencil.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% set locations = locations if locations is defined else [] %}
+{% set di_id = "device-info-" ~ di.kind %}
+{% set head %}
+	<button type="button" class="di-toggle" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ di_id }}-body">
+		{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+		{{ ui.card_icon("info") }}
+		<span class="text-base font-semibold whitespace-nowrap">{{ "monitoring.device_info.heading"|t }}</span>
+	</button>
+{% endset %}
+{% set head_end %}
+	<button type="button" class="di-rest" @click="open = !open" tabindex="-1" aria-hidden="true">
+		<span class="text-sm text-muted-fg truncate min-w-0" x-show="!open" x-cloak x-text="summary(rev)"></span>
+		{% if di.ident %}<span class="ml-auto text-xs text-muted-fg font-mono truncate hidden sm:inline">{{ di.ident }}</span>{% endif %}
+	</button>
+{% endset %}
+<section class="card-v1 di" id="{{ di_id }}" data-device-info="{{ di.kind }}"
+	x-data='{
+		open: false,
+		summary() {
+			const t = (n) => { const e = this.$root.querySelector("[data-te-view=" + n + "]"); return e && !e.classList.contains("text-muted-fg") ? e.textContent.trim() : ""; };
+			return [t("name"), t("location")].filter(Boolean).join(" · ") || "—";
+		}
+	}' :class="open && 'di-open'">
+{% call ui.edit_block(di_id ~ "-edit", di.action, htmx=di.htmx, can_edit=di.can_edit,
+	head=head, head_end=head_end, head_class="di-head", saved=(di.ok is not none and di.ok != ""),
+	hidden=({"tab": di.tab} if di.tab else {}),
+	body_class="di-body", body_attrs=('id="' ~ di_id ~ '-body" x-show="open" x-cloak')|safe) %}
+		{% if di.error %}<div role="alert" class="alert alert-error mb-2 text-sm"><span>{{ di.error }}</span></div>{% endif %}
+		{{ ui.text_field("name", "monitoring.device_info.name"|t, di.name, maxlength=64, id=di_id ~ "-name", editable=di.can_edit) }}
+		{{ ui.text_field("description", "monitoring.device_info.description"|t, di.description, maxlength=255, multiline=true,
+			placeholder="monitoring.meta.description_placeholder"|t, id=di_id ~ "-description", editable=di.can_edit) }}
+		{{ ui.text_field("location", "monitoring.device_info.location"|t, di.location, maxlength=64, suggestions=locations,
+			id=di_id ~ "-location", editable=di.can_edit) }}
+
+		<hr class="di-sep">
+		<dl class="di-grid">
+			{% for f in di.facts %}
+			<div class="di-fact">
+				<dt>{{ f.label|t }}</dt>
+				<dd class="{% if f.mono %}font-mono{% endif %}{% if f.tone == 'expired' %} text-error{% elif f.tone == 'warning' %} text-warning{% endif %}">
+					{%- if f.value_key -%}
+					{{ f.value_key|t|replace("{n}", f.value_n|string)|replace("{code}", f.value_n|string) }}
+					{%- elif f.value and f.dt -%}
+					{{ f.value | short_dt }}
+					{%- else -%}
+					{{ f.value | default("—", true) }}
+					{%- endif -%}
+					{%- if f.hint %} <span class="text-xs text-muted-fg font-sans">{{ f.hint|t }}</span>{% endif -%}
+					{%- if f.copy %}<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon di-copy" data-copy="{{ f.value }}"
+						title="{{ "monitoring.meta.copy"|t }}" aria-label="{{ "monitoring.meta.copy"|t }}"
+						onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy)">{{ ic.icon("copy", "h-3 w-3") }}</button>{% endif -%}
+				</dd>
+			</div>
+			{% endfor %}
+		</dl>
+{% endcall %}
+</section>

@@ -1,0 +1,31 @@
+{#
+  404 page, served by `http::not_found_handler` as the router's fallback.
+
+  Context: { current_user } — optional. A logged-in visitor keeps the navbar
+  (layout/nav.html renders the bare brand link when current_user is none), so a
+  mistyped URL is a detour rather than a dead end.
+
+  No `nav_active`: no nav entry matches an unknown path.
+
+  Also the role-refusal page (`http::forbidden_page`): `code`, `title` and
+  `message` override the 404 defaults, so both errors share one layout.
+#}
+{% extends "layout/base.html" %}
+
+{% set code = code if code is defined else 404 %}
+{% set title = title if title is defined else "common.not_found.title"|t %}
+{% set message = message if message is defined else "common.not_found.body"|t %}
+{% block title %}{{ title }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="hero py-16">
+	<div class="hero-content text-center">
+		<div class="max-w-md">
+			<p class="text-6xl font-bold text-base-content/20">{{ code }}</p>
+			<h1 class="text-2xl font-bold mt-2">{{ title }}</h1>
+			<p class="text-base-content/60 mt-2">{{ message }}</p>
+			<a href="/" class="btn btn-primary mt-6">{{ "common.not_found.home"|t }}</a>
+		</div>
+	</div>
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+[package]
+name = "control-radio"
+version = "0.1.0"
+edition = "2021"
+# Raised with the ChirpStack client: tonic 0.14 declares rust-version 1.88, and the
+# chirpstack_api versions still on tonic 0.13 are below the 4.17.0 read-only-key floor.
+rust-version = "1.88"
+
+# The lib target is `control_radio` (decision #12 / portal/monolith.md §11.7 fixes this
+# spelling once: directory and package `control-radio`, lib target `control_radio`, and
+# `control.radio` is the command/dispatch namespace and nothing else).
+[lib]
+name = "control_radio"
+path = "src/lib.rs"
+
+# STANDALONE GUARANTEE (decision #12, monolith.md §11.7): this crate may depend on no
+# other crate in this workspace. External crates are fine; a `path = "../..."` line here
+# is the thing that breaks the guarantee. Asserted by a test in tests/standalone.rs.
+[dependencies]
+aes = "0.9.2"
+async-trait = "0.1.92"
+ccm = "0.6.0"
+chirpstack_api = "4.19.0"
+clap = { version = "4.6.6", features = ["derive"] }
+cmac = "0.8.0"
+# CRC-32/ISO-HDLC of the Northbridge image and its `app_valid` record
+# (northbridge_update.md §10). Already in the workspace lock file.
+crc32fast = "1.5"
+getrandom = "0.4.3"
+rumqttc = "0.24"
+# `flock(2)` for the P2P session DB's cross-process critical section (p2p/db.rs::update).
+# Already in the workspace lock file via tokio/mio, so this costs no new crate — and it is
+# an external crate, so decision #12's standalone guarantee (no workspace `path =` deps)
+# is untouched.
+rustix = { version = "1.1", features = ["fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml = "0.9.34"
+# The Northbridge image's sha256 against its manifest (northbridge_update.md §3.2).
+# Already in the workspace lock file (control-core, fiber-protocol).
+sha2 = "0.10"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util"] }
+tokio-serial = "5.5.0"
+
+[dev-dependencies]
+chirpstack_api = "4.19.0"

@@ -1,0 +1,265 @@
+{#
+  Alarm list page (M6-T context contract, P2 v1-style restyle).
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "alarms",
+    alarms: [ partials/alarm_table.html's row shape, ... ], total: int,
+    limit: int, offset: int,
+    filter: { hostname: string|none, severity: string|none,
+      alarm_type: string|none, include_acknowledged: bool,
+      include_cleared: bool,
+      show: "open"|"unacked"|"all" },   -- the lifecycle select's value, derived
+                                        -- from the two flags by the handler
+    active_count: int                   -- currently-active (uncleared) alarms
+                                        -- for THIS filter's hostname, not just
+                                        -- the current page
+  }
+
+  Filter form is a plain GET (audit.html's pattern) — the query string is
+  the only state, so filtering + pagination stay bookmarkable/shareable and
+  survive reload. `hostname` is a hidden field, not a visible control:
+  Phase 1 is single-Hub (history.html's decision, same reasoning here), so
+  there is nothing for the operator to pick — the field only exists so a
+  future multi-Hub filter value round-trips through this form without a
+  template change. Both `alarm_type` and `severity` are closed enums, so
+  both are <select>s: `AlarmType` is the SCREAMING_SNAKE_CASE values in
+  portal-domain's `types.rs` (rest.md's `HIGH | LOW | DISCONNECT |
+  POWER_DISCONNECT | WIFI_DISCONNECT | ETHERNET_DISCONNECT`) and the repo
+  filters on `alarm_type = ?`, an exact match — which is why free text was
+  the wrong control: the operator sees translated labels but the filter
+  wants the raw enum, so anything typed by hand missed. Every filter
+  auto-submits on change, so the toolbar behaves like v1's instant
+  dropdowns.
+
+  `active_count` (top stats row already shows "With Alarms"/"Critical", so
+  this page does not repeat it as its own banner — legacy's Alarms screen
+  has no such banner either) and the search box are NOT part of the context
+  contract's filter — search is a client-side re-filter over the current
+  page's rendered rows (dashboard.html's pattern), not a server round-trip.
+
+  Table + pagination live in partials/alarm_table.html, wrapped in the SSE
+  swap target `#alarm-table` — see that partial's header.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "alarms.list.heading"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4" data-list-key="alarms">
+	<form method="get" action="/alarms" id="alarm-filter-form">
+		{% if devices | length < 2 %}
+		<input type="hidden" name="hostname" value="{{ filter.hostname | default('', true) }}">
+		{% endif %}
+		{#- Same toolbar as every other list (ui.toolbar_shell), in its SERVER
+		    mode: the fields are form controls that auto-submit, and the count,
+		    the active-filter tally and "Clear all" arrive rendered. The search
+		    box is the exception and stays client-side — it re-filters the rows
+		    of the current page (the script at the bottom), which is what it did
+		    before and what pagination makes it: a server-side search would have
+		    to leave the page you are on. -#}
+		{% set active_filters = 0 %}
+		{% if filter.hostname %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.severity %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.alarm_type %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.to_state %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.field %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{% if filter.q %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{#- `filter.show`, not a top-level `show`: the handler puts it in the
+		    filter, and reading a name nobody sets left the select on "open"
+		    for every URL (UX-048). -#}
+		{% set show = filter.show | default("open", true) %}
+		{% if show != "open" %}{% set active_filters = active_filters + 1 %}{% endif %}
+		{#- Chips as data: label, value and the link that drops that one
+		    parameter. The hrefs come from the handler (`chip_hrefs`) because
+		    re-emitting five parameters to drop the sixth, six times over, is
+		    forty lines of template that get one conditional wrong. -#}
+		{#- Read defensively: `chip_hrefs` is the page handler's, and a render
+		    path that has not been through it degrades to no chips rather than
+		    to an error. -#}
+		{% set chip_hrefs = chip_hrefs if chip_hrefs is defined else {} %}
+		{% set ns = namespace(chips=[]) %}
+		{% if filter.hostname %}{% set ns.chips = ns.chips + [["alarms.list.filter.device"|t, filter.hostname, chip_hrefs["hostname"] if "hostname" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if filter.severity %}{% set ns.chips = ns.chips + [["alarms.list.filter.severity"|t, ("alarms.severity." ~ filter.severity)|t|capitalize, chip_hrefs["severity"] if "severity" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if filter.alarm_type %}{% set ns.chips = ns.chips + [["alarms.list.filter.type"|t, ui.alarm_type_label(filter.alarm_type), chip_hrefs["alarm_type"] if "alarm_type" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if filter.to_state %}{% set ns.chips = ns.chips + [["alarms.list.filter.state"|t, ("alarms.state." ~ (filter.to_state|lower))|t, chip_hrefs["to_state"] if "to_state" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if filter.field %}{% set ns.chips = ns.chips + [["monitoring.limits.quantity"|t, filter.field|field_label(filter.field), chip_hrefs["field"] if "field" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if filter.q %}{% set ns.chips = ns.chips + [["monitoring.list.filters_button"|t, filter.q, chip_hrefs["q"] if "q" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% if show != "open" %}{% set ns.chips = ns.chips + [["alarms.list.filter.show_label"|t, ("alarms.list.filter.show_" ~ show)|t, chip_hrefs["show"] if "show" in chip_hrefs else "/alarms"]] %}{% endif %}
+		{% set count_text = ("monitoring.list.count"|t)
+			|replace("{visible}", alarms|length)
+			|replace("{total}", total)
+			|replace("{entity}", "common.nav.alarms"|t) %}
+		{#- Every informational column is toggleable here, which is the other
+		    kind of picker: nothing is hidden waiting to be revealed, the table
+		    is simply ten columns wide and only some of them are load-bearing
+		    for a given job. Strong defaults carry that — "what is wrong, how
+		    bad, where and since when" stays on, and the two that are dead in
+		    the default view (a filter that excludes cleared alarms leaves
+		    every End cell empty, and Duration restates Start) start off.
+
+		    The select checkbox and the Actions cell are not on the list: they
+		    are the row's controls, not information about it. -#}
+		{% set columns = [
+			["loc", "alarms.table.location"|t, true],
+			["type", "alarms.type_label"|t, true],
+			["state", "alarms.table.state"|t, true],
+			["start", "alarms.table.activated"|t, true],
+			["value", "monitoring.shared.value_column"|t, false],
+			["end", "alarms.table.end"|t, false],
+			["length", "alarms.table.length"|t, false],
+		] %}
+		{% call ui.toolbar_shell(
+			key="alarms",
+			columns=columns,
+			search_placeholder="alarms.list.search_placeholder"|t,
+			search_name="q",
+			search_value=filter.q | default("", true),
+			count_text=count_text,
+			clear_href="/alarms",
+			active=active_filters,
+			chips=ns.chips
+		) %}
+			{% if devices | length > 1 %}
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-device">{{ "alarms.list.filter.device"|t }}</label>
+				<select id="f-alarms-device" name="hostname" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="" {% if not filter.hostname %}selected{% endif %}>{{ "monitoring.list.filter_all"|t }}</option>
+					{% for d in devices %}
+					<option value="{{ d }}" {% if filter.hostname == d %}selected{% endif %}>{{ d }}</option>
+					{% endfor %}
+				</select>
+			</div>
+			{% endif %}
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-severity">{{ "alarms.list.filter.severity"|t }}</label>
+				<select id="f-alarms-severity" name="severity" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="" {% if not filter.severity %}selected{% endif %}>{{ "monitoring.list.filter_all"|t }}</option>
+					<option value="warning" {% if filter.severity == "warning" %}selected{% endif %}>{{ ("alarms.severity.warning"|t)|capitalize }}</option>
+					<option value="critical" {% if filter.severity == "critical" %}selected{% endif %}>{{ ("alarms.severity.critical"|t)|capitalize }}</option>
+				</select>
+			</div>
+
+			{#- A closed enum, so a <select>: the repo matches `alarm_type = ?`
+			    against the raw SCREAMING_SNAKE_CASE value while the operator
+			    reads a translated label, and free text missed every time. -#}
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-type">{{ "alarms.list.filter.type"|t }}</label>
+				<select id="f-alarms-type" name="alarm_type" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="" {% if not filter.alarm_type %}selected{% endif %}>{{ "monitoring.list.filter_all"|t }}</option>
+					{#- Then the Hub's radio alarms (radio diagnostics §4, §4a), the portal's
+					    undelivered Node configuration (PF-3) and its calibration reminder
+					    (calibration.cs.md §3). -#}
+					{% for value in ["HIGH", "LOW", "DISCONNECT", "OFFLINE", "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT", "CONCENTRATOR_MISSING", "HUB_OFFLINE", "NORTHBRIDGE_UNREACHABLE", "NORTHBRIDGE_UPDATE_FAILED", "SOUTHBRIDGE_UPDATE_FAILED", "CHIRPSTACK_DOWN", "CONFIG_NOT_DELIVERED", "CALIBRATION", "CONFIG_SYNC"] %}
+					<option value="{{ value }}" {% if filter.alarm_type == value %}selected{% endif %}>{{ ui.alarm_type_label(value) }}</option>
+					{% endfor %}
+				</select>
+			</div>
+
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-state">{{ "alarms.list.filter.state"|t }}</label>
+				<select id="f-alarms-state" name="to_state" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="" {% if not filter.to_state %}selected{% endif %}>{{ "monitoring.list.filter_all"|t }}</option>
+					{% for value in ["WARNING", "CRITICAL", "DISCONNECTED", "RECONNECTING", "NEVERCONNECTED"] %}
+					<option value="{{ value }}" {% if filter.to_state == value %}selected{% endif %}>{{ ("alarms.state." ~ (value | lower))|t }}</option>
+					{% endfor %}
+				</select>
+			</div>
+
+			{% set quantities = quantity_options() %}{% if quantities %}
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-field">{{ "monitoring.limits.quantity"|t }}</label>
+				<select id="f-alarms-field" name="field" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					<option value="" {% if not filter.field %}selected{% endif %}>{{ "monitoring.list.filter_all"|t }}</option>
+					{% for name, label in quantities %}
+					<option value="{{ name }}" {% if filter.field == name %}selected{% endif %}>{{ label }}</option>
+					{% endfor %}
+				</select>
+			</div>
+			{% endif %}
+
+			{#- The lifecycle pair (`include_acknowledged`, `include_cleared`) as
+			    one select: `show` maps to the flags in `alarm_routes::parse_filter`.
+			    Three options, not four — cleared-but-unacknowledged is a view
+			    nobody asks for. -#}
+			<div class="flex flex-col gap-1.5">
+				<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-alarms-show">{{ "alarms.list.filter.show_label"|t }}</label>
+				<select id="f-alarms-show" name="show" class="input-v1 select-v1 w-full" onchange="this.form.submit()">
+					{% for v in ["open", "unacked", "all"] %}
+					<option value="{{ v }}" {% if show == v %}selected{% endif %}>{{ ("alarms.list.filter.show_" ~ v)|t }}</option>
+					{% endfor %}
+				</select>
+			</div>
+		{#- The order survives a filter change: the sort headers are links
+		    outside this form, so without these two the first filter click
+		    would silently drop the column the operator sorted by. -#}
+		<input type="hidden" name="sort" value="{{ sort }}">
+		<input type="hidden" name="dir" value="{{ dir }}">
+		{% endcall %}
+	</form>
+
+	{# sse_live false: keep this page's filtered view out of the fixed-filter
+	   SSE re-render — see the partial's header. #}
+	{% set sse_live = false %}
+	<div data-list-results>
+	{% include "partials/alarm_table.html" %}
+	</div>
+</div>
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+
+<script>
+	// Bulk-acknowledge bar: partials/alarm_table.html's checkboxes, select-all
+	// and reason textarea live inside #alarm-table, which every filter change
+	// and the bulk form's own htmx response replace wholesale — so this binds
+	// fresh listeners on load and again after every swap rather than once.
+	(function () {
+		function initBulkBar() {
+			var bar = document.getElementById('alarm-bulk-bar');
+			if (!bar) return;
+			var reason = document.getElementById('alarm-bulk-reason');
+			var ackBtn = document.getElementById('alarm-bulk-ack-btn');
+			var clearBtn = document.getElementById('alarm-bulk-clear-btn');
+			var countEl = document.getElementById('alarm-bulk-count');
+			var ackCountEl = document.getElementById('alarm-bulk-ack-count');
+
+			// Selection is portal-select.js's (#alarm-select): this only
+			// mirrors the count into the bar and clears on demand.
+			var root = document.getElementById('alarm-select');
+			function picked() {
+				return document.querySelectorAll('.alarm-row-checkbox:checked').length;
+			}
+			function update() {
+				var n = picked();
+				countEl.textContent = n;
+				ackCountEl.textContent = n;
+				bar.classList.toggle('hidden', n === 0);
+				ackBtn.disabled = n === 0 || !reason.value.trim();
+			}
+			if (root && !root._bulkBound) {
+				root._bulkBound = true;
+				root.addEventListener('select-change', update);
+			}
+			if (!reason._bulkBound) {
+				reason._bulkBound = true;
+				reason.addEventListener('input', update);
+			}
+			if (!clearBtn._bulkBound) {
+				clearBtn._bulkBound = true;
+				clearBtn.addEventListener('click', function () {
+					reason.value = '';
+					if (root && root._select) root._select.clear();
+					update();
+				});
+			}
+			update();
+		}
+		initBulkBar();
+		document.body.addEventListener('htmx:afterSettle', initBulkBar);
+		document.body.addEventListener('portal-list:swapped', initBulkBar);
+	})();
+</script>
+{% endblock %}

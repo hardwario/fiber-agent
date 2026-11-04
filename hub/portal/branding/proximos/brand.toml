@@ -1,0 +1,28 @@
+# The ProXimos brand, the default build (PROXIMOS_BRAND unset or "proximos").
+# Flat `key = "string"` only; proximos-brand's build script reads it without a
+# TOML parser. Every key is required. plan/portal/branding.md section 2.
+id = "proximos"
+product = "ProXimos"
+hub = "ProXimos Hub"
+node = "ProXimos Node"
+beacon = "ProXimos Beacon"
+# Sender name, signature and test-notification wording.
+monitor = "ProXimos Monitor"
+# The phone app, as "the {mobile_app} mobile app".
+mobile_app = "ProXimos"
+# Decision #17: <prefix><last 8 hex of the CM4 serial>.
+hostname_prefix = "proximos-"
+# The BLE name is the lowercase hostname (decision #21); must equal hostname_prefix.
+ble_alias_prefix = "proximos-"
+# O= of the Hub CA and the server certificate (proximos-tls-cert.sh).
+cert_organisation = "ProXimos"
+support_url = "https://www.proximos.cz"
+support_email = "ask@hardwario.com"
+# The daisyUI theme in assets/css/app.css.
+theme = "proximos"
+# logo.svg's intrinsic size, for the <img> width/height attributes.
+logo_width = "439"
+logo_height = "138"
+# Documentation PDFs under static/, linked from /docs; empty hides the link.
+docs_pdf_en = "PROXIMOS-documentation.pdf"
+docs_pdf_cs = "PROXIMOS-dokumentace.pdf"

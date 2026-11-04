@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# The gateway options with their defaults (event ring size, bench shell switches).
+rsource "../../app/Kconfig.gateway"
+
+source "Kconfig.zephyr"

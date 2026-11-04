@@ -1,0 +1,174 @@
+{#
+  The CLIENT-side lists' toolbar — /nodes, /beacons and Monitoring.
+
+  The chrome (search row, the two disclosures, the panel and its header) is
+  `ui.toolbar_shell`, shared with /alarms. This file is only the field grid,
+  because those three filter over rows already in the DOM and /alarms filters
+  on the server — same look, different mechanism, and the mechanism is what
+  the fields encode. /static/js/portal-list.js drives everything here; see
+  partials/node_card.html's header for the row attributes it reads.
+
+  Set before including (minijinja hands the caller's context to an include):
+
+    list_key            "nodes" | "beacons" | "monitoring" — the localStorage
+                        namespace and the script's instance key
+    search_placeholder  translated string
+    search_title        optional tooltip: what the search matches
+    entity_label        translated plural for the count ("Nodes", "Beacons")
+    columns             [[id, translated label], ...] for the picker; empty
+                        list = no Columns dropdown (Monitoring has none, it
+                        has the four view modes instead)
+
+  Fields are opt-in, because the three lists genuinely differ:
+
+    show_location       Location select, built from the rendered rows
+    show_gateway        the gateway/Hub checklist; needs gw_label
+    show_kind           Druh (probe/node/beacon) — Monitoring only, the one
+                        list that mixes entity kinds
+    show_proto          Protocol — built but hidden unless the list turns out
+                        to be mixed (§2.2.5); the script decides
+    oor_alarming        add the "Warning or Critical" option. Every list with
+                        a #64 metric row wants it: the "Mimo meze" tile
+                        deep-links `?oor=alarming`, which spans two value
+                        classes, and dropping the option would leave the tile
+                        pointing at a filter nothing offers — portal-list.js
+                        only seeds a value the control actually carries
+    oor_param           URL query name for the value filter; defaults to `oor`.
+                        Monitoring passes `status` because that is the param
+                        its tiles already emit
+    extra_filters       optional markup appended to the field grid: a page's
+                        own `data-list-filter` selects (equality on the
+                        row's `data-<name>`, portal-list.js `extras`) —
+                        /limits adds Quantity and Limit this way
+    toolbar_lead        optional markup in the toolbar row right before the
+                        Filters button (Trends puts its group select there)
+    view_modes/view_mode  the four-layout picker joins the row
+    action_label / action_href / action_onclick
+                        the page's primary action, passed straight through to
+                        ui.toolbar_shell — the caller gates it on the role
+    toolbar_action      optional markup in the action's place (/limits puts
+                        its ui.edit_set bar there, ui_components.md §3)
+    action_disabled     optional: renders the action's button disabled, this
+                        string its tooltip — for a reason that is not the
+                        role (an unpaired Hub on /nodes, #109)
+    secondary_label / secondary_onclick / secondary_controls
+                        an optional second, outlined button left of it, for
+                        work spanning the whole list rather than adding to it
+                        (the bulk threshold panel). Gated the same way.
+                        `secondary_controls` is the id of the collapsible it
+                        toggles, which gives it a chevron and an open state
+#}
+{% import "partials/ui.html" as ui %}
+
+{% call ui.toolbar_shell(
+	key=list_key,
+	search_placeholder=search_placeholder,
+	search_title=search_title if search_title is defined else "",
+	columns=columns,
+	view_modes=view_modes if view_modes is defined else none,
+	view_mode=view_mode if view_mode is defined else none,
+	oor_param=oor_param | default("oor", true),
+	action_label=action_label if action_label is defined else "",
+	action_href=action_href if action_href is defined else "",
+	action_onclick=action_onclick if action_onclick is defined else "",
+	action_disabled=action_disabled if action_disabled is defined else "",
+	action_icon=action_icon if action_icon is defined else "plus",
+	secondary_label=secondary_label if secondary_label is defined else "",
+	secondary_onclick=secondary_onclick if secondary_onclick is defined else "",
+	secondary_controls=secondary_controls if secondary_controls is defined else "",
+	lead=toolbar_lead if toolbar_lead is defined else "",
+	action_html=toolbar_action if toolbar_action is defined else ""
+) %}
+	{#- Druh is Monitoring's alone: it is the one list that mixes wired
+	    probes, Nodes and Beacons in one table (monitoring.md §2.2 point 2). -#}
+	{% if show_kind is defined and show_kind %}
+	<div class="flex flex-col gap-1.5">
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-kind">{{ "monitoring.list.filter_kind"|t }}</label>
+		<select id="f-{{ list_key }}-kind" data-list-filter="kind" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			<option value="probe">{{ "monitoring.dashboard.kind_probes"|t }}</option>
+			<option value="node">{{ "monitoring.dashboard.kind_nodes"|t }}</option>
+			<option value="beacon">{{ "monitoring.dashboard.kind_beacons"|t }}</option>
+		</select>
+	</div>
+	{% endif %}
+
+	{% if show_location is defined and show_location %}
+	<div class="flex flex-col gap-1.5">
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-location">{{ "monitoring.dashboard.location_column"|t }}</label>
+		<select id="f-{{ list_key }}-location" data-list-filter="location" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			<option value="__none__">{{ "monitoring.list.filter_location_none"|t }}</option>
+		</select>
+	</div>
+	{% endif %}
+
+	<div class="flex flex-col gap-1.5">
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-connection">{{ "monitoring.dashboard.connection_label"|t }}</label>
+		<select id="f-{{ list_key }}-connection" data-list-filter="connection" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			<option value="online">{{ "monitoring.dashboard.connection_online"|t }}</option>
+			<option value="offline">{{ "monitoring.dashboard.connection_offline"|t }}</option>
+		</select>
+	</div>
+
+	{#- Three value states and no more (§2.2 point 4 as revised 2026-09-01,
+	    unified with Monitoring and Beacons); the older six-way split by bound
+	    and severity named the same three answers. -#}
+	<div class="flex flex-col gap-1.5">
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-oor">{{ "monitoring.dashboard.out_of_range_label"|t }}</label>
+		<select id="f-{{ list_key }}-oor" data-list-filter="oor" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			{% if oor_alarming is defined and oor_alarming %}
+			<option value="alarming">{{ "monitoring.dashboard.filter_alarming"|t }}</option>
+			{% endif %}
+			<option value="normal">{{ "monitoring.list.filter_oor_normal"|t }}</option>
+			<option value="warning">{{ "monitoring.list.filter_oor_warning"|t }}</option>
+			<option value="critical">{{ "monitoring.list.filter_oor_critical"|t }}</option>
+		</select>
+	</div>
+
+	{#- Faults deliberately get NO visible control (monitoring.md §2.2,
+	    decided 2026-09-01): the operational axis is filtered by clicking the
+	    "Poruchy" tile in the metric row above, which links `?fault=any`
+	    (#64 task 4). The select is here, permanently hidden, so that flag is
+	    an ordinary filter to portal-list.js — it seeds from the URL, shows a
+	    chip, and Clear all clears it, none of which a special-cased flag
+	    would get for free. `any` rather than a kind: /nodes and /beacons
+	    spell `data-fault` as the fault KIND and Monitoring as "1", and the
+	    tile only ever asks "carries one". -#}
+	<div class="hidden">
+		<label class="sr-only" for="f-{{ list_key }}-fault">{{ "monitoring.list.filter_fault"|t }}</label>
+		<select id="f-{{ list_key }}-fault" data-list-filter="fault">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			<option value="any">{{ "monitoring.list.filter_fault_active"|t }}</option>
+		</select>
+	</div>
+
+	{% if show_proto is defined and show_proto %}
+	{#- Built always, shown only in a genuinely mixed list: a Node is
+	    hardware-bound to one transport, so in a single-transport fleet this
+	    control would filter nothing (§2.2.5). The script decides. -#}
+	<div class="flex flex-col gap-1.5 hidden" data-list-protowrap>
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-proto">{{ "monitoring.list.column_protocol"|t }}</label>
+		<select id="f-{{ list_key }}-proto" data-list-filter="proto" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			<option value="lorawan">{{ "monitoring.transport.lorawan"|t }}</option>
+			<option value="p2p">{{ "monitoring.transport.p2p"|t }}</option>
+		</select>
+	</div>
+	{% endif %}
+
+	{#- Options come from the rows (`data-gw`, portal-list.js `fillGateways`),
+	    so only the "all" entry is rendered here. A Node is heard by several
+	    gateways at once, so this asks "heard by THIS one", not "only by". -#}
+	{% if show_gateway is defined and show_gateway %}
+	<div class="flex flex-col gap-1.5">
+		<label data-list-gwlabel class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-{{ list_key }}-gw">{{ gw_label }}</label>
+		<select id="f-{{ list_key }}-gw" data-list-gwselect class="input-v1 select-v1 w-full font-mono">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+		</select>
+	</div>
+	{% endif %}
+	{% if extra_filters is defined and extra_filters %}{{ extra_filters }}{% endif %}
+{% endcall %}

@@ -1,0 +1,5 @@
+part /boot --source bootimg-partition --ondisk mmcblk0 --fstype=vfat --label boot --part-name boot --active --align 4096 --fixed-size 256M --no-fstab-update
+part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label rootfs_A --part-name rootfs_A --part-type b921b045-1df0-41c3-af44-4c6f280d3fae --align 4096 --fixed-size 2048M --no-fstab-update
+part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label rootfs_B --part-name rootfs_B --part-type b921b045-1df0-41c3-af44-4c6f280d3fae --align 4096 --fixed-size 2048M --no-fstab-update
+part /data --ondisk mmcblk0 --fstype=ext4 --label data --part-name data --part-type 0fc63daf-8483-4772-8e79-3d69d8477de4 --align 4096 --fixed-size 256M --no-fstab-update
+bootloader --ptable gpt

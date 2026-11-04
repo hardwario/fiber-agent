@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# TOWER gateway options (#470 Northbridge-Hub link protocol). Sourced by app/Kconfig and by
+# the native_sim tests that build the gateway core.
+
+config NB_EVT_RING_SIZE
+	int "Event ring entries (EVT_TWR_UPLINK / EVT_TWR_TX awaiting TWR_EVT_ACK)"
+	range 32 127
+	default 32
+	help
+	  Events the Northbridge keeps until the host confirms them with TWR_EVT_ACK
+	  (link protocol §4.1). The body pool is sized for this many uplinks of the
+	  lora MTU (78 B plaintext, ~100 B each). When the events of a received frame
+	  do not fit, the frame is dropped whole: no ACK, no last_seen update. Below
+	  128 so the u8 delivery seq window cannot alias.
+
+config NB_TWR_RX_INJECT
+	bool "Bench shell 'p2p rx_inject <hex> [rssi_dbm]' (never in production)"
+	default n
+	help
+	  Feeds a captured air frame into the gateway's receive path as if the
+	  radio had received it (classification, replay rule, ACK on air, events),
+	  so e.g. a replayed frame -> rx_replay can be checked on HIL. Only in
+	  state GATEWAY. GET_INFO build_flags b2 (RX_INJECT) is set when it is
+	  compiled in.

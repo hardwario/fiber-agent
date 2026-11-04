@@ -1,0 +1,94 @@
+{#
+  The Node registration form (devices.node.md §5), rendered by
+  pages/node_add.html. POSTs the whole form to `POST /nodes` (not htmx): the
+  answer changes the list, so it redirects there with ?ok / ?error.
+  Context: registration_radio, radio_mode, default_join_eui,
+  register_blocked — see pages/nodes.html's header.
+#}
+{#- The radio choice drives the JoinEUI field, LoRaWAN's alone
+    (devices.node.md, dodatek 2026-09-27). -#}
+{#- The fallback is a portal with no rendered radio mode: both carriers
+    offered, LoRaWAN preselected (`radio::registration_default(None)`).
+    With a mode, the route preselects it, P2P on `dual`. -#}
+{% set reg = registration_radio if registration_radio is defined else {"default": "lorawan", "lorawan": true, "p2p": true} %}
+<form method="post" action="/nodes" class="flex flex-col gap-3 mt-3"
+	x-data="{ radio: '{{ reg.default }}' }">
+	{#- No Hub field: every Node is registered on the Server, the Hub
+	    this portal runs on, never on a Client (devices.node.md §5,
+	    dodatek 2026-10-13). The radio choice and the JoinEUI below
+	    are the Server's. -#}
+	{#- One registry, one carrier per Node (node_registry.md §6). A
+	    carrier the Server has switched off is shown and disabled, with
+	    the reason, whatever the Clients run; the POST refuses it too. -#}
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">{{ "monitoring.nodes.radio_label"|t }}</legend>
+		{% for c in ["lorawan", "p2p"] %}
+		<label class="flex items-center gap-2 text-sm">
+			<input type="radio" name="radio" value="{{ c }}" x-model="radio"
+				{% if c == reg.default %}checked{% endif %}
+				{% if not reg[c] %}disabled{% endif %}>
+			{{ ("monitoring.transport." ~ c)|t }}
+		</label>
+		{% if not reg[c] %}
+		<p class="text-xs text-muted-fg">{{ "monitoring.nodes.radio_off_hint"|t|replace("{carrier}", ("monitoring.transport." ~ c)|t) }}</p>
+		{% endif %}
+		{% endfor %}
+	</fieldset>
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">{{ "monitoring.nodes.serial_label"|t }}</legend>
+		<input type="text" name="serial" class="input-v1 font-mono"
+			pattern="[0-9]+|(0[xX])?[0-9a-fA-F]{8}" autocomplete="off" spellcheck="false" required>
+		<p class="text-xs text-muted-fg">{{ "monitoring.nodes.serial_hint"|t }}</p>
+	</fieldset>
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">DevEUI</legend>
+		<input type="text" name="dev_eui" class="input-v1 font-mono" maxlength="16" minlength="16"
+			pattern="[0-9a-fA-F]{16}" autocomplete="off" spellcheck="false" required>
+		<p class="text-xs text-muted-fg">{{ "monitoring.nodes.dev_eui_hint"|t }}</p>
+	</fieldset>
+	{#- #86: optional, prefilled with the Server's `radio.join_eui`
+	    (`system/info.lorawan.join_eui`). Blank sends nothing and the Hub
+	    applies that same default, so an unknown default is not an error.
+	    The same value is the placeholder, so a cleared field still shows
+	    what blank means — the way the name and description fields hint.
+	    LoRaWAN's join parameter: shown for that radio choice only,
+	    labelled so on a `dual` Hub, and absent where this Hub has
+	    LoRaWAN switched off. The server drops it from a P2P
+	    registration whatever the form posted. -#}
+	{% if reg.lorawan %}
+	<fieldset class="flex flex-col gap-1" x-show="radio === 'lorawan'">
+		<legend class="text-sm font-medium mb-1">JoinEUI{% if radio_mode == "dual" %} <span class="font-normal text-muted-fg">({{ "monitoring.nodes.join_eui_lorawan_only"|t }})</span>{% endif %}</legend>
+		<input type="text" name="join_eui" class="input-v1 font-mono" maxlength="16"
+			pattern="[0-9a-fA-F]{16}" autocomplete="off" spellcheck="false"
+			value="{{ default_join_eui or '' }}"
+			{%- if default_join_eui %} placeholder="{{ default_join_eui }}"{% endif %}>
+		<p class="text-xs text-muted-fg">{{ "monitoring.nodes.join_eui_hint"|t }}</p>
+	</fieldset>
+	{% endif %}
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">AppKey</legend>
+		<input type="text" name="app_key" class="input-v1 font-mono" maxlength="32" minlength="32"
+			pattern="[0-9a-fA-F]{32}" autocomplete="off" spellcheck="false" required>
+		<p class="text-xs text-muted-fg">{{ "monitoring.nodes.app_key_hint"|t }}</p>
+	</fieldset>
+	{#- Operator metadata, same pair and same order as /beacons/add and
+	    the Hub's meta card: a name that goes on the wire (the Hub
+	    registry holds a Node's name) and a description that stays in
+	    `device_meta`. Both optional; a blank name registers as the
+	    serial. -#}
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">{{ "monitoring.shared.name_label"|t }}</legend>
+		<input type="text" name="name" class="input-v1" maxlength="120" autocomplete="off"
+			placeholder="{{ "monitoring.nodes.name_placeholder_example"|t }}">
+		<p class="text-xs text-muted-fg">{{ "monitoring.shared.name_hint_serial_fallback"|t }}</p>
+	</fieldset>
+	<fieldset class="flex flex-col gap-1">
+		<legend class="text-sm font-medium mb-1">{{ "monitoring.meta.description_label"|t }}</legend>
+		<input type="text" name="description" class="input-v1" maxlength="240" autocomplete="off"
+			placeholder="{{ "monitoring.meta.description_placeholder"|t }}">
+	</fieldset>
+	<div class="flex justify-end gap-2">
+		<a href="/nodes" class="btn-v1 btn-v1-outline">{{ "common.actions.cancel"|t }}</a>
+		<button type="submit" class="btn-v1 btn-v1-primary"{% if register_blocked | default(false) %} disabled{% endif %}>{{ "monitoring.nodes.register_button"|t }}</button>
+	</div>
+</form>

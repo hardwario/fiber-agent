@@ -1,0 +1,58 @@
+{#
+  Settings sub-navigation: a segmented switch, right-aligned above the
+  section's content. Ported from enerooo-spark's
+  `components/v2/entity_tabs.html` — a filled `base-200` pill with no border,
+  the active segment solid.
+
+  There is deliberately NO settings index behind it. `/settings` redirects to
+  the first section the visitor's role allows, so nobody ever lands on a page
+  whose only content is links to the pages beside it — which is exactly what
+  the card grid retired on 2026-09-14 was.
+
+  Each section is its own route, because each is a real page: notifications is
+  six sections of forms, users is a list with detail pages of its own, and
+  neither folds into a shared one. The tabs are what makes them read as one
+  area anyway — they stay on screen, so moving between sections is one click
+  and never a trip back.
+
+  Context (from the section's own handler):
+    settings_tab   "notifications" | "mqtt" | "maintenance"
+    show_notifications / show_mqtt / show_maintenance: bool
+      — the roles the routes behind them enforce. A section the visitor
+        cannot reach is not drawn, so no tab ever leads to a 403.
+
+  Two sections that are NOT here, for two different reasons. Audit is a log,
+  not a setting. Users is a list of entities with a toolbar, filters and
+  detail pages — /nodes for people — and adding a technician is a more
+  frequent errand than configuring SMTP once; both keep their own nav entry,
+  under the sidebar's Administration heading.
+#}
+{% set settings_tab = settings_tab if settings_tab is defined else "" %}
+{% set show_notifications = show_notifications if show_notifications is defined else false %}
+{% set show_mqtt = show_mqtt if show_mqtt is defined else false %}
+{% set show_maintenance = show_maintenance if show_maintenance is defined else false %}
+
+{#- No heading of its own: `layout/topbar.html` already puts the area's icon
+    and name above every page, and a second "Settings" three lines under the
+    first is the page telling you twice where you are. The bar is the tabs
+    alone, right-aligned so it sits under the topbar's own right edge. -#}
+<div class="flex justify-end">
+	<div class="inline-flex p-1 gap-[3px] rounded-[9px] bg-base-200">
+		{% for id, href, label, shown in [
+			("notifications", "/settings/notifications", "common.nav.notifications"|t, show_notifications),
+			("mqtt", "/settings/mqtt", "common.settings.mqtt.tab"|t, show_mqtt),
+			("maintenance", "/settings/maintenance", "common.settings.maintenance.tab"|t, show_maintenance),
+		] %}
+		{% if shown %}
+		{% if id == settings_tab %}
+		{#- The current section is a <span>, not a link to itself: a tab that
+		    navigates to the page you are on is a reload disguised as a
+		    control. -#}
+		<span aria-current="page" class="inline-flex items-center h-7 px-4 rounded-[6px] text-xs font-semibold uppercase tracking-[0.05em] bg-primary text-primary-content shadow-sm">{{ label }}</span>
+		{% else %}
+		<a href="{{ href }}" class="inline-flex items-center h-7 px-4 rounded-[6px] text-xs font-semibold uppercase tracking-[0.05em] text-muted-fg hover:text-base-content hover:bg-base-content/[0.06] transition-colors">{{ label }}</a>
+		{% endif %}
+		{% endif %}
+		{% endfor %}
+	</div>
+</div>

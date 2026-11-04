@@ -1,0 +1,66 @@
+{#-
+  /run/proximos/control/config.yaml — the `radio:` section, read by control-radio's
+  dispatch::load_config() (crates/control-radio/src/config.rs, DEFAULT_CONFIG_PATH).
+
+  NOTHING PRODUCED THIS FILE BEFORE WP-C. radio-setup.service, proximosctl
+  control.radio and (WP-D) proximos-control.service all read it, and every one of them
+  reports NotBootstrapped without it — it is the hardware prerequisite for the whole
+  LoRaWAN chain, not a convenience.
+
+  WHY THIS TEMPLATE IS ONE SUBSTITUTION AND NOT A YAML LITERAL. The `radio:` schema is a
+  tree with three named-map arms; a device overlay may add a fourth OTAA profile or
+  change one field of one profile, and a template made of `{{ radio.device_profiles.
+  otaa.default.uplink_interval }}` lines could express neither. So the merge happens on
+  the parsed document (defaults.yaml ← overlay, mappings recursively, scalars and
+  sequences replaced) and the result is re-serialized here as one block. The knobs, and
+  the comments explaining every one of them, live in defaults.yaml — which is the file a
+  human edits and which ships beside this one on the rootfs.
+
+  Emitted in EVERY mode, `off` included: control-radio has to be able to read the mode in
+  order to refuse a command with OffMode (exit 35). The chirpstack and forwarder configs
+  are the ones the mode gates.
+
+  `radio:` and `mqtt:`. monolith.md §9.1 has this file eventually carrying a `portal:`
+  section too, once the merged proximos-control binary reads one config for the whole
+  process (§11.4-§11.6); until then the portal keeps its own file.
+
+  WHY `mqtt:` IS HERE (plan/portal/mqtt/design.md §9.2). The two halves must agree on one
+  topic root, and two defaults in two files are not agreement — they are two things that
+  can be edited separately. A half-flip is SILENT data loss: the portal's
+  `extract_hostname` drops every topic whose root does not match, and its subscribe
+  succeeds against a prefix nothing publishes, so nothing anywhere reports an error and
+  the readings simply stop arriving. So the value the portal is rendered with is the value
+  the agent is rendered with, emitted here from the one `portal.topic_prefix` key, and
+  `control-core` reads this file in preference to its own `fiber.config.yaml`.
+
+  `mqtt.broker` + `mqtt.tls` ONLY ON A CLIENT (plan/control/cluster.md §4.4). The agent's
+  primary broker becomes the Server's TLS listener under this Hub's peer account, read the
+  same way as `topic_prefix`, so the seeded fiber.config.yaml is never edited. Both blocks
+  or neither: control-core applies the pair only when the TLS half is present and enabled,
+  and refuses a non-loopback broker whose CA is missing rather than fall back to plaintext.
+
+  NEVER THE PASSWORD ITSELF. This file is 0640 root:proximos, so proximos-control could
+  read it. `password_file` names /data/proximos/cluster/peer_password (0600 root), which
+  the agent reads because it runs as root; control-core refuses an override that carries an
+  inline `password`.
+-#}
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Per-device overrides go in /data/proximos/config/proximos.config.yaml,
+# merged over /usr/share/proximos/templates/defaults.yaml — which is also
+# where every key below is documented.
+{{ radio_yaml }}
+mqtt:
+  # One root for both halves — see the note at the top of this template.
+  topic_prefix: "{{ topic_prefix }}"
+{% if broker is not none %}
+  # Client role: the Server's broker, from /data/proximos/cluster/.
+  broker:
+    host: {{ broker.host | tojson }}
+    port: {{ broker.port }}
+    username: {{ broker.username | tojson }}
+    password_file: {{ broker.password_file | tojson }}
+  tls:
+    enabled: true
+    ca_cert_path: {{ broker.ca_cert_path | tojson }}
+{% endif %}

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# The app's tuning options with their defaults, for radio_tune.c.
+rsource "../../app/Kconfig.radio_tune"
+
+source "Kconfig.zephyr"

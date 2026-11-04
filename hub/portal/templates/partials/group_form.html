@@ -1,0 +1,95 @@
+{#
+  The group form: the shared metadata fields (ui.text_field rows in
+  embedded mode, ui_components.md §1: name, description, location with
+  the ui.combobox suggestions), then the channel table — the History picker's shape
+  (list_toolbar + portal-list.js filters/fulltext, portal-select.js boxes
+  with Shift-range). pages/group_form.html renders it for both
+  /monitoring/groups/new and /monitoring/groups/{id}/edit (monitoring.md,
+  dodatky 2026-10-14 and 2026-10-15).
+
+  Context:
+    form_id    string          -- prefix of the input ids
+    action     string          -- /monitoring/groups or /monitoring/groups/{id}
+    picker     [ monitoring::PickerDeviceCtx, ... ] -- New Group; an edit
+                                  uses `g.picker` (built without its own claims)
+    g          monitoring::GroupEditCtx | none
+    locations  [string]        -- routes::location_suggestions
+    fields     [[name, label]] -- the Quantity filter's options
+    many_hubs  bool
+
+  One row per CHANNEL. A wired probe (one value) and a Node/Beacon that
+  reports no selectable field yet post `member[]=<token>`; a Node or Beacon
+  channel posts `field[]=<token>|<field>` and the server makes its owner a
+  member (routes::group_routes::GroupForm::to_members). Any number of
+  channels of one entity, and a channel may sit in several groups
+  (monitoring.md amendment 2026-10-15); a row another group also holds
+  just names it. A legacy "all fields" member (fields NULL)
+  opens with all its channels ticked. Wired probes are listed for the first
+  Hub only (see the loop below).
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+{#- The shared edit set (ui.edit_set, ui_components.md §3) in permanent
+    edit mode: no Set button, Cancel + Save always shown, Save enabled once
+    something changed and the name is filled in. Cancel goes back, Save
+    submits this form as before. -#}
+<form method="post" action="{{ action }}" id="group-form" class="group-form flex flex-col gap-4"
+	x-data="{
+		editing: true, busy: false, changes: 0, base: null, root: null,
+		snap() { return [...this.root.elements].filter(e => e.name).map(e => (e.type == 'checkbox' || e.type == 'radio') ? e.checked : e.value); },
+		count() {
+			const now = this.snap(); let n = 0;
+			now.forEach((v, i) => { if (v !== this.base[i]) n++; });
+			const name = this.root.querySelector('input[name=name]');
+			this.changes = (name && !name.value.trim()) ? 0 : n;
+		},
+		init() { this.root = this.$el; this.base = this.snap(); ['input', 'change', 'click'].forEach(t => this.root.addEventListener(t, () => setTimeout(() => this.count(), 0))); },
+		cancel() { location.assign('/'); },
+		save() { this.busy = true; this.root.requestSubmit(); }
+	}">
+	{#- Collapsible metadata (monitoring.md amendment 2026-10-15, collapsible
+	    group metadata): collapsed on edit, open on new. x-show only hides,
+	    the inputs stay in the DOM and post with the form. The header keeps
+	    a one-line summary (name · location), refreshed on input. -#}
+	<section class="card-v1 p-4" data-group-meta
+		x-data="{ open: {{ 'false' if g else 'true' }}, t: 0,
+			sum() { this.t; const f = (n) => ($el.querySelector('[name=' + n + ']') || {}).value || '';
+				return [f('name'), f('location')].filter(Boolean).join(' · '); } }"
+		@input="t++" @change="t++">
+	<button type="button" class="flex w-full items-center gap-2 text-left" @click="open = !open; $nextTick(() => window.proximosFit && window.proximosFit())"
+		:aria-expanded="open" aria-controls="group-meta-body">
+		<h2 class="text-sm font-semibold shrink-0">{{ "monitoring.groups.meta_heading"|t }}</h2>
+		<span class="text-sm text-muted-fg truncate min-w-0" x-show="!open" x-text="sum()"></span>
+		<span class="ml-auto shrink-0 transition-transform" :class="open && 'rotate-180'">{{ ic.icon("chevron-down", "h-4 w-4") }}</span>
+	</button>
+	<div id="group-meta-body" class="mt-3"{% if g %} x-cloak{% endif %} x-show="open">
+	{#- The shared inline text edit look in embedded mode (ui_components.md
+	    §1): only the inputs, saved by this form's own Save. -#}
+	<div class="te-form" data-group-meta-fields>
+		{{ ui.text_field("name", "monitoring.shared.name_label"|t, g.name if g else none, maxlength=64, required=true,
+			id="group-name", embedded=true) }}
+		{{ ui.text_field("description", "monitoring.meta.description_label"|t, g.description if g else none, maxlength=255,
+			multiline=true, placeholder="monitoring.meta.description_placeholder"|t, id="group-description", embedded=true) }}
+		{{ ui.text_field("location", "monitoring.dashboard.location_column"|t, g.location if g else none,
+			suggestions=locations if locations is defined else [], id="group-location", embedded=true) }}
+	</div>
+	</div>
+	</section>
+
+	<section class="card-v1 p-4" data-list-key="groupform" data-select data-select-active="1">
+		{#- Header: title + selected count left, the edit set right — the
+		    same place as the Channels card (ui_components.md §3). -#}
+		<div class="es-head es-head-plain">
+			<h2 class="text-sm font-semibold">{{ "monitoring.groups.sensors_label"|t }}</h2>
+			<span class="text-xs text-muted-fg"><span class="tabular-nums" data-select-count>0</span></span>
+			{{ ui.edit_set("", idle=false) }}
+		</div>
+		{% with sp_key = "groupform", sp_mode = "group", sp_empty = "monitoring.groups.picker_empty" %}
+		{% include "partials/sensor_picker.html" %}
+		{% endwith %}
+	</section>
+
+</form>
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>

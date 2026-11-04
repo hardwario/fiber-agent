@@ -1,0 +1,95 @@
+# The device config the integration stack drives the harness with. Same shape as the
+# rendered /run/proximos/control/config.yaml, trimmed to the radio: section.
+radio:
+  region: eu868
+  mode: lorawan                        # "off" | "lorawan" | "p2p" | "dual" — factory
+                                        # choice, set once by the provisioning tool at
+                                        # flash time, never at runtime; constrained by
+                                        # installed hardware (§1). Phase 1: always
+                                        # "lorawan"; "dual" is not built or tested.
+  join_eui: "5876070000000000"         # default JoinEUI for `node-add --otaa`
+                                        # (overridable per node with --join-eui); OTAA
+                                        # only — ABP has no join procedure
+
+  application:
+    name: "ProXimos Sensors"
+    description: "ProXimos Node sensors"
+
+  device_profiles:                      # each arm is a NAMED MAP (decided 2026-08-20),
+                                         # not a single object — node-add's required
+                                         # --profile <name> selects which entry applies
+                                         # to the device being enrolled; see below
+    otaa:
+      default:
+        name: "ProXimos Node (OTAA)"
+        description: ""
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: "default"
+        flush_queue_on_activate: true
+        uplink_interval: 3600          # ChirpStack's inactivity threshold, not the
+                                        # device's actual send rate — that is the
+                                        # separate application.interval_report on the
+                                        # Node itself (900 s / 15 min)
+        device_status_req_interval: 1
+        decoder: "node"                 # named registry key, see below
+      # additional named profiles go here — e.g. a second Node variant needing a
+      # different uplink_interval or decoder — each converges to its own ChirpStack
+      # DeviceProfile (lorawan.md §5)
+
+    abp:
+      default:
+        name: "ProXimos Node (ABP)"
+        description: ""
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: "default"
+        flush_queue_on_activate: true
+        uplink_interval: 3600
+        device_status_req_interval: 1
+        abp_rx1_delay: 1                # verified against hardwario/sticker-firmware
+        abp_rx1_dr_offset: 0            # app/src/app_lrw.c:992-1004 — the firmware sets
+        abp_rx2_dr: 0                   # RX1/RX2 delay explicitly (1 s / 2 s via
+        abp_rx2_freq: 869525000         # MIB_RECEIVE_DELAY_1/2); DR offset and RX2
+                                        # DR/freq are untouched EU868 band defaults
+        decoder: "node"
+
+    p2p:                                # NOT a ChirpStack object — consumed by the P2P
+      default:                          # central service, never by `create`'s converge
+        name: "ProXimos Node (P2P)"
+        description: ""
+        decoder: "node"                 # same registry, same key — this is the P2P
+                                        # decoder binding (frames 0x02/0x03/0x55)
+      # additional named p2p profiles may only vary decoder — radio parameters are
+      # Hub-wide (p2p_radio below), never per-profile: see the note there
+
+  p2p_radio:                            # Hub-wide, NOT per-profile (decided 2026-08-20):
+    frequency_hz: 868100000             # the northbridge has exactly one physical channel
+    spreading_factor: 10                # (§15 "single shared channel"), so every p2p
+    bandwidth_khz: 125                  # profile necessarily shares it. Living under
+    coding_rate: "4/5"                  # device_profiles.p2p.<name> would let two profiles
+    preamble: 8                         # imply two channels, which the northbridge cannot
+                                        # do — hoisted out to make that impossible to
+                                        # express. The Node firmware carries these values
+                                        # FIXED, so changing any of them without a
+                                        # coordinated firmware release severs the link —
+                                        # same cross-repo-constant class as the P2P
+                                        # domain-separation labels (p2p.md §7)
+    node_tx_power_dbm: 0                # dBm assigned to every node in its JoinAccept
+                                        # reserved[2]; 0 = assign nothing and leave each
+                                        # node on its own p2p_tx_power. Otherwise 2..=22,
+                                        # the node's own bounds. Network-wide, like the
+                                        # channel above: one radio, one plan.
+    deliver_time: false                 # append the 4-byte Unix-time tail to every ACK so
+                                        # a node with no RTC can stamp alarms and history.
+                                        # Off by default: 4 bytes on every acknowledged
+                                        # uplink is not free, and a node that does not need
+                                        # wall time should not pay for it. Suppressed
+                                        # automatically while the Hub's own clock is unset.
+
+  gateway:
+    name: "ProXimos Gateway"
+    description: ""
+
+  chirpstack: {}                        # reserved for genuinely ChirpStack-specific
+                                         # settings; empty today

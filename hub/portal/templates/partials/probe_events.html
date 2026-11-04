@@ -1,0 +1,126 @@
+{#
+  A probe's event timeline with the manual event form (monitoring.md §6.3),
+  split out of partials/probe_window.html on 2026-10-15 so that
+  pages/hub_sensor.html can show it under the Channels card
+  (ui_components.md §2) without the window's chart.
+
+  Context: w = routes::probe_routes::ProbeWindowCtx; `events_csv` (bool,
+  optional) puts the window's CSV export in the header — the wired probe's
+  page, whose chart card (which carried it) the Channels card replaced.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+	{# ---- Events (§6.3): value classes, liveness, manual — one list ---- #}
+	<div class="card-v1">
+		<div class="p-4 flex flex-col gap-2">
+			<div class="flex items-center justify-between gap-2">
+				<h2 class="font-semibold text-base">{{ "monitoring.probe_detail.events_heading"|t }}</h2>
+				<div class="flex items-center gap-2">
+				{% if events_csv is defined and events_csv %}
+				<a class="btn-v1 btn-v1-outline btn-v1-sm gap-1" href="{{ w.csv_href }}">
+					{{ ic.icon("download", "h-4 w-4") }}{{ "monitoring.probe_detail.export_csv"|t }}
+				</a>
+				{% endif %}
+				{% if w.can_edit %}
+				<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1"
+					onclick="document.getElementById('probe-event-form').hidden = !document.getElementById('probe-event-form').hidden">
+					{{ ic.icon("plus", "h-4 w-4") }}{{ "monitoring.probe_detail.add_event"|t }}
+				</button>
+				{% endif %}
+				</div>
+			</div>
+
+			{% if w.can_edit %}
+			{# Hidden until asked for, and a plain POST + redirect like every
+			   other group mutation: the redirect carries the token and the
+			   range, so it lands back on this page as it was. #}
+			<form id="probe-event-form" hidden method="post"
+				action="/monitoring/probe/{{ w.token }}/events"
+				class="grid grid-cols-1 sm:grid-cols-[auto_1fr_auto] gap-2 items-end mb-2 max-w-3xl">
+				<input type="hidden" name="range" value="{{ w.range }}">
+				<input type="hidden" name="hub" value="{{ w.hostname }}">
+				<div>
+					<label class="text-xs font-medium" for="probe-event-at">{{ "monitoring.probe_detail.event_when"|t }}</label>
+					<input id="probe-event-at" type="datetime-local" name="at" class="input-v1 input-v1-sm mt-1"
+						value="{{ w.now_local }}" required>
+				</div>
+				<div class="min-w-0">
+					<label class="text-xs font-medium" for="probe-event-text">{{ "monitoring.probe_detail.event_text"|t }}</label>
+					<input id="probe-event-text" type="text" name="text" class="input-v1 input-v1-sm mt-1"
+						maxlength="240" required
+						placeholder="{{ "monitoring.probe_detail.event_text_placeholder"|t }}">
+				</div>
+				<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">
+					{{ "monitoring.probe_detail.event_save"|t }}
+				</button>
+			</form>
+			{% endif %}
+
+			{# The wired probe's honest answer, rather than an events section
+			   that looks like "never offline": a wired probe has no per-probe
+			   liveness at all, only the Hub's own DeviceOffline, which is a
+			   different scope (monitoring.backend.md §9.2). #}
+			{% if not w.operational_supported %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.probe_detail.no_operational"|t }}</p>
+			{% endif %}
+
+			{# The three things the list has to admit about itself rather than
+			   pass off as a quiet week (review items 5, 7, 8, 2026-09-10). #}
+			{% if w.events_unreadable %}
+			<p class="text-xs text-critical">{{ "monitoring.probe_detail.events_unreadable"|t }}</p>
+			{% endif %}
+			{% if w.events_truncated %}
+			<p class="text-xs text-warning">{{ "monitoring.probe_detail.events_truncated"|t }}</p>
+			{% endif %}
+			{% if w.ongoing_outage %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.probe_detail.outage_spans_range"|t }}</p>
+			{% endif %}
+
+			<ul class="flex flex-col divide-y divide-base-300/60 max-h-[32rem] overflow-y-auto">
+				{% for e in w.events %}
+				{%- if e.kind == "offline" %}{% set icon, tone = "wifi-off", "text-muted-fg" %}
+				{%- elif e.kind == "disconnect" %}{% set icon, tone = "circle-alert", "text-critical" %}
+				{%- elif e.kind == "online" %}{% set icon, tone = "wifi", "text-success" %}
+				{%- elif e.kind == "value_cleared" %}{% set icon, tone = "circle-check", "text-success" %}
+				{%- elif e.kind == "manual" %}{% set icon, tone = "pencil", "text-primary" %}
+				{%- elif e.severity == "critical" %}{% set icon, tone = "alert-triangle", "text-critical" %}
+				{%- else %}{% set icon, tone = "alert-triangle", "text-warning" %}{% endif %}
+				<li class="flex items-start gap-2 py-1.5 text-sm">
+					<span class="shrink-0 mt-0.5 {{ tone }}">{{ ic.icon(icon, "h-4 w-4") }}</span>
+					<span class="shrink-0 tabular-nums text-muted-fg text-xs mt-0.5 w-[9.5rem]"
+						title="{{ e.at | short_dt("full") }}">{{ e.at_rel }}</span>
+					<span class="min-w-0 flex-1">
+						<span class="font-medium">{{ ("monitoring.probe_detail.event_" ~ e.kind)|t }}</span>
+						{#- A value row says how bad, what kind, which quantity and, on
+						    the raising edge, the reading against its limit (§6.3). -#}
+						{% if e.alarm_type %}<span class="text-muted-fg"> — {{ ("alarms.severity." ~ ("critical" if e.severity == "critical" else "warning"))|t }} · {{ ui.alarm_type_label(e.alarm_type) }}
+							{%- if e.field %} · {{ ("common.field." ~ e.field)|t }}{% endif %}
+							{%- if e.kind == "value_raised" and e.value is not none %}
+							{%- set u = " " ~ e.unit if e.unit else "" %}
+							{%- set value_str = (e.value | round(1) | replace("-0.0", "0.0")) ~ u %}: {% if e.threshold is not none %}{{ ("alarms.detail.value_with_threshold"|t)|replace("{value}", value_str)|replace("{threshold}", (e.threshold | round(1) | replace("-0.0", "0.0")) ~ u) }}{% else %}{{ value_str }}{% endif %}
+							{%- endif %}</span>{% endif %}
+						{% if e.detail %}<span class="text-muted-fg"> — {{ e.detail | alarm_message }}</span>{% endif %}
+						{% if e.author %}<span class="text-muted-fg"> ({{ e.author }})</span>{% endif %}
+					</span>
+					{% if e.id and w.can_edit %}
+					{# No edit route exists: a correction is a delete plus a new row. No browser
+					   confirm(): popups are removed portal-wide. #}
+					<form method="post" action="/monitoring/probe/{{ w.token }}/events/{{ e.id }}/delete"
+						class="shrink-0">
+						<input type="hidden" name="range" value="{{ w.range }}">
+				<input type="hidden" name="hub" value="{{ w.hostname }}">
+						<button type="submit" class="btn-v1 btn-v1-ghost btn-v1-sm text-critical"
+							aria-label="{{ "monitoring.probe_detail.event_delete"|t }}"
+							title="{{ "monitoring.probe_detail.event_delete"|t }}">
+							{{ ic.icon("x", "h-4 w-4") }}
+						</button>
+					</form>
+					{% endif %}
+				</li>
+				{% else %}
+				<li class="py-1.5 text-sm text-muted-fg">{{ "monitoring.probe_detail.events_empty"|t }}</li>
+				{% endfor %}
+			</ul>
+		</div>
+	</div>
+

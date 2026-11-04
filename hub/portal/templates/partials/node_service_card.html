@@ -1,0 +1,143 @@
+{#
+  The Node service card (spec plan/portal/devices.node.md §3.6b, plan nodes_phase1.cs.md WP6).
+
+  Context: { n: {node_key}, current_user, raw_templates: [render::RawTemplateCtx] }.
+  `current_user`'s shape is layout/nav.html's.
+
+  ADMIN ONLY, and the gate is here as well as on every route. The routes are `RequireAdmin`
+  and that is the enforcement; this block only decides whether an admin-only card is drawn,
+  using the same `is_admin` idiom layout/nav.html uses so the two cannot drift. A manager sees
+  no card at all rather than disabled buttons.
+
+  Three functions (WP6): Force send, Send raw message and Reboot. Device info and settings are
+  read from the Device card in Diagnostics (WP7); the two intervals are edited on the
+  Configuration card (WP5).
+
+  - Force send answers into its own watch element (partials/node_force_send.html), not
+    #command-status: the firmware has no fPort-85 answer, and the confirmation is the next
+    reading, which the watch polls for.
+  - Send raw message goes at once, no draft. The template picker fills the editor with a
+    `set-config` object for one group, valued from the Node's config info; the key table
+    under it says what each key takes. The server refuses the keys the portal owns or that are
+    not the radio's; control-radio checks types and ranges.
+  - Reboot's typed confirmation is checked ON THE SERVER (the handler compares `confirm`
+    against the node_key). The `required` attribute is a courtesy, not the gate.
+
+  Every route writes an audit row. The raw-message and reboot dialogs stay open on a refusal
+  (`data-status="error"` on the answer), so the operator can correct what they typed.
+
+  Amendment 2026-10-15 (ui_components.md §7): one Service functions card
+  in the shared shell (partials/service_card.html) — locked until
+  "Unlock", inline panels instead of dialogs, and "Change radio" moved here
+  from partials/node_radio_card.html (the `#node-move` dialog stays for the
+  "radio off on this Hub" banner). Restart and Change radio confirm inline;
+  the routes' typed `confirm` is filled with the node_key by the form.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/service_card.html" as svc %}
+{% set current_user = current_user if current_user is defined else none %}
+{% set raw_templates = raw_templates if raw_templates is defined else [] %}
+{% set is_admin = current_user and (current_user.user_role == "admin" or current_user.is_superuser) %}
+{% set node_name = n.name | default(n.node_key, true) if n.name is defined else n.node_key %}
+{% if is_admin %}
+{% call svc.card("node-service-" ~ n.node_key) %}
+	<form id="node-svc-force-{{ n.node_key }}" hidden
+		hx-post="/nodes/{{ n.node_key }}/service/force-send"
+		hx-target="#node-force-send-{{ n.node_key }}" hx-swap="innerHTML"></form>
+	{% call svc.row("force", "monitoring.service.force_send_button"|t, "monitoring.service.force_send_help"|t,
+		"monitoring.service.force_send_now"|t, immediate="node-svc-force-" ~ n.node_key) %}{% endcall %}
+	<div id="node-force-send-{{ n.node_key }}"></div>
+
+	{% call svc.row("raw", "monitoring.service.send_msg_button"|t, "monitoring.service.send_msg_help"|t,
+		"monitoring.service.compose"|t) %}
+		<div role="alert" class="alert alert-warning mb-3">
+			<span class="text-sm">{{ "monitoring.service.send_msg_warning"|t }}</span>
+		</div>
+		<form hx-post="/nodes/{{ n.node_key }}/service/send-msg"
+			hx-target="#command-status" hx-swap="outerHTML" @htmx:after-request="done($event)"
+			class="flex flex-col gap-3">
+			{% if raw_templates %}
+			<div>
+				<label class="block text-xs font-medium mb-1" for="svc-tpl-{{ n.node_key }}">{{ "monitoring.service.raw_template_label"|t }}</label>
+				{#- Each option carries its template; choosing one fills the editor and shows that
+				    group's key table. -#}
+				<select id="svc-tpl-{{ n.node_key }}" class="input-v1 input-v1-sm select-v1 text-xs w-auto"
+					onchange="var f = this.form, o = this.selectedOptions[0]; if (o && o.dataset.json) { f.elements.payload.value = o.dataset.json; } f.querySelectorAll('[data-raw-group]').forEach(function (t) { t.hidden = t.dataset.rawGroup !== this.value; }, this);">
+					<option value="">{{ "monitoring.service.raw_template_none"|t }}</option>
+					{% for tpl in raw_templates %}
+					<option value="{{ tpl.group }}" data-json="{{ tpl.json }}">{{ ("monitoring.node_detail.config_group_" ~ tpl.group)|t }}</option>
+					{% endfor %}
+				</select>
+			</div>
+			{% endif %}
+			<fieldset class="flex flex-col gap-1 min-w-0">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.service.payload_label"|t }}</legend>
+				<textarea name="payload" rows="8" class="input-v1 h-auto font-mono text-xs"
+					autocomplete="off" spellcheck="false" required
+					placeholder='{"application.history_enable": true}'></textarea>
+				<p class="text-xs text-muted-fg">{{ "monitoring.service.payload_hint"|t }}</p>
+			</fieldset>
+			{% for tpl in raw_templates %}
+			<div data-raw-group="{{ tpl.group }}" hidden class="relative w-full overflow-x-auto max-h-64">
+				<table class="w-full text-xs">
+					<tbody>
+						{% for k in tpl.keys %}
+						<tr class="border-b border-base-300 last:border-0 [&>td]:py-1 [&>td]:px-2 [&>td]:align-top">
+							<td class="font-mono whitespace-nowrap">{{ k.key }}</td>
+							<td class="font-mono whitespace-nowrap text-muted-fg">{{ k.takes }}</td>
+							{#- P-10: the Portal's own short text; the firmware registry's is the fallback. -#}
+							{%- set help_key = "monitoring.node_param_help." ~ k.key %}
+							{%- set help = help_key|t %}
+							<td class="text-muted-fg">{{ help if help != help_key else (k.help or "") }}</td>
+						</tr>
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+			{% endfor %}
+			{{ svc.actions("monitoring.service.send_message"|t) }}
+		</form>
+	{% endcall %}
+
+	{% if can_move is defined and can_move and radio is defined and radio %}
+	{% set to_label = ("monitoring.transport." ~ radio.target)|t %}
+	{% call svc.row("radio", "monitoring.service.change_radio"|t,
+		"monitoring.node_detail.radio_current"|t|replace("{carrier}", ("monitoring.transport." ~ radio.carrier)|t),
+		"monitoring.service.select"|t) %}
+		<form hx-post="/nodes/{{ n.node_key }}/move" hx-target="#command-status" hx-swap="outerHTML"
+			@htmx:after-request="done($event)" class="flex flex-col gap-3">
+			<input type="hidden" name="confirm" value="{{ n.node_key }}">
+			<fieldset class="flex flex-col gap-1">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.node_detail.move_target_label"|t }}</legend>
+				{% for c in ["lorawan", "p2p"] %}
+				<label class="flex items-center gap-2 text-sm">
+					<input type="radio" name="to" value="{{ c }}"
+						{% if c == radio.target %}checked required{% else %}disabled{% endif %}>
+					{{ ("monitoring.transport." ~ c)|t }}{% if c == radio.carrier %} <span class="text-muted-fg">({{ "monitoring.node_detail.move_current_marker"|t }})</span>{% endif %}
+				</label>
+				{% endfor %}
+				{% if not radio.target_enabled %}
+				<p class="text-xs text-muted-fg">{{ "monitoring.node_detail.move_target_off"|t|replace("{carrier}", to_label) }}</p>
+				{% endif %}
+			</fieldset>
+			<div role="alert" class="alert alert-warning">
+				{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+				<span class="text-sm">{{ "monitoring.node_detail.move_node_warning"|t }}</span>
+			</div>
+			{{ svc.actions("monitoring.service.move_to"|t|replace("{carrier}", to_label), "btn-v1-destructive") }}
+		</form>
+	{% endcall %}
+	{% endif %}
+
+	{% call svc.row("reboot", "monitoring.service.restart_node"|t, "monitoring.service.restart_node_help"|t,
+		"monitoring.service.restart"|t, tone="text-critical border-critical/50") %}
+		<form hx-post="/nodes/{{ n.node_key }}/service/reboot"
+			hx-target="#command-status" hx-swap="outerHTML" @htmx:after-request="done($event)"
+			class="flex flex-col gap-3">
+			<input type="hidden" name="confirm" value="{{ n.node_key }}">
+			<p class="text-sm">{{ "monitoring.service.restart_confirm"|t|replace("{name}", node_name) }}</p>
+			{{ svc.actions("monitoring.service.restart"|t, "btn-v1-destructive") }}
+		</form>
+	{% endcall %}
+{% endcall %}
+{% endif %}

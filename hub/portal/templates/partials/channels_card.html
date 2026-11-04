@@ -1,0 +1,200 @@
+{#
+  The Channels card ("Čidla", plan/portal/ui_components.md §2, amended
+  2026-10-15 §2.6) — shared by the Overview of pages/node_detail.html and
+  pages/beacon_detail.html and by pages/hub_sensor.html (a wired probe).
+
+  Context: ch = routes::channels::ChannelsCtx {
+    card_id, can_set, node, trends_href,
+    rows: [ {id, label, unit, source: payload|diagnostics|radio|system,
+             last, sort_last, ts, received, received_at, stale, enabled,
+             action, has_band} ]
+  }
+
+  Every channel the device reported, none ever drops out (a switched-off
+  one stays muted with "off"). Ten rows show, then the body scrolls under
+  a sticky header. Sorting: ui.sort_th, done by `editSet`.
+
+  "Set channels" (manager, `ch.can_set`) is the shared edit set (ui.edit_set
+  + `editSet`, static/js/portal-editset.js): the select column is ALWAYS
+  rendered at a fixed width, its checkboxes appear only while editing, so
+  nothing shifts. Only Payload rows carry one (`action`). Save posts each
+  changed row to its own sensor route; a switch-off first goes through the
+  confirm dialog below (the sensor_switch wording).
+
+  Amended 2026-10-15 (§2.7): collapsible like Device information (collapsed on
+  load, the header toggles it) and Payload rows only
+  (channels::SHOW_NON_PAYLOAD), so the Source column is commented out.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% set id = ch.card_id %}
+{% set switchable = ch.rows | selectattr("action") | list %}
+{% set limited = ch.rows | selectattr("limit") | list %}
+{#- Each limited row's editor target, resolved as the limits editor does
+    (`limits_band`: the stored band, or the default one switched off). -#}
+{#- Each limited row's editor target (`limits` below), resolved as the
+    limits editor does (`limits_band`: the stored band, or the default one
+    switched off). -#}
+{% macro lim_target(r) -%}
+{%- set L = r.limit %}
+{%- set band = limits_band(L.scope, L.field, L.stored) %}
+{%- set st = L.stored %}
+{{- {
+	"post": L.post, "kind": L.kind, "unit": r.unit, "toggle": L.toggle,
+	"value": (r.sort_last | float) if r.sort_last else none,
+	"seed": threshold_seed(r.unit),
+	"configured": (st is not none and (st.critical_low is not none or st.warning_low is not none or st.warning_high is not none or st.critical_high is not none)),
+	"d": {"t": {"critical_low": band.critical_low, "warning_low": band.warning_low,
+	            "warning_high": band.warning_high, "critical_high": band.critical_high},
+	      "enabled": band.enabled if L.toggle else true, "hysteresis": band.hysteresis}
+} | tojson }}
+{%- endmacro %}
+<section id="{{ id }}" class="card-v1" data-channels-card
+	:class="open && 'di-open'"
+	x-data='editSet({
+		open: false,
+		rows: {{ switchable | map(attribute="id") | list | tojson }},
+		on: { {% for r in switchable %}{{ r.id | tojson }}: {{ r.enabled | tojson }}{% if not loop.last %}, {% endif %}{% endfor %} },
+		actions: { {% for r in switchable %}{{ r.id | tojson }}: {{ r.action | tojson }}{% if not loop.last %}, {% endif %}{% endfor %} },
+		labels: { {% for r in switchable %}{{ r.id | tojson }}: {{ r.label | tojson }}{% if not loop.last %}, {% endif %}{% endfor %} },
+		bands: { {% for r in switchable %}{{ r.id | tojson }}: {{ r.has_band | tojson }}{% if not loop.last %}, {% endif %}{% endfor %} },
+		limits: { {% for r in limited %}{{ r.id | tojson }}: {{ lim_target(r) }}{% if not loop.last %}, {% endif %}{% endfor %} }
+	})'>
+	<div class="es-head">
+		<button type="button" class="di-toggle" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ id }}-body">
+			{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+			{{ ui.card_icon("activity") }}
+			<span class="text-base font-semibold">{{ "monitoring.channels.heading"|t }}</span>
+			{#- #159: active/total. Active = not switched off; a switchable row
+			    follows its draft while editing (isOff), so the count moves with
+			    the checkboxes. -#}
+			{% set fixed_on = ch.rows | rejectattr("action") | selectattr("enabled") | list | length %}
+			<span class="es-count" x-show="!editing"
+				x-text='({{ fixed_on }} + ids.filter(function (i) { return !isOff(i); }).length) + "/{{ ch.rows | length }}"'>{{ ch.rows | selectattr("enabled") | list | length }}/{{ ch.rows | length }}</span>
+		</button>
+		<div class="es-bar">
+			{% if ch.trends_href %}
+			<a class="btn-v1 btn-v1-ghost btn-v1-sm gap-1.5" href="{{ ch.trends_href }}" x-show="!editing" data-channels-trends>
+				{{ ic.icon("chart-line", "h-4 w-4") }}<span class="hidden sm:inline">{{ "monitoring.channels.open_trends"|t }}</span>
+			</a>
+			{% endif %}
+			{{ ui.edit_set("monitoring.channels.set_button"|t, can_edit=ch.can_set) }}
+		</div>
+	</div>
+	<div class="ch-scroll" id="{{ id }}-body" x-show="open" x-cloak :class='limOpen !== null ? "ch-scroll-open" : ""'>
+		<table class="ch-table" data-edit-set-table>
+			<thead>
+				<tr>
+					<th class="ch-sel" aria-hidden="true"></th>
+					{{ ui.sort_th("monitoring.channels.col_channel"|t, "name") }}
+					{#- kept for possible return: non-payload channels (Diagnostics/Radio/System), see plan/portal/ui_components.md §2.7
+					{{ ui.sort_th("monitoring.channels.col_source"|t, "source") }} -#}
+					{{ ui.sort_th("monitoring.channels.col_last"|t, "last") }}
+					<th class="ch-lim-th h-12 px-4 text-left align-middle font-medium text-muted-fg">{{ "monitoring.channels.col_limits"|t }}</th>
+					{{ ui.sort_th("monitoring.channels.col_received"|t, "ts") }}
+				</tr>
+			</thead>
+			<tbody>
+				{% for r in ch.rows %}
+				<tr class="{% if not r.enabled %}ch-off{% elif r.stale %}ch-stale{% endif %}"
+					data-row-id="{{ r.id }}" data-seq="{{ loop.revindex }}"
+					data-sort-name="{{ r.label }}" data-sort-source="{{ r.source }}"
+					data-sort-last="{{ r.sort_last }}" data-sort-ts="{{ r.ts if r.ts is not none else '' }}"
+					{% if r.action %}:class='rowClass({{ r.id | tojson }})'{% endif %}>
+					<td class="ch-sel">
+						{% if r.action %}
+						<input type="checkbox" class="checkbox-v1 es-check" :disabled="!editing" disabled{% if r.enabled %} checked{% endif %}
+							x-model='draft[{{ r.id | tojson }}]'
+							aria-label="{{ "monitoring.channels.select"|t }}: {{ r.label }}">
+						{% endif %}
+					</td>
+					<td>
+						<span>{{ r.label }}</span>
+						{% if r.action %}
+						<span class="ch-off-badge" x-show='isOff({{ r.id | tojson }})'{% if r.enabled %} x-cloak{% endif %}>{{ "monitoring.channels.off_badge"|t }}</span>
+						{% elif not r.enabled %}
+						<span class="ch-off-badge">{{ "monitoring.channels.off_badge"|t }}</span>
+						{% endif %}
+					</td>
+					{#- kept for possible return: non-payload channels (Diagnostics/Radio/System), see plan/portal/ui_components.md §2.7
+					<td><span class="ch-src ch-src-{{ r.source }}">{{ ("monitoring.channels.source_" ~ r.source)|t }}</span></td> -#}
+					<td class="tabular-nums">{% if r.last is not none and r.enabled %}{{ r.last }}{% if r.unit %} {{ r.unit }}{% endif %}{% else %}—{% endif %}</td>
+					<td class="ch-lim">
+						{%- if r.limit %}
+						{%- set rid = r.id | tojson %}
+						<div class="ch-lim-wrap">
+							<span class="text-muted-fg" x-show='!mini({{ rid }})'>—</span>
+							<div class="ch-mini" x-show='mini({{ rid }})' x-cloak :class='mini({{ rid }}) && mini({{ rid }}).off ? "ch-mini-off" : ""' aria-hidden="true">
+								<div class="ch-mini-bar" :style='mini({{ rid }}) ? "background:" + mini({{ rid }}).grad : ""'></div>
+								<div class="ch-mini-val" x-show='mini({{ rid }}) && mini({{ rid }}).pos !== null' :style='mini({{ rid }}) && mini({{ rid }}).pos !== null ? "left:" + mini({{ rid }}).pos + "%" : ""'></div>
+							</div>
+							{%- if ch.can_set %}
+							<span class="te-tools" x-show="editing" x-cloak>
+								<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon te-pencil" x-show='limOpen !== {{ rid }}' @click='limEdit({{ rid }})'
+									title="{{ "monitoring.channels.limits_edit"|t }}" aria-label="{{ "monitoring.channels.limits_edit"|t }}: {{ r.label }}">{{ ic.icon("pencil", "h-4 w-4") }}</button>
+								<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon te-cancel" x-show='limOpen === {{ rid }}' @click="limRevert()"
+									title="{{ "monitoring.channels.limits_revert"|t }}" aria-label="{{ "monitoring.channels.limits_revert"|t }}">{{ ic.icon("x", "h-4 w-4") }}</button>
+								<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon te-save" x-show='limOpen === {{ rid }}' @click="limAccept()"
+									title="{{ "monitoring.channels.limits_accept"|t }}" aria-label="{{ "monitoring.channels.limits_accept"|t }}">{{ ic.icon("check", "h-4 w-4") }}</button>
+							</span>
+							{%- endif %}
+						</div>
+						{%- endif %}
+					</td>
+					<td class="text-muted-fg"{% if r.received_at %} title="{{ r.received_at|short_dt }}"{% endif %}>{{ r.received | default("—", true) }}</td>
+				</tr>
+				{% else %}
+				<tr><td class="ch-sel"></td><td colspan="4" class="text-muted-fg">{{ "monitoring.channels.empty"|t }}</td></tr>
+				{% endfor %}
+				{%- if ch.can_set and limited %}
+				{#- The one inline limits editor (§2.8): moved under the row whose
+				    pencil opened it; the shared threshold slider. -#}
+				<tr class="ch-lim-row" data-lim-row x-ref="limrow" x-show="limOpen !== null" x-cloak>
+					<td colspan="5" class="ch-lim-cell">
+						<div class="ch-lim-ed" :class='limToggle && !limOn ? "ch-lim-off" : ""'>
+							<label class="flex items-center gap-2 mb-3" x-show="limToggle">
+								<input type="checkbox" class="checkbox-v1" x-model="limOn">
+								<span class="text-sm">{{ "monitoring.threshold.enabled_checkbox"|t }}</span>
+							</label>
+							<fieldset :disabled="limToggle && !limOn">
+								<div x-ref="limslider">
+								{% with t = none, slider_unit = "", slider_value = none, slider_id = id ~ "-lim", slider_hysteresis = 0, slider_seed = none %}
+								{% include "partials/threshold_slider.html" %}
+								{% endwith %}
+								</div>
+							</fieldset>
+						</div>
+					</td>
+				</tr>
+				{%- endif %}
+			</tbody>
+		</table>
+	</div>
+	{% if ch.can_set %}
+	{#- The sensor_switch confirm (partials/sensor_switch.html), for every
+	    channel this Save switches off at once. -#}
+	<dialog class="modal" x-ref="dlg">
+		<div class="modal-box">
+			<h3 class="font-bold text-lg" x-text='offList().length == 1
+				? {{ "monitoring.sensor_switch.confirm_heading"|t|tojson }}.replace("{sensor}", offList()[0])
+				: {{ "monitoring.channels.confirm_heading_many"|t|tojson }}.replace("{n}", offList().length)'></h3>
+			<ul class="text-sm mt-3 list-disc pl-5">
+				<template x-for="name in offList()" :key="name"><li x-text="name"></li></template>
+			</ul>
+			<div role="alert" class="alert alert-warning mt-3">
+				{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+				<span class="text-sm">{{ "monitoring.sensor_switch.confirm_delete"|t }}</span>
+			</div>
+			{% if ch.node %}
+			<p class="text-sm mt-3" x-show="offBand()">{{ "monitoring.sensor_switch.confirm_send"|t }}</p>
+			{% endif %}
+			<p class="text-sm mt-3 text-muted-fg">{{ "monitoring.sensor_switch.confirm_device"|t }} {{ "monitoring.channels.confirm_stays"|t }}</p>
+			<div class="flex justify-end gap-2 mt-4">
+				<button type="button" class="btn-v1 btn-v1-outline" @click="$refs.dlg.close()">{{ "common.actions.cancel"|t }}</button>
+				<button type="button" class="btn-v1 btn-v1-destructive" @click="$refs.dlg.close(); commit()" data-edit-set-confirm>{{ "monitoring.sensor_switch.confirm_button"|t }}</button>
+			</div>
+		</div>
+		<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+	</dialog>
+	{% endif %}
+</section>

@@ -1,0 +1,11 @@
+# DEMO_SITE comes from docker-compose.yml: `:80` for plain HTTP on the IP,
+# a hostname for automatic HTTPS. SSE streams work as-is: Caddy disables
+# buffering for text/event-stream responses on its own.
+{$DEMO_SITE}
+
+# The Portal throttles logins and audits per client address, and Caddy is not on
+# its loopback: X-Real-IP names the visitor, trusted through config.yaml's
+# trusted_proxies (R2-4, review 2 of !102).
+reverse_proxy portal:8088 {
+	header_up X-Real-IP {remote_host}
+}

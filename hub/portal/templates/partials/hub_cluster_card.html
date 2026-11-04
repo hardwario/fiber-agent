@@ -1,0 +1,151 @@
+{#
+  The System tab's cluster card — plan/portal/devices.hub.md §3.4 "Cluster",
+  §5 (C5). Two shapes, one file:
+
+  Server (`cluster_card` set, `client` none): the registered Clients —
+    name · hostname · gateway EUI · state · registered by, when — each linked
+    to its detail, Retry on an incomplete one, and Add hub. Admin-only
+    controls are not rendered for anyone else (§7); the routes are
+    RequireAdmin regardless.
+  Client (`client` set): the facts (Server, peer account, registered) and,
+    for an admin, "Odebrat z clusteru" with its confirm dialog (§5).
+
+  Context (from pages/hub_detail.html): {
+    hostname, is_admin,
+    cluster_card: { clients: [ClusterRowCtx + name], add_hub: AddHubCtx|none }|none,
+    client: render::ClusterRowCtx|none,
+    device_label: string|none
+  }
+#}
+{#- Amended 2026-10-15: a ui.collapsible_card (network icon, summary). -#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% macro state_badge(c) -%}
+	{%- if c.removal_error -%}
+	<span class="badge-status badge-status-warning" title="{{ c.removal_error }}">{{ "monitoring.hubs.removal_incomplete"|t }}</span>
+	{%- elif c.state == "failed" -%}
+	<span class="badge-status badge-status-warning" title="{{ c.registration_error | default('', true) }}">{{ "monitoring.hubs.registration_incomplete"|t }}</span>
+	{%- elif c.never_connected or c.state == "pending" -%}
+	<span class="badge-status badge-status-neutral">{{ "monitoring.hubs.cluster_state_waiting"|t }}</span>
+	{%- elif c.online -%}
+	<span class="badge-status badge-status-normal">{{ "monitoring.shared.online"|t }}</span>
+	{%- else -%}
+	<span class="badge-status badge-status-offline">{{ "monitoring.shared.offline"|t }}</span>
+	{%- endif -%}
+{%- endmacro %}
+
+{% if client %}
+{# ---- A Client's own card ---- #}
+{% call ui.collapsible_card("hub-cluster", "network", "monitoring.hubs.cluster_heading"|t,
+	summary=("monitoring.hubs.kind_client"|t) ~ ((" · " ~ client.gateway_eui) if client.gateway_eui else "")) %}
+	<dl class="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+		<div class="flex items-baseline justify-between gap-3 border-b border-base-300 pb-1.5">
+			<dt class="text-sm text-muted-fg">{{ "monitoring.hubs.column_type"|t }}</dt>
+			<dd class="text-sm">{{ "monitoring.hubs.kind_client"|t }}</dd>
+		</div>
+		<div class="flex items-baseline justify-between gap-3 border-b border-base-300 pb-1.5">
+			<dt class="text-sm text-muted-fg">{{ "monitoring.hubs.cluster_state_label"|t }}</dt>
+			<dd class="text-sm">{{ state_badge(client) }}</dd>
+		</div>
+		<div class="flex items-baseline justify-between gap-3 border-b border-base-300 pb-1.5">
+			<dt class="text-sm text-muted-fg">{{ "monitoring.hubs.bundle_username"|t }}</dt>
+			<dd class="text-sm font-mono truncate">{{ client.peer_username }}</dd>
+		</div>
+		<div class="flex items-baseline justify-between gap-3 border-b border-base-300 pb-1.5">
+			<dt class="text-sm text-muted-fg">{{ "monitoring.hubs.column_gateway_eui"|t }}</dt>
+			<dd class="text-sm font-mono truncate">{{ client.gateway_eui | default("—", true) }}</dd>
+		</div>
+		<div class="flex items-baseline justify-between gap-3 border-b border-base-300 pb-1.5 sm:col-span-2">
+			<dt class="text-sm text-muted-fg">{{ "monitoring.hubs.registered_label"|t }}</dt>
+			<dd class="text-sm truncate">{{ client.registered_by | default("—", true) }} · {{ client.registered_at }}</dd>
+		</div>
+	</dl>
+	{% if client.registration_error and client.state == "failed" %}
+	<p class="mt-2 text-xs font-mono text-muted-fg break-all">{{ client.registration_error }}</p>
+	{% endif %}
+	{% if client.removal_error %}
+	<p class="mt-2 text-xs font-mono text-muted-fg break-all">{{ client.removal_error }}</p>
+	{% endif %}
+
+	{% if is_admin %}
+	<div class="mt-4 flex flex-wrap items-center gap-3 border-t border-base-300 pt-3">
+		<p class="flex-1 min-w-0 text-sm text-muted-fg">{{ "monitoring.hubs.remove_desc"|t }}</p>
+		<button type="button" class="btn-v1 btn-v1-destructive btn-v1-sm shrink-0"
+			onclick="var p = document.getElementById('remove-client-dialog'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+			{{ "monitoring.hubs.remove_button"|t }}
+		</button>
+	</div>
+	{% endif %}
+{% endcall %}
+{#- The confirm dialog lives in pages/hub_detail.html (#162): the header
+    button opens it from every tab. -#}
+
+{% elif cluster_card %}
+{# ---- The Server's card ---- #}
+{% set head_end %}
+	{% if cluster_card.add_hub %}
+	<a href="/hubs/add" class="btn-v1 btn-v1-primary btn-v1-sm gap-1.5 shrink-0">
+		{{ ic.icon("plus", "h-4 w-4") }}{{ "monitoring.hubs.add_hub_button"|t }}
+	</a>
+	{% endif %}
+{% endset %}
+{% call ui.collapsible_card("hub-cluster", "network", "monitoring.hubs.cluster_heading"|t, head_end=head_end,
+	summary="monitoring.hubs.cluster_clients_count"|t|replace("{n}", cluster_card.clients|length|string)) %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.hubs.cluster_server_desc"|t }}</p>
+	{% if cluster_card.clients %}
+	<div class="overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead class="[&_th]:py-2 [&_th]:px-3 [&_th]:text-left [&_th]:text-xs [&_th]:font-medium [&_th]:text-muted-fg border-b border-base-300">
+				<tr>
+					<th>{{ "monitoring.shared.name_label"|t }}</th>
+					<th>{{ "monitoring.hubs.column_gateway_eui"|t }}</th>
+					<th>{{ "monitoring.hubs.cluster_state_label"|t }}</th>
+					<th>{{ "monitoring.hubs.registered_label"|t }}</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for c in cluster_card.clients %}
+				<tr class="border-b border-base-300 last:border-0 [&>td]:py-2 [&>td]:px-3 [&>td]:align-middle">
+					<td>
+						<a href="/hubs/{{ c.hostname }}/system" class="block hover:underline">{{ c.name | default(c.hostname, true) }}</a>
+						<span class="text-xs font-mono text-muted-fg">{{ c.hostname }}</span>
+					</td>
+					<td class="font-mono text-xs">{{ c.gateway_eui | default("—", true) }}</td>
+					<td>{{ state_badge(c) }}
+						{%- if c.gateway_gap %}
+						<span class="badge-status badge-status-warning" data-gateway-gap="{{ c.gateway_gap.kind }}"
+							title="{{ "monitoring.hubs.client_gateway_unregistered"|t }}">{{ "monitoring.hubs.gateway_gap_badge"|t }}</span>
+						{%- endif %}
+						{%- if c.radio_mode %}
+						<span class="block text-xs text-muted-fg" data-client-radio-mode="{{ c.radio_mode }}">{{ "monitoring.hubs.radio_mode_label"|t }}: {{ ("monitoring.hubs.radio_mode_" ~ c.radio_mode)|t }}</span>
+						{%- endif %}
+						{%- if c.radio_mode_differs %}
+						<span class="badge-status badge-status-warning" data-radio-follow
+							title="{{ "monitoring.hubs.radio_follow_hint"|t }}">{{ "monitoring.hubs.radio_follow_badge"|t }}</span>
+						{%- endif %}</td>
+					<td class="text-xs text-muted-fg">{{ c.registered_by | default("—", true) }} · {{ c.registered_at }}</td>
+					<td class="text-right whitespace-nowrap">
+						{% if cluster_card.add_hub and not cluster_card.add_hub.unavailable %}
+						<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5"
+							hx-get="/hubs/{{ cluster_card.add_hub.server }}/cluster/clients/{{ c.hostname }}/retry"
+							hx-target="#add-hub-body" hx-swap="innerHTML"
+							hx-on::before-request="document.getElementById('add-hub-dialog').showModal()">
+							{{ ic.icon("refresh-cw", "h-4 w-4") }}{{ ("monitoring.hubs.retry_button" if c.state == "failed" else "monitoring.hubs.rotate_button")|t }}
+						</button>
+						{% endif %}
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% else %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.hubs.cluster_no_clients"|t }}</p>
+	{% endif %}
+{% endcall %}
+{% if cluster_card.add_hub %}
+{% set add_hub = cluster_card.add_hub %}
+{% include "partials/hub_add_dialog.html" %}
+{% endif %}
+{% endif %}

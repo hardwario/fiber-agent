@@ -1,0 +1,102 @@
+[Unit]
+Description=ProXimos BLE provisioning (control.ble create)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/ble/plan.md
+
+# One cross-role boot oneshot, the shape radio-setup.service established. `create` with
+# no --role runs whatever `ble.mode` says: under `dual` — the shipped default — it
+# initialises both roles sequentially, each with its own outcome, and under `off` this
+# unit is not in the service set at all because the renderer does not install it.
+#
+# bluetooth.service is WANTED, not required. The whole component tolerates the adapter
+# being down, late or absent, and a Hub with no controller must still boot green; making
+# bluetoothd a hard requirement would turn a degraded feature into a failed boot. The v1
+# field lesson is explicit about this, and central.md §3 records it as a runtime
+# obligation.
+#
+# bt-address.service sets the public B8:27:EB:* address on a *down* controller before
+# bluetoothd starts (system/design.md §8.2), so ordering after bluetooth.service is
+# ordering after that too.
+After=proximos-data-migrate.service proximos-render.service data.mount bluetooth.service
+Requires=proximos-render.service
+Wants=bluetooth.service
+RequiresMountsFor=/data
+
+# Ordering only, never a dependency: this component runs standalone by design and must
+# not require the agent to exist.
+Before=proximos-control.service
+
+# The start rate limit lives in [Unit], NOT in [Service].
+#
+# `systemd-analyze verify` on this file with them under [Service] says
+# "Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring" — so the
+# window would silently fall back to systemd's 10 s default and the bounded-retry policy
+# below would mean "6 attempts in 10 seconds", not "6 in 5 minutes". A directive systemd
+# ignores is worse than no directive, because the comment next to it still reads as true.
+#
+# `radio-setup.service` has the same two keys under [Service] and therefore the same
+# silent fallback. Not changed here — it is Hynek's file — but raised as a Part C item.
+StartLimitBurst=6
+StartLimitIntervalSec=300
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=proximos
+Group=proximos
+ExecStart=/usr/bin/proximosctl control.ble create
+
+# Degraded-green is exit 0 with a warning: a Hub with no controller (the qemuarm64 smoke
+# image) must boot green. The per-role `provisioned` markers are withheld in that case,
+# so the next boot re-probes — degraded-green and provisioned-complete are two different
+# states and only the second is recorded.
+#
+# Hard failures (NotBootstrapped 10, StorageError 40) fail the unit and block the health
+# gate: a Hub that cannot record an enrollment is not healthy enough to mark an update
+# good.
+#
+# The 20-29 band is transient — bluetoothd may still be coming up behind
+# bt-address.service — so those get bounded retries rather than an immediate failure.
+Restart=on-failure
+RestartSec=5s
+
+# A ceiling on one attempt. `create` probes the adapter and writes a little state; the
+# longest honest run is a handful of bounded D-Bus calls. This is the backstop for a
+# bluetoothd that accepts the connection and then never answers, which would otherwise
+# hold the boot here indefinitely and never let the retry band above run.
+TimeoutStartSec=120s
+
+# Hardening baseline, carried from v1 and kept.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+# AF_BLUETOOTH: the EN12830 archive path opens a raw L2CAP socket on the one fixed CID
+# the kernel permits userspace (beacon-btsmp1.md §3). A connect on that CID creates the
+# LE link and needs no capability — only privileged PSM binds do — so this line is the
+# whole of what that path requires.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH
+
+# Deliberately NOT PrivateDevices=yes, which radio-setup.service can afford and this
+# cannot: the scan-stall recovery ladder writes /dev/rfkill directly (central.md §7 rung
+# 0). That write is what replaced v1's `sh -c "rfkill block bluetooth; ..."`, so denying
+# the device here would put the shell back.
+DeviceAllow=/dev/rfkill rw
+
+# The component's own state tree, plus the fleet config it mutates through the host's
+# config store. Nothing else on /data.
+ReadWritePaths=/data/proximos/ble
+ReadWritePaths=/data/proximos/config
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+{#
+  The answer to „Aktualizovat firmware NB“ (POST /hubs/{hub}/radio/northbridge-update,
+  plan/control/radio/northbridge_update.md §3.4, amended 2026-10-09).
+
+  Context: { cmd: the relay outcome (partials/command_status.html),
+             radio: render::RadioCardCtx | none (partials/hub_nb_firmware.html) }
+
+  `#command-status` is the form's hx-target; the Northbridge firmware card (since 2026-10-15) rides along out of
+  band, following the update, so it says „Probíhá aktualizace…“ and polls
+  itself without a reload.
+#}
+{% include "partials/command_status.html" %}
+{% if radio and radio.northbridge %}{% with oob = true %}{% include "partials/hub_nb_firmware.html" %}{% endwith %}{% endif %}

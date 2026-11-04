@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Northbridge RX sensitivity tuning, 0.2.2 (docs/problems.md §1). Each option is the
+# boot default of one `radio tune` item; the RTT shell switches them at run time.
+# The RX items boot on; everything that changes TX boots off, so a modem that resets
+# mid-test comes back with the stock TX path (turn TX items on over RTT).
+# Sourced by app/Kconfig and tests/radio_tune/Kconfig.
+
+menuconfig NB_RADIO_TUNE
+	bool "Northbridge radio tuning (docs/problems.md 1)"
+	default y
+	help
+	  Board-level tuning hooks for the patched sx126x driver
+	  (patches/lora/nb_sx126x_hooks.h), a boot log line of the effective
+	  tuning and the `radio tune` RTT shell. With n the driver runs its
+	  stock init: power-saving RX gain, chip-default SMPS drive, DC-DC,
+	  the devicetree's PA row and a 40 us ramp.
+
+if NB_RADIO_TUNE
+
+config NB_RADIO_TUNE_RX_BOOST
+	bool "RX boosted gain (0x08AC)"
+	default y
+	help
+	  Substitute the boosted LNA gain for the 0x94 (power saving) that
+	  loramac-node's SX126xSetRx() writes to 0x08AC before every SET_RX.
+	  RX only.
+
+config NB_RADIO_TUNE_RX_BOOST_VALUE
+	hex "RX boosted gain value"
+	default 0x96
+	range 0x96 0x97
+	help
+	  0x96 is the boosted gain of the SX1261/2 datasheet and of Zephyr's
+	  native sx126x driver; 0x97 is what the 0.1.x/0.2.x wake-up patch
+	  wrote (never effective, see docs/problems.md 1). Used while
+	  rx_boost is on.
+
+config NB_RADIO_TUNE_SMPS_RX
+	bool "SMPS drive level in RX (0x0923)"
+	default y
+	help
+	  Set the SMPS drive level (SUBGHZ_SMPSC2R bits 2:1) before every
+	  SET_RX. RX only.
+
+config NB_RADIO_TUNE_SMPS_RX_MA
+	int "SMPS drive level in RX, mA (20, 40, 60 or 100)"
+	default 40
+	help
+	  Used while smps_rx is on, also after `radio tune set smps_rx on`.
+
+config NB_RADIO_TUNE_DCDC
+	bool "Regulator mode DC-DC + LDO"
+	default y
+	help
+	  SetRegulatorMode(0x01). loramac-node's RadioInit() already sends
+	  it, so y adds nothing at boot; n sends LDO only (0x00) after the
+	  driver's init. Affects RX and TX.
+
+config NB_RADIO_TUNE_SMPS_TX
+	bool "SMPS drive level in TX (0x0923) - changes TX"
+	help
+	  Set the SMPS drive level before every SET_TX. Off, TX gets the
+	  chip's own drive level back (read at boot) if smps_rx changed it.
+
+config NB_RADIO_TUNE_SMPS_TX_MA
+	int "SMPS drive level in TX, mA (20, 40, 60 or 100)"
+	default 60
+	help
+	  Used while smps_tx is on, e.g. after `radio tune set smps_tx on`.
+
+config NB_RADIO_TUNE_PA_TABLE
+	bool "RFO-LP PA config by requested power - changes TX"
+	help
+	  Pick the SetPaConfig row (+15 dBm 0x07, +14 dBm 0x04, +10 dBm 0x01)
+	  by the requested TX power instead of by the devicetree's
+	  rfo-lp-max-power. At the host's 14 dBm: 0x04 / power 14 instead of
+	  0x07 / power 13.
+
+config NB_RADIO_TUNE_RAMP_200US
+	bool "200 us PA ramp instead of 40 us - changes TX"
+	help
+	  SetTxParams ramp time 200 us (0x04). Starts the preamble ~160 us
+	  later than the driver's 40 us; no effect on RX.
+
+endif # NB_RADIO_TUNE

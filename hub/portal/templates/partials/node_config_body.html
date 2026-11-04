@@ -1,0 +1,108 @@
+{#
+  The device-configuration card's BODY — everything inside the SSE swap
+  target, and nothing of the target itself.
+
+  Context: { n: {node_key}, config, can_edit, history } — partials/node_config.html
+  is the shell and carries the contract; this is what it contains and what
+  the SSE frame carries. `config` is render::NodeConfigCtx, `history`
+  render::NodeHistoryCtx (the History switch; the section is left out
+  without it).
+
+  Split for the reason partials/pending_config_body.html spells out: the
+  shell swaps `innerHTML`, so the element the SSE extension bound its
+  listener to is never replaced and cannot lose a frame that arrives while
+  htmx is re-binding its successor. A Node's config comes back as several
+  pages in a burst, which is exactly that window.
+#}
+{% import "partials/ui.html" as ui %}
+{#- "Settings in device" (ui_components.md §8, 2026-10-15): read-only, what the Node
+    reports; it is not where the Node is configured (that is Device configuration). -#}
+{% set head_end %}
+	{% if can_edit %}
+	<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm shrink-0"
+		hx-post="/nodes/{{ n.node_key }}/refresh-config" hx-target="#command-status" hx-swap="outerHTML">
+		{{ "monitoring.node_detail.refresh_config_button"|t }}
+	</button>
+	{% endif %}
+{% endset %}
+{% call ui.collapsible_card("node-settings-" ~ n.node_key, "cpu", "monitoring.node_detail.config_heading"|t, head_end=head_end, bare=true,
+	summary=("monitoring.device_settings.last_sync"|t|replace("{when}", config.synced_at|short_dt) if config.synced_at else "monitoring.device_settings.never_synced"|t)) %}
+	{% if config.read_status is not none or config.synced_at %}
+	<div class="flex items-center gap-2 flex-wrap">
+		{% if config.read_status == "complete" %}
+		<span class="badge-status badge-status-normal">{{ "monitoring.config_status.complete"|t }}</span>
+		{% elif config.read_status == "partial" %}
+		<span class="badge-status badge-status-warning">{{ "monitoring.config_status.partial"|t }}</span>
+		{% elif config.read_status is not none %}
+		<span class="badge-status badge-status-neutral">{{ ("monitoring.config_status." ~ config.read_status)|t }}</span>
+		{% endif %}
+		{% if config.synced_at %}
+		<span class="text-xs text-muted-fg">{{ "monitoring.node_detail.synced_at"|t|replace("{value}", (config.synced_at | short_dt) ~ " UTC") }}</span>
+		{% endif %}
+	</div>
+	{% endif %}
+
+	{#- `missing` means two different things depending on how the read
+	    was asked for, and the two want different sentences. A whole-Node
+	    refresh pages the config and `missing` is the pages that have not
+	    come back yet. The §3.6 service card's GetParam asks for ONE key
+	    (get_sticker_config{keys}, which is what B4 uses instead of the
+	    `get_param` row §16.2 planned) and a `partial` answer means that
+	    key came back unreadable — "config pages not yet read: <key>"
+	    would be a puzzle. -#}
+	{% if config.missing %}
+	<div role="alert" class="alert alert-warning">
+		{% if config.read_status == "partial" %}
+		<span>{{ "monitoring.node_detail.config_keys_unreadable"|t|replace("{keys}", config.missing | join(", ")) }}</span>
+		{% else %}
+		<span>{{ "monitoring.node_detail.config_missing"|t|replace("{pages}", config.missing | join(", ")) }}</span>
+		{% endif %}
+	</div>
+	{% endif %}
+
+	{#- The Node's settings-info, read-only by group (nodes_phase1.cs.md WP5): only what it
+	    sends by itself after boot, never the full configuration the Hub accumulated, which can
+	    be stale (render::SETTINGS_INFO_KEYS). Read-only: the intervals are edited in the
+	    Device configuration card, the service card's raw message reaches the rest. -#}
+	{% if (config.groups is none or not config.groups) and not config.w1_slot_type %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.no_config_yet"|t }}</p>
+	{% else %}
+	<div class="relative w-full overflow-x-auto">
+		<table class="w-full caption-bottom text-sm">
+			<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+				<tr>{{ ui.th("monitoring.shared.key_column"|t) }}{{ ui.th("monitoring.shared.value_column"|t) }}</tr>
+			</thead>
+			{% for group in (config.groups or []) %}
+			<tbody>
+				<tr class="border-b border-base-300 [&>td]:pt-3 [&>td]:pb-1 [&>td]:px-4">
+					<td colspan="2" class="text-xs uppercase tracking-wide text-muted-fg">{% if group.id in ["application", "sensors"] %}{{ ("monitoring.node_detail.config_group_" ~ group.id)|t }}{% else %}{{ group.id }}{% endif %}</td>
+				</tr>
+				{% for row in group.rows %}
+				<tr class="border-b border-base-300 last:border-0 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+					<td class="font-mono text-xs">{{ row.name }}</td>
+					<td class="{% if row.value_label %}text-sm{% else %}font-mono text-sm{% endif %}">{% if row.value_label %}{{ row.value_label|t }} <span class="font-mono text-xs text-muted-fg">{{ row.value }}</span>{% else %}{{ row.value }}{% endif %}{% if row.edit and not row.edit.options %} <span class="text-xs text-muted-fg">s</span>{% endif %}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+			{% endfor %}
+			{#- The 1-Wire slot types (node_reported_state.md §2.2): runtime state from the
+			    boot dump, not a setting; one more group of the same list. -#}
+			{% if config.w1_slot_type %}
+			<tbody>
+				<tr class="border-b border-base-300 [&>td]:pt-3 [&>td]:pb-1 [&>td]:px-4">
+					<td colspan="2" class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.node_detail.w1_slots_heading"|t }}</td>
+				</tr>
+				{% for slot in config.w1_slot_type %}
+				<tr class="border-b border-base-300 last:border-0 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+					<td class="text-sm">{{ "monitoring.node_detail.w1_slot_label"|t|replace("{n}", loop.index|string) }}</td>
+					<td class="text-sm">{% if slot in ["empty", "dallas", "machine-probe"] %}{{ ("monitoring.w1_slot." ~ slot)|t }}{% else %}<span class="font-mono">{{ slot }}</span>{% endif %}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+			{% endif %}
+		</table>
+	</div>
+	<p class="text-xs text-muted-fg">{{ "monitoring.node_detail.config_boot_only_note"|t }}</p>
+	{% endif %}
+
+{% endcall %}

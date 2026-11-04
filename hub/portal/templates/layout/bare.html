@@ -1,0 +1,21 @@
+{#
+  Chrome-less shell for the anonymous surface (login, first-run setup) — v1
+  renders those routes with the sidebar/top bar suppressed and gives them a
+  full-bleed split layout of their own, which is why they do not go through
+  `layout/base.html`.
+
+  Context: `lang` only. `current_user` is absent by definition here.
+#}
+<!doctype html>
+<html lang="{{ lang | default('en') }}" data-theme="{{ brand.theme }}">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{% block title %}{{ brand.product }}{% endblock %}</title>
+	<link rel="icon" href="/static/favicon.ico" sizes="any">
+	<link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}">
+</head>
+<body class="bg-base-100 text-base-content antialiased">
+	{% block content %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,32 @@
+[package]
+name = "proximosctl"
+version = "0.1.0"
+edition = "2021"
+# Raised with control-radio: the ChirpStack client's tonic 0.14 declares 1.88.
+rust-version = "1.88"
+
+# A real second binary of the same workspace, not a subcommand of the service
+# (portal/monolith.md §2). It is confined on its own terms, one ruleset per subcommand.
+[[bin]]
+name = "proximosctl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+control-ble = { path = "../control-ble" }
+control-radio = { path = "../control-radio" }
+# `cluster client-add` opens the password the agent sealed to this run's reply key
+# (fiber_protocol::sealed_reply). The protocol crate only: no BlueZ, no hardware stack.
+fiber-protocol = { path = "../fiber-protocol" }
+# The `render` subcommand (system/design.md §7). A path dependency in this direction only:
+# control-radio's standalone guarantee (decision #12) forbids it depending on anything in
+# this workspace, and proximos-render deliberately does not depend on control-radio either
+# — this binary is the one place the two meet, and they meet through argv, not through a
+# shared type.
+proximos-render = { path = "../proximos-render" }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

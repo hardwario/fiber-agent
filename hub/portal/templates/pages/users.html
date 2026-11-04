@@ -1,0 +1,75 @@
+{#
+  Users list — the same list as /nodes and /beacons wears: search, a Filters
+  disclosure, a Columns picker and the page's one primary action, over a
+  table whose rows open a detail page (pages/user_detail.html).
+
+  Context: {
+    current_user, nav_active = "users", error: string|none,
+    deleted: string|none,             -- username of a just-deleted user
+    users: [ partials/user_row.html's `u` shape, ... ]
+  }.
+
+  Client-side mode: every user is on the page (the fleet's operator list is
+  tens of rows, not thousands), so the toolbar filters the rendered table
+  the way the device lists do. The two fields are generic equality filters —
+  `data-list-filter="role"` matches the row's `data-role` — which
+  /static/js/portal-list.js supports without knowing what a user is.
+
+  The metric tiles link here with `?status=` / `?role=`, which the script
+  seeds into the two fields (render/stats.rs `user_stats_ctx`). "Create
+  user" is a page of its own, /settings/users/new (pages/user_add.html).
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "common.nav.users"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set error = error if error is defined else none %}
+{#- `deleted`: the username a delete on the detail page redirected here
+    with (`?deleted=`), so the action that left no page behind still says
+    it happened. -#}
+{% if deleted is defined and deleted %}
+<div role="status" class="alert alert-success mb-4"><span>{{ "auth.users.ok_deleted"|t|replace("{name}", deleted) }}</span></div>
+{% endif %}
+<div data-list-key="users">
+	{% set entity_label = "common.nav.users"|t %}
+	{% call ui.toolbar_shell(
+		key="users",
+		search_placeholder="auth.users.search_placeholder"|t,
+		columns=[
+			["role", "auth.fields.role"|t, true],
+			["status", "auth.users.table.status"|t, true],
+			["job", "auth.fields.job_title"|t, false],
+			["created", "auth.users.table.created"|t, true],
+			["seen", "auth.users.table.last_login"|t, true],
+		],
+		action_label="auth.users.create_user"|t,
+		action_href="/settings/users/new"
+	) %}
+		<div class="flex flex-col gap-1.5">
+			<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-users-role">{{ "auth.fields.role"|t }}</label>
+			<select id="f-users-role" data-list-filter="role" class="input-v1 select-v1 w-full">
+				<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+				<option value="viewer">{{ "auth.users.role_option_viewer"|t }}</option>
+				<option value="manager">{{ "auth.users.role_option_manager"|t }}</option>
+				<option value="admin">{{ "auth.users.role_option_admin"|t }}</option>
+			</select>
+		</div>
+
+		<div class="flex flex-col gap-1.5">
+			<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-users-status">{{ "auth.users.table.status"|t }}</label>
+			<select id="f-users-status" data-list-filter="status" class="input-v1 select-v1 w-full">
+				<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+				<option value="enabled">{{ "auth.users.status_enabled"|t }}</option>
+				<option value="disabled">{{ "auth.users.status_disabled"|t }}</option>
+			</select>
+		</div>
+	{% endcall %}
+
+	{% include "partials/users_table.html" %}
+</div>
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

@@ -1,0 +1,78 @@
+# plan/control/ble/plan.md §4, extracted verbatim — tests/config_schema.rs parses this
+ble:
+  mode: dual                      # "off" | "central" | "peripheral" | "dual" — factory
+                                  # choice, set once by the provisioning tool at flash
+                                  # time, never at runtime. Policy, not hardware: every
+                                  # Hub has a controller. A client-role Hub must be
+                                  # "peripheral" or "dual" (decision #5), enforced by the
+                                  # provisioning tool, not by this component.
+
+  adapter: null                   # e.g. "hci1". null = the default adapter. One adapter
+                                  # serves BOTH roles (§0.1); this is not a per-role key
+                                  # and deliberately cannot become one.
+
+  central:                        # ignored unless mode includes "central"
+    scan_interval_s: 30           # how often the beacon snapshot is published
+    beacon_timeout_s: 600         # a beacon drops out of the snapshot after this
+    discovered_max: 64            # HARD CAP on tracked strangers. Not a tuning knob: an
+                                  # unbounded discovered set is what turns a dense RF
+                                  # environment into an oversized publish, and one
+                                  # oversized publish tore down v1's entire MQTT client
+                                  # (see central.md §4). The cap is enforced, and the
+                                  # overflow is reported, never silently dropped.
+    beacon_profile:               # the fleet-wide default written during provisioning
+                                  # (central.md §5 step 3) and by `beacon-provision` (§5
+                                  # below). `beacon-send config` overrides a subset of it
+                                  # ad hoc, per beacon, without touching this default.
+      advertising_interval_s: 10   # config-layer unit is seconds, for a human editing YAML;
+                                  # the BTSMP1 config-service characteristic itself is
+                                  # milliseconds, little-endian u16 on the wire
+                                  # (beacon-btsmp1.md §2) — this component multiplies by
+                                  # 1000 at the write. Matches v1's hardware-verified
+                                  # default (control-core libs/beacon/provisioning.rs)
+      active_sensors: [temperature, humidity] # the vendor app's "Packet settings" screen
+                                  # (beacon-btsmp1.md §2). A deliberate narrowing from v1's
+                                  # shipped default (all four: temperature, humidity,
+                                  # magnet, movement) to just what this fleet needs. Subset
+                                  # of {temperature, humidity, magnet, movement}. The
+                                  # characteristic is absent on recorder beacons; the write
+                                  # is skipped there, not treated as a failure
+                                  # (beacon-btsmp1.md §2, fact 2)
+      tx_power_dbm: 8             # the standard Tx Power characteristic (BT SIG 0x2A07),
+                                  # signed dBm — matches v1's hardware-verified default,
+                                  # the tag's maximum TX power, chosen for range
+                                  #
+                                  # "protocol type" (beacon-btsmp1.md §2) is deliberately
+                                  # NOT a key here: this component's decoder registry (§7)
+                                  # parses only the Teltonika-native frame (beacon-btsmp1.md
+                                  # §1), so any other value would silently break decode.
+                                  # It is written as a fixed constant, pinned in
+                                  # beacon-btsmp1.md §2 as `0x02` — not exposed as something
+                                  # an operator could misconfigure. Confirmed 2026-08-25
+                                  # against v1's hardware-verified code; open question 8
+                                  # resolved.
+    dial_budget:
+      per_beacon_attempts: 5      # unlock/provision attempts before a beacon is marked and
+                                  # left alone until operator action. Persisted — a
+                                  # budget that resets on reboot is not a budget.
+      concurrent_dials: 1         # one outbound dial at a time. The adapter is shared
+                                  # (§0.1) and a second concurrent dial buys nothing but
+                                  # contention.
+      session_timeout_s: 30
+    recovery:
+      enabled: true               # the shell-free scan-stall ladder (central.md §7)
+      stall_secs: 180             # silence with audible beacons present before rung 0
+      cooldown_secs: 120          # minimum between recovery firings. Enforced on EVERY
+                                  # rung — v1's ladder took this as a parameter on one
+                                  # path and ignored it on the other, so a wedged
+                                  # controller was power-cycled every ~30 s.
+
+  peripheral:                     # ignored unless mode includes "peripheral"
+    session_idle_timeout_s: 300   # FB01 session idle timeout; every operation bumps it
+    max_page_bytes: 180           # the paging budget ceiling (peripheral.md). Never
+                                  # relies on long reads.
+    advertise_name: null          # null = derived from hostname
+
+  bluez: {}                       # reserved for genuinely BlueZ-specific settings; empty
+                                  # today, and a non-empty value is a parse error rather
+                                  # than a second undocumented configuration surface

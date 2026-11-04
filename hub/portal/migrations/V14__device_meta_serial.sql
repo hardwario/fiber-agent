@@ -1,0 +1,28 @@
+-- The Beacon's serial number, which the operator types at registration
+-- (plan/portal/devices.backend.md §9 WP6.4 and §22.4 — B6; Czech spec
+-- plan/portal/devices.beacon.md §3.1 and §4).
+--
+-- devices.beacon.md §3.1 makes the SN the Beacon's **primary identity in the
+-- detail header**, with the MAC demoted into the "Popis zařízení" block. The
+-- portal had nowhere to keep it: `BeaconState` is rebuilt from retained MQTT
+-- on every start, and the BTSMP1 advertisement carries no serial at all
+-- (plan/control/ble/beacon-btsmp1.md §1) — the number is printed on the
+-- device's label and reaches the portal only because a human reads it off
+-- and types it in. That makes it operator metadata, which is what
+-- `device_meta` (V9) is for, one column beside `description`.
+--
+-- Nullable, and not backfilled: every Beacon registered before B6 has no
+-- serial and no way to acquire one except an operator opening its page. The
+-- detail header says "not recorded" for those rather than inventing a value
+-- (the same honesty rule §21.6 applied to "waiting for join").
+--
+-- **The number 14 is deliberate and the hazard is real.** refinery runs with
+-- `abort_missing`, so a migration whose version is BELOW the highest already
+-- applied is a hard failure on every subsequent start — see §21.1, where V10
+-- was permanently burned by exactly that. V14 is above the tree's highest
+-- (V13, B4's `pending_config`) and creates no hole: V11 `backfill_not_before`,
+-- V12 `sensor_events`, V13 `pending_config`, V14 here. A database that
+-- stopped at V9 or V11 applies the rest in order; one already at V13 applies
+-- only this.
+
+ALTER TABLE device_meta ADD COLUMN serial TEXT;

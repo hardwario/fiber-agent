@@ -1,0 +1,164 @@
+{#
+  Settings › Maintenance — the operator-initiated full VACUUM of the PORTAL's
+  own database, and the status it reads back.
+
+  Whose database, precisely: `<data_dir>/portal.db` on the machine the portal
+  runs on. Not a device's. The agent keeps storage of its own and this never
+  speaks to it — which is why the panel briefly lived on `/device` and had to
+  come back: that page renders whichever Hub reported first, and on a
+  multi-Hub install it would have claimed the rebuild was that Hub's.
+
+  Context: {
+    current_user, nav_active = "settings", settings_tab = "maintenance",
+    show_notifications / show_users / show_maintenance: bool  -- the tabs
+    maintenance: {...}|none   -- settings_routes::MaintenanceCtx; none when
+                                 the service is unavailable
+    ok: string|none, error: string|none   -- flash slugs, ?ok=/?err=
+  }
+
+  A plain POST, no htmx: the work outlives the request and the result is read
+  back on the next render, not swapped in.
+
+  Layout: the four numbers first, as the metric strip every other page uses,
+  then one card holding the single action and whatever the database is
+  currently saying about itself. The numbers used to be a two-column `dl`
+  huddled in the left third of a full-width card, with the state announced by
+  a solid orange slab across the whole page; the notices are tinted strips
+  inside the card now, so the loudest thing on screen is the one button.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "common.settings.maintenance.title"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{% include "partials/settings_tabs.html" %}
+
+	{% if error %}
+	<div role="alert" class="card-v1 flex items-start gap-2 px-5 py-3 text-sm bg-error/10 border-error/30 text-error">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5") }}
+		<span>{{ ("common.settings.flash.err." ~ error)|t }}</span>
+	</div>
+	{% endif %}
+	{% if ok %}
+	<div role="alert" class="card-v1 flex items-start gap-2 px-5 py-3 text-sm bg-success/10 border-success/30 text-success">
+		{{ ic.icon("circle-check", "h-4 w-4 shrink-0 mt-0.5") }}
+		<span>{{ ("common.settings.flash.ok." ~ ok)|t }}</span>
+	</div>
+	{% endif %}
+
+	{#- The display zone (decisions.md #25): every time the portal shows and
+	    every e-mail it sends. Stored instants stay UTC. -#}
+	<form method="post" action="/settings/maintenance/timezone" class="card-v1 px-5 py-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+		<div class="min-w-0">
+			{{ ui.page_header("clock", "common.settings.timezone.title"|t) }}
+			<p class="text-sm text-muted-fg mt-3 max-w-2xl">{{ "common.settings.timezone.explain"|t }}</p>
+			<label class="block mt-3 max-w-sm">
+				<span class="text-xs font-medium text-muted-fg">{{ "common.settings.timezone.label"|t }}</span>
+				<select name="timezone" class="input-v1 select-v1 w-full mt-1">
+					{% for z in timezones %}
+					<option value="{{ z }}" {% if z == timezone %}selected{% endif %}>{{ z }}</option>
+					{% endfor %}
+				</select>
+			</label>
+		</div>
+		<button type="submit" class="btn-v1 btn-v1-primary w-full md:w-auto">{{ "common.actions.save"|t }}</button>
+	</form>
+
+	{% if maintenance %}
+	{#- One cell of the strip. Same shape as `ui.stat_tile`, smaller value:
+	    these are words ("neplánováno") as often as numbers, and a word set in
+	    `text-2xl` shouts. `dim` greys the placeholder readings. -#}
+	{% macro fact(label, value, icon, dim=false) %}
+	<div class="bg-base-100 px-4 py-3 sm:px-5">
+		<p class="text-[11.5px] font-semibold uppercase tracking-wider text-muted-fg truncate">{{ label }}</p>
+		<div class="mt-1 flex items-center gap-2">
+			<span class="shrink-0 text-primary">{{ ic.icon(icon, "h-4 w-4") }}</span>
+			<span class="text-base font-semibold tabular-nums truncate {% if dim %}text-muted-fg font-normal{% endif %}">{{ value }}</span>
+		</div>
+	</div>
+	{% endmacro %}
+
+	{% call ui.stat_row() %}
+		{{ fact("common.settings.maintenance.db_size"|t, maintenance.db_size, "database") }}
+		{% if maintenance.available %}
+		{{ fact("common.settings.maintenance.available"|t, maintenance.available, "hard-drive") }}
+		{% else %}
+		{{ fact("common.settings.maintenance.available"|t, "common.settings.maintenance.available_unknown"|t, "hard-drive", true) }}
+		{% endif %}
+		{% if maintenance.window %}
+		{{ fact("common.settings.maintenance.window"|t, maintenance.window, "clock") }}
+		{% else %}
+		{{ fact("common.settings.maintenance.window"|t, "common.settings.maintenance.window_none"|t, "clock", true) }}
+		{% endif %}
+		{% if maintenance.last_run_at %}
+		{{ fact("common.settings.maintenance.last_run"|t, maintenance.last_run_at ~ ((" (" ~ "common.settings.maintenance.took"|t ~ " " ~ maintenance.last_run_seconds ~ " " ~ "common.settings.maintenance.seconds_short"|t ~ ")") if maintenance.last_run_seconds else ""), "refresh-cw") }}
+		{% else %}
+		{{ fact("common.settings.maintenance.last_run"|t, "common.settings.maintenance.never"|t, "refresh-cw", true) }}
+		{% endif %}
+	{% endcall %}
+
+	<div class="card-v1 divide-y divide-base-300">
+		{#- Heading, the two lines of why, and the button as the row's second
+		    column — a full-size primary button level with the text, not a small
+		    one parked in the header corner. It is the only thing this page does.
+		    While a rebuild runs, or when there is no room for one, the button is
+		    gone and the strip below says which of the two it is. -#}
+		<div class="px-5 py-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+			<div class="min-w-0">
+				{{ ui.page_header("database-backup", "common.settings.maintenance.title"|t) }}
+				<p class="text-sm text-muted-fg mt-3 max-w-2xl">{{ "common.settings.maintenance.explain"|t }}</p>
+				<p class="text-sm text-muted-fg mt-1 max-w-2xl">{{ "common.settings.maintenance.warning"|t }}</p>
+			</div>
+			{% if not maintenance.running and maintenance.enough_space %}
+			<form method="post" action="/settings/maintenance/vacuum" class="md:pl-6">
+				<button type="submit" class="btn-v1 btn-v1-primary w-full md:w-auto">{{ "common.settings.maintenance.start"|t }}</button>
+			</form>
+			{% endif %}
+		</div>
+
+		{#- What the database is currently saying, one tinted strip per thing,
+		    in the order an operator acts on them: what blocks the button,
+		    what the button would fix, what it did last time. -#}
+		{% if maintenance.running %}
+		<div role="alert" class="flex items-start gap-2 px-5 py-3 text-sm bg-info/10 text-info">
+			<span class="loading loading-spinner loading-xs shrink-0 mt-0.5"></span>
+			<span>{{ "common.settings.maintenance.running"|t }}</span>
+		</div>
+		{% elif not maintenance.enough_space %}
+		<div role="alert" class="flex items-start gap-2 px-5 py-3 text-sm bg-error/10 text-error">
+			{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5") }}
+			<span>{{ "common.settings.maintenance.not_enough_space"|t }}</span>
+		</div>
+		{% endif %}
+
+		{% if maintenance.needs_conversion %}
+		<div role="alert" class="flex items-start gap-2 px-5 py-3 text-sm bg-warning/10 text-warning">
+			{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5") }}
+			<span>{{ "common.settings.maintenance.needs_conversion"|t }}</span>
+		</div>
+		{% endif %}
+
+		{% if maintenance.last_error %}
+		<div role="alert" class="flex items-start gap-2 px-5 py-3 text-sm bg-error/10 text-error">
+			{{ ic.icon("alert-circle", "h-4 w-4 shrink-0 mt-0.5") }}
+			<span>{{ "common.settings.maintenance.last_error"|t }}: <span class="font-mono break-all">{{ maintenance.last_error }}</span></span>
+		</div>
+		{% endif %}
+
+		{% if maintenance.spill_depth %}
+		<div class="flex items-center gap-2 px-5 py-2.5 text-xs text-muted-fg bg-muted/40">
+			{{ ic.icon("info", "h-3.5 w-3.5 shrink-0") }}
+			<span>{{ "common.settings.maintenance.spill_depth"|t }}: <span class="font-mono tabular-nums">{{ maintenance.spill_depth }}</span></span>
+		</div>
+		{% endif %}
+	</div>
+	{% else %}
+	<div class="card-v1 p-8 text-center text-sm text-muted-fg">
+		{{ "common.settings.maintenance.unavailable"|t }}
+	</div>
+	{% endif %}
+</div>
+{% endblock %}

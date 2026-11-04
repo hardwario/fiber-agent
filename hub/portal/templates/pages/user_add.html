@@ -1,0 +1,64 @@
+{#
+  Create user — GET /settings/users/new (plan/portal/user_admin.md,
+  amendment 2026-10-15): the same shape as /nodes/add, a back link and one
+  card holding the form. It used to be a dialog on /settings/users.
+
+  Context: { current_user, nav_active = "users", stats,
+             error: string|none            -- `auth.errors.*` slug,
+             username, full_name: string|none, user_role: string }.
+
+  A plain form POST to /settings/users: success redirects to the new
+  user's page (`?created=1`), a refusal re-renders this page with what was
+  typed — never the password.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "auth.users.create_user"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set error = error if error is defined else none %}
+<div class="space-y-4">
+	{{ ui.back_link("/settings/users", "auth.users.back_to_list"|t) }}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ ("auth.errors." ~ error)|t }}</span></div>
+	{% endif %}
+
+	<div class="card-v1 p-4">
+		{% call ui.page_header("users", "auth.users.create_user"|t) %}{% endcall %}
+		<form method="post" action="/settings/users" class="max-w-2xl flex flex-col gap-3 mt-3">
+			<div>
+				<label class="text-sm font-medium" for="new-user-username">{{ "auth.fields.username"|t }}</label>
+				<input id="new-user-username" type="text" name="username" value="{{ username or '' }}" class="input-v1 mt-1" autocomplete="off" required>
+			</div>
+			<div>
+				<label class="text-sm font-medium" for="new-user-name">{{ "auth.fields.full_name_optional"|t }}</label>
+				<input id="new-user-name" type="text" name="full_name" value="{{ full_name or '' }}" class="input-v1 mt-1" autocomplete="off">
+			</div>
+			<div>
+				<label class="text-sm font-medium" for="new-user-password">{{ "auth.fields.password"|t }}</label>
+				<input id="new-user-password" type="password" name="password" class="input-v1 mt-1" autocomplete="new-password" required>
+			</div>
+			<div>
+				<label class="text-sm font-medium" for="new-user-role">{{ "auth.fields.role"|t }}</label>
+				{# Each option carries its translated permission summary; the
+				   line below the select mirrors the current pick. The
+				   authoritative permission sets live in src/perms.rs. #}
+				<select id="new-user-role" name="user_role" class="input-v1 select-v1 mt-1" required
+					onchange="document.getElementById('new-user-role-desc').textContent = this.selectedOptions[0].dataset.desc">
+					{% for r in ["viewer", "manager", "admin"] %}
+					<option value="{{ r }}" data-desc="{{ ("auth.users.role_desc_" ~ r)|t }}"{% if r == user_role %} selected{% endif %}>{{ ("auth.users.role_option_" ~ r)|t }}</option>
+					{% endfor %}
+				</select>
+				<p id="new-user-role-desc" class="text-xs text-muted-fg mt-1">{{ ("auth.users.role_desc_" ~ (user_role if user_role in ["viewer", "manager", "admin"] else "viewer"))|t }}</p>
+			</div>
+			<div class="flex justify-end gap-2 mt-2">
+				<a href="/settings/users" class="btn-v1 btn-v1-outline">{{ "common.actions.cancel"|t }}</a>
+				<button type="submit" class="btn-v1 btn-v1-primary">{{ "auth.users.create_user"|t }}</button>
+			</div>
+		</form>
+	</div>
+</div>
+{% endblock %}

@@ -1,0 +1,250 @@
+# FIBER Sensor Configuration
+# Defines temperature alarm thresholds for 8 sensor lines
+# Can have common (default) alarms and per-line overrides
+#
+# Threshold hierarchy, as shipped (common_alarms below):
+#   Critical Low (-10°C) < Warning Low (0°C) < [NORMAL ZONE] < Warning High (40°C) < Critical High (50°C)
+# A line with no bounds of its own uses these. They are the portal's default temperature
+# band too (portal/packaging/templates/defaults.yaml `thresholds.defaults`,
+# plan/portal/threshold_defaults.md); a test fails when the two files differ. A Hub whose
+# /data copy still holds the values shipped before 2026-09-28 is moved to these at startup
+# (config_migrations::migrate_sensor_defaults_and_persist); an edited one keeps its own.
+#
+# LINE LED Colors (8 sensors per line):
+#   green      = LEDG only (GREEN)
+#   red        = LEDR only (RED)
+#   yellow     = LEDG + LEDR combined (YELLOW)
+#   off        = Both LEDs off
+#
+# POWER LED Colors (PWRLED):
+#   green      = PWRLEDG only (GREEN)
+#   yellow     = PWRLEDY only (YELLOW)
+#   lime       = PWRLEDG + PWRLEDY combined (LIME/CYAN)
+#   off        = Both LEDs off
+
+# Alarm pattern configuration - controls LED and buzzer behavior for each state
+alarm_patterns:
+  # Warning state - approaching alarm thresholds
+  warning:
+    led_color: yellow           # Line LEDs: LEDG + LEDR (YELLOW) = approaching limits
+    led_blink: slow             # steady, slow (4 cycles), fast (1 cycle)
+    buzzer_enabled: true       # true = beep, false = silent
+    buzzer_pattern: critical        # none, disconnected, critical
+
+  # Alarm state - abnormal condition detected
+  alarm:
+    led_color: red
+    led_blink: steady
+    buzzer_enabled: false
+    buzzer_pattern: none
+
+  # Critical state - urgent condition, immediate response needed
+  critical:
+    led_color: red
+    led_blink: fast             # fast blinking
+    buzzer_enabled: true
+    buzzer_pattern: critical    # Use buzzer_critical_timing below
+
+  # Disconnected state - sensor lost connection
+  disconnected:
+    led_color: red
+    led_blink: slow
+    buzzer_enabled: true
+    buzzer_pattern: disconnected  # Use buzzer_disconnected_timing below
+
+  # Buzzer timing configuration for critical pattern (milliseconds)
+  # on_ms: Duration of PWM beeping phase
+  # off_ms: Duration of silence between beeps
+  buzzer_critical_timing:
+    on_ms: 500      # 500ms of PWM beeping (urgent - shorter beep)
+    off_ms: 500     # 500ms silence between beeps
+
+  # Buzzer timing configuration for disconnected pattern (milliseconds)
+  buzzer_disconnected_timing:
+    on_ms: 1000     # 1000ms of PWM beeping (1 second beep)
+    off_ms: 2000    # 2000ms silence (2 second pause)
+
+common_alarms:
+  # Critical thresholds - urgent, immediate response needed
+  critical_low_celsius: -10.0   # Below -10°C: critical low
+  critical_high_celsius: 50.0   # Above 50°C: critical high
+  # Warning thresholds - approaching critical, monitor closely
+  warning_low_celsius: 0.0      # Below 0°C: warning low
+  warning_high_celsius: 40.0    # Above 40°C: warning high
+  # Hysteresis (#110): an alarm opens at the bound, but steps down only once
+  # the value is this far back inside it, so a probe hovering at a bound
+  # raises one alarm instead of one per wobble. Per line: hysteresis_celsius.
+  # 0 = off.
+  hysteresis_celsius: 0.5
+  # Reconnection animation
+  reconnect_blinks: 5
+
+# Default per-field thresholds for LoRaWAN stickers. Applied automatically to
+# every paired sticker that has no explicit override saved via the viewer —
+# this is the LoRaWAN analogue of `common_alarms` above. Each per-sensor
+# override merges over these on a per-bound basis (omit a bound to inherit).
+# Field names must match the LoRaWAN field registry.
+#
+# Legacy: only the v1 LoRaWAN monitor reads this block, and it is off whenever
+# `radio.mode` is set, i.e. on every v2 Hub. A v2 Node gets the portal's default
+# bands instead, stored switched off (plan/portal/threshold_defaults.md). The
+# values are the same numbers, so this file does not state two sets of defaults.
+common_lorawan_field_thresholds:
+  temperature:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  humidity:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  # External temperature probes — mirror temperature defaults
+  ext_temperature_1:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  ext_temperature_2:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  # Machine probes (temperature) — mirror temperature defaults
+  machine_probe_temperature_1:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  machine_probe_temperature_2:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  # Machine probes (humidity) — mirror humidity defaults
+  machine_probe_humidity_1:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  machine_probe_humidity_2:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  # 1-Wire slots, sticker-firmware v2.0.0 (#430, w1_{slot}_{channel}) —
+  # temperatures mirror temperature, humidity mirrors humidity. The
+  # pre-v2.0.0 names above stay for Nodes still on older firmware.
+  w1_1_temperature:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_1_temperature_aux:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_1_humidity:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  w1_2_temperature:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_2_temperature_aux:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_2_humidity:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  w1_3_temperature:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_3_temperature_aux:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_3_humidity:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  w1_4_temperature:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_4_temperature_aux:
+    critical_low: -10.0
+    warning_low: 0.0
+    warning_high: 40.0
+    critical_high: 50.0
+  w1_4_humidity:
+    critical_low: 0.0
+    warning_low: 10.0
+    warning_high: 80.0
+    critical_high: 90.0
+  # No battery (voltage) default. The sticker evaluates its own low-battery
+  # condition and reports it as a native alarm on fPort 3, so a threshold here
+  # raised a second, duplicate battery alarm on every sticker — armed by this
+  # default even though nobody had configured it. `voltage` is no longer
+  # thresholdable in the registry either, so a leftover entry in a deployed
+  # config file is ignored rather than honoured.
+  # No global defaults for illuminance, pressure, altitude — too context-dependent.
+
+lines:
+  - line: 0
+    enabled: true
+    name: "Sensor 1"
+    # Uses common_alarms if not specified
+
+  - line: 1
+    enabled: true
+    name: "Sensor 2"
+    # Uses common_alarms if not specified
+
+  - line: 2
+    enabled: true
+    name: "Sensor 3"
+    # Uses common_alarms if not specified
+
+  - line: 3
+    enabled: true
+    name: "Sensor 4"
+    # Uses common_alarms if not specified
+
+  - line: 4
+    enabled: true
+    name: "Sensor 5"
+    # Uses common_alarms if not specified
+    # NOTE: Per-sensor reporting intervals are reserved for future use
+    # Currently, all sensors report together at the global interval
+    # Example (not yet functional):
+    #   report_interval_ms: 180000  # Future: Report this sensor every 3 minutes
+
+  - line: 5
+    enabled: true
+    name: "Sensor 6"
+    # Uses common_alarms if not specified
+
+  - line: 6
+    enabled: true
+    name: "Sensor 7"
+    # Uses common_alarms if not specified
+
+  - line: 7
+    enabled: true
+    name: "Sensor 8"
+    # Uses common_alarms if not specified

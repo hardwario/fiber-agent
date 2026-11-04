@@ -6,3 +6,13 @@ build/
 .vscode-ctags
 __pycache__/
 dist/
+hub/portal/target/
+hub/portal/target-linux/
+hub/portal/dev-data/
+hub/firmware/zephyr/
+hub/firmware/modules/
+hub/firmware/.west/
+hub/firmware/build-*/
+hub/firmware/twister-out*/
+hub/firmware/nb-package/
+hub/firmware/sb-package/

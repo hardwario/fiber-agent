@@ -1,0 +1,132 @@
+[Unit]
+Description=ProXimos control agent (radio uplink decode, gateway health, P2P central)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/radio/plan.md https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/portal/monolith.md
+
+# The resident half of the pair. Decision #12 dissolved `control-radio.service` and its
+# second socket and moved its three loop duties into this one process: the ChirpStack
+# event subscription that feeds the decode path, the 60 s `radio/gateways` health poll,
+# and the `node-get` cache. plan/portal/monolith.md §9 makes this the host the rest of
+# the agent moves into, which is why the unit is not radio-conditional beyond the config
+# file it needs to read at all.
+
+# The renderer's output is what this reads, and its absence is the gate: with no
+# `radio:` section rendered there is no device config to run against. Same mechanism
+# fiber-portal.service uses for /run/proximos/portal/config.yaml (decision #5) — the
+# condition skips the unit quietly rather than failing it, which is what a Hub
+# provisioned without the file should look like.
+ConditionPathExists=/run/proximos/control/config.yaml
+
+# Requires the renderer, because that file is not optional: without it this daemon has
+# nothing to load and the ConditionPathExists above would have skipped it anyway. The
+# rest is ordering only.
+Requires=proximos-render.service
+After=proximos-render.service radio-setup.service mosquitto.service data.mount
+
+# `Wants`, not `Requires`, and deliberately asymmetric with radio-setup.service — which
+# *requires* mosquitto because gateway EUI discovery is a retained-topic read and without
+# a broker it would report "no radio" for the wrong reason. This daemon has no such
+# one-shot answer to get wrong: with the broker down it retries on its backoff ladder and
+# starts decoding the moment mosquitto comes back. Making it a hard requirement would
+# only add a way for the agent host to fail to start.
+Wants=mosquitto.service
+
+# The `node-get` cache and the enrollment records live under /data.
+RequiresMountsFor=/data
+
+[Service]
+Type=simple
+User=proximos
+Group=proximos
+ExecStart=/usr/bin/proximos-control
+
+# Not `always`: a clean SIGTERM exit is a stop, and the daemon exits 0 for one. It exits
+# non-zero only for a config it cannot use at all — a task that merely lost its broker or
+# its ChirpStack restarts inside the process on its own backoff, which is why there is no
+# StartLimit ladder here. 10 s, because everything it reconnects to is on loopback and a
+# longer wait would only extend an outage nobody is queueing behind.
+Restart=on-failure
+RestartSec=10
+
+# This unit's own runtime directory, and NOT /run/proximos/control — that one belongs to
+# proximos-render.service (WP-G gives it `RuntimeDirectory=proximos/portal proximos/control
+# proximos/chirpstack proximos/chirpstack-mqtt-forwarder`). Claiming it here would fight
+# that in two ways: systemd enforces the owning unit's User=/mode on a RuntimeDirectory, so
+# the two would chown it back and forth, and — decisively — systemd *removes* a
+# RuntimeDirectory when its unit stops, so every restart of this daemon would delete the
+# rendered config.yaml inside it and the ConditionPathExists above would then keep it from
+# starting again.
+#
+# So the liveness file lives in this component's own directory instead. Removal-on-stop is
+# a feature here rather than a hazard: `node-get` answers DaemonDown (exit 23) the instant
+# the unit stops, instead of waiting out three missed health ticks.
+#
+# proximos-radio.tmpfiles.conf declares the same path with the same mode and owner, for the
+# boot where this unit is condition-skipped; the two agree exactly, so neither undoes the
+# other.
+RuntimeDirectory=proximos/radio
+RuntimeDirectoryMode=0750
+
+# Hardening baseline, carried from radio-setup.service unchanged. AF_UNIX for the journal,
+# AF_INET/AF_INET6 for loopback MQTT (1883) and the ChirpStack gRPC API (8080) — both on
+# 127.0.0.1, both closed at the firewall.
+#
+# RuntimeDirectory= adds its own path to the read-write set, so /run/proximos/radio stays
+# writable under ProtectSystem=strict without a ReadWritePaths row of its own.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# The northbridge UART, and no other device (PI1, plan/portal/p2p_integration.md §4.1):
+# the P2P central runs in this process and LoRa P2P goes over the northbridge alone — the
+# RAK5146 is LoRaWAN's, reached by chirpstack-concentratord, never by this unit.
+# PrivateDevices=yes would hide /dev/ttyAMA3 in the private /dev, so it is off and the
+# device cgroup does the narrowing instead: DevicePolicy=closed leaves the pseudo devices
+# (null, zero, random, …) and DeviceAllow= adds exactly the UART. The node is root:dialout
+# 0660, hence the supplementary group (P2P-N2). On a Hub whose mode does not allow P2P the
+# task never opens it.
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/ttyAMA3 rw
+SupplementaryGroups=dialout
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+# The component's own state tree, and nothing else on /data: the enrollment records the
+# uplink task joins against, the converged config.json it reads app_id/tenant_id from, and
+# the node-get cache it fills. ProtectSystem=strict makes the whole hierarchy read-only,
+# so this row is what makes the cache writable at all.
+ReadWritePaths=/data/proximos/radio
+
+# The Client's info page (plan/decisions.md #46). A tmpfiles directory, not a second
+# RuntimeDirectory=: RuntimeDirectoryMode would make it 0750 and nginx could not read it.
+ReadWritePaths=/run/proximos/client-page
+
+# On a cluster Client the P2P task is the gateway forwarder, which connects to the Server's
+# broker under this Hub's peer account (plan/control/radio/p2p_cluster_gateway.md §3.2). Its
+# password and the Server's CA sit in /data/proximos/cluster/ (0700 root), which this unit's
+# user must not read; systemd copies the two files in as credentials instead. SetCredential=
+# is the fallback on a Server, where the files do not exist: a LoadCredential= with a default
+# is not fatal when the path is missing (systemd.exec(5)), and the forwarder never runs there
+# anyway. The fallback is the word `absent`, which the forwarder reads as no credential:
+# systemd 259 rejects an empty SetCredential= value, and a missing file then fails the unit.
+LoadCredential=cluster-peer-password:/data/proximos/cluster/peer_password
+SetCredential=cluster-peer-password:absent
+LoadCredential=cluster-ca:/data/proximos/cluster/ca.crt
+SetCredential=cluster-ca:absent
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proximos-control
+
+[Install]
+WantedBy=multi-user.target

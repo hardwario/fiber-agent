@@ -1,0 +1,24 @@
+{#
+  One user's page — GET /settings/users/{id}, opened by a row of
+  pages/users.html's table.
+
+  Context: { current_user, nav_active = "users", u } — `u` shape per
+  routes/user_routes.rs's `UserRowCtx`.
+
+  The page is the back link plus partials/user_detail.html, which owns every
+  action and is the swap target they re-render. Splitting them that way is
+  what lets enable/disable/reset-password answer with the card alone.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+{% block title %}{{ u.full_name | default(u.username, true) }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{{ ui.back_link("/settings/users", "auth.users.back_to_list"|t) }}
+
+	{% include "partials/user_detail.html" %}
+</div>
+{% endblock %}

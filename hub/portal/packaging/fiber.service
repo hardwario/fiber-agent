@@ -1,0 +1,136 @@
+[Unit]
+Description=ProXimos Agent (control) — sensors, BLE, LoRaWAN bridge, MQTT export
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/portal/monolith.md
+# Adapted from v1's meta-fiber/recipes-core/application/files/fiber.service.
+# v1 also had Requires=/After=fiber-firstboot.service, a oneshot unit that both
+# bootstrapped CA/keys and copied /usr/share/fiber/config/*.yaml to
+# /data/fiber/config (once, never overwriting an existing file). That unit has
+# no v2 equivalent yet, so both jobs run inline via ExecStartPre below instead:
+# fiber-config-seed.sh (config files) then init-signer.sh (CA/keys), same
+# shape as v1's own fallback path for the latter.
+After=network.target local-fs.target mosquitto.service NetworkManager.service dbus.service bluetooth.service fiber-factory-reset.service ble-setup.service
+# The agent reads /run/proximos/control/config.yaml at startup for its topic root and,
+# on a client-role Hub, for the Server's broker (plan/control/cluster.md §4.4). Started
+# before the renderer it would find no file and connect to the seeded loopback broker for
+# the rest of the boot. Ordering only, not Requires=: a failed render must not also take
+# the sensors, the display and the alarms down with it.
+After=proximos-render.service
+Wants=network.target NetworkManager.service mosquitto.service dbus.service bluetooth.service
+RequiresMountsFor=/data/fiber
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=+/usr/share/fiber/scripts/fiber-config-seed.sh
+ExecStartPre=+/bin/sh -c '[ -f /data/fiber/keys/ca.pub ] && [ -f /data/fiber/keys/ca.key ] || /usr/share/fiber/scripts/init-signer.sh'
+ExecStart=/usr/bin/fiber_app
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Hardening carried over from v1 unchanged. Running as root with no
+# sysusers.d identity is a deliberate, scoped decision for this transitional
+# package (v1's own posture) — the non-root/unified-profile target described
+# in plan/portal/monolith.md §11.6 is a separate hardening pass, out of scope
+# here.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/fiber
+# control-ble runs in-process here (start_bluetooth hosts its scan loop, FB00
+# GATT and enroll seam) and keeps its provisioning ledger and EN12830 archive
+# under /data/proximos/ble (control_ble::store DEFAULT_ROOT), not /data/fiber.
+# That directory is created by the 020-ble-init.sh data migration
+# ble-setup.service depends on, and this unit is ordered After=ble-setup.service,
+# so it exists before it starts. Without this row every ledger write (a
+# beacon-provision, the per-beacon give-up budget) fails with EROFS under
+# ProtectSystem=strict even though /data is mounted rw, so a provisioned beacon
+# is never recorded and the portal tag hangs in "provisioning"/"pending".
+#
+# Only /data/proximos/ble is listed. The eye fleet section this agent writes
+# goes through ConfigApplier into /data/fiber (already covered above), NOT
+# /data/proximos/config; and /data/proximos/config is created by no migration on
+# this image, so naming it here (as ble-setup.service currently does) makes
+# systemd fail namespace setup with 226/NAMESPACE and the unit never starts.
+# (2026-09-26: migration 040-config-init.sh now creates it, root:root 0750, for the
+# first-run applier of decision #37. This agent still has no business writing there,
+# so the row stays out.)
+ReadWritePaths=/data/proximos/ble
+# The signed `node-add`/`node-remove` commands (libs/radio_nodes.rs) go through
+# the v2 radio stack, which keeps /data/proximos/radio/lorawan/nodes.json.
+# Read-only under ProtectSystem=strict without this line, and a refused write
+# there leaves a device enrolled in ChirpStack with no record of it. The `-`
+# keeps the unit starting on a Hub whose migration has not created the tree yet.
+ReadWritePaths=-/data/proximos/radio
+# A Server Hub mints, rotates and removes its Client Hubs' broker accounts
+# (`cluster client-add`/`-remove` and their signed twins, libs/cluster_clients.rs,
+# plan/control/cluster.md §7): it stages passwd/acl as temporary files in
+# /data/mosquitto and renames them into place, so the directory itself must be
+# writable, not only the two files. proximos-data-dirs (tmpfiles) creates it,
+# 0750 root:mosquitto, before mosquitto.service, which this unit is ordered
+# after. The `-` is for a Hub whose tmpfiles run has not created it: there the
+# agent must still start (226/NAMESPACE otherwise) and the mint reports a
+# failed account, which is what it is.
+ReadWritePaths=-/data/mosquitto
+# A Client Hub's connection to its Server and the role marker, written by the
+# cluster join (BLE FB1C and `proximosctl control.radio create --role client`,
+# libs/cluster_join.rs, plan/control/cluster.md §3, §8): one file per value,
+# each staged as a temporary file in the directory and renamed into place, so the
+# directory itself must be writable. proximos-data-dirs (tmpfiles, sysinit)
+# creates it 0700 root:root; the agent cannot create it itself, /data/proximos
+# being read-only here. The `-` keeps the unit starting (226/NAMESPACE otherwise)
+# on an image whose tmpfiles run has not created it: there a join is refused with
+# the write error, and nothing else is affected.
+ReadWritePaths=-/data/proximos/cluster
+# ProtectSystem=strict makes /run read-only along with the rest of the
+# filesystem, so control-core's server.rs (libs/control/server.rs `serve`)
+# can no longer mkdir the control socket's parent directory itself — that
+# recursive DirBuilder::create on /run/fiber returns EROFS and fiberctl loses
+# its only way to reach the daemon. RuntimeDirectory is the exception
+# ProtectSystem=strict carves out: systemd creates /run/fiber before
+# ExecStart, owned by this unit's User/Group (root) and mode 0700 to match
+# what serve() itself would have chmod'd it to, and removes it again on
+# stop — so the daemon no longer needs write access to /run at all, and the
+# stale-socket cleanup serve() does by hand is now systemd's job too.
+RuntimeDirectory=fiber
+RuntimeDirectoryMode=0700
+# On a Client Hub the agent keeps the Server's IPv4 address in the file /etc/hosts
+# links to, /run/proximos/net/hosts (plan/control/cluster.md §8; libs/mqtt/server_hosts.rs),
+# so the musl forwarder can dial <server>.local by name. It rewrites it by temp-and-rename,
+# which needs the directory, and only that directory: not /etc, not the rest of
+# /run/proximos (the renderer's outputs, mosquitto's listener). Seeded by tmpfiles
+# (proximos-hosts.conf); the `-` keeps the unit starting on an image without it. Written
+# on a Client only, and only when the Server is named rather than given as an address.
+ReadWritePaths=-/run/proximos/net
+# The factory socket for the provisioning account (plan/system/factory_test.md §4.1):
+# fiber_app binds /run/proximos-factory/factory.sock, which answers the factory test
+# commands only. tmpfiles creates the directory (proximos-provisioning-access); the `-`
+# keeps the unit starting on an image without the account.
+ReadWritePaths=-/run/proximos-factory
+PrivateTmp=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+DeviceAllow=/dev/gpiomem rw
+DeviceAllow=/dev/i2c-* rw
+DeviceAllow=/dev/spidev* rw
+DeviceAllow=/dev/ttyAMA* rw
+DeviceAllow=char-* rw
+# Bluetooth (control-ble). Ordering only on ble-setup.service above: it unblocks
+# rfkill and records the adapter, and a Hub whose controller is missing must still
+# boot green, so this is deliberately not a Requires=.
+#
+# AF_BLUETOOTH is needed twice over: bluer's D-Bus path for GATT and advertising,
+# and the raw L2CAP socket the EN12830 archive reads over ATT CID 4. /dev/rfkill
+# is the recovery ladder's lowest rung — unblocking a soft-blocked adapter without
+# shelling out to `rfkill`, which CP-1 removed.
+DeviceAllow=/dev/rfkill rw
+# No RestrictAddressFamilies= line here yet, and adding one now would NARROW this
+# unit rather than widen it — the default is "all families allowed". The row is
+# owed to security/landlock.md §5.1, where the whole list is set at once; adding
+# AF_BLUETOOTH alone would silently cut off AF_NETLINK (NetworkManager), AF_UNIX
+# (the control socket) and AF_INET (MQTT). Proposed in the MR, not done here.
+
+[Install]
+WantedBy=multi-user.target

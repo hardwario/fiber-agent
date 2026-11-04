@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Core peripherals
+CONFIG_SERIAL=y
+CONFIG_GPIO=y
+CONFIG_ADC=y
+
+# No console / shell — USART1 is used directly by application protocol
+CONFIG_CONSOLE=n
+CONFIG_UART_CONSOLE=n
+CONFIG_SHELL=n
+
+# Interrupt-driven UART for command RX
+CONFIG_UART_INTERRUPT_DRIVEN=y
+
+# Power / safety
+CONFIG_HW_STACK_PROTECTION=y

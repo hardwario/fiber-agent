@@ -1,0 +1,135 @@
+{#
+  Hubs (FIBER) list — plan/portal/devices.hub.md §2.
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "hubs",
+    hubs: [ render::HubRowCtx, ... ]    -- may be empty; one row each:
+      { hostname, name, serial, online, last_seen (RFC 3339|none),
+        display_version, gateway_eui, radio: render::HubRadioCtx|none,
+        radio_control_off: bool, unpaired: bool,
+        value_class: "normal"|"warning"|"critical", fault: bool,
+        kind: "server"|"client"|none,
+        cluster: render::ClusterRowCtx|none   -- a registered Client (C5):
+          { state: "pending"|"failed"|"complete", registration_error,
+            removal_error, never_connected, gateway_gap, … } }
+    show_type: bool,                    -- §2.2: the list holds a Client too
+    add_hub: cluster_routes::AddHubCtx|none,   -- admin + a Server: §2.6
+    is_admin: bool
+  }
+
+  Order (§2.2): the Server first, then the registered Clients from the
+  newest registration, then any other Hub on the broker (OQ 18).
+
+  C5: a registered Client that has never connected has a row from the
+  registry alone (§2.5 "registrováno — čeká na připojení klienta"); one whose
+  registration is incomplete carries the warning badge and, for an admin,
+  Retry — which posts into the Add-hub dialog, because a Retry mints a new
+  password and that screen is where it is shown.
+
+  One table, every row an SSE swap target "hub-{hostname}" (§6). The live
+  region carries `data-sse-refresh` like every other list, so the M1-H
+  broadcast-lag hint reloads it.
+
+  Honest about what the Hub has not reported: SN is
+  `system/info.hardware.serial` (§3.1, amendment 2026-09-28) and renders
+  "—" until a Hub that publishes it has, rather than a guess. Radio and
+  Gateway EUI come from `system/info.lorawan` (§12 A) and are "—" until the
+  first block arrives. The `radio.mode` chip is not built yet (§2.3).
+
+  Type (Server/Client) renders only when the registry holds a Client
+  (`show_type`): §2.2 says a homogeneous list renders nothing typed. There
+  is no pagination (§2.7: units of rows, never hundreds).
+
+  Toolbar is the shared partials/list_toolbar.html in its client-side mode,
+  like /nodes — fulltext over hostname and name, plus the Connection
+  filter; everything runs over the row's `data-*` attributes in
+  /static/js/portal-list.js.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+
+{% block title %}{{ "common.nav.hubs"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set hubs = hubs if hubs is defined else [] %}
+<div data-sse-refresh class="space-y-4">
+	{#- §2.6: "Přidat hub" in the page header, admin+, from the first build;
+	    its preconditions are explained inside the dialog, never by hiding
+	    the button. Not rendered without a Server to add to (§9). -#}
+
+	{% if not hubs %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.hubs.empty_body"|t }}</p>
+	</div>
+	{% else %}
+	<div data-list-key="hubs">
+		{% set list_key = "hubs" %}
+		{% set search_placeholder = "monitoring.hubs.search_placeholder"|t %}
+		{% set entity_label = "common.nav.hubs"|t %}
+		{#- Same reason as /nodes: #64's "Mimo meze" tile links
+		    `?oor=alarming`, and portal-list.js only seeds an option the
+		    select carries. -#}
+		{% set oor_alarming = true %}
+		{% set show_location = true %}
+		{% set show_gateway = false %}
+		{% set show_kind = false %}
+		{% set show_proto = false %}
+		{#- The unified device table, Hub columns (devices.hub.md, amendment
+		    2026-10-14). -#}
+		{% set columns = [
+			["type", "monitoring.hubs.column_type"|t, true],
+			["loc", "monitoring.dashboard.location_column"|t, true],
+			["overview", "monitoring.list.overview_column"|t, true],
+			["values", "monitoring.shared.value_column"|t, true],
+			["radio", "monitoring.hubs.column_radio"|t, true],
+			["seen", "monitoring.dashboard.last_activity_column"|t, false],
+			["eui", "monitoring.hubs.column_gateway_eui"|t, false],
+			["fw", "monitoring.list.column_version"|t, false],
+		] %}
+		{#- §2.6: "Add Hub", admin+, in the toolbar's action slot like Register
+		    Node / Add Beacon; not rendered without a Server to add to (§9). -#}
+		{% set action_label = "monitoring.hubs.add_hub_button"|t if add_hub else "" %}
+		{% set action_href = "/hubs/add" %}
+		{% include "partials/list_toolbar.html" %}
+
+		<div class="card-v1 mt-3">
+			<div class="relative w-full overflow-x-auto overflow-y-clip rounded-xl">
+				<table data-list-table class="w-full caption-bottom text-sm">
+					<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+						<tr>
+							{{ ui.sort_th("monitoring.list.item_column"|t, "name", "sticky left-0 z-30") }}
+							{{ ui.sort_th("monitoring.hubs.column_type"|t, "type", "", "type") }}
+							{{ ui.th("monitoring.dashboard.location_column"|t, "", "loc") }}
+							{{ ui.sort_th("monitoring.list.overview_column"|t, "seen", "", "overview") }}
+							{{ ui.th("monitoring.shared.value_column"|t, "", "values") }}
+							{{ ui.th("monitoring.hubs.column_radio"|t, "", "radio") }}
+							{{ ui.th("monitoring.dashboard.last_activity_column"|t, "hidden", "seen") }}
+							{{ ui.th("monitoring.hubs.column_gateway_eui"|t, "hidden", "eui") }}
+							{{ ui.sort_th("monitoring.list.column_version"|t, "fw", "hidden", "fw") }}
+							{#- View: permanent, no `data-column`. -#}
+							{{ ui.th("") }}
+						</tr>
+					</thead>
+					<tbody id="hub-rows">
+						<tr data-list-nomatch class="hidden">
+							<td colspan="10" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td>
+						</tr>
+						{% for h in hubs %}
+						{% include "partials/hub_row.html" %}
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+	{% endif %}
+</div>
+
+{% if add_hub %}{% include "partials/hub_add_dialog.html" %}{% endif %}
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

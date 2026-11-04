@@ -1,0 +1,6 @@
+board:
+  name: stm32wl5moc
+  full_name: STM32WL5MOC Module
+  vendor: st
+  socs:
+    - name: stm32wl55xx

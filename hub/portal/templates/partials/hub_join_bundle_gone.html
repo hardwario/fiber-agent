@@ -1,0 +1,29 @@
+{#
+  What POST …/cluster/clients/{client}/reveal answers when the token reveals
+  nothing (devices.hub.md §4 step 4, §8.4): the bundle was already fetched,
+  its 5 minutes passed, a Retry replaced it, or the token came from another
+  session (and is now burnt). The password exists nowhere, so the way on is
+  Retry, which rotates it.
+
+  Context: {
+    server, client: string,
+    other_session: bool
+  }
+#}
+{% import "partials/icons.html" as ic %}
+<div class="grid gap-2">
+	<div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+		<div>
+			<p class="font-medium">{{ "monitoring.hubs.bundle_gone_title"|t }}</p>
+			<p class="mt-1">{% if other_session %}{{ "monitoring.hubs.bundle_gone_other_session"|t }}{% else %}{{ "monitoring.hubs.bundle_gone_body"|t }}{% endif %}</p>
+			<p class="mt-1 text-muted-fg">{{ "monitoring.hubs.bundle_gone_retry"|t }}</p>
+		</div>
+	</div>
+	<div class="flex justify-end gap-2">
+		<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "common.actions.close"|t }}</button>
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm"
+			hx-post="/hubs/{{ server }}/cluster/clients/{{ client }}/retry" hx-target="#add-hub-body" hx-swap="innerHTML"
+			hx-disabled-elt="this">{{ "monitoring.hubs.retry_button"|t }}</button>
+	</div>
+</div>

@@ -1,0 +1,136 @@
+{#
+  One probe's window (monitoring.md §6): the chart with its range pills and
+  exports, the per-field aggregates and the event timeline with the manual
+  event form. Shared by pages/probe_detail.html (Node, Beacon) and
+  pages/hub_sensor.html (a wired line, devices.hub.md §3.2 amendment
+  2026-10-14), so the two cannot drift apart.
+
+  The events card is partials/probe_events.html, which pages/hub_sensor.html
+  includes on its own under the Channels card (ui_components.md §2).
+
+  Context: w = routes::probe_routes::ProbeWindowCtx. `w.page` is the page
+  the range pills and the event redirects return to; the event forms post
+  `hub`, since `probe:{line}` names no Hub.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+	{# --- Chart, its controls and the per-field aggregates (§6.1, §6.2) -- #}
+	<div class="card-v1">
+		<div class="p-4 flex flex-col gap-3">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				{#- Range pills are links: the range is the page's own state
+				    (`?range=`), so reload, bookmark and the back button all
+				    work without a line of JavaScript. -#}
+				<div class="pill-group" role="group" aria-label="{{ "monitoring.probe_detail.range_label"|t }}">
+					{% for r in w.ranges %}
+					<a href="{{ w.page }}?range={{ r }}"
+						class="pill {% if r == w.range %}is-active{% endif %}"
+						{% if r == w.range %}aria-current="true"{% endif %}>
+						{{ ("monitoring.probe_detail.range_" ~ r)|t }}
+					</a>
+					{% endfor %}
+				</div>
+
+				<div class="flex flex-wrap items-center gap-2">
+					{# Default off, remembered per viewer in localStorage (§6.3). #}
+					<label class="flex items-center gap-1.5 text-sm cursor-pointer">
+						<input type="checkbox" id="probe-events-toggle" class="checkbox-v1">
+						{{ "monitoring.probe_detail.events_in_chart"|t }}
+					</label>
+
+					<a class="btn-v1 btn-v1-outline btn-v1-sm gap-1" href="{{ w.csv_href }}">
+						{{ ic.icon("download", "h-4 w-4") }}{{ "monitoring.probe_detail.export_csv"|t }}
+					</a>
+					{# PNG is client-side ECharts `getDataURL`, always in the light
+					   theme (§6.4, decision 2026-09-01) — the filename is decided
+					   server-side so the date and the range in it cannot disagree
+					   with the data. #}
+					<button type="button" id="probe-png" class="btn-v1 btn-v1-outline btn-v1-sm gap-1"
+						data-filename="{{ w.png_filename }}">
+						{{ ic.icon("chart-line", "h-4 w-4") }}{{ "monitoring.probe_detail.export_png"|t }}
+					</button>
+				</div>
+			</div>
+
+			<script id="probe-chart-config" type="application/json">{{ w.chart_config|safe }}</script>
+			<div id="probe-chart" class="chart-island w-full h-[22rem]"
+				data-chart-config="probe-chart-config" data-chart-empty="probe-chart-empty"
+				data-chart-events="0"></div>
+			<div id="probe-chart-empty" class="hidden h-[22rem] items-center justify-center text-sm text-muted-fg">
+				{{ "monitoring.probe_detail.no_data"|t }}
+			</div>
+
+			{# ---- Aggregates: one line per field (§6.2) ------------------ #}
+			<div class="flex flex-col gap-1 border-t border-base-300 pt-3">
+				{% for f in w.fields %}
+				<div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm tabular-nums">
+					<span class="inline-flex items-center gap-1 font-medium" style="color: {{ f.color }}">
+						{% if f.unit == "°C" %}{{ ic.icon("thermometer", "h-4 w-4") }}
+						{% elif f.unit == "%" %}{{ ic.icon("droplet", "h-4 w-4") }}{% endif %}
+						{{ f.label|field_label(f.field) }}
+					</span>
+					{% if f.count %}
+					<span>{{ f.count }} {{ "monitoring.probe_detail.samples"|t }}</span>
+					<span class="text-muted-fg">·</span>
+					<span>{{ "monitoring.probe_detail.min"|t }} {{ f.min }}</span>
+					<span>{{ "monitoring.probe_detail.max"|t }} {{ f.max }}</span>
+					<span>{{ "monitoring.probe_detail.avg"|t }} {{ f.avg }}</span>
+					<span>{{ "monitoring.probe_detail.median"|t }} {{ f.median }} {{ f.unit }}</span>
+					{% else %}
+					<span class="text-muted-fg">{{ "monitoring.probe_detail.no_data"|t }}</span>
+					{% endif %}
+				</div>
+				{% else %}
+				<p class="text-sm text-muted-fg">{{ "monitoring.probe_detail.no_data"|t }}</p>
+				{% endfor %}
+			</div>
+		</div>
+	</div>
+
+	{% include "partials/probe_events.html" %}
+
+<script>
+	(function () {
+		var EVENTS_KEY = 'proximos.probe.eventsInChart';
+		var island = document.getElementById('probe-chart');
+		var toggle = document.getElementById('probe-events-toggle');
+		var wanted = false;
+		try { wanted = localStorage.getItem(EVENTS_KEY) === '1'; } catch (err) { /* private mode */ }
+
+		// Before portal-charts.js runs (it is deferred, this is not), so a
+		// viewer who left the toggle on never sees one frame without the
+		// event marklines.
+		if (island) island.dataset.chartEvents = wanted ? '1' : '0';
+		if (toggle) {
+			toggle.checked = wanted;
+			toggle.addEventListener('change', function () {
+				try { localStorage.setItem(EVENTS_KEY, toggle.checked ? '1' : '0'); } catch (err) { /* private mode */ }
+				if (!island) return;
+				island.dataset.chartEvents = toggle.checked ? '1' : '0';
+				island.dispatchEvent(new CustomEvent('portal-chart:reconfigure', { bubbles: true }));
+			});
+		}
+
+		// PNG: client-side, ALWAYS light (§6.4, decision 2026-09-01) — a
+		// report or a printout has to be readable whatever theme the
+		// operator runs, and that means the axis text and grid lines too.
+		// The capture belongs to portal-charts.js, which owns the palette
+		// and the fetched series; this only asks for it, and names the file
+		// the server decided.
+		document.addEventListener('click', function (ev) {
+			var button = ev.target.closest('#probe-png');
+			if (!button || !island) return;
+			island.dispatchEvent(new CustomEvent('portal-chart:png', {
+				detail: { filename: button.dataset.filename || 'probe.png' },
+			}));
+		});
+
+	})();
+</script>
+
+{# Chart-only deps, exactly as pages/history.html loads them. Order matters —
+   both are `defer`, so they run in document order before DOMContentLoaded,
+   but echarts.min.js must define `window.echarts` before portal-charts.js
+   reads it. #}
+<script src="/static/js/echarts.min.js?v={{ asset_v }}" defer></script>
+<script src="/static/js/portal-charts.js?v={{ asset_v }}" defer></script>

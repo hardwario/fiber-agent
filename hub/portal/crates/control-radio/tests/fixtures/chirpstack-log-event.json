@@ -1,0 +1,23 @@
+{
+  "time": "2026-10-13T12:08:18.412345678+00:00",
+  "deviceInfo": {
+    "tenantId": "52f14cd4-c6f1-4fbd-8f87-4025e1d49242",
+    "tenantName": "ChirpStack",
+    "applicationId": "4ad6e8a1-2a8b-4f0b-9a34-6d1e25d9c0a1",
+    "applicationName": "proximos",
+    "deviceProfileId": "0f9a1c2e-3b4d-4e5f-8a6b-7c8d9e0f1a2b",
+    "deviceProfileName": "sticker-eu868",
+    "deviceName": "sticker-5132",
+    "devEui": "70b3d57ed80051b2",
+    "deviceClassEnabled": "CLASS_A",
+    "tags": {}
+  },
+  "level": "ERROR",
+  "code": "DOWNLINK_PAYLOAD_SIZE",
+  "description": "Device queue-item discarded because it exceeds the max. payload size",
+  "context": {
+    "max_payload_size": "51",
+    "item_size": "88",
+    "queue_item_id": "1b0d7f4e-63a2-4c55-9a0e-2f3b7c9d8e11"
+  }
+}

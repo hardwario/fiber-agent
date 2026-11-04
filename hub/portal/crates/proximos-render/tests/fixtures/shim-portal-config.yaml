@@ -1,0 +1,13 @@
+# Rendered by proximos-render.sh (TRANSITIONAL SHIM — see the header comment
+# in that script and in its .bb). Regenerated on every boot; edits made
+# directly to this file are lost on the next render. Put per-device
+# overrides in /data/portal/config.yaml instead.
+bind_addr: "127.0.0.1:8088"
+mqtt_host: "localhost"
+mqtt_port: 1883
+topic_prefix: "fiber"
+data_dir: "/data/portal"
+templates_dir: "/usr/share/fiber-portal/templates"
+static_dir: "/usr/share/fiber-portal/static"
+db_key: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+cookie_secure: true

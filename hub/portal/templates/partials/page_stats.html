@@ -1,0 +1,72 @@
+{#
+  The metric row above a page. WHICH metrics is the page's business, not
+  this file's: `render::StatsScope` picks them from `nav_active` and
+  `render::page_stats_ctx` builds them, tone and link included. A page the
+  row says nothing about (History, settings, the audit log) gets no tiles and
+  this renders nothing.
+
+  Four tiles per scope since #64, whatever the scope: the total of the page's
+  device type, Online, Mimo meze / Out of range, Poruchy / Faults. The old
+  fleet-wide quartet (total probes / online / with alarms / critical) is gone
+  — the separate Critical tile with it, because severity is the out-of-range
+  tile's tone and its click-through covers both classes.
+
+  Context: `stats` = { connected: bool, tiles: [{ label, value, icon, tone,
+  href }] }, merged in centrally by `routes::render()` /
+  `http::dashboard_handler` — only `/alarms` passes its own, because its
+  numbers come from the event log. Read defensively so a render path that has
+  not been through those (a bare fragment, a test) simply omits the row.
+
+  `label` is an i18n key applied with `|t` here, so the static-key sweep
+  cannot see these: `render::tests::page_stats_keys_exist` checks them.
+
+  The connection pill and Refresh that used to head this row now live in
+  `layout/topbar.html` — they are about the Hub link, not the page.
+
+  Tile tone follows the value, as in v1: online green once every entity is
+  online, out of range amber above zero and red once any of it is Critical,
+  faults amber-red above zero, neutral otherwise.
+
+  The two value tiles link to a filter of the page they sit on, NOT to
+  /alarms: `?status=alarming` on Monitoring, `?oor=alarming` on the three
+  device lists, and `?fault=any` for the Faults tile everywhere. These
+  numbers are live state (`dominant_alarm_state` in the last aggregation
+  window, the offline detector's verdict); /alarms lists `alarm_events` rows,
+  which only exist if the portal happened to be connected when the Hub
+  published the non-retained transition. Linking a state count at an event
+  log let the tile say "1" and the page it opened say "none" — see
+  `render::page_stats_ctx`.
+
+  `?fault=any` is #64 task 4's open question, decided as the honest target:
+  it filters the very rows that were counted, on the page the operator is
+  already on (monitoring.md §2.1, "na Monitoringu se neodchází na jiný
+  pohled"). Faults have no toolbar control of their own by design (§2.2) —
+  the select `partials/list_toolbar.html` renders for them stays hidden and
+  exists only so the flag gets the URL, chip and Clear-all machinery every
+  other filter has.
+
+  Live (UX-020, monitoring.md §2.1 "Živě přes SSE"): a row with
+  `stats.refresh` refetches itself from that URL (`GET /stats/{scope}`,
+  which renders this same file) on the SSE `page-stats` nudge. `sse.rs`
+  sends that nudge at most once per `STATS_WINDOW` per tab, so a burst of
+  readings costs one recount, not one per row (devices.node.md §2). The
+  wrapper is the swap target; the tiles and their links come back exactly
+  as a page load draws them.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% set stats = stats if stats is defined else none %}
+{#- `stats_oob`: a fragment answering the user's own action (a user created,
+    alarms acknowledged) re-sends the row out of band, so the tiles agree
+    with the list it just re-rendered. -#}
+{% if stats and stats.tiles %}
+{#- One element carries the id for both refresh paths: the SSE nudge
+    refetches it (`stats.refresh`), a user action re-sends it out of band. -#}
+<div id="page-stats"{% if stats.refresh %} hx-get="{{ stats.refresh }}" hx-trigger="sse:page-stats" hx-swap="outerHTML"{% endif %}{% if stats_oob is defined and stats_oob %} hx-swap-oob="true"{% endif %}>
+{% call ui.stat_row() %}
+	{% for tile in stats.tiles %}
+	{{ ui.stat_tile(tile.label|t, tile.value, tile.icon, tile.tone, tile.href, tile.title|t if tile.title else none) }}
+	{% endfor %}
+{% endcall %}
+</div>
+{% endif %}

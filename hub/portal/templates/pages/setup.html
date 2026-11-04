@@ -1,0 +1,99 @@
+{#
+  First-run setup page (M2-T context contract, P1 relayout).
+
+  Context: { error: string|none }.
+
+  Only reachable while the instance has no users yet (server-side gate, not a
+  template concern). Creates the initial superuser account. Plain POST to
+  /setup; a successful submit logs the new superuser in and redirects
+  (mirrors /login's flow), a failed one re-renders this page. `error` is an
+  `auth.errors.*` slug (`AuthError::slug`, or `password_mismatch` for the
+  form-level check), not a message.
+
+  No transport choice: the radio mode is set at provisioning, from the Manager
+  app over BLE (decision #44, GitLab #154).
+
+  Same split layout as `pages/login.html` — v1 serves setup and login from
+  one component, so they share the hero.
+#}
+{% extends "layout/bare.html" %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "auth.setup.heading"|t }} {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="min-h-screen grid lg:grid-cols-2">
+	<div class="hidden lg:flex flex-col justify-between p-12 bg-gradient-to-br from-primary/5 via-accent/5 to-base-100 relative overflow-hidden">
+		<div class="absolute inset-0 opacity-30" aria-hidden="true">
+			<div class="absolute top-20 left-20 w-72 h-72 bg-primary/20 rounded-full blur-3xl"></div>
+			<div class="absolute bottom-20 right-20 w-96 h-96 bg-accent/20 rounded-full blur-3xl"></div>
+		</div>
+
+		<div class="relative z-10">
+			<img src="/static/logo.svg" alt="{{ brand.product }}" class="h-10 w-auto">
+		</div>
+
+		<div class="relative z-10 space-y-6">
+			<h1 class="text-4xl xl:text-5xl font-bold tracking-tight leading-tight">
+				{{ "auth.login.hero_title"|t }}<br>
+				<span class="text-gradient">{{ "auth.login.hero_title_highlight"|t }}</span>
+			</h1>
+			<p class="text-lg text-muted-fg max-w-md">{{ "auth.login.hero_body"|t }}</p>
+		</div>
+
+		<div class="relative z-10 text-sm text-muted-fg">{{ "auth.login.footer_tagline"|t }}</div>
+	</div>
+
+	<div class="flex items-center justify-center p-6 lg:p-12">
+		<div class="w-full max-w-md">
+			<div class="lg:hidden flex items-center justify-center mb-8">
+				<img src="/static/logo.svg" alt="{{ brand.product }}" class="h-10 w-auto">
+			</div>
+
+			<div class="card-v1 p-6">
+				<h2 class="text-2xl font-bold">{{ "auth.setup.heading"|t }} {{ brand.product }}</h2>
+				<p class="text-sm text-muted-fg mt-1">{{ "auth.setup.subtitle"|t }}</p>
+				<p class="text-sm text-muted-fg mt-2">{{ "auth.setup.intro"|t }}</p>
+
+				{% if error %}
+				<div role="alert" class="alert alert-error mt-4">
+					<span>{{ ("auth.errors." ~ error)|t }}</span>
+				</div>
+				{% endif %}
+
+				<form method="post" action="/setup" class="space-y-4 mt-6">
+					<div class="space-y-2">
+						<label for="setup-username" class="text-sm font-medium">{{ "auth.fields.username"|t }}</label>
+						<div class="relative">
+							{{ ic.icon("user", "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-fg pointer-events-none") }}
+							<input id="setup-username" type="text" name="username" class="input-v1 pl-10"
+								autocomplete="username" required autofocus>
+						</div>
+					</div>
+					<div class="space-y-2">
+						<label for="setup-full-name" class="text-sm font-medium">{{ "auth.fields.full_name_optional"|t }}</label>
+						<input id="setup-full-name" type="text" name="full_name" class="input-v1" autocomplete="name">
+					</div>
+					<div class="space-y-2">
+						<label for="setup-password" class="text-sm font-medium">{{ "auth.fields.password"|t }}</label>
+						<div class="relative">
+							{{ ic.icon("lock", "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-fg pointer-events-none") }}
+							<input id="setup-password" type="password" name="password" class="input-v1 pl-10"
+								autocomplete="new-password" required>
+						</div>
+					</div>
+					<div class="space-y-2">
+						<label for="setup-password-confirm" class="text-sm font-medium">{{ "auth.fields.confirm_password"|t }}</label>
+						<div class="relative">
+							{{ ic.icon("lock", "absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-fg pointer-events-none") }}
+							<input id="setup-password-confirm" type="password" name="password_confirm" class="input-v1 pl-10"
+								autocomplete="new-password" required>
+						</div>
+					</div>
+					<button type="submit" class="btn-v1 btn-v1-primary w-full h-11">{{ "auth.setup.submit"|t }}</button>
+				</form>
+			</div>
+		</div>
+	</div>
+</div>
+{% endblock %}

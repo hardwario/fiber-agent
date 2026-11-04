@@ -1,0 +1,68 @@
+{#
+  The completion screen of Add hub / Retry — plan/portal/devices.hub.md §4
+  step 4, §8.4; plan/control/cluster.md §8 step 1 (C5).
+
+  Context: {
+    server, client: string,             -- hostnames
+    host: string,                       -- "<server>.local", the bundle's `h`
+    port: int,                          -- 8883
+    peer_username: string,              -- "peer-<client>"
+    fingerprint: string,                -- the bundle's `f`: SHA-256 of the CA
+                                        -- as GET /connection/ca serves it
+    gateway: "ok"|"skipped",            -- the gateway effect
+    token: string,                      -- the one-time reveal token
+    rotated: bool                       -- a Retry: the previous password is dead
+  }
+
+  No password, no bundle text and no QR code: they are in this Server's
+  memory only (cluster::RevealVault), for one fetch within 5 minutes. "Zobrazit"
+  posts the token to …/reveal, which writes the `hub_peer_secret_revealed`
+  audit row and answers with partials/hub_join_bundle_revealed.html, once;
+  any later or foreign fetch answers partials/hub_join_bundle_gone.html.
+  Closing the dialog reloads the page (`data-reload-on-close`,
+  hub_add_dialog.html).
+#}
+{% import "partials/icons.html" as ic %}
+<div id="join-bundle" data-reload-on-close class="grid gap-3">
+	<div class="flex items-start gap-2 rounded-lg border border-success/40 bg-success/5 px-3 py-2 text-sm">
+		{{ ic.icon("circle-check", "h-4 w-4 shrink-0 mt-0.5 text-success") }}
+		<div>
+			<p class="font-medium">{{ "monitoring.hubs.bundle_registered"|t|replace("{client}", client) }}</p>
+			<p class="text-muted-fg">{{ ("monitoring.hubs.bundle_gateway_" ~ gateway)|t }}</p>
+		</div>
+	</div>
+
+	<p class="text-sm">{{ "monitoring.hubs.bundle_instructions"|t|replace("{client}", client) }}</p>
+
+	<div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+		<div>
+			<p>{{ "monitoring.hubs.bundle_once"|t }}</p>
+			{% if rotated %}<p class="mt-1">{{ "monitoring.hubs.bundle_rotated"|t }}</p>{% endif %}
+		</div>
+	</div>
+
+	<dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
+		<dt class="text-muted-fg">{{ "monitoring.hubs.bundle_server_host"|t }}</dt>
+		<dd class="font-mono text-xs break-all">{{ host }}</dd>
+		<dt class="text-muted-fg">{{ "monitoring.hubs.bundle_port"|t }}</dt>
+		<dd class="font-mono text-xs">{{ port }}</dd>
+		<dt class="text-muted-fg">{{ "monitoring.hubs.bundle_username"|t }}</dt>
+		<dd class="font-mono text-xs break-all">{{ peer_username }}</dd>
+		<dt class="text-muted-fg">{{ "monitoring.hubs.bundle_fingerprint"|t }}</dt>
+		<dd class="font-mono text-xs break-all">{{ fingerprint }}</dd>
+	</dl>
+
+	<div id="join-bundle-secret" class="grid gap-2">
+		<p class="text-sm text-muted-fg">{{ "monitoring.hubs.bundle_reveal_hint"|t }}</p>
+		<form class="flex flex-wrap items-center justify-end gap-2"
+			hx-post="/hubs/{{ server }}/cluster/clients/{{ client }}/reveal"
+			hx-target="#join-bundle-secret" hx-swap="innerHTML">
+			<input type="hidden" name="token" value="{{ token }}">
+			<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm" hx-disabled-elt="this">
+				{{ ic.icon("eye", "h-4 w-4") }}{{ "monitoring.hubs.bundle_reveal"|t }}
+			</button>
+			<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "monitoring.hubs.bundle_done"|t }}</button>
+		</form>
+	</div>
+</div>

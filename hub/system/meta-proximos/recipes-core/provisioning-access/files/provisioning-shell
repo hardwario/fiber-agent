@@ -1,0 +1,50 @@
+#!/bin/sh
+# The provisioning account's only command (sshd ForceCommand, 50-provisioning.conf;
+# plan/system/factory_test.md §4.1). SSH_ORIGINAL_COMMAND is matched word by word
+# against the allowed commands; nothing of it reaches a shell or fiberctl unchecked.
+# A factory test note comes on stdin, never on the command line.
+set -f
+set -u
+
+SOCKET=/run/proximos-factory/factory.sock
+
+refuse() {
+    echo "provisioning-shell: not allowed: ${SSH_ORIGINAL_COMMAND:-(no command)}" >&2
+    exit 126
+}
+
+boot_check() {
+    echo "hostname=$(hostname)"
+    echo "version=$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"')"
+    echo "uptime_s=$(cut -d. -f1 /proc/uptime)"
+    echo "system=$(systemctl is-system-running 2>/dev/null)"
+    echo "failed=$(systemctl --failed --no-legend --plain 2>/dev/null | cut -d' ' -f1 | tr '\n' ' ')"
+    echo "slot=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^rauc\.slot=//p')"
+    for u in fiber.service proximos-control.service qbee-agent.service; do
+        echo "unit.$u=$(systemctl is-active "$u" 2>/dev/null)"
+    done
+}
+
+# shellcheck disable=SC2086 # split into words on purpose; globbing is off (set -f)
+set -- ${SSH_ORIGINAL_COMMAND:-}
+case "$#:${1:-}:${2:-}" in
+    2:factory-test:run | 2:factory-test:status | 2:factory-test:stop)
+        exec fiberctl --socket "$SOCKET" factory-test "$2"
+        ;;
+    2:factory-test:fail)
+        IFS= read -r note || true
+        if [ -n "$note" ]; then
+            exec fiberctl --socket "$SOCKET" factory-test fail --note "$note"
+        fi
+        exec fiberctl --socket "$SOCKET" factory-test fail
+        ;;
+    1:boot-check:)
+        boot_check
+        ;;
+    1:forget-key:)
+        : > "$HOME/.ssh/authorized_keys"
+        ;;
+    *)
+        refuse
+        ;;
+esac

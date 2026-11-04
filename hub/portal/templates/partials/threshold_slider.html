@@ -1,0 +1,188 @@
+{#
+  The interactive four-bound threshold control — v1's ThresholdSlider
+  (viewer/frontend/components/config/ThresholdSlider.tsx) as server-rendered
+  markup over an Alpine component (static/js/portal-thresholds.js). Used by
+  the one limits editor (partials/limits_editor.html), which can load another
+  sensor into it (`load`).
+
+  Context (all optional, read defensively like the forms that include it):
+    t              { critical_low, warning_low, warning_high, critical_high }
+                   (each float|none) — the same dict both forms already build
+    slider_unit    "°C" | "%" | … — picks the track range (portal-thresholds.js
+                   TRACK / INPUT) and suffixes every number
+    slider_value   float|none — the sensor's current reading, drawn as v1's
+                   black marker so the bounds are set against something real
+    slider_id      string — unique on the page; the inputs' `id`, and what
+                   their labels point at. The wired form renders one of these
+                   per sensor ROW, so a shared id would mislabel every input
+                   but the first
+    slider_input_class  defaults to "input input-sm", what both existing
+                   threshold forms use
+    slider_prefix  prepended to each input's `name`. Empty for the two
+                   single-sensor forms, whose handlers expect the bare bound
+                   names; the bulk dialog carries TWO of these sliders in one
+                   form and prefixes them "t_" and "h_"
+    slider_seed    [critical_low, warning_low, warning_high, critical_high]
+                   (each float|none) — what a band with all four bounds blank
+                   starts from. Defaults to the configured default band of the
+                   unit's quantity (`threshold_seed`, threshold_defaults.md D5);
+                   none for a unit that has none, which keeps the JS spread
+    slider_hysteresis  float — when given, a fifth input "Hystereze" (name
+                   `{slider_prefix}hysteresis`) under the four bounds,
+                   pre-filled with it: the field's own value or the default of
+                   its quantity (plan/control/alarm_hysteresis.md §5). One
+                   value for all four bounds; ≥ 0, 0 is off. Left out, no input
+
+  Layout, top to bottom, as v1 has it: a label row (the four values, nudged
+  apart, a hairline back to the handle when moved), the track with the
+  reading's marker and the four handle bars, the track's range under its two
+  ends, then the four inputs.
+
+  The four <input>s carry their real `name` attributes and are rendered
+  server-side, NOT by x-for: without Alpine (or before it boots) the form
+  still submits the same six/four fields, it just has no track to drag. That
+  is also why `value` is a plain attribute and `x-model` only takes over once
+  Alpine is up.
+
+  All geometry that depends on data — handle and label positions, the band
+  gradient, the marker — is inline `style`, bound by Alpine. Tailwind here is
+  only for the static chrome. Two reasons: it is what the numbers demand, and
+  static/css/app.css is a COMMITTED build (`make css`) that carries only the
+  classes present in templates/ when it was last built. A new utility class
+  in this file does nothing until that rebuild lands, which is how the first
+  cut of this partial shipped a track with no width.
+
+  **An element with `:style` carries NO static `style` attribute.** Alpine's
+  string form of `:style` is `setAttribute('style', value)` — it REPLACES the
+  attribute rather than merging into it (see `setStylesFromString` in
+  static/js/alpine.min.js). The track had `style="height:1.5rem"` beside
+  `:style="background:…"` and the gradient painted over a box 0px tall, which
+  is the invisible bar reported on 2026-09-14. Every static declaration on
+  such an element belongs inside the same bound expression.
+
+  Blank means unset, as everywhere else in the threshold path. A blank bound
+  is drawn as a zero-width band at the outer end of its side (see `eff` in
+  the JS) and its handle is faded, rather than inventing a number for it.
+#}
+{% set t = t if t is defined and t is not none else {
+	"critical_low": none, "warning_low": none, "warning_high": none, "critical_high": none } %}
+{% set slider_unit = slider_unit if slider_unit is defined and slider_unit else "" %}
+{% set slider_value = slider_value if slider_value is defined else none %}
+{% set slider_id = slider_id if slider_id is defined else "thr" %}
+{% set slider_input_class = slider_input_class if slider_input_class is defined else "input input-sm" %}
+{% set slider_prefix = slider_prefix if slider_prefix is defined else "" %}
+{% set slider_seed = slider_seed if slider_seed is defined else threshold_seed(slider_unit) %}
+{% set bounds = [
+	("critical_low",  "monitoring.threshold.critical_low"|t,  "bg-critical", "text-critical"),
+	("warning_low",   "monitoring.threshold.warning_low"|t,   "bg-warning",  "text-warning"),
+	("warning_high",  "monitoring.threshold.warning_high"|t,  "bg-warning",  "text-warning"),
+	("critical_high", "monitoring.threshold.critical_high"|t, "bg-critical", "text-critical"),
+] %}
+{% import "partials/icons.html" as ic %}
+<div class="flex flex-col"
+	x-data='thresholdSlider({
+		bounds: {
+			critical_low: "{{ t.critical_low if t.critical_low is not none else "" }}",
+			warning_low: "{{ t.warning_low if t.warning_low is not none else "" }}",
+			warning_high: "{{ t.warning_high if t.warning_high is not none else "" }}",
+			critical_high: "{{ t.critical_high if t.critical_high is not none else "" }}"
+		},
+		unit: "{{ slider_unit }}",
+		value: {{ slider_value if slider_value is not none else "null" }},
+		seed: {{ slider_seed | tojson }}
+	})'
+	@pointermove.window="move($event)" @pointerup.window="end()" @pointercancel.window="end()">
+
+	{#- Label row. Each label sits at its nudged x; the hairline below it runs
+	    back to where the handle really is when the two differ. -#}
+	<div class="relative w-full select-none" style="height:2.5rem">
+		{% for key, label, marker, tone in bounds %}
+		<div class="absolute top-0" :style="`left:${labelPx('{{ key }}')}px; transform:translateX(-50%)`">
+			<svg class="absolute pointer-events-none" style="top:18px; left:50%; overflow:visible" width="1" height="16"
+				x-show="Math.abs(labelShift('{{ key }}')) > 1">
+				<line x1="0" y1="0" :x2="labelShift('{{ key }}')" y2="16" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+			</svg>
+			<span class="inline-flex items-center gap-0.5 text-xs font-medium whitespace-nowrap tabular-nums {{ tone }}"
+				:class="num('{{ key }}') === null ? 'opacity-50' : ''">
+				<span x-show="keyOverflow('{{ key }}') === 'below'">{{ ic.icon("chevrons-left", "h-3 w-3 shrink-0") }}</span>
+				<span x-text="labelText('{{ key }}')"></span>
+				<span x-show="keyOverflow('{{ key }}') === 'above'">{{ ic.icon("chevrons-right", "h-3 w-3 shrink-0") }}</span>
+			</span>
+		</div>
+		{% endfor %}
+	</div>
+
+	{#- The track. Every pointer interaction lands here; the handles below
+	    are visual only (`pointer-events-none`). -#}
+	<div class="relative w-full rounded-full cursor-pointer touch-none select-none"
+		x-ref="track" :style="`height:1.5rem; background:${gradient()}`"
+		@pointerdown.prevent="start($event)">
+
+		{#- The current reading: a hairline across the bar, a dot above it, and
+		    v1's black value pill under it. Off-track readings pin to the edge
+		    with a chevron and anchor the pill inward so it stays on screen. -#}
+		<template x-if="value !== null">
+			<div class="absolute top-0 bottom-0 pointer-events-none"
+				:style="`left:${valuePct()}%; width:2px; background:var(--color-base-content); opacity:0.8; z-index:20`">
+				<div class="absolute flex items-center gap-0.5" style="top:-14px; left:50%; transform:translateX(-50%)">
+					<span x-show="valueOverflow() === 'below'" class="text-base-content">{{ ic.icon("chevrons-left", "h-3.5 w-3.5 shrink-0") }}</span>
+					<span class="block rounded-full bg-base-content border-2 border-base-100 shadow-sm" style="width:12px; height:12px"></span>
+					<span x-show="valueOverflow() === 'above'" class="text-base-content">{{ ic.icon("chevrons-right", "h-3.5 w-3.5 shrink-0") }}</span>
+				</div>
+				<div class="absolute rounded px-1 text-xs whitespace-nowrap tabular-nums bg-base-content text-base-100"
+					:style="'top:28px; ' + (valueOverflow() === 'below' ? 'left:0' : (valueOverflow() === 'above' ? 'right:0' : 'left:50%; transform:translateX(-50%)'))"
+					x-text="fmt(value)"></div>
+			</div>
+		</template>
+
+		{#- Handle bars. Keyboard focus lands on them (they are the ARIA
+		    sliders), the pointer never does. A pinned handle sits flush
+		    inside its edge instead of hanging half off the bar, with the
+		    chevron on its outward side; a blank one is faded. -#}
+		{% for key, label, marker, tone in bounds %}
+		<div class="absolute top-1/2 flex items-center pointer-events-none"
+			:style="`left:${pct('{{ key }}')}%; z-index:10; transform:translate(${keyOverflow('{{ key }}') === 'below' ? '0' : (keyOverflow('{{ key }}') === 'above' ? '-100%' : '-50%')}, -50%)`">
+			<span x-show="keyOverflow('{{ key }}') === 'below'" class="{{ tone }}">{{ ic.icon("chevrons-left", "h-4 w-4 shrink-0") }}</span>
+			<button type="button" role="slider" tabindex="0"
+				class="rounded-sm border border-base-100 shadow-sm transition-transform pointer-events-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary {{ marker }}"
+				style="width:10px; height:2.5rem"
+				:class="(dragging === '{{ key }}' ? 'scale-x-150 shadow-lg' : '') + (num('{{ key }}') === null ? ' opacity-40' : '')"
+				:aria-valuenow="num('{{ key }}')" :aria-valuetext="labelText('{{ key }}')"
+				:aria-valuemin="inLo" :aria-valuemax="inHi"
+				aria-label="{{ label }}"
+				@keydown="key($event, '{{ key }}')"></button>
+			<span x-show="keyOverflow('{{ key }}') === 'above'" class="{{ tone }}">{{ ic.icon("chevrons-right", "h-4 w-4 shrink-0") }}</span>
+		</div>
+		{% endfor %}
+
+		{#- The track's range, under its two ends. -#}
+		<div class="absolute left-0 text-xs text-muted-fg tabular-nums" style="bottom:-1.125rem" x-text="fmt(lo)"></div>
+		<div class="absolute right-0 text-xs text-muted-fg tabular-nums" style="bottom:-1.125rem" x-text="fmt(hi)"></div>
+	</div>
+
+	{#- Room for the pill and the range markers, then the inputs. -#}
+	<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-12">
+		{% for key, label, marker, tone in bounds %}
+		<div class="flex flex-col gap-1">
+			<label class="flex items-center gap-1.5 text-[11px] font-medium text-muted-fg" for="{{ slider_id }}-{{ key }}">
+				<span class="w-2 h-2 rounded-full shrink-0 {{ marker }}"></span>{{ label }}
+			</label>
+			<input type="number" step="0.1" inputmode="decimal" id="{{ slider_id }}-{{ key }}" name="{{ slider_prefix }}{{ key }}"
+				class="{{ slider_input_class }} w-full tabular-nums" placeholder="—"
+				x-model="b.{{ key }}"
+				{% if t[key] is not none %}value="{{ t[key] }}"{% endif %}>
+		</div>
+		{% endfor %}
+	</div>
+	{% if slider_hysteresis is defined and slider_hysteresis is not none %}
+	<div class="flex flex-col gap-1 mt-2 max-w-48">
+		<label class="text-[11px] font-medium text-muted-fg" for="{{ slider_id }}-hysteresis">
+			{{ "monitoring.threshold.hysteresis"|t }}{% if slider_unit %} ({{ slider_unit }}){% endif %}
+		</label>
+		<input type="number" step="0.1" min="0" inputmode="decimal" id="{{ slider_id }}-hysteresis"
+			name="{{ slider_prefix }}hysteresis" class="{{ slider_input_class }} w-full tabular-nums"
+			value="{{ slider_hysteresis }}">
+	</div>
+	<p class="text-xs text-muted-fg mt-1">{{ "monitoring.threshold.hysteresis_hint"|t }}</p>
+	{% endif %}
+</div>

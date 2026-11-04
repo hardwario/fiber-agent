@@ -1,0 +1,50 @@
+{#
+  One group's rows as a table — the `table-detailed` layout, the only
+  table since the simplified one was removed (monitoring.md, amendments
+  2026-10-15):
+
+    stripe · Sensor · Channel · Value · Limits · Min/max 24 h · Data —
+    one <tbody> per sensor, one <tr> per channel (variant A)
+
+  Context:
+    rows        [ monitoring::GroupRowCtx, ... ]
+
+  A row is one ENTITY and carries its value cards in `r.fields`: one for a
+  wired probe, one per selected field for a Node or Beacon. That is why the
+  sensor block spans one row per field —
+  repeating a Node's name once per field is what v1 stopped doing when it
+  merged those rows back together.
+
+  Since MB2 the rows ARE SSE swap targets, and the table shape lives in
+  `partials/group_row.html` — this file is the table chrome around them. The
+  objection recorded here before still stands and is what shaped the design:
+  the device partials (sensor_card/node_card/beacon_card) render a fixed
+  seven-column shape that is not this one, and a broadcast SSE fragment is
+  one payload for every viewer while this page has four layouts chosen per
+  user. MB2 inverts that instead of working around it — the SSE frame carries
+  an id and no markup, and each browser refetches
+  `/monitoring/groups/{id}/rows/{token}`, which renders in *that* session's
+  view mode.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+<table class="w-full caption-bottom text-sm" data-mon-table>
+	<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+		<tr>
+			{#- Detailed, variant A (amendment 2026-10-15): sorting moves whole
+			    sensor blocks (one <tbody> each), see portal-list.js. -#}
+			<th class="w-1 p-0" aria-hidden="true"></th>
+			{{ ui.sort_th("monitoring.groups.col_sensor"|t, "name") }}
+			{{ ui.sort_th("monitoring.groups.col_channel"|t, "channel") }}
+			{{ ui.sort_th("monitoring.shared.value_column"|t, "value") }}
+			{{ ui.th("monitoring.groups.col_limits"|t) }}
+			{{ ui.sort_th("monitoring.groups.col_minmax"|t, "minmax") }}
+			{{ ui.sort_th("monitoring.groups.col_data"|t, "age") }}
+		</tr>
+	</thead>
+		{% for r in rows %}
+		{% include "partials/group_row.html" %}
+		{% endfor %}
+</table>
+{% include "partials/age_tick.html" %}

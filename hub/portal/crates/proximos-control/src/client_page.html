@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="cs" data-theme="@BRAND_THEME@">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex">
+<title>@BRAND_HUB@</title>
+<!-- Written by proximos-control on a cluster Client (plan/decisions.md #46). Served by nginx
+     from /run/proximos/client-page at /_hub/; every URL here is absolute under /_hub/, because
+     this page is also the fallback for any other path. The left half is templates/pages/login.html's
+     hero markup, styled by the portal's own app.css (assets/css/app.css lists this file as a
+     Tailwind source); keep the two in step. The at-sign BRAND tokens are the build's brand, filled
+     in by client_page.rs (plan/portal/branding.md §3). -->
+<link rel="stylesheet" href="/_hub/app.css">
+</head>
+<body class="min-h-screen bg-base-100 text-base-content">
+<div class="min-h-screen grid lg:grid-cols-2">
+	<div class="hidden lg:flex flex-col justify-between p-12 bg-gradient-to-br from-primary/5 via-accent/5 to-base-100 relative overflow-hidden">
+		<div class="absolute inset-0 opacity-30" aria-hidden="true">
+			<div class="absolute top-20 left-20 w-72 h-72 bg-primary/20 rounded-full blur-3xl"></div>
+			<div class="absolute bottom-20 right-20 w-96 h-96 bg-accent/20 rounded-full blur-3xl"></div>
+		</div>
+
+		<div class="relative z-10">
+			<img src="/_hub/logo.svg" alt="@BRAND_PRODUCT@" width="@BRAND_LOGO_WIDTH@" height="@BRAND_LOGO_HEIGHT@" class="h-10 w-auto">
+		</div>
+
+		<div class="relative z-10 space-y-6">
+			<h1 class="text-4xl xl:text-5xl font-bold tracking-tight leading-tight">
+				<span data-t="hero_title"></span><br>
+				<span class="text-gradient" data-t="hero_highlight"></span>
+			</h1>
+			<p class="text-lg text-muted-fg max-w-md" data-t="hero_body"></p>
+
+			<div class="flex flex-wrap gap-3 pt-4">
+				<div class="flex items-center gap-2 px-4 py-2 rounded-full bg-base-100/50 backdrop-blur border border-base-300/50">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg><span class="text-sm" data-t="f_realtime"></span>
+				</div>
+				<div class="flex items-center gap-2 px-4 py-2 rounded-full bg-base-100/50 backdrop-blur border border-base-300/50">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/> <path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span class="text-sm" data-t="f_secure"></span>
+				</div>
+				<div class="flex items-center gap-2 px-4 py-2 rounded-full bg-base-100/50 backdrop-blur border border-base-300/50">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/> <path d="M12 9v4"/> <path d="M12 17h.01"/></svg><span class="text-sm" data-t="f_alerts"></span>
+				</div>
+			</div>
+		</div>
+
+		<div class="relative z-10 text-sm text-muted-fg" data-t="tagline"></div>
+	</div>
+
+	<div class="relative flex items-center justify-center p-6 lg:p-12">
+		<!-- The portal's language switcher (layout/nav.html), client-side: no portal to POST /lang to. -->
+		<div class="absolute top-4 right-4 flex items-center border border-base-300 rounded-lg p-0.5 gap-0.5" role="group" aria-label="Language">
+			<button type="button" data-lang="cs" class="px-2 py-0.5 rounded-md text-xs font-semibold uppercase transition-colors">cs</button>
+			<button type="button" data-lang="en" class="px-2 py-0.5 rounded-md text-xs font-semibold uppercase transition-colors">en</button>
+		</div>
+
+		<div class="w-full max-w-md">
+			<div class="lg:hidden flex items-center justify-center mb-8">
+				<img src="/_hub/logo.svg" alt="@BRAND_PRODUCT@" width="@BRAND_LOGO_WIDTH@" height="@BRAND_LOGO_HEIGHT@" class="h-10 w-auto">
+			</div>
+
+			<div class="card-v1 p-6">
+				<h2 class="text-2xl font-bold" data-t="heading"></h2>
+				<p class="text-sm text-muted-fg mt-1" data-t="sub"></p>
+
+				<div id="link" class="flex items-center gap-2 mt-5 px-3 py-2.5 rounded-lg text-sm font-medium bg-base-200 text-muted-fg">
+					<span class="h-2 w-2 rounded-full bg-current shrink-0"></span><span id="link-text">…</span>
+				</div>
+
+				<dl class="grid grid-cols-[max-content_1fr] gap-x-5 gap-y-2.5 mt-5 text-sm">
+					<dt class="text-muted-fg">Hub</dt><dd id="hostname" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg">Server</dt><dd id="server" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg" data-t="version"></dt><dd id="version" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg" data-t="ip"></dt><dd id="ip" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg" data-t="radio"></dt><dd id="radio" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg">Northbridge</dt><dd id="nb" class="font-medium tabular-nums break-all">…</dd>
+					<dt class="text-muted-fg" data-t="uptime"></dt><dd id="uptime" class="font-medium tabular-nums break-all">…</dd>
+				</dl>
+
+				<a id="server-link" href="#" class="btn-v1 btn-v1-primary w-full h-11 mt-6"><span data-t="open"></span>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></svg></a>
+			</div>
+			<p id="updated" class="text-xs text-muted-fg text-center mt-4"></p>
+		</div>
+	</div>
+</div>
+<script>
+(function () {
+  "use strict";
+  // Hero strings are the portal's auth.login.* (i18n/{cs,en}/auth.json), kept verbatim.
+  var T = {
+    cs: {
+      hero_title: "Monitorování teploty", hero_highlight: "pro zdravotnictví",
+      hero_body: "Profesionální monitorování zdravotnických zařízení s upozorněními v reálném čase, komplexní analytikou a bezpečným přístupem pro více uživatelů.",
+      f_realtime: "Monitorování v reálném čase", f_secure: "Zabezpečený přístup", f_alerts: "Chytrá upozornění",
+      tagline: "Zdravotnický systém monitorování teploty",
+      heading: "Klient clusteru", sub: "Tento Hub se spravuje z portálu Serveru.",
+      version: "Verze", ip: "IP adresa", radio: "Rádio", uptime: "Běží",
+      open: "Přejít na přihlášení Serveru",
+      reachable: "Server dosažitelný", unreachable: "Server nedosažitelný", nodata: "Stav není k dispozici",
+      updated: "Aktualizováno", d: "d", h: "h", m: "min",
+      modes: { off: "Vypnuto", lorawan: "LoRaWAN", p2p: "P2P", dual: "LoRaWAN + P2P" }
+    },
+    en: {
+      hero_title: "Temperature Monitoring", hero_highlight: "for Healthcare",
+      hero_body: "Professional medical device monitoring with real-time alerts, comprehensive analytics, and secure multi-user access.",
+      f_realtime: "Real-time Monitoring", f_secure: "Secure Access", f_alerts: "Smart Alerts",
+      tagline: "Medical-grade temperature monitoring system",
+      heading: "Cluster Client", sub: "This Hub is managed from the Server's portal.",
+      version: "Version", ip: "IP address", radio: "Radio", uptime: "Up",
+      open: "Go to the Server's sign-in",
+      reachable: "Server reachable", unreachable: "Server unreachable", nodata: "State not available",
+      updated: "Updated", d: "d", h: "h", m: "min",
+      modes: { off: "Off", lorawan: "LoRaWAN", p2p: "P2P", dual: "LoRaWAN + P2P" }
+    }
+  };
+/*@BRAND_STRINGS@*/  var ON = ["bg-primary", "text-primary-content"], OFF = ["text-muted-fg", "hover:text-base-content"];
+  var lang, t, last = null;
+  function saved() { try { return localStorage.getItem("hub-lang"); } catch (e) { return null; } }
+  function setLang(l) {
+    lang = l; t = T[l];
+    document.documentElement.lang = l;
+    document.querySelectorAll("[data-t]").forEach(function (el) { el.textContent = t[el.dataset.t]; });
+    document.querySelectorAll("[data-lang]").forEach(function (b) {
+      var on = b.dataset.lang === l;
+      b.setAttribute("aria-pressed", on);
+      ON.forEach(function (c) { b.classList.toggle(c, on); });
+      OFF.forEach(function (c) { b.classList.toggle(c, !on); });
+    });
+    if (last) render(last); else link(null, "…");
+  }
+  document.querySelectorAll("[data-lang]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      try { localStorage.setItem("hub-lang", b.dataset.lang); } catch (e) {}
+      setLang(b.dataset.lang);
+    });
+  });
+
+  function set(id, v) { document.getElementById(id).textContent = v == null || v === "" ? "–" : v; }
+  function uptime(s) {
+    if (s == null) return null;
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return (d ? d + " " + t.d + " " : "") + (d || h ? h + " " + t.h + " " : "") + m + " " + t.m;
+  }
+  function link(ok, text) {
+    var el = document.getElementById("link");
+    el.classList.toggle("bg-success/10", ok === true);
+    el.classList.toggle("text-success", ok === true);
+    el.classList.toggle("bg-error/10", ok === false);
+    el.classList.toggle("text-error", ok === false);
+    el.classList.toggle("bg-base-200", ok !== true && ok !== false);
+    el.classList.toggle("text-muted-fg", ok !== true && ok !== false);
+    set("link-text", text);
+  }
+  function render(s) {
+    last = s;
+    document.title = s.hostname + " - @BRAND_PRODUCT@";
+    set("hostname", s.hostname);
+    set("server", s.server.host);
+    document.getElementById("server-link").href = "https://" + s.server.host + "/login";
+    set("version", s.version);
+    set("ip", (s.ipv4 || []).join(", "));
+    link(s.server.reachable, s.server.reachable ? t.reachable : t.unreachable);
+    set("radio", t.modes[s.radio.mode] || s.radio.mode);
+    // `disabled` only says this Hub's radio mode leaves the Northbridge idle; the version is what
+    // a reader wants.
+    var st = s.northbridge.state === "disabled" ? null : s.northbridge.state;
+    set("nb", [s.northbridge.fw_version && "FW " + s.northbridge.fw_version, st].filter(Boolean).join(", "));
+    set("uptime", uptime(s.uptime_s));
+    set("updated", t.updated + " " + new Date(s.updated_at * 1000).toLocaleTimeString(lang));
+  }
+  function poll() {
+    fetch("/_hub/status.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw r.status; return r.json(); })
+      .then(render)
+      .catch(function () { link(null, t.nodata); });
+  }
+  var s0 = saved();
+  setLang(T[s0] ? s0 : /^cs\b/i.test(navigator.language || "") ? "cs" : "en");
+  poll();
+  setInterval(poll, 10000);
+})();
+</script>
+</body>
+</html>

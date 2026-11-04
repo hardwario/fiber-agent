@@ -1,0 +1,17 @@
+{#- Re-counts every `data-age-ts` data age ("40 s") every 5 s, the same
+    buckets as monitoring::short_age. Shared by the detailed cards and the
+    detailed table; bound once per page, swapped-in rows are picked up on
+    the next tick. -#}
+<script>
+(function () {
+	if (window.__ageTick) return;
+	window.__ageTick = setInterval(function () {
+		var now = Date.now() / 1000;
+		document.querySelectorAll('[data-age-ts]').forEach(function (el) {
+			var s = Math.max(0, Math.floor(now - Number(el.getAttribute('data-age-ts'))));
+			el.textContent = s < 60 ? s + ' s' : s < 3600 ? Math.floor(s / 60) + ' min'
+				: s < 86400 ? Math.floor(s / 3600) + ' h' : Math.floor(s / 86400) + ' d';
+		});
+	}, 5000);
+})();
+</script>

@@ -1,0 +1,100 @@
+{#
+  One wired probe's page — plan/portal/devices.hub.md §3.2, amendment
+  2026-10-14. URL /hubs/{hub}/sensors/line-{n}, n 1-based like the UI (wire
+  line 0..7); `internal-{name}` is reserved for the Hub's internal sensors
+  and is a 404 while the Hub publishes none. One page, no tabs:
+
+    Card order from 2026-10-15 (ui_components.md §12): 1. Device
+    information, 2. Channels (its own Trends link; none in the header), 3. Calibration, 4. Events,
+    5. Device configuration (Hub-wide, read-only), 6. Diagnostics (the
+    collapsible §8 shell). /monitoring/probe/probe:{line} redirects here.
+
+  Context (routes::hub_routes::hub_sensor_page):
+    w          routes::probe_routes::ProbeWindowCtx (events, CSV, range)
+    ch         routes::channels::ChannelsCtx
+    s          render::SensorCardCtx of the line
+    cal        render::CalibrationCardCtx|none
+    hub_name   the Hub's display name
+    intervals  {sample, aggregation, failure_threshold}: {value, default}
+               — seconds / count; `default` = the Hub did not state it
+    diag       {line, sensor_type, rom_id|none, failures, samples,
+                last_error|none}; the last read is s.updated_at
+    error      string|none, a manual event's flash
+#}
+{% extends "layout/base.html" %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+{% block title %}{{ w.name }} - {{ brand.product }}{% endblock %}
+
+{% macro row(label, value, mono=false) -%}
+<dt class="text-muted-fg">{{ label }}</dt>
+<dd{% if mono %} class="font-mono text-xs tabular-nums"{% endif %}>{{ value }}</dd>
+{%- endmacro %}
+
+{% block content %}
+{% set display_name = s.name | default(("monitoring.shared.line_fallback"|t|replace("{n}", s.line + 1)), true) %}
+<div class="space-y-4">
+	{{ ui.back_link("/hubs/" ~ w.hostname ~ "/sensors", "monitoring.hub_sensor.back_to_list"|t) }}
+
+	{% include "partials/command_status.html" %}
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+
+	<div class="card-v1 p-4 flex flex-wrap items-center justify-between gap-3">
+		<div class="min-w-0">
+			<h1 class="flex items-center gap-2 text-lg font-bold truncate">{{ display_name }}
+				{%- if s.calibration %}{{ ui.calibration_icon(s.calibration) }}{% endif %}
+				{{ ui.status_badge(s.dominant_alarm_state, ("monitoring.alarm_state." ~ s.dominant_alarm_state)|t) }}</h1>
+			<p class="text-xs text-muted-fg truncate">
+				{{ hub_name }} · {{ "monitoring.shared.line_fallback"|t|replace("{n}", s.line + 1) }}{% if s.location %} · {{ s.location }}{% endif %}
+			</p>
+		</div>
+	</div>
+
+	{# 1. Device information (metadata.cs.md §5): name, description and
+	   location; name and location go to the Hub as one signed command. #}
+	{% include "partials/device_info.html" %}
+
+	{# 2. Channels (ui_components.md §2); the Trends link stays in its head #}
+	{% include "partials/channels_card.html" %}
+	{# 3. Calibration; the title is in the page header (ui_components.md §12) #}
+	{% set cal_hide_title = true %}
+	{% if cal %}
+	{% include "partials/calibration_card.html" %}
+	{% endif %}
+
+	{# 4. Events (ui_components.md §5) #}
+	{% if evc %}{% include "partials/events_card.html" %}{% endif %}
+
+	{# 5. Device configuration (ui_components.md §6) — Hub-wide, read-only (#142). #}
+	{% set dflt = " · " ~ "monitoring.hub_sensor.default_label"|t %}
+	{% with dc = {"kind": "probe", "action": none, "items": [
+		{"name": "interval_sample", "label": "monitoring.device_config.interval_sample", "help": "monitoring.device_config.interval_sample_help_probe",
+		 "value": intervals.sample.value | string, "unit": "s", "editable": false,
+		 "display": (intervals.sample.value | string) ~ " s" ~ (dflt if intervals.sample.default else "")},
+		{"name": "interval_report", "label": "monitoring.device_config.interval_report", "help": "monitoring.device_config.interval_report_help_probe",
+		 "value": intervals.aggregation.value | string, "unit": "s", "editable": false,
+		 "display": (intervals.aggregation.value | string) ~ " s" ~ (dflt if intervals.aggregation.default else "")},
+		{"name": "offline_k", "label": "monitoring.device_config.offline_k", "help": "monitoring.device_config.offline_k_help_probe",
+		 "value": intervals.failure_threshold.value | string, "unit": "", "editable": false,
+		 "display": (intervals.failure_threshold.value | string) ~ (dflt if intervals.failure_threshold.default else "")}]} %}
+	{% include "partials/device_config.html" %}
+	{% endwith %}
+
+	{# 6. Diagnostics (ui_components.md §12): the §8 shell, label/mono-value list. #}
+	{% call ui.collapsible_card("diag-probe-" ~ s.line, "cpu", "monitoring.hub_sensor.diag_heading"|t,
+		summary=(diag.sensor_type ~ " · " ~ (s.updated_at | short_dt if s.updated_at else "–"))) %}
+	<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1" data-diagnostics>
+		{{ row("monitoring.hubs.line_column"|t, diag.line, true) }}
+		{{ row("monitoring.hub_sensor.sensor_type"|t, diag.sensor_type) }}
+		{{ row("monitoring.hub_sensor.rom_id"|t, diag.rom_id or ("monitoring.hub_sensor.rom_id_unpublished"|t), diag.rom_id is not none) }}
+		{{ row("monitoring.hub_sensor.failures"|t, diag.failures, true) }}
+		{{ row("monitoring.hub_sensor.samples"|t, diag.samples, true) }}
+		{{ row("monitoring.hub_sensor.last_error"|t, ("monitoring.alarm_state." ~ diag.last_error)|t if diag.last_error else "–") }}
+		{{ row("monitoring.hub_sensor.last_read"|t, s.updated_at | default("–", true), true) }}
+	</dl>
+	{% endcall %}
+</div>
+{% endblock %}

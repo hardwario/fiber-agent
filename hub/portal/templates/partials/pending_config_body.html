@@ -1,0 +1,135 @@
+{#
+  The unsent-configuration banner's BODY — everything inside the SSE swap
+  target, and nothing of the target itself.
+
+  Context: `pending`, exactly as partials/pending_config.html documents it.
+  That file is the shell; this one is what the shell contains and what the
+  SSE frame carries. Read its header for the contract.
+
+  **Why the two are split.** The shell swaps `innerHTML`, so the element
+  carrying `id`/`sse-swap` is never itself replaced. With `outerHTML` — the
+  shape command_status.html uses — htmx replaces the very element the SSE
+  extension attached its listener to, and re-binding the new one is a
+  separate step: two frames arriving inside that window leave the second
+  one with nothing listening. That is not theoretical here. A send walk
+  nudges on every unit's state change, and against the dev mock those land
+  milliseconds apart — the banner froze mid-walk showing a key as "sending"
+  that had already landed. One stable element, contents replaced, and the
+  listener outlives every frame.
+#}
+{% if pending is not none and pending.rows %}
+{#- `flex`: daisyUI's `.alert` is a column-flowing grid, which put the table beside the text in a
+    narrow column of very tall rows. -#}
+<div role="alert" class="alert {% if pending.failed or pending.refusal %}alert-error{% elif pending.sending %}alert-info{% else %}alert-warning{% endif %} mb-4 flex flex-col items-stretch gap-3">
+	<div class="flex items-start justify-between gap-3 flex-wrap w-full">
+		<div class="flex-1 min-w-0">
+			{% if pending.awaiting %}
+			<div class="font-medium" data-awaiting>{{ "monitoring.pending.awaiting_heading"|t }}</div>
+			<div class="text-sm" x-show="open" x-cloak>{{ "monitoring.pending.awaiting_body"|t }}</div>
+			<div class="text-sm mt-1" data-deadline>
+				{% if pending.awaiting.passed %}{{ "monitoring.pending.deadline_passed"|t|replace("{time}", pending.awaiting.sent_at) }} &middot; {% endif %}
+				{{ "monitoring.pending.sent_column"|t }}: {{ pending.awaiting.sent_at }}
+				&middot; {{ "monitoring.pending.attempts_column"|t }}: {{ pending.awaiting.attempts }}
+			</div>
+			{% else %}
+			<div class="font-medium">{{ "monitoring.pending.banner_heading"|t }}</div>
+			<div class="text-sm" x-show="open" x-cloak>{{ "monitoring.pending.banner_body"|t }}</div>
+			{% endif %}
+			{#- What Send puts on the air (nodes_phase1.cs.md WP5): none for a warning-only edit,
+			    which stays on the Hub. -#}
+			{% if pending.downlinks %}
+			<div class="text-sm mt-1">{{ "monitoring.pending.downlinks"|t|replace("{count}", pending.downlinks|string) }} {{ "monitoring.pending.restart_note"|t }}</div>
+			{% endif %}
+			{% if pending.sending %}
+			<div class="text-sm mt-1">{{ "monitoring.pending.waiting_for_uplink"|t|replace("{minutes}", pending.confirm_minutes|string) }}</div>
+			{% endif %}
+			{#- PF-3: a bound the Hub and the portal already hold, which the Node does not. Not a
+			    failure: telemetry evaluation is the primary alarm path. -#}
+			{% if pending.undelivered_bounds %}
+			<div class="text-sm font-medium mt-1">{{ "monitoring.pending.undelivered_note"|t }}</div>
+			{% endif %}
+			{% if pending.node_differs %}
+			<div class="text-sm font-medium mt-1">{{ "monitoring.pending.node_differs_note"|t }}</div>
+			{% endif %}
+			{% if pending.alarm_layout_moved %}
+			<div class="text-sm font-medium mt-1">{{ "monitoring.pending.alarm_layout_moved"|t }}</div>
+			{% endif %}
+			{#- #126 item 5: what Send would refuse (pending::refusal), said before it is pressed. -#}
+			{% if pending.refusal %}
+			<div class="text-sm font-medium mt-1" data-send-refusal>{{ pending.refusal.key|t|replace("{fields}", pending.refusal.fields)|replace("{keys}", pending.refusal.keys)|replace("{version}", pending.refusal.version) }}</div>
+			{% endif %}
+		</div>
+		<div class="flex items-center gap-2 shrink-0">
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" @click="open = !open" :aria-expanded="open">
+				<span x-show="!open">{{ "monitoring.pending.show_rows"|t|replace("{count}", pending.rows|length|string) }}</span>
+				<span x-show="open" x-cloak>{{ "monitoring.pending.hide_rows"|t }}</span>
+			</button>
+		{% if pending.can_edit %}
+			<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+				hx-post="/nodes/{{ pending.node_key }}/pending/discard"
+				{#- innerHTML into the SSE shell, never outerHTML: replacing the element
+				     the SSE listener is attached to loses any frame arriving before htmx
+				     re-binds it, which is the same rule the shell's own hx-swap follows.
+				     The response is this body partial, not the shell (§21 review, item 11). -#}
+				hx-target="#pending-config-{{ pending.node_key }}" hx-swap="innerHTML"
+				{% if pending.sending %}disabled{% endif %}>
+				{{ "monitoring.pending.discard_button"|t }}
+			</button>
+			<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm"
+				hx-post="/nodes/{{ pending.node_key }}/pending/send"
+				hx-target="#command-status" hx-swap="outerHTML"
+				{% if pending.refusal %}title="{{ "monitoring.pending.send_refused_title"|t }}"{% endif %}
+				{% if pending.sending or pending.refusal %}disabled{% endif %}>
+				{% if pending.sending %}<span class="loading loading-spinner loading-xs mr-1"></span>{% endif %}
+				{% if pending.awaiting %}{{ "monitoring.pending.resend_button"|t }}{% elif pending.resend %}{{ "monitoring.pending.send_failed_resend"|t }}{% else %}{{ "monitoring.pending.send_button"|t }}{% endif %}
+			</button>
+		{% endif %}
+		</div>
+	</div>
+
+	<div class="relative w-full overflow-x-auto" x-show="open" x-cloak>
+		<table class="w-full caption-bottom text-sm">
+			<thead class="[&_tr]:border-b [&_tr]:border-base-300/40">
+				<tr class="[&>th]:py-1 [&>th]:px-2 [&>th]:text-left [&>th]:font-medium [&>th]:text-xs">
+					<th>{{ "monitoring.pending.key_column"|t }}</th>
+					<th>{{ "monitoring.pending.current_column"|t }}</th>
+					<th>{{ "monitoring.pending.desired_column"|t }}</th>
+					<th>{{ "monitoring.pending.changed_by_column"|t }}</th>
+					<th>{{ "monitoring.pending.state_column"|t }}</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for r in pending.rows %}
+				<tr class="border-b border-base-300/40 last:border-0 [&>td]:py-1 [&>td]:px-2 [&>td]:align-top">
+					<td class="font-mono text-xs">{{ r.label|field_label }}</td>
+					<td class="font-mono text-xs opacity-70">{{ r.current | default(("monitoring.pending.current_unknown"|t), true) }}</td>
+					<td class="font-mono text-xs font-medium">{{ r.desired }}</td>
+					<td class="text-xs">
+						{{ "monitoring.pending.changed_by"|t|replace("{user}", r.author)|replace("{time}", r.changed_at) }}
+					</td>
+					<td class="text-xs">
+						{% if r.state == "sending" %}<span class="loading loading-spinner loading-xs mr-1"></span>{% endif %}
+						{%- if r.state == "undelivered" and r.kind == "threshold" -%}
+						{{ "monitoring.pending.undelivered_bound"|t }}
+						{%- else -%}
+						{{ ("monitoring.pending.state_" ~ r.state)|t }}
+						{%- endif %}
+						{% if r.state == "sending" and r.hub_set %}
+						<div class="opacity-80">{{ "monitoring.pending.hub_set_node_pending"|t }}</div>
+						{% endif %}
+						{#- A row still "sending" long past any walk's budget belongs to a walk
+						     that is gone; render::pending_ctx already reports it as an error and
+						     sets r.stale, and this is the reason it shows (§21 review, defect 2). -#}
+						{% if r.stale %}
+						<div class="opacity-80">{{ "monitoring.pending.send_interrupted"|t }}</div>
+						{% elif r.last_error %}
+						<div class="opacity-80">{{ r.last_error }}</div>
+						{% endif %}
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</div>
+{% endif %}

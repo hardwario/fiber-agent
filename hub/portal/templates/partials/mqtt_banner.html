@@ -1,0 +1,26 @@
+{#
+  MQTT connection banner (M1-T context contract).
+
+  Context: `mqtt` = { connected: bool, reason: string|none }.
+
+  Renders a DaisyUI alert-warning bar when disconnected; renders nothing
+  visible when connected. The outer <div> always renders regardless of
+  `connected` — it is the SSE swap target (id/sse-swap "mqtt-status",
+  hx-swap="outerHTML") and must stay present in the DOM so a later
+  disconnect event has an element to swap into. This "always-present empty
+  wrapper" behavior is a template-side implementation detail, not a change
+  to the contract.
+#}
+<div id="mqtt-status" sse-swap="mqtt-status" hx-swap="outerHTML">
+	{% if not mqtt.connected %}
+	<div role="alert" class="alert alert-warning mb-4">
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+		</svg>
+		<span>
+			{{ "monitoring.mqtt_banner.disconnected"|t }}
+			{%- if mqtt.reason %} — {{ mqtt.reason }}{% endif %}
+		</span>
+	</div>
+	{% endif %}
+</div>

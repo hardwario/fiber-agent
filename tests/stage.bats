@@ -1,6 +1,6 @@
 load test_helper
 
-V2_SRC="${V2_SRC:-$HOME/Projects/fiber/v2/proximos-v2}"
+V2_SRC="${V2_SRC:-$REPO_ROOT/hub}"
 
 setup_file() {
   export FIBER_UPSTREAM_DIR="$BATS_FILE_TMPDIR/upstream"
@@ -96,6 +96,8 @@ setup_file() {
 }
 
 @test "stages cleanly from the v1.1.0 tag of proximos-v2 (not only from main)" {
+  git -C "${PROXIMOS_V2:-/nonexistent}" rev-parse -q --verify v1.1.0 >/dev/null 2>&1 || skip "needs PROXIMOS_V2, a proximos-v2 clone with tags"
+  local V2_SRC="$PROXIMOS_V2"
   local up="$BATS_TEST_TMPDIR/up"
   mkdir -p "$up/v1.1.0/bin" "$up/v1.1.0/src" "$up/chirpstack"
   git -C "$V2_SRC" archive v1.1.0 | tar -x -C "$up/v1.1.0/src"

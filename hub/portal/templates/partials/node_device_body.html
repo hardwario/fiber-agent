@@ -1,0 +1,149 @@
+{#
+  The Diagnostics Device card's BODY (plan/portal/ui_components.md, amendment
+  2026-10-15) — everything inside the SSE swap target `node-device-{node_key}`
+  (pages/node_detail.html), and what the SSE frame carries. Only what the Node
+  sends at boot: its Info and its ConfigDump (settings-info), as two groups.
+
+  Context: { n: render::NodeDetailCtx (node_key, info, info_view,
+  info_received_at, last_fault), config: render::NodeConfigCtx, can_edit }.
+
+  A Node's Info and settings-info both raise `ChangeEvent::NodeConfig`, so the
+  SSE arm that repaints the config card repaints this one too: "Refresh" shows
+  its answer without a reload (nodes_phase1.cs.md WP7). The shell swaps
+  innerHTML for the reason partials/pending_config_body.html gives.
+#}
+	<div class="flex flex-col gap-3">
+		<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.info_group"|t }}</p>
+		{% if n.info is not none %}
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+			{% if "fw_major" in n.info and "fw_minor" in n.info and "fw_patch" in n.info %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.firmware_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ n.info.fw_major }}.{{ n.info.fw_minor }}.{{ n.info.fw_patch }}{% if "build_type" in n.info %} ({{ n.info.build_type }}){% endif %}{% if n.info.debug %} &middot; {{ "monitoring.node_detail.debug_build"|t }}{% endif %}</dd>
+			{% endif %}
+			{% if "serial_number" in n.info %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.serial_label"|t }}</dt>
+			<dd class="font-mono">{{ n.info.serial_number | node_serial }}</dd>
+			{% endif %}
+			{% if "uptime_s" in n.info %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.uptime_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ n.info_view.uptime if n.info_view.uptime else n.info.uptime_s ~ " s" }}</dd>
+			{% endif %}
+			{#- F8: the Node reports mV and two bitmasks; info_view decodes
+			    them, and a document it cannot decode shows as it came. -#}
+			{% if "battery" in n.info %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.battery_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ n.info_view.battery if n.info_view.battery is not none else n.info.battery }}</dd>
+			{% endif %}
+			{% if "device_status" in n.info or n.info_view.status_flags is not none %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.status_label"|t }}</dt>
+			{% if n.info_view.status_flags is not none %}
+			<dd class="flex flex-wrap gap-1.5">
+				{#- A bit v2.0.0 does not define arrives as `bitN` and shows as sent. -#}
+				{% for flag in n.info_view.status_flags %}{% if flag[:3] == "bit" %}<span class="badge-outline-v1 font-mono">{{ flag }}</span>{% else %}<span class="badge-outline-v1" title="{{ ("monitoring.node_status_bit." ~ flag ~ "_help")|t }}">{{ ("monitoring.node_status_bit." ~ flag)|t }}</span>{% endif %}{% else %}{{ "monitoring.node_detail.status_ok"|t }}{% endfor %}
+			</dd>
+			{% else %}
+			<dd class="font-mono text-xs">{{ n.info.device_status }}</dd>
+			{% endif %}
+			{% endif %}
+			{% if "reset_cause" in n.info or n.info_view.reset_causes is not none %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.reset_cause_label"|t }}</dt>
+			{% if n.info_view.reset_causes is not none %}
+			<dd class="flex flex-wrap gap-1.5">
+				{% for cause in n.info_view.reset_causes %}<span class="badge-outline-v1 font-mono">{{ cause }}</span>{% else %}{{ "monitoring.node_detail.reset_cause_unknown"|t }}{% endfor %}
+			</dd>
+			{% else %}
+			<dd class="font-mono text-xs">{{ n.info.reset_cause }}</dd>
+			{% endif %}
+			{% endif %}
+			{#- WP7: the Node's clock as it reported, against the Hub's receive time. -#}
+			{% if n.info_view.clock %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.clock_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{% if n.info_view.clock.synced %}{{ n.info_view.clock.node_time | short_dt }}{% if n.info_view.clock.offset_s is not none %} <span class="text-xs text-muted-fg">({{ "monitoring.node_detail.clock_offset"|t|replace("{offset}", ("+" if n.info_view.clock.offset_s > 0 else "") ~ n.info_view.clock.offset_s|string) }})</span>{% endif %}{% else %}<span class="text-warning">{{ "monitoring.node_detail.clock_unsynced"|t }}</span>{% endif %}</dd>
+			{% endif %}
+			{% if n.info_view.active_alarms is not none %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.active_alarms_label"|t }}</dt>
+			<dd class="flex flex-col gap-0.5">
+				{%- for a in n.info_view.active_alarms %}
+				{%- set src_known = a.source in ["onboard", "slot", "hall_left", "hall_right", "input_a", "input_b", "pir", "accel", "battery"] %}
+				<span>{% if a.slot %}{{ "monitoring.alarm_source.slot"|t|replace("{n}", a.slot|string) }}{% elif src_known %}{{ ("monitoring.alarm_source." ~ a.source)|t }}{% else %}<span class="font-mono">{{ a.source }}</span>{% endif %}
+					&middot; {% if a.quantity in ["temperature", "humidity", "pressure", "illuminance", "magnetic_field", "tilt", "state", "count", "voltage", "acceleration"] %}{{ ("monitoring.alarm_quantity." ~ a.quantity)|t }}{% else %}<span class="font-mono">{{ a.quantity }}</span>{% endif %}
+					&middot; {% if a.kind in ["none", "low", "high", "trigger", "no_data", "sensor_mismatch"] %}{{ ("monitoring.alarm_type." ~ a.kind)|t }}{% else %}<span class="font-mono">{{ a.kind }}</span>{% endif %}</span>
+				{%- else %}
+				<span>{{ "monitoring.node_detail.active_alarms_none"|t }}</span>
+				{%- endfor %}
+			</dd>
+			{% endif %}
+			{#- v2.0.0: what the Node found in each 1-Wire slot at boot (node-firmware-v2.0.0.md §5). -#}
+			{% if n.info_view.w1_slot_state %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.w1_slot_state_label"|t }}</dt>
+			<dd class="flex flex-wrap gap-1.5">
+				{%- for st in n.info_view.w1_slot_state %}
+				<span class="badge-outline-v1{% if st in ["absent", "replaced", "mismatch"] %} text-warning{% endif %}">{{ loop.index }}: {% if st in ["none", "ok", "absent", "replaced", "mismatch"] %}{{ ("monitoring.w1_slot_state." ~ st)|t }}{% else %}<span class="font-mono">{{ st }}</span>{% endif %}</span>
+				{%- endfor %}
+			</dd>
+			{% endif %}
+			{#- UI-9: DeviceInfo is what the Node reported at its last
+			    boot (or last GetInfo), never a live read — say when. -#}
+			{% if n.info_received_at %}
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.device_info_received_at"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ n.info_received_at | short_dt }}</dd>
+			{% endif %}
+		</dl>
+		{% else %}
+		<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.no_device_info"|t }}</p>
+		{% endif %}
+		{#- GitLab #135: the Node's last crash record (v2.0.0 `Info` 20..22). The Node sends it on
+		    one boot only; the portal keeps it, so it stays after a later Info without it. -#}
+		{% if n.last_fault %}
+		{%- set lf = n.last_fault %}
+		<div class="border-t border-base-300 pt-3">
+			<p class="text-xs uppercase tracking-wide text-warning mb-1.5" title="{{ "monitoring.node_detail.last_fault_help"|t }}">{{ "monitoring.node_detail.last_fault_heading"|t }}</p>
+			<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.last_fault_reason"|t }}</dt>
+				<dd class="font-mono">{% if lf.reason_name %}{{ lf.reason_name }}{% if lf.reason is not none %} ({{ lf.reason }}){% endif %}{% elif lf.reason is not none %}{{ lf.reason }}{% else %}–{% endif %}</dd>
+				{% if lf.pc %}
+				<dt class="text-muted-fg">PC</dt>
+				<dd class="font-mono">{{ lf.pc }}</dd>
+				{% endif %}
+				{% if lf.lr %}
+				<dt class="text-muted-fg">LR</dt>
+				<dd class="font-mono">{{ lf.lr }}</dd>
+				{% endif %}
+				{% if lf.received_at %}
+				<dt class="text-muted-fg">{{ "monitoring.node_detail.last_fault_received"|t }}</dt>
+				<dd class="font-mono text-xs tabular-nums">{{ lf.received_at | short_dt }}</dd>
+				{% endif %}
+			</dl>
+		</div>
+		{% endif %}
+		<div class="border-t border-base-300 pt-3 flex flex-col gap-1.5">
+			<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.config_group"|t }}</p>
+			{% if config is defined and config.groups %}
+			<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+				{% for group in config.groups %}{% for row in group.rows %}
+				<dt class="text-muted-fg font-mono text-xs">{{ row.key }}</dt>
+				<dd class="font-mono text-xs break-all">{{ row.value }}{% if row.value_label %} <span class="text-muted-fg font-sans">({{ row.value_label|t }})</span>{% endif %}</dd>
+				{% endfor %}{% endfor %}
+			</dl>
+			{% if config.synced_at %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.node_detail.synced_at"|t|replace("{value}", config.synced_at | short_dt) }}</p>
+			{% endif %}
+			{% else %}
+			<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.no_config_yet"|t }}</p>
+			{% endif %}
+			{#- WP3 (devices.node.md §3.2, dodatek 2026-09-24): what the ConfigDump says the
+			    Node measures with, the 1-Wire slot types included. -#}
+			<p class="text-xs text-muted-fg mt-1.5">{{ "monitoring.node_detail.sensors_label"|t }}</p>
+			{% if n.sensors is not none %}
+			<ul class="text-sm flex flex-col gap-0.5">
+				<li>{{ "monitoring.sensor.board"|t }}</li>
+				{% for cap in n.sensors.caps %}<li>{{ ("monitoring.sensor." ~ cap)|t }}</li>{% endfor %}
+				{% for slot in n.sensors.w1_slots %}
+				<li>{{ "monitoring.sensor.w1_slot"|t|replace("{n}", slot.slot|string) }} &middot; {{ slot.type_label }}{% if slot.part %} ({{ slot.part }}){% endif %}</li>
+				{% endfor %}
+			</ul>
+			{% else %}
+			<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.sensors_unknown"|t }}</p>
+			{% endif %}
+		</div>
+	</div>

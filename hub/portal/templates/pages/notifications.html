@@ -1,0 +1,578 @@
+{#
+  Notification settings page (M6-T context contract, P2 v1-style restyle).
+
+  Context: {
+    current_user, nav_active = "settings", settings_tab = "notifications",
+    is_admin: bool,                       -- gates the admin-only sections
+    email: { provider: "none"|"sendgrid"|"smtp", from_email: string|none,
+      from_name: string|none, api_key_set: bool,
+      smtp: { host: string|none, port: int|none, username: string|none,
+        password_set: bool, use_tls: bool, use_ssl: bool },
+      public_url: string|none },          -- UX-027, admin-only like the rest
+    webhook: { enabled: bool, url: string|none, method: "POST"|"PUT",
+      headers_set: bool, timeout_s: int, max_attempts: int },
+    default_recipients: [string],         -- decisions.md #31, manager-editable
+    device: { own: bool,                  -- false: no row, the defaults apply
+      hostname: string|none, recipients: [string], enabled: bool,
+      notify_on_alarm: bool, notify_on_clear: bool, notify_on_ack: bool },
+    system: { recipients: [string], battery_enabled: bool,
+      battery_threshold: float, network_enabled: bool, storage_enabled: bool,
+      storage_threshold: float, device_offline_enabled: bool,
+      version_mismatch_enabled: bool, expected_version: string|none },
+    history: [ { sent_at: string, hostname: string|none, event_type: string,
+      source: string, recipients: [string], subject: string|none,
+      status: string, error_message: string|none, provider: string|none }, ... ],
+    history_total: int,
+    ok: string|none, error: string|none   -- page-level flash, ?ok=/?err=
+                                          -- like pages/hub_detail.html
+  }
+  Optional `hoffset: int` — see the original M6-T header for the full
+  pagination contract; unchanged by this restyle.
+
+  ONE form, one save button, one POST /settings/notifications (BINDING —
+  routes::notification_routes::SettingsForm). It used to be four cards with
+  four endpoints; the field names that collided across them are prefixed
+  here: `webhook_enabled`, `device_enabled`, `device_recipients`,
+  `system_recipients`, `default_recipients`. Everything else keeps the name the merge helpers
+  already speak.
+
+  Two cards, both built from `setting_row` (description left, controls
+  right, hairlines between) like the Hub configuration tab: channels (how a
+  notification leaves the portal) and rules (what raises one). The
+  admin-only sections are drawn only for `is_admin` — the save applies the
+  same split server-side, so a manager submitting the form saves the device
+  card and nothing else.
+
+  Email provider fields are conditionally shown via Alpine (`x-data`
+  tracking the radio, `x-show` per section) — unchanged mechanism. The
+  webhook and per-device sections hide their settings the same way while
+  their enable toggle is off (x-show only hides, so the inputs still submit
+  and a disabled save keeps the stored values); the webhook Test button
+  hides with them. Recipients render through the recipients_editor macro
+  defined below (rows + add-flow + client-side validation mirroring the
+  server's) — the wire shape is unchanged: a newline-joined field. Secrets
+  (`api_key`, SMTP `password`) are NEVER prefilled — inputs render blank
+  with placeholder "•••• saved" when the corresponding `*_set` flag is
+  true, so an empty submit must mean "leave unchanged". Webhook headers
+  follow the same never-prefill logic.
+
+  Test buttons are htmx (the one live bit on this page): "Send test email"
+  -> POST /settings/notifications/test-email, "Send test webhook" -> POST
+  /settings/notifications/test-webhook, both hx-target="#command-status".
+  They are `type="button"` so they never submit the surrounding form.
+
+  M9: `ok`/`error` are `alarms.flash.ok.*`/`alarms.flash.err.*` slugs;
+  `event_type`/`source`/`status` in the history table are dynamic
+  `alarms.event_type.*`/`alarms.source.*`/`alarms.delivery_status.*` keys.
+  "Hub"/SendGrid/SMTP/STARTTLS/SSL/URL/Host/Port/Webhook are left
+  untranslated, as before.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "common.nav.notifications"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set hlimit = 50 %}
+{% set hoffset = hoffset if hoffset is defined else 0 %}
+
+{# One settings row: what it is on the left, the controls on the right. #}
+{% macro setting_row(title, desc="") %}
+<div class="grid gap-3 md:grid-cols-3 md:gap-6 px-5 py-4">
+	<div class="min-w-0">
+		<h3 class="text-sm font-semibold">{{ title }}</h3>
+		{% if desc %}<p class="mt-1 text-sm text-muted-fg">{{ desc }}</p>{% endif %}
+	</div>
+	<div class="md:col-span-2 min-w-0">{{ caller() }}</div>
+</div>
+{% endmacro %}
+
+{# A labelled field, the shape every input on this page uses. #}
+{% macro field(label) %}
+<div class="min-w-0">
+	<label class="text-sm font-medium">{{ label }}</label>
+	{{ caller() }}
+</div>
+{% endmacro %}
+
+{# Recipients list editor, shared by the device- and system-alert rows.
+   Saved addresses render as individual rows (each with a remove button);
+   "Add recipients" opens the one-per-line textarea, and its Add validates
+   every line with the same shape check the server's is_plausible_email
+   applies — invalid lines stay in the box behind an error note instead of
+   silently vanishing (the POST still re-validates, this is a convenience).
+   The submitted value is the hidden input, newline-joined to keep
+   parse_recipients' wire shape; it carries a server-rendered initial value
+   so the form still round-trips unchanged if Alpine never boots. `name`
+   differs per instance (device_recipients / system_recipients) because
+   both live in one form now. The Alpine.data component is registered in
+   the script at the end of this block. #}
+{% macro recipients_editor(name, recipients) %}
+<div x-data='recipientsEditor({{ recipients | tojson }})' class="flex flex-col gap-1.5">
+	<input type="hidden" name="{{ name }}" value="{{ recipients | join("\n") }}" :value="list.join('\n')">
+	<div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+		<template x-for="(r, i) in list" :key="r">
+			<div class="flex items-center justify-between gap-2 rounded-lg border border-base-300 px-2.5 py-1 min-w-0">
+				<span class="text-sm font-mono truncate" x-text="r"></span>
+				<button type="button" class="btn btn-ghost btn-xs shrink-0" @click="remove(i)"
+					aria-label="{{ "alarms.notify.recipients_remove"|t }}" title="{{ "alarms.notify.recipients_remove"|t }}">✕</button>
+			</div>
+		</template>
+	</div>
+	<div x-show="open" class="flex flex-col gap-1.5 sm:max-w-sm">
+		<textarea rows="3" class="input-v1 h-auto" x-model="draft"
+			placeholder="{{ "alarms.notify.recipients_placeholder"|t }}"></textarea>
+		<p class="text-xs text-error" x-show="invalid">{{ "alarms.notify.recipients_invalid"|t }}</p>
+		<div class="flex items-center gap-2">
+			<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" @click="add()">{{ "alarms.notify.recipients_confirm_button"|t }}</button>
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" @click="cancel()">{{ "common.actions.cancel"|t }}</button>
+		</div>
+	</div>
+	<div x-show="!open" class="flex items-center gap-2">
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" @click="open = true">
+			{{ ic.icon("plus", "h-4 w-4") }}{{ "alarms.notify.recipients_add_button"|t }}
+		</button>
+		<span class="text-xs text-muted-fg" x-show="!list.length">{{ "alarms.notify.recipients_empty"|t }}</span>
+	</div>
+</div>
+{% endmacro %}
+
+<div class="space-y-4">
+	{% include "partials/settings_tabs.html" %}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error">
+		<span>{{ ("alarms.flash.err." ~ error)|t }}</span>
+	</div>
+	{% endif %}
+	{% if ok %}
+	<div role="alert" class="alert alert-success">
+		<span>{{ ("alarms.flash.ok." ~ ok)|t }}</span>
+	</div>
+	{% endif %}
+
+	{% include "partials/command_status.html" %}
+
+	<form method="post" action="/settings/notifications" class="space-y-4">
+		{# --- Channels: how a notification leaves the portal --------------- #}
+		{% if is_admin %}
+		<div class="card-v1 divide-y divide-base-300">
+			<div class="px-5 py-3">
+				<h2 class="text-base font-semibold">{{ "alarms.notify.channels_heading"|t }}</h2>
+			</div>
+
+			{# Email. The provider radio drives which credential block shows;
+			   the unselected provider's fields still submit and the server
+			   ignores them, so switching back keeps what was stored. #}
+			<div x-data="{ provider: '{{ email.provider }}' }">
+				{% call setting_row("alarms.notify.email.heading"|t, "alarms.notify.email.row_desc"|t) %}
+				<div class="flex flex-col gap-3">
+					<div class="flex flex-wrap gap-4">
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="radio" name="provider" value="none" class="radio radio-sm" x-model="provider">
+							{{ "alarms.notify.email.provider_none"|t }}
+						</label>
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="radio" name="provider" value="sendgrid" class="radio radio-sm" x-model="provider">
+							SendGrid
+						</label>
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="radio" name="provider" value="smtp" class="radio radio-sm" x-model="provider">
+							SMTP
+						</label>
+					</div>
+
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+						{% call field("alarms.notify.email.from_address_label"|t) %}
+						<input type="email" name="from_email" class="input-v1 input-v1-sm mt-1" value="{{ email.from_email | default('', true) }}">
+						{% endcall %}
+						{% call field("alarms.notify.email.from_name_label"|t) %}
+						<input type="text" name="from_name" class="input-v1 input-v1-sm mt-1" value="{{ email.from_name | default('', true) }}">
+						{% endcall %}
+						{% call field("alarms.notify.email.lang_label"|t) %}
+						<select name="email_lang" class="input-v1 select-v1 input-v1-sm mt-1">
+							<option value="cs" {% if email_lang == "cs" %}selected{% endif %}>Čeština</option>
+							<option value="en" {% if email_lang == "en" %}selected{% endif %}>English</option>
+						</select>
+						<p class="mt-1 text-xs text-muted-fg">{{ "alarms.notify.email.lang_hint"|t }}</p>
+						{% endcall %}
+					</div>
+
+					{# The origin e-mail links start with (UX-027). The button fills
+					   in the address this browser reached the portal at. #}
+					<div x-data='{ url: {{ email.public_url | default("", true) | tojson }} }'>
+						{% call field("alarms.notify.email.public_url_label"|t) %}
+						<div class="flex flex-wrap items-center gap-2 mt-1">
+							<input type="url" name="public_url" class="input-v1 input-v1-sm flex-1 min-w-0" x-model="url"
+								value="{{ email.public_url | default('', true) }}" placeholder="https://{{ brand.id }}.example.com">
+							<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" @click="url = window.location.origin">
+								{{ "alarms.notify.email.public_url_use_current"|t }}
+							</button>
+						</div>
+						<p class="mt-1 text-xs text-muted-fg">{{ "alarms.notify.email.public_url_hint"|t }}</p>
+						<p class="mt-1 text-xs text-warning" x-show="!url.trim()"{% if email.public_url %} style="display: none"{% endif %}>{{ "alarms.email.link.missing"|t }}</p>
+						{% endcall %}
+					</div>
+
+					<div x-show="provider === 'sendgrid'">
+						{% call field("alarms.notify.email.api_key_label"|t) %}
+						<input type="password" name="api_key" class="input-v1 input-v1-sm mt-1" autocomplete="off"
+							placeholder="{% if email.api_key_set %}{{ "alarms.notify.saved_placeholder"|t }}{% else %}{{ "alarms.notify.email.api_key_placeholder"|t }}{% endif %}">
+						<p class="mt-1 text-xs text-muted-fg">{{ "alarms.notify.email.api_key_hint"|t }}</p>
+						{%- if email.api_key_set %}
+						<label class="mt-1 flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" name="clear_api_key" value="true" class="checkbox-v1"> {{ "alarms.notify.clear_saved"|t }}</label>
+						{%- endif %}
+						{% endcall %}
+					</div>
+
+					<div x-show="provider === 'smtp'" class="flex flex-col gap-3">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+							{% call field("Host") %}
+							<input type="text" name="smtp_host" class="input-v1 input-v1-sm mt-1" value="{{ email.smtp.host | default('', true) }}">
+							{% endcall %}
+							{% call field("Port") %}
+							<input type="number" name="smtp_port" class="input-v1 input-v1-sm mt-1" value="{{ email.smtp.port | default('', true) }}">
+							{% endcall %}
+							{% call field("alarms.notify.email.smtp_username_label"|t) %}
+							<input type="text" name="smtp_username" class="input-v1 input-v1-sm mt-1" value="{{ email.smtp.username | default('', true) }}" autocomplete="off">
+							{% endcall %}
+							{% call field("alarms.notify.email.smtp_password_label"|t) %}
+							<input type="password" name="smtp_password" class="input-v1 input-v1-sm mt-1" autocomplete="off"
+								placeholder="{% if email.smtp.password_set %}{{ "alarms.notify.saved_placeholder"|t }}{% else %}{{ "alarms.notify.email.smtp_password_placeholder"|t }}{% endif %}">
+							{%- if email.smtp.password_set %}
+							<label class="mt-1 flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" name="clear_smtp_password" value="true" class="checkbox-v1"> {{ "alarms.notify.clear_saved"|t }}</label>
+							{%- endif %}
+							{% endcall %}
+						</div>
+						<div class="flex flex-wrap items-center gap-4">
+							<label class="flex items-center gap-2 text-sm cursor-pointer">
+								<input type="checkbox" name="smtp_use_tls" value="true" class="checkbox-v1" {% if email.smtp.use_tls %}checked{% endif %}>
+								STARTTLS
+							</label>
+							<label class="flex items-center gap-2 text-sm cursor-pointer">
+								<input type="checkbox" name="smtp_use_ssl" value="true" class="checkbox-v1" {% if email.smtp.use_ssl %}checked{% endif %}>
+								SSL
+							</label>
+							<span class="text-xs text-muted-fg">{{ "alarms.notify.email.smtp_password_hint"|t }}</span>
+						</div>
+					</div>
+
+					<div>
+						<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" hx-post="/settings/notifications/test-email" hx-target="#command-status" hx-swap="outerHTML">
+							{{ ic.icon("mail", "h-4 w-4") }}{{ "alarms.notify.email.test_button"|t }}
+						</button>
+					</div>
+				</div>
+				{% endcall %}
+			</div>
+
+			{# Webhook. x-show only hides: the inputs still submit, so saving
+			   while disabled keeps the stored values. #}
+			<div x-data="{ enabled: {% if webhook.enabled %}true{% else %}false{% endif %} }">
+				{% call setting_row("Webhook", "alarms.notify.webhook.row_desc"|t) %}
+				<div class="flex flex-col gap-3">
+					<label class="flex items-center gap-3 w-fit cursor-pointer">
+						<input type="checkbox" name="webhook_enabled" value="true" class="toggle toggle-sm" x-model="enabled" {% if webhook.enabled %}checked{% endif %}>
+						<span class="text-sm">{{ "alarms.notify.enabled_label"|t }}</span>
+					</label>
+					<div x-show="enabled" class="flex flex-col gap-3">
+						<div class="grid grid-cols-1 sm:grid-cols-[1fr_8rem] gap-3">
+							{% call field("URL") %}
+							<input type="url" name="url" class="input-v1 input-v1-sm mt-1" value="{{ webhook.url | default('', true) }}">
+							{% endcall %}
+							{% call field("alarms.notify.webhook.method_label"|t) %}
+							<select name="method" class="input-v1 input-v1-sm select-v1 mt-1">
+								<option value="POST" {% if webhook.method == "POST" %}selected{% endif %}>POST</option>
+								<option value="PUT" {% if webhook.method == "PUT" %}selected{% endif %}>PUT</option>
+							</select>
+							{% endcall %}
+						</div>
+						{% call field("alarms.notify.webhook.headers_label"|t) %}
+						{%- if webhook.headers_set %} <span class="badge-outline-v1">{{ "alarms.notify.saved_badge"|t }}</span>{% endif %}
+						<textarea name="headers" class="input-v1 input-v1-sm mt-1 font-mono h-auto" rows="2"
+							placeholder="{{ "alarms.notify.webhook.headers_placeholder"|t }}"></textarea>
+						<p class="mt-1 text-xs text-muted-fg">{{ ("alarms.notify.webhook.headers_hint"|t)|replace("{example}", '<code class="font-mono">Name: value</code>')|safe }}</p>
+						{%- if webhook.headers_set %}
+						<label class="mt-1 flex items-center gap-2 text-xs cursor-pointer"><input type="checkbox" name="clear_headers" value="true" class="checkbox-v1"> {{ "alarms.notify.clear_saved"|t }}</label>
+						{%- endif %}
+						{% endcall %}
+						<div class="grid grid-cols-2 gap-3 sm:max-w-sm">
+							{% call field("alarms.notify.webhook.timeout_label"|t) %}
+							<input type="number" name="timeout_s" class="input-v1 input-v1-sm mt-1" min="1" max="60" value="{{ webhook.timeout_s }}">
+							{% endcall %}
+							{% call field("alarms.notify.webhook.max_attempts_label"|t) %}
+							<input type="number" name="max_attempts" class="input-v1 input-v1-sm mt-1" min="1" max="10" value="{{ webhook.max_attempts }}">
+							{% endcall %}
+						</div>
+						<label class="flex items-start gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="webhook_lifecycle" value="true" class="checkbox-v1 mt-0.5" {% if webhook.lifecycle %}checked{% endif %}>
+							<span>{{ "alarms.notify.webhook.lifecycle_label"|t }}
+								<span class="block text-xs text-muted-fg">{{ "alarms.notify.webhook.lifecycle_hint"|t }}</span></span>
+						</label>
+						<div>
+							<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" hx-post="/settings/notifications/test-webhook" hx-target="#command-status" hx-swap="outerHTML">
+								{{ ic.icon("zap", "h-4 w-4") }}{{ "alarms.notify.webhook.test_button"|t }}
+							</button>
+						</div>
+					</div>
+				</div>
+				{% endcall %}
+			</div>
+		</div>
+		{% endif %}
+
+		{# --- Rules: what raises a notification ---------------------------- #}
+		<div class="card-v1 divide-y divide-base-300">
+			<div class="px-5 py-3">
+				<h2 class="text-base font-semibold">{{ "alarms.notify.rules_heading"|t }}</h2>
+			</div>
+
+			{# Alarm pop-ups. No form fields: the state is per-BROWSER
+			   (localStorage, shared across this browser's tabs) and the
+			   `alarmToastMute` component that fronts it lives in
+			   partials/alarm_toasts.html, next to the toast lifecycle. #}
+			<div x-data="alarmToastMute">
+				{% call setting_row("alarms.notify.popups.heading"|t, "alarms.notify.popups.description"|t) %}
+				<div class="flex flex-wrap items-center gap-3">
+					<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" x-show="!isMuted" @click="mute()">
+						{{ ic.icon("bell-off", "h-4 w-4") }}{{ "alarms.notify.popups.mute_button"|t }}
+					</button>
+					<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" x-show="isMuted" @click="unmute()">
+						{{ ic.icon("bell", "h-4 w-4") }}{{ "alarms.notify.popups.unmute_button"|t }}
+					</button>
+					{# The label rides a data attribute: inlining a quoted string
+					   into a double-quoted x-text would end the attribute at its
+					   first quote. #}
+					<span class="text-xs text-muted-fg" x-show="isMuted"
+						data-label="{{ "alarms.notify.popups.muted_until"|t }}"
+						x-text="$el.dataset.label.replace('{time}', untilLabel)"></span>
+					<span class="text-xs text-muted-fg" x-show="!isMuted">{{ "alarms.notify.popups.scope_hint"|t }}</span>
+				</div>
+				{% endcall %}
+			</div>
+
+			{# Default alarm recipients (decisions.md #31): the sensor-alarm
+			   e-mails of every Hub without its own recipients below. A manager
+			   edits it like the Hub section. #}
+			{% call setting_row("alarms.notify.defaults.heading"|t, "alarms.notify.defaults.row_desc"|t) %}
+			{{ recipients_editor("default_recipients", default_recipients) }}
+			{% endcall %}
+
+			{# Device alarms — a manager may edit it too. #}
+			<div x-data="{ enabled: {% if device.enabled %}true{% else %}false{% endif %} }">
+				{% call setting_row("alarms.notify.device.heading"|t, device.hostname | default(("alarms.notify.device.row_desc"|t), true)) %}
+				<div class="flex flex-col gap-3">
+					{#- Each Hub has its own recipients and toggles. Picking another
+					    one reloads the page for it; the hidden field says which
+					    Hub a save is for. -#}
+					<input type="hidden" name="hub" value="{{ device.hostname | default('', true) }}">
+					{% if hubs | length > 1 %}
+					{% call field("alarms.notify.device.hub_label"|t) %}
+					<select class="input-v1 select-v1 input-v1-sm mt-1 w-fit" aria-label="{{ "alarms.notify.device.hub_label"|t }}"
+						onchange="location.href='/settings/notifications?hub=' + encodeURIComponent(this.value)">
+						{% for h in hubs %}
+						<option value="{{ h.hostname }}" {% if h.hostname == device.hostname %}selected{% endif %}>{{ h.name }}{% if h.name != h.hostname %} ({{ h.hostname }}){% endif %}{% if h.no_recipients %} · {{ "alarms.notify.device.hub_no_recipients"|t }}{% endif %}</option>
+						{% endfor %}
+					</select>
+					{% endcall %}
+					{% endif %}
+					{% if device.hostname and not device.own %}
+					<p class="text-xs text-muted-fg">{{ "alarms.notify.device.uses_defaults"|t }}</p>
+					{% endif %}
+					<label class="flex items-center gap-3 w-fit cursor-pointer">
+						<input type="checkbox" name="device_enabled" value="true" class="toggle toggle-sm" x-model="enabled" {% if device.enabled %}checked{% endif %}>
+						<span class="text-sm">{{ "alarms.notify.enabled_label"|t }}</span>
+					</label>
+					<div x-show="enabled" class="flex flex-col gap-3">
+						{{ recipients_editor("device_recipients", device.recipients) }}
+						<div class="flex flex-wrap gap-4">
+							<label class="flex items-center gap-2 text-sm cursor-pointer">
+								<input type="checkbox" name="notify_on_alarm" value="true" class="checkbox-v1" {% if device.notify_on_alarm %}checked{% endif %}>
+								{{ "alarms.notify.device.notify_on_alarm"|t }}
+							</label>
+							<label class="flex items-center gap-2 text-sm cursor-pointer">
+								<input type="checkbox" name="notify_on_clear" value="true" class="checkbox-v1" {% if device.notify_on_clear %}checked{% endif %}>
+								{{ "alarms.notify.device.notify_on_clear"|t }}
+							</label>
+							<label class="flex items-center gap-2 text-sm cursor-pointer">
+								<input type="checkbox" name="notify_on_ack" value="true" class="checkbox-v1" {% if device.notify_on_ack %}checked{% endif %}>
+								{{ "alarms.notify.device.notify_on_ack"|t }}
+							</label>
+						</div>
+					</div>
+				</div>
+				{% endcall %}
+			</div>
+
+			{% if is_admin %}
+			{# System alerts: the hub itself, not its sensors. One line per
+			   alert — the switch and its threshold on the same row, so the
+			   ones without a threshold simply have nothing on the right. #}
+			{% call setting_row("alarms.notify.system.heading"|t, "alarms.notify.system.row_desc"|t) %}
+			<div class="flex flex-col gap-3">
+				{{ recipients_editor("system_recipients", system.recipients) }}
+				<div class="divide-y divide-base-300 border-t border-base-300">
+					<div class="grid gap-2 sm:grid-cols-2 sm:items-center py-2.5">
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="battery_enabled" value="true" class="checkbox-v1" {% if system.battery_enabled %}checked{% endif %}>
+							{{ "alarms.notify.system.battery_label"|t }}
+						</label>
+						<div class="flex items-center gap-2">
+							<input type="number" name="battery_threshold" step="0.1" min="1" max="100" class="input-v1 input-v1-sm flex-1 min-w-0"
+								value="{{ system.battery_threshold }}" placeholder="{{ "alarms.notify.threshold_placeholder"|t }}"
+								title="{{ "alarms.notify.system.battery_hint"|t }}">
+							<span class="text-sm text-muted-fg">%</span>
+						</div>
+					</div>
+					<div class="grid gap-2 sm:grid-cols-2 sm:items-center py-2.5">
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="storage_enabled" value="true" class="checkbox-v1" {% if system.storage_enabled %}checked{% endif %}>
+							{{ "alarms.notify.system.storage_label"|t }}
+						</label>
+						<div class="flex items-center gap-2">
+							<input type="number" name="storage_threshold" step="0.1" min="50" max="100" class="input-v1 input-v1-sm flex-1 min-w-0"
+								value="{{ system.storage_threshold }}" placeholder="{{ "alarms.notify.threshold_placeholder"|t }}"
+								title="{{ "alarms.notify.system.storage_hint"|t }}">
+							<span class="text-sm text-muted-fg">%</span>
+						</div>
+					</div>
+					<div class="grid gap-2 sm:grid-cols-2 sm:items-center py-2.5">
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="version_mismatch_enabled" value="true" class="checkbox-v1" {% if system.version_mismatch_enabled %}checked{% endif %}>
+							{{ "alarms.notify.system.version_mismatch_label"|t }}
+						</label>
+						<input type="text" name="expected_version" class="input-v1 input-v1-sm"
+							value="{{ system.expected_version | default('', true) }}"
+							placeholder="{{ "alarms.notify.system.expected_version_placeholder"|t }}"
+							title="{{ "alarms.notify.system.expected_version_hint"|t }}">
+					</div>
+					<div class="flex flex-wrap gap-4 py-2.5">
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="network_enabled" value="true" class="checkbox-v1" {% if system.network_enabled %}checked{% endif %}>
+							{{ "alarms.notify.system.network_label"|t }}
+						</label>
+						<label class="flex items-center gap-2 text-sm cursor-pointer">
+							<input type="checkbox" name="device_offline_enabled" value="true" class="checkbox-v1" {% if system.device_offline_enabled %}checked{% endif %}>
+							{{ "alarms.notify.system.device_offline_label"|t }}
+						</label>
+					</div>
+				</div>
+			</div>
+			{% endcall %}
+			{% endif %}
+		</div>
+
+		<div class="flex justify-end">
+			<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">{{ "common.actions.save"|t }}</button>
+		</div>
+	</form>
+
+	{# --- Delivery history ---------------------------------------------- #}
+	{% call ui.table_card() %}
+	<table class="w-full caption-bottom text-sm">
+		<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+			<tr>
+				{{ ui.th("alarms.notify.history.table.sent"|t) }}
+				{{ ui.th("Hub") }}
+				{{ ui.th("alarms.notify.history.table.event"|t) }}
+				{{ ui.th("alarms.notify.history.table.source"|t) }}
+				{{ ui.th("alarms.notify.recipients_label"|t) }}
+				{{ ui.th("alarms.notify.history.table.subject"|t) }}
+				{{ ui.th("alarms.notify.history.table.status"|t) }}
+			</tr>
+		</thead>
+		<tbody>
+			{% for h in history %}
+			<tr class="border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+				<td class="whitespace-nowrap text-sm tabular-nums">{{ h.sent_at|short_dt("full") }}</td>
+				<td class="text-sm">{{ h.hostname | default("–", true) }}</td>
+				<td class="text-sm">{{ ("alarms.event_type." ~ h.event_type)|t }}</td>
+				<td class="text-sm">
+					{{ ("alarms.source." ~ h.source)|t }}
+					{% if h.provider %}<span class="text-xs text-muted-fg">({{ h.provider }})</span>{% endif %}
+				</td>
+				<td class="text-xs">{{ h.recipients | join(", ") }}</td>
+				<td class="text-sm">{{ h.subject | default("–", true) }}</td>
+				<td>
+					<span class="badge-status {% if h.status == 'sent' or h.status == 'success' %}badge-status-normal{% elif h.status == 'failed' or h.status == 'error' %}badge-status-critical{% else %}badge-status-neutral{% endif %}">{{ ("alarms.delivery_status." ~ h.status)|t }}</span>
+					{% if h.error_message %}
+					<details class="mt-1">
+						<summary class="text-xs cursor-pointer text-muted-fg">{{ "alarms.notify.history.error_toggle"|t }}</summary>
+						<pre class="text-xs bg-muted rounded-box p-2 mt-1 whitespace-pre-wrap">{{ h.error_message }}</pre>
+					</details>
+					{% endif %}
+				</td>
+			</tr>
+			{% else %}
+			<tr><td colspan="7" class="text-center text-muted-fg py-10">{{ "alarms.notify.history.empty"|t }}</td></tr>
+			{% endfor %}
+		</tbody>
+	</table>
+	{% endcall %}
+	<div class="flex items-center justify-between">
+		{% if history_total > 0 %}
+		<span class="text-sm text-muted-fg">
+			{{ "common.pagination.range"|t|replace("{a}", hoffset + 1)|replace("{b}", hoffset + hlimit if hoffset + hlimit < history_total else history_total)|replace("{total}", history_total) }}
+		</span>
+		{% else %}
+		<span class="text-sm text-muted-fg">{{ "common.pagination.none"|t }}</span>
+		{% endif %}
+		<div class="flex gap-2">
+			<a href="/settings/notifications?hoffset={{ hoffset - hlimit if hoffset - hlimit > 0 else 0 }}"
+				class="btn-v1 btn-v1-outline btn-v1-sm {% if hoffset <= 0 %}pointer-events-none opacity-50{% endif %}">{{ "common.pagination.prev"|t }}</a>
+			<a href="/settings/notifications?hoffset={{ hoffset + hlimit }}"
+				class="btn-v1 btn-v1-outline btn-v1-sm {% if hoffset + hlimit >= history_total %}pointer-events-none opacity-50{% endif %}">{{ "common.pagination.next"|t }}</a>
+		</div>
+	</div>
+</div>
+
+<script>
+	// The recipients_editor macro's Alpine component (both instances share
+	// it). alpine:init fires because this inline script runs before the
+	// deferred alpine.min.js in layout/base.html executes. `plausible`
+	// mirrors routes::notification_routes::is_plausible_email exactly — no
+	// whitespace, a non-empty local part before the first '@', and a
+	// dot-bearing domain that neither starts nor ends with the dot — so the
+	// client never rejects an address the server would take, or vice versa.
+	document.addEventListener('alpine:init', function () {
+		Alpine.data('recipientsEditor', function (initial) {
+			function plausible(s) {
+				if (/\s/.test(s)) return false;
+				var at = s.indexOf('@');
+				if (at < 1) return false;
+				var domain = s.slice(at + 1);
+				return domain.indexOf('.') !== -1 && domain[0] !== '.' && domain[domain.length - 1] !== '.';
+			}
+			return {
+				list: initial,
+				open: false,
+				draft: '',
+				invalid: false,
+				add: function () {
+					var self = this;
+					var lines = this.draft.split('\n')
+						.map(function (s) { return s.trim(); })
+						.filter(function (s) { return s.length > 0; });
+					var bad = lines.filter(function (l) { return !plausible(l); });
+					lines.forEach(function (l) {
+						if (plausible(l) && self.list.indexOf(l) === -1) self.list.push(l);
+					});
+					// Invalid lines stay in the box so nothing typed is lost.
+					this.draft = bad.join('\n');
+					this.invalid = bad.length > 0;
+					if (!this.invalid) this.open = false;
+				},
+				cancel: function () {
+					this.open = false;
+					this.draft = '';
+					this.invalid = false;
+				},
+				remove: function (i) {
+					this.list.splice(i, 1);
+				},
+			};
+		});
+	});
+</script>
+{% endblock %}

@@ -1,0 +1,226 @@
+{#
+  Alarm list table + pagination (M6-T context contract, P2 v1-style restyle).
+
+  Context: {
+    alarms: [ {
+      id: string, hostname: string, sensor_id: string,
+      sensor_name: string|none, sensor_location: string|none,
+      alarm_type: string, severity: "warning"|"critical",
+      max_severity: "warning"|"critical",  -- worst reached; the badge shows it
+      to_state: string|none, message: string|none,
+      value: float|none, threshold: float|none,
+      triggered_at: string, cleared_at: string|none,
+      acknowledged_at: string|none, acknowledged_by_username: string|none,
+      triggered_at_raw: string, cleared_at_raw: string|none
+    }, ... ] (triggered_at/cleared_at are pre-formatted display strings, per
+      M1's render.rs convention; the _raw pair is the same instants kept as
+      RFC3339 for this table's `short_dt` columns — see render.rs's
+      `AlarmCtx` doc comment),
+    total: int, limit: int, offset: int,
+    filter: { hostname: string|none, severity: string|none,
+      alarm_type: string|none, include_acknowledged: bool,
+      include_cleared: bool },
+    bulk_summary: string|none,  -- set by routes::alarm_routes::bulk_acknowledge's
+                                -- htmx re-render: "Acknowledged N alarms, M
+                                -- skipped", already localized (not a `t` key)
+    bulk_error: string|none     -- ditto, an `alarms.errors.*` key (blank
+                                -- reason) run through `|t` here instead
+  }
+
+  Root is the SSE swap target: id/sse-swap "alarm-table", hx-swap="outerHTML"
+  — same "partial owns its own swap-target id" shape as
+  partials/backfill_jobs.html/users_table.html. The server re-renders this
+  whole table (current page, current filter) whenever an alarm_events row
+  changes (raised/cleared/acknowledged) for the portal's Hub. `data-search`
+  on each row feeds pages/alarms.html's client-side search box.
+
+  v1 AlarmTable.tsx columns (viewer/frontend/components/alarms/AlarmTable.tsx)
+  are Location/Name/Field/Type/Value/Start/End/Length/Status/Actions; this
+  drops "Field" (always "Temperature" — there is no distinct measured-field
+  value in this contract, and inventing one would be display-only noise) and
+  drops "Length" outright (P2: with today's data it can only ever read
+  "ongoing"/"–" — no duration is computed server-side, and the pre-formatted
+  timestamp strings cannot be subtracted in a template — so the column added
+  width without adding information; End already shows whether it's over).
+  Start/End render through `short_dt` off `triggered_at_raw`/`cleared_at_raw`
+  (render.rs's `alarm_ctx`) rather than the pre-formatted `triggered_at`/
+  `cleared_at` fields, so the table stays inside 1440px — the full
+  "YYYY-MM-DD HH:MM:SS UTC" strings were what overflowed it.
+  Type renders as v1's filled severity pill, carrying alarm_type alone
+  + severity, both through `t` since `cs` translates them, so raw `|upper`
+  would be wrong — `uppercase` is a CSS transform instead). Status is v1's
+  outline Active/Ended pill plus a separate outline Pending/Acknowledged pill
+  (an alarm can be acknowledged while still active, so it is not a state of
+  its own — same M6-T convention as before).
+
+  Prev/next mirror partials/audit_table.html's plain-GET-with-hidden-inputs
+  pattern (no `urlencode` filter available — see that partial's header) and
+  carry the full filter (including the single-Hub `hostname`) forward.
+
+  M9: severity/alarm_type/state values are dynamic `alarms.severity.*`/
+  `alarms.type.*`/`alarms.state.*` keys (see i18n/en/alarms.json); the
+  "Cleared"/"Active" state-label fallback (no `to_state` on the row) and the
+  pagination summary reuse `alarms.lifecycle.*`/`common.pagination.*` —
+  same keys pages/alarm_detail.html's body partial and partials/
+  audit_table.html use, so the wording stays identical everywhere.
+
+  Bulk acknowledge: the first column is a per-row checkbox, `name="ids[]"`,
+  present only for a still-acknowledgeable row (mirrors alarm_detail_body.
+  html's `can_ack`: not yet acknowledged, ended or not, decisions.md #28d) —
+  an acknowledged alarm gets an empty cell instead, nothing to select. Every
+  checkbox carries `form="alarm-bulk-ack-form"` so it can live inside a
+  `<td>` while still submitting with the bulk form declared further up
+  (HTML5 lets an input outside a `<form>` submit with it by id). The header
+  checkbox is select-all, pure UI (no `name`, never submitted itself) —
+  pages/alarms.html's script drives both the counter and the enable state,
+  re-bound on `htmx:afterSwap` since this whole subtree — bulk bar
+  included — is what gets replaced on every filter change and on the bulk
+  form's own response.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as row %}
+{% import "partials/alarm_row.html" as ar %}
+{# `sse_live` (default true, the SSE re-render path's shape): whether this
+   instance carries the `sse-swap` attribute at all. pages/alarms.html and
+   the bulk-ack htmx response set it FALSE: the SSE re-render uses a fixed
+   default filter (sse.rs handle_alarm_nudge), and now that the SSE
+   connection lives on layout/base.html's app shell — every page holds one —
+   a live-swapping table on /alarms would clobber whatever filter the user
+   picked on the very next alarm mutation. Without the attribute no listener
+   is registered, so the page's table stays exactly what the filter asked
+   for (its pre-base-shell behavior, when /alarms simply had no connection). #}
+{% set sse_live = sse_live if sse_live is defined else true %}
+{#- LE-17: the bulk controls only for a role the server lets acknowledge (manager, admin);
+    the SSE re-render has no user and draws none. -#}
+{% set can_act = current_user is defined and current_user and current_user.user_role in ["manager", "admin"] %}
+<div id="alarm-table" {% if sse_live %}sse-swap="alarm-table" hx-swap="outerHTML" {% endif %}class="space-y-3">
+	{% if bulk_error %}
+	<div role="alert" class="alert alert-error"><span>{{ bulk_error|t }}</span></div>
+	{% elif bulk_summary %}
+	<div role="status" class="alert alert-success"><span>{{ bulk_summary }}</span></div>
+	{% endif %}
+
+	<form id="alarm-bulk-ack-form" hx-post="/alarms/acknowledge" hx-target="#alarm-table" hx-swap="outerHTML">
+		<input type="hidden" name="hostname" value="{{ filter.hostname | default('', true) }}">
+		<input type="hidden" name="severity" value="{{ filter.severity | default('', true) }}">
+		<input type="hidden" name="alarm_type" value="{{ filter.alarm_type | default('', true) }}">
+		<input type="hidden" name="to_state" value="{{ filter.to_state | default('', true) }}">
+		<input type="hidden" name="field" value="{{ filter.field | default('', true) }}">
+		{#- The search joins the other filters in all three carriers (the bulk
+		    form and both page links): it is a SQL clause now, so dropping it
+		    here would silently widen the list under a paging click. -#}
+		<input type="hidden" name="q" value="{{ filter.q | default('', true) }}">
+		{% if filter.include_acknowledged %}<input type="hidden" name="include_acknowledged" value="true">{% endif %}
+		{% if filter.include_cleared %}<input type="hidden" name="include_cleared" value="true">{% endif %}
+		<input type="hidden" name="sort" value="{{ sort }}">
+		<input type="hidden" name="dir" value="{{ dir }}">
+		<input type="hidden" name="limit" value="{{ limit }}">
+		<input type="hidden" name="offset" value="{{ offset }}">
+		{% if can_act %}
+		<div id="alarm-bulk-bar" class="card-v1 bg-primary/5 border-primary/30 p-3 hidden flex flex-col gap-2">
+			<div class="flex items-center gap-1.5 text-sm font-medium">
+				{{ ic.icon("circle-check", "h-4 w-4 text-primary") }}
+				<span id="alarm-bulk-count">0</span> {{ "alarms.bulk.selected_suffix"|t }}
+			</div>
+			<textarea id="alarm-bulk-reason" name="reason" rows="2" class="input-v1 w-full"
+				placeholder="{{ "alarms.bulk.reason_placeholder"|t }}"></textarea>
+			<div class="flex items-center justify-end gap-2">
+				<button type="button" id="alarm-bulk-clear-btn" class="btn-v1 btn-v1-outline btn-v1-sm">{{ "alarms.bulk.clear_button"|t }}</button>
+				<button type="submit" id="alarm-bulk-ack-btn" class="btn-v1 btn-v1-success btn-v1-sm" disabled>
+					{{ ic.icon("check", "h-4 w-4") }}<span>{{ "alarms.bulk.acknowledge_label"|t }} (<span id="alarm-bulk-ack-count">0</span>)</span>
+				</button>
+			</div>
+		</div>
+		{% endif %}
+	</form>
+
+	{#- The shared selectable table (portal-select.js): checkbox column,
+	    header select-all, Shift-range, a viewport-fit scroll area. A row
+	    click still opens the alarm (data-select-rowclick="0"). -#}
+	<div class="card-v1 overflow-hidden" data-select data-select-active="{{ 1 if can_act else 0 }}" data-select-rowclick="0" id="alarm-select">
+	<div class="relative w-full overflow-auto" data-fit-viewport data-fit-below="#alarm-pager">
+	<table class="w-full caption-bottom text-sm">
+		<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+			<tr>
+				{% if can_act %}<th class="h-12 px-4 w-10 text-left align-middle" data-select-col><input type="checkbox" id="alarm-select-all" class="checkbox-v1" data-select-all aria-label="{{ "alarms.bulk.select_all"|t }}"></th>{% endif %}
+				{#- Six of the eight sort in SQL. Length is computed from two
+				    columns and State from three, so neither is a column the
+				    database can order by without a view — they stay plain,
+				    exactly as the client lists leave their derived columns. -#}
+				{{ ui.sort_th_link("monitoring.list.item_column"|t, "name", "/alarms", sort_qs, sort, dir, "sticky left-0 z-30") }}
+				{{ ui.sort_th_link("alarms.table.location"|t, "loc", "/alarms", sort_qs, sort, dir, "", "loc") }}
+				{{ ui.sort_th_link("alarms.type_label"|t, "type", "/alarms", sort_qs, sort, dir, "", "type") }}
+				{{ ui.th("alarms.table.state"|t, "", "state") }}
+				{{ ui.sort_th_link("alarms.table.activated"|t, "start", "/alarms", sort_qs, sort, dir, "", "start") }}
+				{{ ui.sort_th_link("monitoring.shared.value_column"|t, "value", "/alarms", sort_qs, sort, dir, "hidden", "value") }}
+				{{ ui.sort_th_link("alarms.table.end"|t, "end", "/alarms", sort_qs, sort, dir, "hidden", "end") }}
+				{{ ui.th("alarms.table.length"|t, "hidden", "length") }}
+				<th class="h-12 px-4"></th>
+			</tr>
+		</thead>
+		<tbody>
+			{% for a in alarms %}
+			{{ ar.alarm_row(a, can_act) }}
+			{% else %}
+			{#- Two different facts, as on every other list. Here the server
+			    knows which one applies: it ran the filter. -#}
+			<tr><td colspan="{{ 10 if can_act else 9 }}" class="py-10 text-center text-muted-fg">{% if filtered %}{{ "common.list.no_match"|t }}{% else %}{{ "alarms.table.empty"|t }}{% endif %}</td></tr>
+			{% endfor %}
+		</tbody>
+	</table>
+	</div>
+	</div>
+
+	<div id="alarm-pager" class="flex items-center justify-between">
+		{% if total > 0 %}
+		{% set range_end = offset + limit if offset + limit < total else total %}
+		<span class="text-sm text-muted-fg">
+			{{ "common.pagination.range"|t|replace("{a}", offset + 1)|replace("{b}", range_end)|replace("{total}", total) }}
+		</span>
+		{% else %}
+		<span class="text-sm text-muted-fg">{{ "common.pagination.none"|t }}</span>
+		{% endif %}
+		<div class="flex gap-2">
+			<form method="get" action="/alarms">
+				<input type="hidden" name="hostname" value="{{ filter.hostname | default('', true) }}">
+				<input type="hidden" name="severity" value="{{ filter.severity | default('', true) }}">
+				<input type="hidden" name="alarm_type" value="{{ filter.alarm_type | default('', true) }}">
+		<input type="hidden" name="to_state" value="{{ filter.to_state | default('', true) }}">
+		<input type="hidden" name="field" value="{{ filter.field | default('', true) }}">
+		{#- The search joins the other filters in all three carriers (the bulk
+		    form and both page links): it is a SQL clause now, so dropping it
+		    here would silently widen the list under a paging click. -#}
+		<input type="hidden" name="q" value="{{ filter.q | default('', true) }}">
+				{% if filter.include_acknowledged %}<input type="hidden" name="include_acknowledged" value="true">{% endif %}
+				{% if filter.include_cleared %}<input type="hidden" name="include_cleared" value="true">{% endif %}
+				<input type="hidden" name="sort" value="{{ sort }}">
+				<input type="hidden" name="dir" value="{{ dir }}">
+				<input type="hidden" name="limit" value="{{ limit }}">
+				<input type="hidden" name="offset" value="{{ offset - limit if offset - limit > 0 else 0 }}">
+				<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm" {% if offset <= 0 %}disabled{% endif %}>{{ "common.pagination.prev"|t }}</button>
+			</form>
+			<form method="get" action="/alarms">
+				<input type="hidden" name="hostname" value="{{ filter.hostname | default('', true) }}">
+				<input type="hidden" name="severity" value="{{ filter.severity | default('', true) }}">
+				<input type="hidden" name="alarm_type" value="{{ filter.alarm_type | default('', true) }}">
+		<input type="hidden" name="to_state" value="{{ filter.to_state | default('', true) }}">
+		<input type="hidden" name="field" value="{{ filter.field | default('', true) }}">
+		{#- The search joins the other filters in all three carriers (the bulk
+		    form and both page links): it is a SQL clause now, so dropping it
+		    here would silently widen the list under a paging click. -#}
+		<input type="hidden" name="q" value="{{ filter.q | default('', true) }}">
+				{% if filter.include_acknowledged %}<input type="hidden" name="include_acknowledged" value="true">{% endif %}
+				{% if filter.include_cleared %}<input type="hidden" name="include_cleared" value="true">{% endif %}
+				<input type="hidden" name="sort" value="{{ sort }}">
+				<input type="hidden" name="dir" value="{{ dir }}">
+				<input type="hidden" name="limit" value="{{ limit }}">
+				<input type="hidden" name="offset" value="{{ offset + limit }}">
+				<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm" {% if offset + limit >= total %}disabled{% endif %}>{{ "common.pagination.next"|t }}</button>
+			</form>
+		</div>
+	</div>
+</div>
+{#- After a bulk acknowledge the metric row comes back out of band, so
+    "Nepotvrzené" agrees with the rows just switched (routes::alarm_routes). -#}
+{% if stats_oob is defined and stats_oob %}{% include "partials/page_stats.html" %}{% endif %}

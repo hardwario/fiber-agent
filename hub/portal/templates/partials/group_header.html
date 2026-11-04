@@ -1,0 +1,164 @@
+{#
+  ONE group's section header: name, description, the two independent status
+  indicators, and the actions (reorder, edit, CSV).
+
+  Context:
+    s         monitoring::GroupSectionCtx
+    can_edit  bool — manager+, gates the reorder arrows and the pencil
+    is_first  bool — no `up` arrow
+    is_last   bool — no `down` arrow
+
+  Rendered from two places that must not diverge: the page's section loop and
+  `GET /monitoring/groups/{id}/header`, which htmx swaps in when any of this
+  group's rows is nudged. The header's counts are aggregates over the rows, so
+  a row repaint that left the header stale would show "Mimo meze: 0" above a
+  warning row.
+
+  `is_first` / `is_last` are passed in rather than read off `loop`, because the
+  fragment route has no loop — it computes them from `list_sensor_groups`'
+  order, which is the same order the page renders.
+
+  `s.offline_hubs` (#30c) adds one banner line per offline Hub under the
+  description; the Hub's DeviceStatus nudges every row of that Hub, and this
+  header listens on those rows' events, so the banner comes and goes live.
+
+  The two indicators are the two alarm classes and never merge (monitoring.md
+  §3.1, MB0's split): the accent strip and the badge tone are the *value*
+  class, the alert-triangle is the *operational* one.
+
+  Every count here is a group total, never a filtered one, with one
+  exception: while the toolbar filter is active, the channel-count badge
+  reads "{shown} of {n}" (monitoring.md, amendment 2026-10-28, #113), so a
+  header over one visible row does not claim five. The other badges stay
+  totals — the operator asked whether any of the group is out of range, not
+  how much is on screen. §3.2 makes that load-bearing: a
+  collapsed group still has to inform, and that is exactly the case where no
+  row is visible.
+
+  Collapse (§3.2, MB3). The name and the chevron are one `<button
+  class="group-collapse">` with `aria-expanded`; pages/dashboard.html toggles
+  that attribute, swaps the chevron and sets/clears the `hidden` ATTRIBUTE on
+  the section's content (not a CSS class — a screen reader has to see the
+  same state the eye does). The description hides with the content.
+
+  This template always renders the EXPANDED state — `aria-expanded="true"`,
+  `chevron-down`, no `hidden`. Collapse is a client-side preference in
+  localStorage with no server round trip and no audit, so the server has
+  nothing to render it from. Per **browser profile**, not per user (review
+  item 14, 2026-09-10): localStorage is keyed by origin, so two people
+  sharing one browser share the collapse state, and one person on a second
+  machine starts expanded; the script re-applies the stored state on load
+  and after every htmx settle. That matters here because the header is a
+  swap target: a fragment that arrived carrying a collapsed state would be
+  guessing, and one that arrived expanded over a collapsed group is
+  re-collapsed a settle-tick later by the same pass that re-applies the
+  toolbar filter.
+
+  A collapsed group keeps its `hx-get`/`hx-trigger` and so keeps updating —
+  that is the whole reason §3.1 puts the status on the header.
+#}
+{% import "partials/icons.html" as ic %}
+{%- if s.alarm_state == "Critical" %}{% set accent = "bg-critical" %}{% set tone = "badge-outline-critical" %}
+{%- elif s.alarm_state == "Warning" %}{% set accent = "bg-warning" %}{% set tone = "badge-outline-warning" %}
+{%- else %}{% set accent = "bg-success" if s.rows|selectattr("has_limits")|list else "bg-base-300" %}{% set tone = "badge-outline-success" %}{% endif %}
+{%- if s.field_count == 1 %}{% set count_key = "monitoring.groups.field_count_one" %}
+{%- elif s.field_count < 5 %}{% set count_key = "monitoring.groups.field_count_few" %}
+{%- else %}{% set count_key = "monitoring.groups.field_count_many" %}{% endif %}
+{#- An empty group listens on nothing, but the trigger has to be written out
+    anyway: htmx defaults a non-form element with `hx-get` to `click`, so
+    omitting the attribute turns the whole header — name, badges, the CSV
+    button — into a link that silently replaces itself. `sse:mon-none` names
+    an event nothing ever sends, which is inert by construction. (F8.) -#}
+{%- if s.member_events %}{% set row_trigger = "sse:" ~ s.member_events|join(", sse:") %}
+{%- else %}{% set row_trigger = "sse:mon-none" %}{% endif %}
+<div id="group-header-{{ s.id }}" class="flex items-end justify-between gap-3 mb-2"
+	hx-get="/monitoring/groups/{{ s.id }}/header" hx-swap="outerHTML"
+	hx-trigger="{{ row_trigger }}">
+	<div class="flex items-start gap-2 min-w-0">
+		<span class="w-1 self-stretch rounded-full shrink-0 {{ accent }}" aria-hidden="true"></span>
+		<div class="min-w-0">
+			<div class="flex items-center gap-2 flex-wrap">
+				<button type="button" class="group-collapse flex items-center gap-1.5 min-w-0 text-left"
+					data-group="{{ s.id }}" aria-expanded="true" aria-controls="group-body-{{ s.id }}"
+					title="{{ "monitoring.groups.collapse_label"|t }}">
+					{#- Both chevrons are rendered and one is hidden, rather than
+					    the script rewriting an <svg> it would have to carry a
+					    copy of. `chevron-down` = expanded, `chevron-right` =
+					    collapsed, per §3.2. -#}
+					<span class="shrink-0 text-muted-fg">
+						<span class="chevron-expanded">{{ ic.icon("chevron-down", "h-4 w-4") }}</span>
+						<span class="chevron-collapsed" hidden>{{ ic.icon("chevron-right", "h-4 w-4") }}</span>
+					</span>
+					<h2 class="text-lg font-semibold truncate">{{ s.name }}</h2>
+				</button>
+				{#- While the toolbar filter is active, static/js/portal-list.js swaps this
+				    text for "{shown} of {n}" from data-filtered (#113); the
+				    server always renders the unfiltered total. -#}
+				<span class="badge-outline-v1" title="{{ "monitoring.groups.field_count_title"|t }}"
+					data-group-count data-total="{{ s.field_count }}"
+					data-filtered="{{ "monitoring.groups.field_count_filtered"|t|replace("{n}", s.field_count) }}">{{ count_key|t|replace("{n}", s.field_count) }}</span>
+				{% if s.out_of_range %}
+				<span class="badge-outline-v1 {{ tone }}">{{ "monitoring.groups.out_of_range_badge"|t|replace("{n}", s.out_of_range) }}</span>
+				{% endif %}
+				{% if s.fault_count %}
+				<span class="badge-outline-v1 text-muted-fg gap-1"
+					title="{{ "monitoring.groups.fault_badge"|t|replace("{n}", s.fault_count) }}">
+					{{ ic.icon("alert-triangle", "h-3.5 w-3.5") }}{{ s.fault_count }}
+				</span>
+				{% endif %}
+			</div>
+			{% if s.location %}
+			<p class="group-location text-xs text-muted-fg truncate">{{ s.location }}</p>
+			{% endif %}
+			{% if s.description %}
+			<p class="group-description text-sm text-muted-fg truncate">{{ s.description }}</p>
+			{% endif %}
+			{#- #30c: one line per offline Hub whose rows this group holds. It
+			    belongs to the group, not to a row: the rows behind it read
+			    "neznámý" and carry no fault of their own. Outside the
+			    collapsible body, so a collapsed group still says it. -#}
+			{% for h in s.offline_hubs %}
+			<p class="hub-offline-banner flex items-center gap-1.5 text-sm font-medium text-warning">
+				{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0") }}
+				{%- if h.since %}{{ "monitoring.groups.hub_offline_since"|t|replace("{name}", h.name)|replace("{time}", h.since|short_dt) }}
+				{%- else %}{{ "monitoring.groups.hub_offline"|t|replace("{name}", h.name) }}{% endif %}
+			</p>
+			{% endfor %}
+		</div>
+	</div>
+	<div class="flex items-center gap-1 shrink-0">
+		{% if can_edit %}
+		{# Group order is a property of the page, not of the viewer, so
+		   each arrow is a plain manager-gated POST and a redirect —
+		   the same shape as every other group mutation. The arrow at
+		   an end of the list is rendered disabled rather than dropped
+		   so the control row keeps its width from section to section;
+		   the route refuses that move anyway. #}
+		<form method="post" action="/monitoring/groups/{{ s.id }}/move" class="contents">
+			<input type="hidden" name="direction" value="up">
+			<button type="submit" class="btn-v1 btn-v1-ghost btn-v1-icon disabled:opacity-30"
+				{% if is_first %}disabled{% endif %}
+				aria-label="{{ "monitoring.groups.move_up_label"|t }}" title="{{ "monitoring.groups.move_up_label"|t }}">
+				{{ ic.icon("chevron-up", "h-4 w-4 text-muted-fg") }}
+			</button>
+		</form>
+		<form method="post" action="/monitoring/groups/{{ s.id }}/move" class="contents">
+			<input type="hidden" name="direction" value="down">
+			<button type="submit" class="btn-v1 btn-v1-ghost btn-v1-icon disabled:opacity-30"
+				{% if is_last %}disabled{% endif %}
+				aria-label="{{ "monitoring.groups.move_down_label"|t }}" title="{{ "monitoring.groups.move_down_label"|t }}">
+				{{ ic.icon("chevron-down", "h-4 w-4 text-muted-fg") }}
+			</button>
+		</form>
+		<a href="/monitoring/groups/{{ s.id }}/edit" class="btn-v1 btn-v1-ghost btn-v1-icon"
+			aria-label="{{ "monitoring.groups.edit_label"|t }}" title="{{ "monitoring.groups.edit_label"|t }}">
+			{{ ic.icon("pencil", "h-4 w-4 text-muted-fg") }}
+		</a>
+		{% endif %}
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+			onclick="document.getElementById('group-export-{{ s.id }}').showModal()">
+			{{ ic.icon("download", "h-4 w-4") }}CSV
+		</button>
+	</div>
+</div>
+

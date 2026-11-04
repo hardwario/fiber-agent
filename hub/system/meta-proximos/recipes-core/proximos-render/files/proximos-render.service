@@ -1,0 +1,20 @@
+[Unit]
+Description=Render the ProXimos runtime configuration
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/system/design.md https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/portal/monolith.md
+Requires=proximos-data-migrate.service
+After=proximos-data-migrate.service proximos-data-dirs.service data.mount
+RequiresMountsFor=/data
+Before=fiber-portal.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=proximos/portal proximos/control proximos/chirpstack proximos/chirpstack-mqtt-forwarder
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/proximosctl render
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proximos-render
+
+[Install]
+WantedBy=multi-user.target

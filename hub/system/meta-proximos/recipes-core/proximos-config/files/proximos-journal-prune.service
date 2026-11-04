@@ -1,0 +1,14 @@
+[Unit]
+Description=Delete journal directories of old machine-ids
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2/-/issues/127
+# /var/log/journal is /data/log/journal bind-mounted (fstab). Before the mount
+# the directory is the rootfs one, which is harmless to prune but pointless.
+RequiresMountsFor=/var/log/journal
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/proximos-journal-prune.sh
+
+[Install]
+WantedBy=multi-user.target

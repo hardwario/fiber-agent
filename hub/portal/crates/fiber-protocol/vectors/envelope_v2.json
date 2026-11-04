@@ -1,0 +1,361 @@
+{
+  "_consumers": [
+    "fiber-protocol (crates/fiber-protocol/tests/vectors.rs)",
+    "control-core (the device verifier's canonical-string test)",
+    "dev/mock/mock_publisher.py"
+  ],
+  "_source": "plan/portal/mqtt/design.md §3.2, §10 — regenerate with `cargo run -p fiber-protocol --example gen_vectors`",
+  "confirms": [
+    {
+      "canonical": "{\"challenge_id\":\"chal-manage-1\",\"confirmation\":\"APPROVED\",\"level\":\"manage\",\"nonce\":\"7777777777777777aaaaaaaaaaaaaaaa\",\"signer_id\":\"manager\",\"timestamp\":1736775080,\"v\":2}",
+      "envelope": {
+        "challenge_id": "chal-manage-1",
+        "command": "config_confirm",
+        "command_type": "set_threshold",
+        "confirmation": "APPROVED",
+        "level": "manage",
+        "nonce": "7777777777777777aaaaaaaaaaaaaaaa",
+        "signature": "yliXdeF1euAja9l2jcUv8yukZbY4zvm8Vgg0GY5/2weSe6R/tUH3a7RYykIjxrWhvA/5AvOT7lz+CXxYsd01BQ==",
+        "signer_id": "manager",
+        "timestamp": 1736775080,
+        "v": 2
+      },
+      "name": "manage_confirm",
+      "note": "the confirm half of manage_set_threshold"
+    },
+    {
+      "canonical": "{\"challenge_id\":\"chal-admin-1\",\"confirmation\":\"REJECTED\",\"level\":\"admin\",\"nonce\":\"8888888888888888bbbbbbbbbbbbbbbb\",\"signer_id\":\"admin\",\"timestamp\":1736775081,\"v\":2}",
+      "envelope": {
+        "challenge_id": "chal-admin-1",
+        "command": "config_confirm",
+        "command_type": "add_signer",
+        "confirmation": "REJECTED",
+        "level": "admin",
+        "nonce": "8888888888888888bbbbbbbbbbbbbbbb",
+        "signature": "cvRh2jQpixWD/KTUWcnAUtINbjqGIE7RpoRFrdJ3myO1Ie/zow+gdg29eKg7dKkkGJVZanJMiX3WKriYV+nfCg==",
+        "signer_id": "admin",
+        "timestamp": 1736775081,
+        "v": 2
+      },
+      "name": "admin_confirm_rejected",
+      "note": "REJECTED is signed the same way APPROVED is"
+    },
+    {
+      "canonical": "{\"challenge_id\":\"chal-5678\",\"confirmation\":\"APPROVED\",\"level\":\"destructive\",\"nonce\":\"fedcba9876543210fedcba9876543210\",\"signer_id\":\"admin\",\"timestamp\":1736775090,\"v\":2}",
+      "envelope": {
+        "challenge_id": "chal-5678",
+        "command": "config_confirm",
+        "command_type": "factory_reset",
+        "confirmation": "APPROVED",
+        "level": "destructive",
+        "nonce": "fedcba9876543210fedcba9876543210",
+        "signature": "G2jiBsTT8uKi06DSlsA4ufNwcYQCI1w5iV9hSeWA8uByyUiazzNHV8fi9q+XBaXiAGxd/Y4NnaBcSIi3cQZFCA==",
+        "signer_id": "admin",
+        "timestamp": 1736775090,
+        "v": 2
+      },
+      "name": "destructive_confirm",
+      "note": "design.md §3.2's second worked example, byte for byte"
+    }
+  ],
+  "envelope_version": 2,
+  "requests": [
+    {
+      "canonical": "{\"command_type\":\"factory_reset\",\"level\":\"destructive\",\"nonce\":\"0123456789abcdef0123456789abcdef\",\"params\":{\"post_action\":\"reboot\"},\"reason\":\"\",\"request_id\":\"req-1234\",\"signer_id\":\"admin\",\"timestamp\":1736775060,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "factory_reset",
+        "level": "destructive",
+        "nonce": "0123456789abcdef0123456789abcdef",
+        "params": {
+          "post_action": "reboot"
+        },
+        "reason": "",
+        "request_id": "req-1234",
+        "signature": "1osIYLpZp2zNeAJ8Y53VqW0y+/BJKz5lqfg+2YZjhrTr0sFDZ6pH37M7X3G3NNvYY2PPCezAfgVzcZr0IbNyCA==",
+        "signer_id": "admin",
+        "timestamp": 1736775060,
+        "v": 2
+      },
+      "name": "destructive_factory_reset",
+      "note": "design.md §3.2's first worked example, byte for byte"
+    },
+    {
+      "canonical": "{\"command_type\":\"get_sticker_info\",\"level\":\"read\",\"nonce\":\"1111111111111111aaaaaaaaaaaaaaaa\",\"params\":{},\"reason\":\"\",\"request_id\":\"req-read-1\",\"signer_id\":\"viewer\",\"timestamp\":1736775061,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "get_sticker_info",
+        "level": "read",
+        "nonce": "1111111111111111aaaaaaaaaaaaaaaa",
+        "params": {},
+        "reason": "",
+        "request_id": "req-read-1",
+        "signature": "mxI89LyA+kqKsg+xRSPl42FkOmUUVpyqKAW+rsjFjJDoxhjkycCuqPfhzDjhcdFH1cZPG96LoDh1rJc94B+rBg==",
+        "signer_id": "viewer",
+        "timestamp": 1736775061,
+        "v": 2
+      },
+      "name": "read_empty_params",
+      "note": "a read verb with no params — `{}`, never null, and `reason` \"\""
+    },
+    {
+      "canonical": "{\"command_type\":\"silence_buzzer\",\"level\":\"operate\",\"nonce\":\"2222222222222222bbbbbbbbbbbbbbbb\",\"params\":{\"line\":1},\"reason\":\"alarm acknowledged by nurse on shift\",\"request_id\":\"req-op-1\",\"signer_id\":\"manager\",\"timestamp\":1736775062,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "silence_buzzer",
+        "level": "operate",
+        "nonce": "2222222222222222bbbbbbbbbbbbbbbb",
+        "params": {
+          "line": 1
+        },
+        "reason": "alarm acknowledged by nurse on shift",
+        "request_id": "req-op-1",
+        "signature": "ACJIIJB1Rhxzq4bD49vIxe9ujrzaiN7GsVK6o+42IAwa20lhWWU0oKOTzZXZ8YZv4U/7g8dFJwOdtT09u2sXBQ==",
+        "signer_id": "manager",
+        "timestamp": 1736775062,
+        "v": 2
+      },
+      "name": "operate_silence_buzzer",
+      "note": "the verb that had no permission at all in v1 (design.md §4.2 ★)"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_threshold\",\"level\":\"manage\",\"nonce\":\"3333333333333333cccccccccccccccc\",\"params\":{\"alarm_high\":10.0,\"line\":2,\"warning_high\":8.0},\"reason\":\"\",\"request_id\":\"req-man-1\",\"signer_id\":\"manager\",\"timestamp\":1736775063,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_threshold",
+        "level": "manage",
+        "nonce": "3333333333333333cccccccccccccccc",
+        "params": {
+          "alarm_high": 10.0,
+          "line": 2,
+          "warning_high": 8.0
+        },
+        "reason": "",
+        "request_id": "req-man-1",
+        "signature": "HconMaLrKAqY6pe9mDMM3rli+vRddGFAg3NP4Z1xVEyzYXBIfz9Jzp/BF1iVn+R+tOF+wyDQQfL96/eOl1EZAg==",
+        "signer_id": "manager",
+        "timestamp": 1736775063,
+        "v": 2
+      },
+      "name": "manage_set_threshold",
+      "note": "the common manage case"
+    },
+    {
+      "canonical": "{\"command_type\":\"add_signer\",\"level\":\"admin\",\"nonce\":\"4444444444444444dddddddddddddddd\",\"params\":{\"role\":\"viewer\",\"signer_id\":\"nurse01\"},\"reason\":\"\",\"request_id\":\"req-adm-1\",\"signer_id\":\"admin\",\"timestamp\":1736775064,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "add_signer",
+        "level": "admin",
+        "nonce": "4444444444444444dddddddddddddddd",
+        "params": {
+          "role": "viewer",
+          "signer_id": "nurse01"
+        },
+        "reason": "",
+        "request_id": "req-adm-1",
+        "signature": "Ww7lmcjLw0Y4uL7RIQvYk7C7cFwHQGFLS9SEuICNsNBpQZ2kWeG/GVRFQCm/ZAOO8C3FytEQXpCYUsugXyT5AQ==",
+        "signer_id": "admin",
+        "timestamp": 1736775064,
+        "v": 2
+      },
+      "name": "admin_add_signer",
+      "note": "level admin"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_sensor_config\",\"level\":\"manage\",\"nonce\":\"5555555555555555eeeeeeeeeeeeeeee\",\"params\":{\"alpha\":{\"y\":{\"x\":null},\"z\":[{\"m\":1,\"n\":2},{\"a\":true,\"b\":false}]},\"mike\":[3,1,2],\"zulu\":1},\"reason\":\"\",\"request_id\":\"req-nest-1\",\"signer_id\":\"admin\",\"timestamp\":1736775065,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_sensor_config",
+        "level": "manage",
+        "nonce": "5555555555555555eeeeeeeeeeeeeeee",
+        "params": {
+          "alpha": {
+            "y": {
+              "x": null
+            },
+            "z": [
+              {
+                "m": 1,
+                "n": 2
+              },
+              {
+                "a": true,
+                "b": false
+              }
+            ]
+          },
+          "mike": [
+            3,
+            1,
+            2
+          ],
+          "zulu": 1
+        },
+        "reason": "",
+        "request_id": "req-nest-1",
+        "signature": "jFrpJuSGH45vPI9IJ9sIHaBygoG28U+IJhYGiy3vBbpJFIssWUd9whwxlALi/l2ZYR7S6efK667wXkOrm7gYBQ==",
+        "signer_id": "admin",
+        "timestamp": 1736775065,
+        "v": 2
+      },
+      "name": "nested_params",
+      "note": "recursive key sorting: nested objects inside an array inside an object, every level out of order at the source"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_device_label\",\"level\":\"manage\",\"nonce\":\"6666666666666666ffffffffffffffff\",\"params\":{\"label\":\"Lednice č. 3 — sklad\"},\"reason\":\"Přejmenováno správcem: teplotní čidlo \\\"A\\\" → \\\"B\\\"\",\"request_id\":\"req-utf8-1\",\"signer_id\":\"admin\",\"timestamp\":1736775066,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_device_label",
+        "level": "manage",
+        "nonce": "6666666666666666ffffffffffffffff",
+        "params": {
+          "label": "Lednice č. 3 — sklad"
+        },
+        "reason": "Přejmenováno správcem: teplotní čidlo \"A\" → \"B\"",
+        "request_id": "req-utf8-1",
+        "signature": "IykCKoIUD/sPN56gmW5pO/FlS4Za1yq5i2fTMW0UyfQbam3igmPFj/t7fnvEaOI5r9+XbOSURjTNuyR8sK0uAw==",
+        "signer_id": "admin",
+        "timestamp": 1736775066,
+        "v": 2
+      },
+      "name": "non_ascii_reason",
+      "note": "status.md: Python's json.dumps escapes non-ASCII and serde_json does not — the one known way the three implementations could disagree, pinned rather than assumed (design.md §10)"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":21.5},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775070,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": 21.5
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "vQQvab1bKX/kHjHdey5FeK7aeJJa9AI/yuoYrMrcjiXSKxc9eI5J/uZ3kUc/U0QhjxQvhP0THZf0zbrpbUiuDg==",
+        "signer_id": "manager",
+        "timestamp": 1736775070,
+        "v": 2
+      },
+      "name": "float_21_5",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":0.1},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775071,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": 0.1
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "I6G5LlhZuANxA2c2Zt9TBbbgI7PJU3BRJ1oygi5ZupPIKANUc6Xex9R+pVlvh8fVLxHNosZOWVFZ9OA0FiWjAw==",
+        "signer_id": "manager",
+        "timestamp": 1736775071,
+        "v": 2
+      },
+      "name": "float_0_1",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":-18.2},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775072,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": -18.2
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "DH0Fg27bLfuLVRSw3nTVhFl3p3iTM8asiY/1RPCUKDHCG7KA1lwxWDcWSGY3Cp9w7DFP8VTESEBtgxK/zOMfAw==",
+        "signer_id": "manager",
+        "timestamp": 1736775072,
+        "v": 2
+      },
+      "name": "float_negative_18_2",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":2.675},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775073,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": 2.675
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "Ha9VRRLJdWSBlAtA2P3Sz7XLZfyobte+uLEFGXdyZN0pv+DGU5UqgnUzhdikW+WZ4uo9WBrPgHMlMAbuj1yfAQ==",
+        "signer_id": "manager",
+        "timestamp": 1736775073,
+        "v": 2
+      },
+      "name": "float_2_675",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":1e+16},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775074,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": 1e+16
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "RIx85qugyuXlUCyVDi/FA9qtRgxyR592aNMy0zlRxnsKdQNEczXFMRsVaF74DMiHLG95eGSGp0TxV7Y1oafuDQ==",
+        "signer_id": "manager",
+        "timestamp": 1736775074,
+        "v": 2
+      },
+      "name": "float_1e16",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    },
+    {
+      "canonical": "{\"command_type\":\"set_lorawan_field_threshold\",\"level\":\"manage\",\"nonce\":\"99999999999999990000000000000000\",\"params\":{\"dev_eui\":\"aabbccddeeff0011\",\"field\":\"temperature\",\"warning_high\":1e-7},\"reason\":\"\",\"request_id\":\"req-float\",\"signer_id\":\"manager\",\"timestamp\":1736775075,\"v\":2}",
+      "envelope": {
+        "command": "config_request",
+        "command_type": "set_lorawan_field_threshold",
+        "level": "manage",
+        "nonce": "99999999999999990000000000000000",
+        "params": {
+          "dev_eui": "aabbccddeeff0011",
+          "field": "temperature",
+          "warning_high": 1e-7
+        },
+        "reason": "",
+        "request_id": "req-float",
+        "signature": "+yuJcBhNhuHBkcvmWzXxQKKwLX8yFlZmXFlnnhYrPXJ2vV+S8dULHUSQEeCHnjt0u6wHg+cgFV5zTQfdqe6DCA==",
+        "signer_id": "manager",
+        "timestamp": 1736775075,
+        "v": 2
+      },
+      "name": "float_1e_minus_7",
+      "note": "float canonicalization pin — the number text this crate signs is the number text that goes on the wire, and the device's arbitrary_precision verifier echoes it back unchanged"
+    }
+  ],
+  "signing_key": {
+    "public_key_ed25519": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+    "seed_hex": "0707070707070707070707070707070707070707070707070707070707070707"
+  }
+}

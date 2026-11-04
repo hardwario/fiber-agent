@@ -1,0 +1,19 @@
+{
+  "_comment": "cluster-client-add's sealed password (plan/control/cluster.md §7, amended 2026-10-02). Generated with Python cryptography, independently of both Rust implementations; every key here is made up and test only.",
+  "label": "proximos/cluster-client-add/password-seal/v1",
+  "request_id": "0b5e3c1a-4f2d-4e8b-9a6c-7d1e2f3a4b5c",
+  "hostname": "proximos-1a2b3c4d",
+  "password": "Zq3-Xr9_Lm2Kp7Wn4Vb8Tc",
+  "reply_secret_hex": "2ad9025a0586fd2910be02f173c9460a41bb69e0f961c0cd0a9a3e235575e1ab",
+  "reply_key": "1wWpoC1yfr-Mw9EeK1ML134Q3CxHu5Otu_l1wzNrSy0",
+  "agent_secret_hex": "ba36b795a2c5d6bd14ba24689af3ae3ba20d1c971a1596db3e0b839dbcd6618a",
+  "nonce_hex": "e4ad962c9e29fe75eed4092c",
+  "shared_hex": "913991ffe6386faacfc7349d1c4357b367f9b671c8452cd10fca1229810fa942",
+  "info_hex": "70726f78696d6f732f636c75737465722d636c69656e742d6164642f70617373776f72642d7365616c2f76310030623565336331612d346632642d346538622d396136632d3764316532663361346235630070726f78696d6f732d3161326233633464",
+  "key_hex": "4dfe7f910cc35fbc8cfb0f2d3a1c1a8cf2d671cdcc0f89dd04803908c751bf32",
+  "sealed": {
+    "epk": "vfNNEgyZhe9UsrTxS4RB-dStfGO2N_GTd6TwiByIPB4",
+    "nonce": "5K2WLJ4p_nXu1Aks",
+    "ct": "DgVWl6uk5LN-2v0wPxyuGDa3ScwWgYqALx63RQlHR3hJOKOCjEI"
+  }
+}

@@ -1,0 +1,140 @@
+[Unit]
+Description=ProXimos radio provisioning (control.radio create)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/radio/plan.md
+
+# One cross-transport boot oneshot, replacing the transport-named `lorawan-setup` an
+# earlier revision had. `create` with no --radio runs whatever `radio.mode` says: under
+# `dual` it executes both arms sequentially, each with its own outcome, and under `off`
+# it has nothing to converge and says so.
+#
+# THE UNIT IS INSTALLED AND ENABLED ON EVERY IMAGE — an earlier revision of this comment
+# claimed that under `off` it "is not in the service set at all", which was never true of
+# the packaging and is certainly not true now (fiber-portal.bb enables both this and
+# proximos-control.service unconditionally). The mode decides what `create` does, not
+# whether the unit exists, and a mode-conditional service set would need the renderer to
+# enable units — which is exactly the daemon-reload it must not issue (see below).
+#
+# mosquitto is required rather than wanted: gateway EUI discovery is a retained-topic
+# read, so with no broker there is nothing to discover from and the run would report
+# "no radio" for the wrong reason.
+After=proximos-data-migrate.service proximos-render.service data.mount mosquitto.service
+Requires=proximos-render.service mosquitto.service
+RequiresMountsFor=/data
+
+# Server only. A cluster Client runs no ChirpStack and no P2P central of its own (decision #8,
+# plan/control/cluster.md section 2): its concentrator forwards into the Server's ChirpStack
+# and the Server converges the profiles and gateways there. `create` on a Client would only
+# dial a loopback ChirpStack that is not there and fail transient until systemd gives up.
+# The renderer is the only reader of the role marker (decision #11, the marker is 0700 root),
+# so the gate is a file it writes on a Server only: the 8883 listener, the same path
+# proximos-firewall-server.service is conditioned on. Checked at start, after
+# proximos-render, so a role change needs no daemon-reload. 65-radio-setup skips a unit
+# whose condition did not hold.
+ConditionPathExists=/run/proximos/mosquitto/8883.conf
+
+# Static and unconditional, replacing an earlier plan in which the renderer wrote these
+# two edges into a drop-in only for LoRaWAN modes. Two facts killed that plan:
+#
+#   1. Both ChirpStack units are now installed and enabled on EVERY image
+#      (chirpstack_4.19.1.bb, SYSTEMD_AUTO_ENABLE = "enable"). The premise the drop-in
+#      rested on — "a P2P-only Hub has neither unit installed" — is simply false now.
+#      What gates them is ConditionPathExists= on /run/proximos/chirpstack/chirpstack.toml,
+#      which the renderer emits only when radio.mode ∈ {lorawan, dual}. So on an `off` or
+#      `p2p` Hub these two edges point at condition-skipped units: ordering against a unit
+#      that will not run costs nothing, blocks nothing, and is not an error.
+#   2. A drop-in written under /run/systemd/system after systemd has loaded its units does
+#      nothing until a `daemon-reload`, and the renderer must not issue one — it is a
+#      oneshot that half the boot graph is already ordered against, and reloading from
+#      inside the transaction it is part of is how a boot deadlocks. A renderer that
+#      cannot reload cannot usefully write units.
+#
+# Ordering only, no Requires=: a Hub with no LoRaWAN configured must still reach this unit
+# and record its degraded-green result, and `create` reports a ChirpStack it cannot reach
+# with an exit code that says so (see the exit-code bands below).
+#
+# ⚠ DELIBERATE CONTRADICTION of plan/control/radio/lorawan.md §9, which still describes
+# chirpstack-bootstrap and chirpstack as being "in the service set only when radio.mode ∈
+# {lorawan, dual}". They are in the service set always; the mode decides whether they run.
+# Doc amendment flagged for the same MR.
+After=chirpstack-bootstrap.service chirpstack.service
+
+# Ordering only, never a dependency: this component runs standalone by design and must
+# not require the agent to exist.
+Before=proximos-control.service
+
+# THE START-RATE LIMIT LIVES IN [Unit], NOT [Service]. Both directives were in [Service]
+# until `systemd-analyze verify` was run over this file: systemd keeps a compatibility
+# parse for the pre-v229 spellings (StartLimitInterval, StartLimitBurst) there, but not
+# for StartLimitIntervalSec, which it discards with "Unknown key ... ignoring". The
+# window silently fell back to DefaultStartLimitIntervalSec (10 s), so the six retries
+# the [Service] section's comment describes were being spent inside ten seconds instead
+# of five minutes — which is far too fast to outlast a ChirpStack still migrating its
+# database on a first boot, the exact case they exist for.
+StartLimitIntervalSec=300s
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=proximos
+Group=proximos
+ExecStart=/usr/bin/proximosctl control.radio create
+
+# Degraded-green is an exit 0 with a warning: a Hub with no concentrator (the qemuarm64
+# smoke image, or a P2P-only unit) must still boot green. The `provisioned` marker is
+# withheld in that case, so the next boot re-converges — degraded-green and
+# provisioned-complete are two different states and only the second is recorded.
+#
+# Hard failures (NotBootstrapped 10, Unauthenticated 11, StorageError 40) fail the unit
+# and block the health gate: a Hub that cannot enrol Nodes is not healthy enough to mark
+# an update good.
+#
+# The 20-29 band is transient — chirpstack may still be migrating its DB on first boot —
+# so those get bounded retries rather than an immediate failure. The ceiling on how many
+# and how fast is StartLimitIntervalSec/StartLimitBurst up in [Unit], where systemd
+# actually reads them.
+Restart=on-failure
+RestartSec=5s
+
+# EXIT 35 IS A SUCCESS HERE, and this line is the direct consequence of the unit being
+# installed and enabled on every image (see the [Unit] section). `radio.mode: off` makes
+# `create` refuse before any RPC and exit 35 (Kind::OffMode, control-radio/src/mode.rs's
+# `gate`) — a correct refusal, not a fault: it means "no radio arm is enabled on this
+# Hub", which is a supported configuration. Without this line an off-mode Hub would
+# retry six times, land in `failed`, and block the health gate's mark-good on a device
+# that is behaving exactly as configured.
+#
+# Deliberately narrow: 35 and nothing else. The 10/11/40 hard failures and the 20-29
+# transient band keep their meanings, and "no concentrator fitted" is already an exit 0
+# inside `create` rather than a code listed here.
+SuccessExitStatus=35
+
+# A ceiling on one attempt. The client now applies a 5 s connect timeout and a 20 s
+# per-call deadline, so the longest honest `create` is a handful of bounded RPCs; this
+# is the backstop for anything that still manages to wedge below them. Without it a
+# ChirpStack that accepts the connection and then never answers holds the boot here
+# indefinitely, and the 20-29 retry band above never gets a chance to run.
+TimeoutStartSec=180s
+
+# Hardening baseline, carried from v1 and kept.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+# The component's own state tree, and nothing else on /data.
+ReadWritePaths=/data/proximos/radio
+
+[Install]
+WantedBy=multi-user.target

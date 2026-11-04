@@ -1,0 +1,75 @@
+{
+  "deduplicationId": "ee59a0b7-6b0a-4b23-a4d0-3f1c15a4b1a2",
+  "time": "2026-08-27T09:59:19.187803+00:00",
+  "deviceInfo": {
+    "tenantId": "52f14cd4-c6f1-4fbd-8f87-4025e1d49242",
+    "tenantName": "ChirpStack",
+    "applicationId": "17c82e96-be03-4f38-aef3-f83d48f28d5b",
+    "applicationName": "proximos",
+    "deviceProfileId": "14855bf7-d10d-4aee-b618-ebfcb64dc7ad",
+    "deviceProfileName": "proximos-node-otaa",
+    "deviceName": "Motion QA",
+    "devEui": "70b3d57ed80051b2",
+    "deviceClassEnabled": "CLASS_A",
+    "tags": {}
+  },
+  "devAddr": "00189440",
+  "adr": true,
+  "dr": 5,
+  "fCnt": 8,
+  "fPort": 2,
+  "confirmed": false,
+  "data": "AQiJARAAGLImIGtAAkgJ0AEl",
+  "rxInfo": [
+    {
+      "gatewayId": "24e124fffefd3bda",
+      "uplinkId": 17679,
+      "gwTime": "2026-08-27T09:59:19.150000+00:00",
+      "nsTime": "2026-08-27T09:59:19.187803+00:00",
+      "rssi": -41,
+      "snr": 13.5,
+      "channel": 5,
+      "rfChain": 1,
+      "board": 0,
+      "antenna": 0,
+      "location": {
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "altitude": 0.0,
+        "source": "UNKNOWN",
+        "accuracy": 0.0
+      },
+      "context": "OMcbBw==",
+      "metadata": {
+        "region_common_name": "EU868",
+        "region_config_id": "eu868"
+      },
+      "crcStatus": "CRC_OK"
+    },
+    {
+      "gatewayId": "0016c001f153a04c",
+      "uplinkId": 17680,
+      "rssi": -87,
+      "snr": 4.25,
+      "channel": 5,
+      "rfChain": 1,
+      "context": "OMcbCA==",
+      "metadata": {
+        "region_common_name": "EU868",
+        "region_config_id": "eu868"
+      },
+      "crcStatus": "CRC_OK"
+    }
+  ],
+  "txInfo": {
+    "frequency": 867900000,
+    "modulation": {
+      "lora": {
+        "bandwidth": 125000,
+        "spreadingFactor": 7,
+        "codeRate": "CR_4_5"
+      }
+    }
+  },
+  "regionConfigId": "eu868"
+}

@@ -1,0 +1,36 @@
+[Unit]
+Description=Hub-local CA and the server certificate nginx terminates TLS with
+Documentation=man:openssl-x509(1ssl)
+
+Requires=proximos-data-dirs.service
+After=proximos-data-dirs.service
+RequiresMountsFor=/data
+
+# A factory reset wipes /data/tls on the boot it runs, before data-dirs
+# recreates the directory; this unit then mints a new CA and pair on the same
+# boot. Already implied through data-dirs (fiber-factory-reset.service orders
+# itself Before= it), stated here so the CA never depends on that staying so.
+After=fiber-factory-reset.service
+
+# The certificate names the decision-#17 hostname, read at run time. Minting
+# before hostname-serial has applied it would name the image's default
+# hostname instead (healed on the next boot, but served for this one).
+Wants=hostname-serial.service
+After=hostname-serial.service
+
+Before=nginx.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/proximos-tls-cert.sh
+
+ProtectSystem=strict
+ReadWritePaths=/data/tls
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+# Not sysinit.target any more: hostname-serial.service runs after
+# basic.target, and so, now, does this unit.
+WantedBy=multi-user.target

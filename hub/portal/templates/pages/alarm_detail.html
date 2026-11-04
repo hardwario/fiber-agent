@@ -1,0 +1,22 @@
+{#
+  Alarm detail page (M6-T context contract).
+
+  Context: { current_user, nav_active = "alarms" } plus everything
+  partials/alarm_detail_body.html needs ({ a, notes, can_ack, duration,
+  error }) — see that partial's header for the full shape. This page is
+  just the breadcrumb + the body include; `error` is expected none on the
+  initial GET (a fresh page load has nothing to re-validate) but the
+  contract allows it so a server-side redirect-with-flash isn't required
+  after a failed non-htmx fallback.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+{% block title %}Alarm — {{ ("alarms.type." ~ (a.alarm_type | lower))|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{{ ui.back_link("/alarms", "alarms.back_to_list"|t) }}
+
+{% include "partials/alarm_detail_body.html" %}
+{% endblock %}

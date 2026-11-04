@@ -1,0 +1,72 @@
+{#-
+  /run/proximos/portal/config.yaml — read by portal/src/config.rs (RUNTIME_CONFIG_PATH).
+
+  BYTE-COMPATIBLE WITH proximos-render.sh's OUTPUT, deliberately. Everything below the
+  header comment is the same nine keys in the same order with the same quoting, because
+  the shell shim is what shipped and the Rust renderer replacing it must be provably a
+  no-op before the shim can be deleted (WP-G removes it "only after WP-C parity").
+  crates/proximos-render/tests/shim_parity.rs carries that shim's exact output as a
+  fixture and diffs body-for-body against this template's.
+
+  The header comment itself is the one intentional difference: it names the renderer that
+  wrote the file, and that is no longer a shell script.
+
+  The optional keys at the bottom are emitted only when an overlay sets them. The
+  shim got that behaviour by appending the whole override file after the block above and
+  relying on serde_yaml's last-key-wins — which, as its own header admitted, is a
+  property of one vendored parser version rather than anything YAML guarantees. Here the
+  keys are merged before rendering, so the emitted document has each key exactly once.
+
+  `thresholds` (plan/portal/threshold_defaults.md §2) is set by defaults.yaml, so unlike
+  the keys above it renders on every Hub; it is a post-shim key in shim_parity.rs.
+
+  The last five are whole SECTIONS (devices.backend.md §3 WP0.3, `thresholds`, and
+  calibration.cs.md §3's `calibration`),
+  emitted through `| tojson` as a YAML flow mapping on one line. That is not a shortcut around block
+  style: YAML is a superset of JSON, so the portal's serde_yaml reads the flow form into
+  the same struct, and emitting it this way means the indentation of a nested section is
+  not something a Jinja template has to get right for an arbitrary depth of operator
+  input. Same reason `cookie_secure` uses the filter -- render what the format actually
+  specifies, do not hand-format it.
+-#}
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Put per-device overrides in /data/proximos/config/proximos.config.yaml
+# (its `portal:` section) or /data/portal/config.yaml instead.
+bind_addr: "{{ portal.bind_addr }}"
+mqtt_host: "{{ portal.mqtt_host }}"
+mqtt_port: {{ portal.mqtt_port }}
+topic_prefix: "{{ portal.topic_prefix }}"
+mqtt_client_id: "{{ portal.mqtt_client_id }}"
+data_dir: "{{ portal.data_dir }}"
+templates_dir: "{{ portal.templates_dir }}"
+static_dir: "{{ portal.static_dir }}"
+db_key: "{{ db_key }}"
+cookie_secure: {{ portal.cookie_secure | tojson }}
+maintenance_window:
+  start_utc: "{{ portal.maintenance_window.start_utc }}"
+  duration_minutes: {{ portal.maintenance_window.duration_minutes }}
+{% if portal.mqtt_username is not none %}
+mqtt_username: "{{ portal.mqtt_username }}"
+{% endif %}
+{% if portal.mqtt_password is not none %}
+mqtt_password: "{{ portal.mqtt_password }}"
+{% endif %}
+{% if portal.experimental_features_enabled is not none %}
+experimental_features_enabled: {{ portal.experimental_features_enabled | tojson }}
+{% endif %}
+{% if portal.nodes is not none %}
+nodes: {{ portal.nodes | tojson }}
+{% endif %}
+{% if portal.beacons is not none %}
+beacons: {{ portal.beacons | tojson }}
+{% endif %}
+{% if portal.signal_quality is not none %}
+signal_quality: {{ portal.signal_quality | tojson }}
+{% endif %}
+{% if portal.thresholds is not none %}
+thresholds: {{ portal.thresholds | tojson }}
+{% endif %}
+{% if portal.calibration is not none %}
+calibration: {{ portal.calibration | tojson }}
+{% endif %}

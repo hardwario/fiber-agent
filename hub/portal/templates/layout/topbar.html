@@ -1,0 +1,81 @@
+{#
+  Top bar — v1 components/TopBar.tsx: the current page's icon + title on the
+  left, connection pill and Refresh on the right.
+
+  Context: `current_user`, `nav_active`, `stats`, plus two OPTIONAL overrides
+  a page may set for a sub-page that has no nav entry of its own:
+    page_title: string   -- defaults to `common.nav.<nav_active>`
+    page_icon: string    -- defaults to the icon of the matching entry in
+                           `layout/nav_items.html`
+
+  So a page that already sets `nav_active` (every page does) gets a correct
+  header without carrying anything extra in its context.
+
+  The language switcher lives in the sidebar's account menu
+  (`layout/nav.html`), and the user menu with it.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "layout/nav_items.html" as navdef %}
+{% set nav_active = nav_active if nav_active is defined else none %}
+{% set lang = lang if lang is defined else "en" %}
+{% set page_icon = page_icon if page_icon is defined else none %}
+{% set page_title = page_title if page_title is defined else none %}
+{% set icon_class = "h-5 w-5 sm:h-6 sm:w-6 md:h-7 md:w-7 text-primary shrink-0" %}
+
+{% set display_name = current_user.full_name | default(current_user.username, true) %}
+{% if current_user.is_superuser %}
+	{% set role_label = "common.role.superuser"|t %}
+{% else %}
+	{% set role_label = ("common.role." ~ current_user.user_role)|t %}
+{% endif %}
+
+<header class="flex items-center justify-between gap-2 h-16 px-4 md:px-6 bg-sidebar shrink-0 z-30">
+	<button type="button" id="nav-open" class="md:hidden p-2 -ml-2 rounded-lg text-muted-fg hover:text-base-content hover:bg-base-content/5 shrink-0" aria-label="{{ "common.nav.open_menu"|t }}">
+		{{ ic.icon("menu", "h-6 w-6") }}
+	</button>
+	{#- The collapse toggle belongs beside the page's identity, not at the foot
+	    of the sidebar it collapses: from here it is in the same place whatever
+	    the sidebar's width, and the sidebar's own foot is the account's now.
+	    Desktop only — below `md` the sidebar is a drawer, which has no
+	    collapsed state to toggle. -#}
+	<button type="button" id="sidebar-collapse"
+		class="hidden md:flex items-center justify-center h-9 w-9 -ml-1 shrink-0 rounded-lg text-muted-fg hover:text-base-content hover:bg-base-content/5 transition-colors"
+		aria-label="{{ "common.nav.collapse_menu"|t }}" title="{{ "common.nav.collapse_menu"|t }}">
+		<span class="[html.sidebar-collapsed_&]:hidden">{{ ic.icon("chevrons-left", "h-5 w-5") }}</span>
+		<span class="hidden [html.sidebar-collapsed_&]:block">{{ ic.icon("chevrons-right", "h-5 w-5") }}</span>
+	</button>
+	<h1 class="flex items-center gap-1.5 sm:gap-2.5 text-lg sm:text-xl md:text-2xl font-bold tracking-tight min-w-0 flex-1">
+		{%- if page_icon -%}
+			{{ ic.icon(page_icon, icon_class) }}
+		{%- else -%}
+			{%- for id, href, icon, gate, group in navdef.nav_items -%}
+				{%- if id == nav_active %}{{ ic.icon(icon, icon_class) }}{% endif -%}
+			{%- endfor -%}
+		{%- endif %}
+		<span class="truncate">
+			{%- if page_title %}{{ page_title }}{% elif nav_active %}{{ ("common.nav." ~ nav_active)|t }}{% else %}{{ brand.product }}{% endif -%}
+		</span>
+	</h1>
+
+	{#- Connection state and Refresh, moved up out of `partials/page_stats.html`:
+	    they describe the portal's link to the Hub, not the page below them, so
+	    they belong on the chrome that every page shares. The language switcher
+	    they replaced moved into the sidebar's account menu. `stats` is merged
+	    into every top-level render by `routes::render()`; a bare fragment
+	    render without it simply omits this. -#}
+	{% if stats is defined and stats %}
+	<div class="flex items-center gap-2 sm:gap-3 shrink-0">
+		<div role="status" aria-live="polite"
+			class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium {% if stats.connected %}bg-success/10 text-success{% else %}bg-alarm/10 text-alarm{% endif %}">
+			<span class="hidden sm:inline">{% if stats.connected %}{{ "common.connection.connected"|t }}{% else %}{{ "common.connection.disconnected"|t }}{% endif %}</span>
+			<span class="w-2 h-2 rounded-full {% if stats.connected %}bg-success pulse-dot{% else %}bg-alarm{% endif %}"></span>
+		</div>
+		{#- Icon only: the label said what the icon says, next to a pill that
+		    is already carrying words. The name stays in `title`/aria-label. -#}
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-icon" onclick="window.location.reload()"
+			title="{{ "common.actions.refresh"|t }}" aria-label="{{ "common.actions.refresh"|t }}">
+			{{ ic.icon("refresh-cw", "h-4 w-4") }}
+		</button>
+	</div>
+	{% endif %}
+</header>

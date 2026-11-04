@@ -1,0 +1,26 @@
+# Pins the Zephyr revision this firmware builds against: main as of
+# 2026-03-23, the workspace snapshot both bridges were developed and
+# hardware-validated on (see fiber-northbridge/docs/sessions). Keep in
+# sync with fiber-northbridge/west.yml. The original v3.7.0 pin was
+# never build-tested: the v4.x-only `full_name` key in board.yml fails
+# v3.7's board schema, and the v4.3.0 tag can't compile the vendored
+# sx126x driver overlay.
+manifest:
+  remotes:
+    - name: upstream
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: upstream
+      revision: 60f8fac0ddb72059b45e04cf6dd60078e8ce0281  # main @ 2026-03-23 (v4.3.99, SDK 1.0.0)
+      import:
+        # Union of both bridges' needs — keep in sync with
+        # fiber-northbridge/west.yml so CI can share one workspace cache.
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_stm32
+          - loramac-node
+          - picolibc
+          - segger

@@ -1,0 +1,45 @@
+[package]
+name = "proximos-control"
+version = "0.1.0"
+edition = "2021"
+# Matched to control-radio's floor: this binary links it, so a lower number here would be a
+# fiction — nothing ever compiles this crate on an older toolchain than that one.
+rust-version = "1.88"
+
+# The resident half of the pair. `proximosctl` is the CLI, confined per subcommand and gone in
+# milliseconds; this is the long-lived process that owns the three loop duties decision #12
+# moved out of a radio daemon of its own (plan/control/radio/plan.md, "Runtime form"), and —
+# per portal/monolith.md §9 — the host the rest of the agent moves into.
+[[bin]]
+name = "proximos-control"
+path = "src/main.rs"
+
+# DELIBERATELY NARROW, and it is the whole point of the crate.
+#
+# `control-radio` may depend on no other crate in this workspace (decision #12,
+# portal/monolith.md §11.7). That guarantee only means anything if the process hosting it does
+# not quietly re-couple the tree, so this binary takes the radio crate, an async runtime and an
+# MQTT client — nothing else from the workspace, and nothing new in the lockfile. When
+# monolith.md §11.3/§11.4 land, `control-core` joins as a *consumer* of the northbound topics,
+# in this same process, with zero data coupling.
+[dependencies]
+control-radio = { path = "../control-radio" }
+# The one exception to "nothing else from the workspace": the build-time brand (decision #50,
+# plan/portal/branding.md) for the Client info page's names, theme and logo. It is a crate of
+# constants with no dependencies of its own, so it couples no data and adds nothing to the
+# lockfile beyond itself; control-radio stays free of it.
+proximos-brand = { path = "../proximos-brand" }
+# The async client, not the sync one `control-radio::mqtt` uses: that module opens a connection
+# per command and blocks for its PUBACKs, which is right for a CLI and wrong for a subscriber
+# that has to stay connected for months. Same version, so no second rumqttc in the lockfile.
+rumqttc = "0.24"
+serde_json = "1.0.151"
+# `signal` is the one feature control-radio does not already ask for, and it is why SIGTERM is
+# a clean disconnect rather than a killed connection the broker has to time out.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
+
+[dev-dependencies]
+# `test-util` only — the supervision tests fast-forward through the backoff ladder with
+# virtual time instead of actually sleeping through 30 s of it. The portal crate already
+# takes the same feature for the same reason, so the lockfile does not move.
+tokio = { version = "1.53.1", features = ["test-util"] }

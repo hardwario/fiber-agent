@@ -1,0 +1,130 @@
+[Unit]
+Description=ProXimos Portal (web UI)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/portal/design.md
+# The renderer must have produced our config before we start; it also decides
+# *whether* we start (see ConditionPathExists below). mosquitto is a Wants=,
+# not a Requires=: the portal's MQTT client reconnects on its own and the UI is
+# useful (login, history, audit) while the broker is down.
+After=proximos-render.service data.mount mosquitto.service network.target
+Wants=mosquitto.service
+Requires=proximos-render.service
+RequiresMountsFor=/data
+
+# Replaces v1's /data/fiber/.client_mode marker file. Role lives in
+# fiber.config.yaml (decision #4) which a systemd Condition cannot parse, so
+# the decision is delegated to the renderer: on a client-role Hub
+# `fiberctl render` does not emit a portal config, and this unit stays
+# inactive. That keeps decision #5 (client Hubs are headless) enforceable
+# without the portal reading device role itself.
+# Obligation on `fiberctl render`, tracked in application/design.md.
+ConditionPathExists=/run/proximos/portal/config.yaml
+
+[Service]
+Type=simple
+# `proximos`, the one account of the merged component (decision #9), ahead of
+# the merge itself: plan/portal/monolith.md §15, issue #88. The portal's
+# in-process control.radio seam authorizes by *being* the local `proximos`
+# user, and everything it reads is `proximos`'s — the rendered radio config,
+# nodes.json, the tenant API token, the downlink sequence cache. As the old
+# `fiber-portal` account it could open none of them and the seam stayed inert.
+# The unit keeps its name, binary and paths; only the identity moved.
+#
+# The group is a cross-file contract: proximos-render chowns
+# /run/proximos/portal/config.yaml to it (run_paths::PORTAL), and a test in
+# that crate fails if the two disagree.
+User=proximos
+Group=proximos
+# Fixes meta-fiber#3: v1 ran this as root because the backend shelled out to
+# `sudo systemctl` / `sudo nmcli`. v2 execs nothing at all (decision #6) —
+# every privileged action is a control-socket request to the agent — so there
+# is nothing left that needs root.
+Environment=PORTAL_CONFIG=/run/proximos/portal/config.yaml
+WorkingDirectory=/usr/share/fiber-portal
+ExecStart=/usr/bin/fiber-portal
+Restart=on-failure
+RestartSec=10
+# The database is opened before the listener binds; give a cold start with
+# pending migrations room without tripping the default 90s.
+TimeoutStartSec=120
+# The portal caps its own graceful shutdown at 10s (SHUTDOWN_GRACE in main.rs)
+# and closes SSE streams as soon as the signal lands, so stopping takes about a
+# second. This is the backstop, well under the default 90s: a restart on a
+# monitoring device must be quick, and reaching SIGKILL would skip closing the
+# SQLite connections.
+TimeoutStopSec=20
+
+# No ExecStartPre=mkdir: /data/portal comes from the tmpfiles.d fragment
+# shipped beside this unit (system/design.md §6.1 — "no service may assume its
+# directory exists"). No ExecStartPre=chown either: on a unit upgraded from an
+# image where this ran as `fiber-portal`, migration 030-portal-owner.sh
+# re-owns the tree before proximos-render.service — and therefore before this
+# unit — starts. It also has to exist *before* ExecStart for a second
+# reason now: Landlock opens a handle to it while building the ruleset, and a
+# missing directory means the portal refuses to confine itself (visible in
+# the journal as "landlock: DEGRADED" and, signed in, on /health as
+# sandbox.state=degraded).
+
+# --- systemd hardening baseline (layer 1 of 3, security/landlock.md §9) ---
+# NoNewPrivileges is not merely hardening here: Landlock requires it (or
+# CAP_SYS_ADMIN), so removing it silently disables layer 3.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Loopback + the broker (and, for the radio seam, the ChirpStack gRPC API on
+# 127.0.0.1:8080) only; nginx owns the external surface.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# The portal's own writable path. Exports stream over HTTP rather than through temp
+# files, and PrivateTmp gives us a private /tmp for anything that needs one.
+#
+# SQLite is the exception and does not use it: its scratch directory is set to
+# /data/portal/tmp (SQLITE_TMPDIR, in main.rs -- deliberately not an
+# Environment= line here, so there is one source of truth). PrivateTmp makes
+# /tmp and /var/tmp a tmpfs, i.e. RAM, and a full VACUUM's temporary copy is
+# roughly the size of the whole database; it also puts them outside the
+# Landlock table. Both problems go away by keeping it on /data.
+ReadWritePaths=/data/portal
+# Rendered config (tmpfs, mode 0640, group = this unit's user) and — once
+# phase 2 needs it — the agent's control socket. '-' = tolerate absence: a
+# half-provisioned device should lose a feature, not fail to boot the UI.
+ReadOnlyPaths=/run/proximos/portal
+ReadWritePaths=-/run/fiber
+
+# The in-process control.radio seam (monolith.md §15): the rendered radio
+# config it reads, and the radio state tree, where `node-send` allocates the
+# per-device downlink sequence under lorawan/cache/. The whole tree rather than
+# the cache directories because nothing creates those before the first
+# node-get/node-send, and a bind on a path absent at start never becomes
+# writable later (open item §15.7 (2)). Both '-': a Hub whose radio tree or
+# control config is missing loses the seam, not the web UI. src/sandbox.rs
+# carries the same two rows for Landlock.
+ReadOnlyPaths=-/run/proximos/control
+ReadWritePaths=-/data/proximos/radio
+
+# `proximos` owns the BLE tree too, and the portal needs nothing in it — the
+# beacon inventory reaches the portal over MQTT. A directory overmount, unlike
+# one on a single file, survives the temp-and-rename rewrites inside it.
+InaccessiblePaths=-/data/proximos/ble
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fiber-portal
+
+[Install]
+WantedBy=multi-user.target

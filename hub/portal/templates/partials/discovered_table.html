@@ -1,0 +1,110 @@
+{#
+  The passive-scan table — devices.beacon.md §4's "Zachycené beacony
+  (posledních 15 minut)", B6/WP6.1.
+
+  Context: `d` = render::DiscoveredPanelCtx
+    rows[]         render::DiscoveredCtx — mac, mac_id, name, temperature,
+                   humidity, rssi, signal, hub, last_seen, age_s
+    capped         the Hub dropped neighbours to fit; say so (UI-12)
+    window_minutes 15, from render::DISCOVERED_WINDOW_S — the template never
+                   hard-codes the number
+    scanning       a Hub is connected and therefore listening
+
+  Rendered twice from the same file: inside pages/beacon_add.html on first
+  load, and on its own into the `beacons-discovered-{hostname}` SSE shell on
+  every `eye/sensors` snapshot. It is the SHELL's INNER html — the shell
+  element itself lives on the page and is never replaced (devices.backend.md
+  §21.11: an outerHTML swap replaces the element the next swap targets).
+
+  `can_edit` gates the Add button, exactly as the registration form above it
+  is gated: a viewer may watch the scan and register nothing.
+
+  Add is prefill, never registration (§4: "sken sám nikdy neregistruje").
+  Each button carries `data-mac`/`data-name` and no handler of its own; the
+  delegated listener in pages/beacon_add.html reads them, fills the form's
+  MAC field and focuses the serial. Delegated and not inline precisely
+  because this whole table is an SSE swap target — a listener bound to a
+  button would be gone with the first snapshot that arrived.
+
+  The serial is NOT on the wire (beacon-btsmp1.md §1: the advertisement
+  carries none), so the operator reads it off the label. That is the one
+  thing this table cannot do for them, and the hint under it says so.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+<div class="flex flex-wrap items-baseline justify-between gap-2">
+	<h3 class="font-semibold">
+		{{ "monitoring.beacons.scan_heading"|t|replace("{minutes}", d.window_minutes|string) }}
+	</h3>
+	<span class="text-xs {% if d.scanning %}text-success{% else %}text-muted-fg{% endif %} inline-flex items-center gap-1">
+		{{ ic.icon("circle-filled", "h-2 w-2") }}
+		{% if d.scanning %}{{ "monitoring.beacons.scan_scanning"|t }}{% else %}{{ "monitoring.beacons.scan_not_scanning"|t }}{% endif %}
+	</span>
+</div>
+
+{% if d.capped %}
+<div role="alert" class="alert alert-warning mt-2 text-sm">
+	<span>{{ "monitoring.beacons.scan_capped"|t }}</span>
+</div>
+{% endif %}
+
+{% if d.rows %}
+<div class="mt-3 overflow-x-auto">
+	<table class="w-full caption-bottom text-sm">
+		<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+			<tr>
+				<th class="h-10 px-4 text-left align-middle font-medium text-muted-fg">MAC</th>
+				<th class="h-10 px-4 text-left align-middle font-medium text-muted-fg">{{ "monitoring.beacons.last_seen_column"|t }}</th>
+				<th class="h-10 px-4 text-left align-middle font-medium text-muted-fg">{{ "monitoring.beacons.scan_value_column"|t }}</th>
+				<th class="h-10 px-4 text-left align-middle font-medium text-muted-fg">{{ "monitoring.beacons.scan_hub_column"|t }}</th>
+				<th class="h-10 px-4 text-left align-middle font-medium text-muted-fg"></th>
+			</tr>
+		</thead>
+		<tbody>
+			{% for r in d.rows %}
+			<tr id="discovered-{{ r.mac_id }}"
+				class="border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+				<td class="font-mono text-xs whitespace-nowrap">
+					{{ r.mac }}
+					{% if r.name %}<span class="block text-muted-fg font-sans">{{ r.name }}</span>{% endif %}
+				</td>
+				<td class="text-muted-fg whitespace-nowrap" title="{{ r.last_seen }}">
+					{{ r.last_seen | short_dt | default("–", true) }}
+				</td>
+				<td class="tabular-nums whitespace-nowrap">
+					{% if r.temperature is not none %}{{ r.temperature | round(1) | replace("-0.0", "0.0") }}&nbsp;°C{% else %}–{% endif %}
+					<span class="text-muted-fg"> / </span>
+					{% if r.humidity is not none %}{{ r.humidity }}&nbsp;%{% else %}–{% endif %}
+				</td>
+				<td class="whitespace-nowrap">
+					{{ ui.signal_bars(r.signal) }}
+					{%- if r.rssi is not none %} <span class="text-muted-fg tabular-nums">({{ r.rssi }} dBm)</span>{% endif %}
+					<span class="text-muted-fg"> · {{ r.hub }}</span>
+				</td>
+				<td class="text-right">
+					{% if can_edit %}
+					{# Data attributes, not an inline `onclick="prefill('…')"`:
+					   an advertised name is device-supplied text and may
+					   carry an apostrophe, which inside a single-quoted
+					   JavaScript literal ends the string and breaks the
+					   handler. pages/beacon_add.html listens for the click. #}
+					<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm beacon-prefill"
+						data-mac="{{ r.mac }}" data-name="{{ r.name | default('', true) }}" data-hub="{{ r.hub }}">
+						{{ "monitoring.beacons.prefill_button"|t }}
+					</button>
+					{% endif %}
+				</td>
+			</tr>
+			{% endfor %}
+		</tbody>
+	</table>
+</div>
+{% if can_edit %}
+<p class="text-xs text-muted-fg mt-2">{{ "monitoring.beacons.prefill_hint"|t }}</p>
+{% endif %}
+{% else %}
+<p class="text-sm text-muted-fg mt-3">
+	{{ "monitoring.beacons.scan_empty"|t|replace("{minutes}", d.window_minutes|string) }}
+</p>
+{% endif %}

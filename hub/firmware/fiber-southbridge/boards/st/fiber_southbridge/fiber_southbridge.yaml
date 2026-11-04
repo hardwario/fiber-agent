@@ -1,0 +1,14 @@
+identifier: fiber_southbridge
+name: Fiber Southbridge (STM32C031C6)
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 12
+flash: 32
+supported:
+  - gpio
+  - serial
+  - adc
+vendor: st

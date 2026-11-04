@@ -1,0 +1,27 @@
+{#
+  The Node's device-configuration card (B4 context contract, extracted from
+  pages/node_detail.html).
+
+  Context: { n: {node_key}, config: render::NodeConfigCtx, can_edit: bool }
+  -- exactly the slice pages/node_detail.html already carries.
+
+  Extracted so it can be an SSE swap target. Before B4 `ChangeEvent::
+  NodeConfig` was a documented no-op precisely because this section had no
+  id to swap into: a config page arriving from the device repainted nothing
+  until the operator reloaded, which is exactly the moment after a Send when
+  they most want to see it. The outer element carries
+  id/sse-swap "node-config-{node_key}" and swaps **innerHTML**, so the body
+  lives in partials/node_config_body.html — which is what the SSE frame
+  carries. That file's header says why the target itself must not be the
+  thing replaced.
+
+  The per-key edit dialogs stay on the page rather than moving here: they
+  sit outside the swap region on purpose, so a repaint arriving while a
+  dialog is open cannot rip it out from under the cursor. The dialogs are
+  keyed by config key, so a repaint that adds a key leaves that key
+  uneditable until the next full navigation -- a smaller wrong than closing
+  a dialog mid-edit.
+#}
+<div class="card-v1" id="node-config-{{ n.node_key }}" sse-swap="node-config-{{ n.node_key }}" hx-swap="innerHTML">
+	{% include "partials/node_config_body.html" %}
+</div>

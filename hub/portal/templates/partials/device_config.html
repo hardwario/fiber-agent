@@ -1,0 +1,105 @@
+{#
+  "Device configuration" — the shared card for how often a device measures
+  and reports, when it counts as offline and whether missing history is
+  fetched (plan/portal/ui_components.md §6, 2026-10-15). Same look and edit
+  system as partials/device_info.html: collapsible, settings icon, one
+  ui.edit_block (pencil -> X + check), values in mono.
+
+  Context: `dc` = {
+    kind: "node"|"beacon"|"probe",   -- id suffix
+    action: string|none,             -- POST target of the check (htmx into
+                                        #command-status); none = read-only
+    items: [{
+      name: string,                  -- form field name
+      label: string, help: string,   -- i18n keys
+      value: string,                 -- the raw value the input starts with
+      display: string|none,          -- view text (default: value + unit)
+      unit: string,                  -- "s" or ""
+      editable: bool,
+      options: [[value, i18n key]]|none,  -- a select (History auto-download)
+      placeholder: string,           -- shown in an empty input (inherited)
+      empty: string|none,            -- view text when saved blank
+      min: int|none, max: int|none,
+    }]
+  }
+  `can_edit` (manager+) comes from the page. No editable item = no pencil.
+
+  Amended 2026-10-15 (the Hub Unit tab's settings): optional `dc.heading`
+  (i18n key), `dc.icon`, and `dc.multi` — no single `action`; each item
+  names its own `action` and the edit block posts each changed one alone
+  (ui.edit_block multi). An item may be `text` (free text, `maxlength`,
+  `required`) instead of a number. `dc.after` (rendered HTML) sits under
+  the rows inside the same card, shown while it is open: the Hub's LCD
+  sensor picker, its own edit set.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% set dc_id = "device-config-" ~ dc.kind %}
+{% set dc_editable = can_edit and (dc.action or dc.multi) and (dc["items"] | selectattr("editable") | list | length) > 0 %}
+{% set head %}
+	<button type="button" class="di-toggle" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ dc_id }}-body">
+		{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+		{{ ui.card_icon(dc.icon or "settings") }}
+		<span class="text-base font-semibold whitespace-nowrap">{{ (dc.heading or "monitoring.device_config.heading")|t }}</span>
+	</button>
+{% endset %}
+{% set head_end %}
+	<button type="button" class="di-rest" @click="open = !open" tabindex="-1" aria-hidden="true"></button>
+{% endset %}
+<section class="card-v1 di" id="{{ dc_id }}" data-device-config="{{ dc.kind }}" x-data="{ open: false }" :class="open && 'di-open'">
+{% call ui.edit_block(dc_id ~ "-edit", dc.action or "", htmx=true, can_edit=dc_editable, multi=(dc.multi or false),
+	head=head, head_end=head_end, head_class="di-head",
+	body_class="di-body", body_attrs=('id="' ~ dc_id ~ '-body" x-show="open" x-cloak')|safe) %}
+	{% for it in dc["items"] %}
+	{%- set fid = dc_id ~ "-" ~ it.name -%}
+	{%- set editable = dc_editable and it.editable -%}
+	{%- if it.options -%}
+		{%- set opt = namespace(shown=it.value) -%}
+		{%- for o in it.options %}{% if o[0] == it.value %}{% set opt.shown = o[1]|t %}{% endif %}{% endfor -%}
+		{%- set shown = opt.shown -%}
+	{%- else -%}
+		{%- set shown = it.display or ((it.value ~ " " ~ it.unit) if it.value != "" else (it.empty or "—")) -%}
+	{%- endif %}
+	<div class="te-row" data-te-field="{{ it.name }}"{% if it.action %} data-action="{{ it.action|safe }}"{% endif %}{% if it.data %} data-{{ it.data }}{% endif %} x-data="{ help: false }">
+		<span class="te-lbl flex items-start justify-between gap-1 min-w-0" style="white-space: normal">
+			<label for="{{ fid }}" class="min-w-0 leading-snug">{{ it.label|t }}</label>
+			{%- if it.help %}
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon h-5 w-5 shrink-0" @click="help = !help"
+				:aria-expanded="help.toString()" aria-controls="{{ fid }}-help"
+				title="{{ it.help|t }}" aria-label="{{ "monitoring.device_config.help"|t }}">{{ ic.icon("info", "h-3.5 w-3.5") }}</button>
+			{%- endif %}
+		</span>
+		<div class="min-w-0">
+			<div class="te-val truncate{% if it.value == '' and not it.display %} text-muted-fg{% endif %}" data-te-view="{{ it.name }}"
+				{% if editable %}x-show="!editing"{% endif %}>{{ shown }}</div>
+			{% if editable %}
+			<div x-show="editing" x-cloak>
+				{% if it.options %}
+				<select name="{{ it.name }}" id="{{ fid }}" data-te-in class="te-in">
+					{% for o in it.options %}<option value="{{ o[0] }}"{% if o[0] == it.value %} selected{% endif %}>{{ o[1]|t }}</option>{% endfor %}
+				</select>
+				{% elif it.text %}
+				<input type="text" name="{{ it.name }}" id="{{ fid }}" data-te-in class="te-in"
+					value="{{ it.value }}" placeholder="{{ it.placeholder or '' }}" autocomplete="off"
+					{% if it.maxlength %}maxlength="{{ it.maxlength }}"{% endif %}{% if it.required %} required data-te-required="{{ "common.edit.required"|t }}"{% endif %}
+					{% if it.action %}data-te-action="{{ it.action|safe }}" data-te-post="{{ it.post or it.name }}"{% endif %}
+					aria-describedby="{{ fid }}-err">
+				{% else %}
+				<input type="text" inputmode="numeric" pattern="[0-9]*" name="{{ it.name }}" id="{{ fid }}" data-te-in class="te-in"
+					{% if it.action %}data-te-action="{{ it.action|safe }}" data-te-post="{{ it.post or it.name }}"{% endif %}
+					value="{{ it.value }}" placeholder="{{ it.placeholder or '' }}" autocomplete="off"
+					data-te-unit="{{ it.unit }}"{% if it.empty %} data-te-empty="{{ it.empty }}"{% endif %}
+					aria-describedby="{{ fid }}-err">
+				{% endif %}
+				<p class="te-err" id="{{ fid }}-err" hidden></p>
+			</div>
+			{% endif %}
+			{% if it.help %}<p class="text-xs text-muted-fg mt-1" id="{{ fid }}-help" x-show="help" x-cloak>{{ it.help|t }}</p>{% endif %}
+		</div>
+	</div>
+	{% endfor %}
+{% endcall %}
+{%- if dc.after %}
+<div class="di-body pt-0" x-show="open" x-cloak data-device-config-after>{{ dc.after|safe }}</div>
+{%- endif %}
+</section>

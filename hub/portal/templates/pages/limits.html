@@ -1,0 +1,226 @@
+{#
+  /limits — every channel of every sensor with its limit, in the shape of the
+  device lists (plan/portal/limits.cs.md §9, amended 2026-10-14).
+
+  Context (routes::limits_routes::limits_page): {
+    current_user, nav_active = "limits", unpaired,
+    rows: [ { kind: "probe"|"node"|"beacon", hub, id, field, field_label,
+        sensor, href, unit, value: float|none, reading: string|none,
+        oor: "normal"|"warning"|"critical",
+        bounds: [crit_low, warn_low, warn_high, crit_high] (string|none each),
+        state: "ok"|"unset"|"off"|"draft"|"sending"|"error"|"undelivered"|"offline",
+        note: string|none, unsynced: string|none, unsynced_href: string|none,
+        pending: [string|none ×4], location: string|none, connected: bool,
+        post, scope: "hub"|"node"|"eye", stored: {…}|none, editable: bool } ],
+    fields: [[name, label]], limit_stats: { total, online, oor, fault, unset },
+    many_hubs: bool, can_edit: bool
+  }
+
+  Built from the shared pieces, no copies: the stat row (ui.stat_row), the
+  list toolbar (partials/list_toolbar.html, client-side over the rows'
+  `data-*`, portal-list.js), the row cells (partials/device_row.html, the
+  same Item / Location cells /alarms uses), the selection component
+  (static/js/portal-select.js) and the one limits editor
+  (partials/limits_editor.html).
+
+  "Set limits" (manager+) switches the table into selection mode and shows the
+  editor above it: a row click then toggles the row, and the selection is
+  limited to one quantity and unit (§9.3, decided by Hynek 2026-10-14). Each
+  selectable row carries its editor target as JSON (`data-target`), resolved
+  through `limits_band`, so the editor opens on exactly what the device page
+  would show. A save reloads nothing; the rows' state refreshes on reload.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+
+{% block title %}{{ "common.nav.limits"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{% include "partials/command_status.html" %}
+	{#- A Node limit's sync state moves on its own (drafted, sent, confirmed or refused), so
+	    the page reloads on the `limits-pending` nudge (sse.rs); not while limits are being
+	    edited, which would drop the edit. A save reloads it too (the bar above). Filters and
+	    sort live in the URL and localStorage, so a reload keeps them. -#}
+	<div hidden hx-trigger="sse:limits-pending"
+		hx-on:sse:limits-pending="if (!window.proximosLimitsEditing && !window.proximosLeaving) window.location.reload()"></div>
+	{#- GitLab #109: one banner, one pairing form, on every page with signed actions. -#}
+	{% include "partials/unpaired_banner.html" %}
+
+	{#- §9.1: the tiles count these rows and filter this page. -#}
+	{% call ui.stat_row() %}
+		{{ ui.stat_tile("monitoring.limits.stat_total"|t, limit_stats.total, "thermometer", "neutral", "/limits") }}
+		{{ ui.stat_tile("monitoring.limits.stat_online"|t, limit_stats.online, "circle-filled", "success" if limit_stats.online and limit_stats.online == limit_stats.total else "neutral", "/limits?conn=online") }}
+		{{ ui.stat_tile("monitoring.limits.stat_oor"|t, limit_stats.oor, "alert-circle", "warning" if limit_stats.oor else "neutral", "/limits?oor=alarming") }}
+		{{ ui.stat_tile("monitoring.limits.stat_fault"|t, limit_stats.fault, "alert-triangle", "alarm" if limit_stats.fault else "neutral", "/limits?fault=any") }}
+	{% endcall %}
+
+	<div data-list-key="limits" data-select data-select-keep-col data-select-active="0" data-select-same="quantity" id="limits-list">
+		{% set list_key = "limits" %}
+		{% set search_placeholder = "monitoring.limits.search"|t %}
+		{% set entity_label = "monitoring.limits.entity"|t %}
+		{% set show_kind = true %}
+		{% set show_location = true %}
+		{% set show_gateway = many_hubs %}
+		{% set gw_label = "monitoring.list.column_hub"|t %}
+		{% set oor_alarming = true %}
+		{% set columns = [
+			["loc", "monitoring.dashboard.location_column"|t, true],
+			["sensor", "monitoring.limits.column_sensor"|t, true],
+			["value", "monitoring.limits.column_value"|t, true],
+			["active", "monitoring.limits.column_active"|t, true],
+			["cl", "monitoring.limits.critical_low"|t, true],
+			["wl", "monitoring.limits.warning_low"|t, true],
+			["wh", "monitoring.limits.warning_high"|t, true],
+			["ch", "monitoring.limits.critical_high"|t, true],
+		] %}
+		{#- "Set limits" is the edit set (ui_components.md §3) in the toolbar's
+		    action place: Set -> counter + Cancel + Save right there, as on
+		    the Channels card. The bar is a proxy over the editor below
+		    (limitsEditor in #limits-editor), whose own bar is off. -#}
+		{% if can_edit %}
+		{% set toolbar_action %}
+		<div class="shrink-0" data-limits-bar
+			x-data='{
+				on: false,
+				get ed() { const e = document.querySelector("#limits-editor [data-limits-editor]"); return (e && window.Alpine && Alpine.$data(e)) || {}; },
+				get editing() { return this.on; },
+				get changes() { return this.on ? (this.ed.changes || 0) : 0; },
+				get busy() { return !!this.ed.busy; },
+				start() { this.on = true; proximosLimitsEdit(true); },
+				cancel() { if (this.ed.cancel) this.ed.cancel(); else this.leave(); },
+				save() { if (this.ed.save) this.ed.save(); },
+				leave() { this.on = false; proximosLimitsEdit(false); }
+			}'
+			x-on:limits-cancel.window="leave()"
+			x-on:limits-saved.window="if ($event.detail.results.every(r => r.ok)) { leave(); window.location.reload(); }">
+			{{ ui.edit_set("monitoring.limits.set_button"|t) }}
+		</div>
+		{% endset %}
+		{% endif %}
+		{% set extra_filters %}
+		<div class="flex flex-col gap-1.5">
+			<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-limits-field">{{ "monitoring.limits.quantity"|t }}</label>
+			<select id="f-limits-field" data-list-filter="field" class="input-v1 select-v1 w-full">
+				<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+				{% for name, label in fields %}<option value="{{ name }}">{{ label }}</option>{% endfor %}
+			</select>
+		</div>
+		<div class="flex flex-col gap-1.5">
+			<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-limits-limit">{{ "monitoring.limits.filter_limit"|t }}</label>
+			<select id="f-limits-limit" data-list-filter="limit" class="input-v1 select-v1 w-full">
+				<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+				<option value="unset">{{ "monitoring.limits.limit_unset"|t }}</option>
+				<option value="attention">{{ "monitoring.limits.show_attention"|t }}</option>
+			</select>
+		</div>
+		{% endset %}
+		{% include "partials/list_toolbar.html" %}
+
+		{#- §9.3/§9.4: the editor, shown in selection mode only. -#}
+		{% if can_edit %}
+		<div id="limits-editor" class="card-v1 mt-3 px-4 py-4 hidden">
+			<div class="max-w-3xl">
+				{% with le_id = "limits", le_targets = [], le_send = true, le_editing = true, le_bar = false, le_unit = "", le_value = none %}
+				{% include "partials/limits_editor.html" %}
+				{% endwith %}
+			</div>
+		</div>
+		{% endif %}
+
+		<div class="card-v1 mt-3">
+			<div class="relative w-full overflow-auto rounded-xl" data-fit-viewport>
+				<table data-list-table class="w-full caption-bottom text-sm">
+					<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+						<tr>
+							{% if can_edit %}<th class="h-12 px-4 w-10 text-left align-middle" data-select-col><input type="checkbox" class="checkbox-v1 es-check" disabled data-select-all aria-label="{{ "monitoring.limits.select_all"|t }}"></th>{% endif %}
+							{{ ui.sort_th("monitoring.list.item_column"|t, "name", "sticky left-0 z-30") }}
+							{{ ui.sort_th("monitoring.dashboard.location_column"|t, "loc", "", "loc") }}
+							{{ ui.sort_th("monitoring.limits.column_sensor"|t, "sensor", "", "sensor") }}
+							{{ ui.sort_th("monitoring.limits.column_value"|t, "value", "text-right", "value") }}
+							{{ ui.sort_th("monitoring.limits.column_active"|t, "active", "", "active") }}
+							{{ ui.th("monitoring.limits.critical_low"|t, "text-right", "cl") }}
+							{{ ui.th("monitoring.limits.warning_low"|t, "text-right", "wl") }}
+							{{ ui.th("monitoring.limits.warning_high"|t, "text-right", "wh") }}
+							{{ ui.th("monitoring.limits.critical_high"|t, "text-right", "ch") }}
+							{{ ui.th("") }}
+						</tr>
+					</thead>
+					<tbody>
+						{% if not rows %}
+						<tr><td colspan="11" class="py-16 text-center text-muted-fg">{{ "monitoring.limits.empty"|t }}</td></tr>
+						{% endif %}
+						<tr data-list-nomatch class="hidden"><td colspan="11" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td></tr>
+						{% for r in rows %}
+						{% set tone = dr.tone(r.oor, r.state == "error", r.reading is not none) | trim %}
+						{% set limit_kind = "unset" if r.state == "unset" else ("attention" if r.state in ["draft", "sending", "offline", "error", "undelivered"] else "ok") %}
+						{% set band = limits_band(r.scope, r.field, r.stored) %}
+						{% set target = {
+							"id": r.id, "label": r.sensor ~ " · " ~ r.field_label, "kind": r.kind, "post": r.post,
+							"unit": r.unit, "value": r.value, "seed": threshold_seed(r.unit),
+							"t": {"critical_low": band.critical_low, "warning_low": band.warning_low,
+								"warning_high": band.warning_high, "critical_high": band.critical_high},
+							"enabled": band.enabled, "hysteresis": band.hysteresis } %}
+						{% set state_title = ("monitoring.limits.state_" ~ r.state)|t ~ (" · " ~ r.note if r.note else "") %}
+						<tr data-kind="{{ r.kind }}" data-oor="{{ r.oor }}" data-connected="{% if r.connected %}1{% else %}0{% endif %}"
+							{% if not r.connected %}data-fault="offline"{% endif %}
+							data-location="{{ r.location | default('', true) }}" data-gw="{{ r.hub | lower }}"
+							data-field="{{ r.field }}" data-limit="{{ limit_kind }}"
+							data-quantity="{{ r.field }}|{{ r.unit }}"
+							{% if can_edit and r.editable %}data-select-id="{{ r.id }}" data-target='{{ target | tojson }}'{% endif %}
+							data-search="{{ (r.sensor ~ ' ' ~ r.field_label ~ ' ' ~ r.hub ~ ' ' ~ (r.location | default('', true)) ~ ' ' ~ (descs[r.id] if descs is defined and r.id in descs else ''))|lower }}"
+							data-sort-name="{{ r.sensor | lower }}" data-sort-loc="{{ (r.location | default('', true))|lower }}"
+							data-sort-sensor="{{ r.kind }}" data-sort-value="{% if r.value is not none %}{{ r.value }}{% endif %}"
+							data-sort-active="{{ r.state }}" data-sort-hub="{{ r.hub | lower }}"
+							data-row-href="{{ r.href }}"
+							class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 data-[selected]:bg-primary/5 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+							{% if can_edit %}<td class="w-10" data-select-col>{% if r.editable %}<input type="checkbox" class="checkbox-v1 es-check" disabled data-select-box aria-label="{{ "monitoring.limits.select_row"|t }}: {{ r.sensor }} · {{ r.field_label }}">{% endif %}</td>{% endif %}
+							{{ dr.item_cell(tone, "", r.sensor, r.href, sub=r.field_label) }}
+							{{ dr.location_cell(r.location, r.hub if many_hubs else "") }}
+							<td data-column="sensor"><span class="text-sm text-muted-fg whitespace-nowrap">{{ ("monitoring.limits.kind_" ~ r.kind)|t }}</span></td>
+							<td data-column="value" class="text-right font-mono whitespace-nowrap {% if r.oor == "critical" %}text-critical font-medium{% elif r.oor == "warning" %}text-warning font-medium{% endif %}">{{ r.reading or "—" }}</td>
+							<td data-column="active" title="{{ state_title }}">
+								{% if r.state == "error" %}<span class="badge-status badge-status-critical">{{ "monitoring.limits.state_error"|t }}</span>
+								{% elif r.state in ["unset", "draft", "sending", "undelivered", "offline"] %}<span class="badge-status badge-status-warning">{{ ("monitoring.limits.state_" ~ r.state)|t }}</span>
+								{% elif r.state == "off" %}<span class="badge-status badge-status-neutral">{{ "monitoring.limits.active_off"|t }}</span>
+								{% else %}<span class="badge-status badge-status-normal">{{ "monitoring.limits.active_on"|t }}</span>{% endif %}
+								{% if r.unsynced %}<a href="{{ r.unsynced_href }}" data-unsynced-badge class="badge-status badge-status-warning mt-1">{{ r.unsynced }}</a>{% endif %}
+							</td>
+							{% for b in r.bounds %}
+							{% set pend = r.pending[loop.index0] %}
+							<td data-column="{{ ['cl', 'wl', 'wh', 'ch'][loop.index0] }}" class="text-right font-mono whitespace-nowrap {% if r.state == "off" %}line-through text-muted-fg{% elif pend %}italic text-warning{% endif %}"{% if pend %} data-pending title="{{ "monitoring.limits.bound_pending"|t|replace("{value}", pend) }}"{% endif %}>{{ b or "—" }}{% if pend %}<span class="block text-[10.5px] not-italic text-muted-fg">{{ "monitoring.limits.bound_pending_short"|t|replace("{value}", pend) }}</span>{% endif %}</td>
+							{% endfor %}
+							{{ dr.view_cell(r.href) }}
+						</tr>
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+</div>
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+<script>
+// "Set limits" toggles selection mode (portal-select.js) and the editor; the
+// selection feeds the editor its targets (limits.cs.md §9.3).
+(function () {
+	var root = document.getElementById('limits-list');
+	var box = document.getElementById('limits-editor');
+	// The toolbar's edit set ([data-limits-bar]) calls this to enter and
+	// leave: selection mode and the editor card follow it.
+	window.proximosLimitsEdit = function (on) {
+		window.proximosLimitsEditing = on;
+		window.proximosSelect(root).active(on);
+		if (box) box.classList.toggle('hidden', !on);
+	};
+	root.addEventListener('select-change', function (ev) {
+		var targets = ev.detail.rows.map(function (tr) {
+			try { return JSON.parse(tr.dataset.target); } catch (err) { return null; }
+		}).filter(Boolean);
+		window.dispatchEvent(new CustomEvent('limits-select', { detail: { targets: targets } }));
+	});
+})();
+</script>
+{% endblock %}

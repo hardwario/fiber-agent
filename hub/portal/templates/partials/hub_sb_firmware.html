@@ -1,0 +1,49 @@
+{#
+  The System tab's "Firmware SB" card (plan/system/southbridge_update.md §3.7;
+  devices.hub.md, dodatek 2026-10-09).
+
+  Context: { sb_firmware: render::SbFirmwareCtx {
+               hostname,
+               sb: { version, bundled, has_update, state, attempts,
+                     last_error, last_result } | none,
+               update_allowed: bool, offer_update: bool,
+               progress: { outcome: "running"|"ok"|"failed"|"unconfirmed",
+                           detail | none, poll: bool, query } | none } }
+    `oob` (optional): render as an out-of-band swap (the update's own answer).
+
+  `system/info.southbridge` as the Hub reported it; "—" when it has not (an
+  agent that predates the block). „Aktualizovat firmware SB“ (admin; an
+  `update` object, a bundled image, not `running`, no update being polled)
+  opens `#sb-update-dialog`, which lives in pages/hub_detail.html outside
+  this swap target: an open dialog would close on every refetch. The card
+  refetches itself on the Hub's `device-{hostname}-status` nudge, and every
+  3 s with the update's phase in its query (`?sbu=`) while it follows one.
+#}
+{#- Amended 2026-10-15: the shared firmware card (partials/fw_card.html),
+    the same shape as the Northbridge one. The Update button is always
+    there for an admin, disabled with its reason where it cannot act. -#}
+{% import "partials/fw_card.html" as fwc %}
+{% set f = sb_firmware %}
+{% set s = f.sb %}
+{% set st = s.state if s and s.state else none %}
+{% set why = ("monitoring.hubs.fw_update_why_offline" if not f.online
+	else ("monitoring.hubs.fw_update_why_running" if (f.progress and f.progress.poll) or st == "running"
+	else (none if f.offer_update else "monitoring.hubs.fw_update_why_no_image"))) %}
+<div id="hub-sb-firmware" data-sb-state="{{ st or "" }}"
+	hx-get="/hubs/{{ f.hostname }}/sb-firmware{{ f.progress.query if f.progress else "" }}"
+	hx-trigger="sse:device-{{ f.hostname }}-status{% if f.progress and f.progress.poll %}, every 3s{% endif %}"
+	hx-swap="outerHTML"{% if oob is defined and oob %} hx-swap-oob="true"{% endif %}>
+	{{ fwc.fw_card({
+		"kind": "sb", "card_id": "hub-sb-fw-" ~ f.hostname, "icon": "cpu",
+		"heading": "monitoring.hubs.sb_fw_heading"|t, "desc": "monitoring.hubs.sb_fw_desc"|t,
+		"running": s.version if s else none, "bundled": s.bundled if s else none,
+		"state_key": st or "",
+		"state_label": ((("monitoring.hubs.sb_fw_state_" ~ st)|t) if st in ["idle", "running", "failed"] else st) if st else none,
+		"state_badge": "warning" if st == "failed" else ("normal" if st == "running" else "neutral"),
+		"attempts": s.attempts if s else none, "last_error": s.last_error if s else none,
+		"last_update": s.last_result if s else none, "note": none,
+		"not_reported": not s or not s.has_update,
+		"button": f.update_allowed, "why": why, "dialog": "sb-update-dialog",
+		"progress": f.progress, "progress_keys": "monitoring.hubs.sb_update_",
+	}) }}
+</div>

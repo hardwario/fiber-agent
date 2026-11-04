@@ -1,0 +1,215 @@
+{#
+  The Overview tab's calibration card (plan/portal/calibration.cs.md §2) —
+  shared by pages/node_detail.html, pages/beacon_detail.html and
+  pages/hub_sensor.html (inline on the page, amendment 2026-10-15), and the
+  body the calibration routes (routes::calibration_routes) answer the card's
+  own forms with.
+
+  Context: {
+    cal: {                              -- render::CalibrationCardCtx
+      base: string,                     -- "/nodes/{node_key}" | "/beacons/{mac}"
+                                        -- | "/hubs/{hub}/sensors/{line}"
+      card_id: string,                  -- the outer element's id and every
+                                        -- form's target: "calibration-card",
+                                        -- "calibration-card-{line}" for a
+                                        -- Hub probe (eight on one page)
+      current: entry|none,              -- the newest upload not deleted
+      state: "valid"|"warning"|"second_warning"|"expired"|none,
+                                        -- none = nothing standing; the
+                                        -- label is the dynamic key
+                                        -- monitoring.calibration.state_{state}
+      days_left: int|none,              -- 1 on the last valid day; none from
+                                        -- the expiry date on
+      days_left_key: string|none,       -- the i18n key of the phrase (Czech
+                                        -- has three plural forms, so Rust
+                                        -- picks it)
+      history: [entry, ...],            -- every other upload, deleted ones
+                                        -- included, newest first
+      can_edit: bool,                   -- manager+: upload + "Upravit datum";
+                                        -- a viewer reads and downloads only
+      can_delete: bool,                 -- admin (or superuser): the delete
+                                        -- form beside each certificate
+      limit_reached: bool, max_count: int, max_mb: int,
+      max_delete_chars: int,
+      ok: string|none, error: string|none,  -- flash from the last write
+      tone, summary_key, card_url,      -- the Device information fact's
+                                        -- summary; card_url = this card alone
+      title: string|none                -- a probe's "1 · Sensor 1", shown
+                                        -- on the header's right
+    }
+
+  Amendment 2026-10-15: styled like partials/device_info.html (.di-*):
+  always expanded on load, the header toggles it and, collapsed, shows the
+  state icon + "until {date}" / "No calibration". History and Upload are
+  sub-sections (.cal-sub), always collapsed on load.
+    entry: {
+      id, href: string|none,            -- href = the PDF download; none once
+                                        -- deleted (the file is gone)
+      delete_href: string,              -- the delete form's target
+      deleted: {at, by, message}|none,  -- set once an admin deleted it
+      valid_until: string,              -- RFC 3339 UTC midnight of the
+                                        -- expiry date, via short_dt("date")
+      valid_until_input: string,        -- "YYYY-MM-DD" for <input type=date>
+      file_name, file_size: string,
+      uploaded_by: string, uploaded_at: string (RFC 3339),
+      note: string|none
+    }
+  }
+
+  The outer element is every form's htmx target (`outerHTML`): a write
+  answers with this partial re-rendered around its flash, the way
+  partials/backfill_jobs.html answers its own form. Not #command-status —
+  nothing here is a device command. The upload is the one form in the
+  portal that carries a file, hence `hx-encoding`.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% set tones = {"valid": "normal", "warning": "warning", "second_warning": "warning", "expired": "critical"} %}
+{#- One certificate's delete form (amendment 2026-10-13): admin only, and the
+    reason is required — the route refuses an empty one as well. -#}
+{% macro delete_form(e, max_chars, card_id) -%}
+<details class="text-sm">
+	<summary class="cursor-pointer text-muted-fg hover:text-base-content">{{ "monitoring.calibration.delete_summary"|t }}</summary>
+	<form hx-post="{{ e.delete_href }}" hx-target="#{{ card_id }}" hx-swap="outerHTML"
+		class="mt-2 flex items-end gap-2 flex-wrap">
+		<label class="flex flex-col gap-1 grow">
+			<span class="text-sm">{{ "monitoring.calibration.delete_message_label"|t }}</span>
+			<input type="text" name="message" required maxlength="{{ max_chars }}" class="input input-sm w-full"
+				placeholder="{{ "monitoring.calibration.delete_message_placeholder"|t }}">
+		</label>
+		<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm text-critical">{{ "monitoring.calibration.delete_button"|t }}</button>
+	</form>
+</details>
+{%- endmacro %}
+{% macro subhead(var, label) -%}
+<button type="button" class="cal-subhead" @click="{{ var }} = !{{ var }}" :aria-expanded="{{ var }}.toString()">
+	{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}{{ label }}
+</button>
+{%- endmacro %}
+{#- The Alpine state sits on an inner wrapper: htmx settles the swapped
+    root's own class attribute, which would drop an Alpine-bound class. -#}
+<section id="{{ cal.card_id }}" class="card-v1 di" data-calibration-card="{{ cal.state or 'none' }}">
+<div x-data="{ open: false, up: false, hist: false }" :class="open && 'di-open'">
+	<button type="button" class="di-head" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ cal.card_id }}-body">
+		{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+		{{ ui.card_icon("calendar") }}
+		<span class="text-base font-semibold whitespace-nowrap">{{ "monitoring.calibration.heading"|t }}</span>
+		<span class="inline-flex items-center gap-1.5 min-w-0">
+			{{- ui.calibration_icon(cal.state, "h-4 w-4") -}}
+			<span class="text-sm text-muted-fg truncate" x-show="!open" x-cloak>
+				{%- if cal.current %}{{ "monitoring.calibration.until"|t|replace("{date}", cal.current.valid_until|short_dt("date")) }}
+				{%- else %}{{ ui.calibration_state_label("none") }}{% endif -%}
+			</span>
+		</span>
+		{% if cal.title and not cal_hide_title %}<span class="ml-auto text-xs text-muted-fg truncate hidden sm:inline">{{ cal.title }}</span>{% endif %}
+	</button>
+	<div class="di-body" id="{{ cal.card_id }}-body" x-show="open" x-cloak>
+		{% if cal.ok %}<div role="alert" class="alert alert-success mb-2 text-sm"><span>{{ cal.ok }}</span></div>{% endif %}
+		{% if cal.error %}<div role="alert" class="alert alert-error mb-2 text-sm"><span>{{ cal.error }}</span></div>{% endif %}
+
+		{% if cal.current %}
+		{% set c = cal.current %}
+		<div class="flex items-center gap-2 flex-wrap mb-1">
+			<span class="badge-status badge-status-{{ tones[cal.state] }}">{{ ui.calibration_state_label(cal.state) }}</span>
+			{%- if cal.days_left_key %} <span class="text-sm text-muted-fg">{{ cal.days_left_key|t|replace("{n}", cal.days_left|string) }}</span>{% endif %}
+		</div>
+		{#- The expiry date as an inline edit block (ui_components.md §1),
+		    posting to the existing date route; the card re-renders. -#}
+		{% set head %}<span class="text-sm font-medium">{{ "monitoring.calibration.current_heading"|t }}</span>{% endset %}
+		{% call ui.edit_block(cal.card_id ~ "-expiry", cal.base ~ "/calibrations/date", htmx=true, can_edit=cal.can_edit,
+			head=head, hx_target="#" ~ cal.card_id, class="mb-2") %}
+			{{ ui.text_field("valid_until", "monitoring.calibration.fact_valid_until"|t, c.valid_until_input, type="date", required=true,
+				display=c.valid_until|short_dt("date"), id=cal.card_id ~ "-valid-until", editable=cal.can_edit) }}
+		{% endcall %}
+		<dl class="di-grid">
+			<div class="di-fact"><dt>{{ "monitoring.calibration.fact_days_left"|t }}</dt><dd class="tabular-nums">{{ cal.days_left | default("—", true) }}</dd></div>
+			<div class="di-fact"><dt>{{ "monitoring.calibration.fact_file"|t }}</dt><dd title="{{ c.file_name }}">{{ c.file_name }} · {{ c.file_size }}</dd></div>
+			<div class="di-fact"><dt>{{ "monitoring.calibration.fact_uploaded"|t }}</dt><dd>{{ c.uploaded_at|short_dt }} · {{ c.uploaded_by }}</dd></div>
+			<div class="di-fact"><dt>{{ "monitoring.calibration.fact_note"|t }}</dt><dd>{{ c.note | default("—", true) }}</dd></div>
+		</dl>
+		<div class="flex items-start gap-2 flex-wrap mt-2">
+			<a href="{{ c.href }}" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5">
+				{{ ic.icon("download", "h-4 w-4") }}{{ "monitoring.calibration.download"|t }}
+			</a>
+		</div>
+		{% if cal.can_delete %}<div class="mt-2">{{ delete_form(c, cal.max_delete_chars, cal.card_id) }}</div>{% endif %}
+		{% else %}
+		<p class="text-sm text-muted-fg py-1">{{ "monitoring.calibration.none"|t }}</p>
+		{% endif %}
+
+		{% if cal.history %}
+		<div class="cal-sub" :class="hist && 'cal-sub-open'">
+			{{ subhead("hist", ("monitoring.calibration.history"|t) ~ " (" ~ (cal.history|length) ~ ")") }}
+			<div x-show="hist" x-cloak class="overflow-x-auto">
+			<table class="cal-hist">
+				<thead>
+					<tr>
+						<th>{{ "monitoring.calibration.history_valid_until"|t }}</th>
+						<th>{{ "monitoring.calibration.history_uploaded"|t }}</th>
+						<th>{{ "monitoring.calibration.history_file"|t }}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for h in cal.history %}
+					<tr{% if h.deleted %} data-deleted{% endif %}>
+						<td class="tabular-nums whitespace-nowrap">{{ h.valid_until|short_dt("date") }}</td>
+						<td class="text-muted-fg">{{ h.uploaded_at|short_dt }} · {{ h.uploaded_by }}</td>
+						<td>
+							{%- if h.deleted -%}
+							<span class="break-all text-muted-fg line-through">{{ h.file_name }}</span>
+							<span class="block text-xs"><span class="badge-status badge-status-critical">{{ "monitoring.calibration.deleted_badge"|t }}</span>
+								{{ "monitoring.calibration.deleted"|t|replace("{date}", h.deleted.at|short_dt)|replace("{user}", h.deleted.by) }}</span>
+							<span class="block text-xs text-muted-fg break-words">{{ h.deleted.message }}</span>
+							{%- else -%}
+							<a href="{{ h.href }}" class="hover:underline break-all">{{ h.file_name }}</a>{% if h.note %}<span class="block text-xs text-muted-fg">{{ h.note }}</span>{% endif %}
+							{%- if cal.can_delete %}{{ delete_form(h, cal.max_delete_chars, cal.card_id) }}{% endif %}
+							{%- endif -%}
+						</td>
+					</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+			</div>
+		</div>
+		{% endif %}
+
+		{% if cal.can_edit %}
+		<div class="cal-sub" :class="up && 'cal-sub-open'">
+			{{ subhead("up", "monitoring.calibration.upload_heading"|t) }}
+			<div x-show="up" x-cloak>
+			{% if cal.limit_reached %}
+			<p class="text-xs text-muted-fg pb-1">{{ "monitoring.calibration.err_limit"|t|replace("{max}", cal.max_count|string) }}</p>
+			{% else %}
+			<form hx-post="{{ cal.base }}/calibrations" hx-encoding="multipart/form-data"
+				hx-target="#{{ cal.card_id }}" hx-swap="outerHTML" class="te-form pb-1">
+				{% if cal.current %}<p class="text-xs text-muted-fg mb-1">{{ "monitoring.calibration.upload_replaces"|t }}</p>{% endif %}
+				<div class="te-row">
+					<label class="te-lbl" for="{{ cal.card_id }}-file">{{ "monitoring.calibration.file_label"|t }}</label>
+					<div class="min-w-0">
+						<input type="file" id="{{ cal.card_id }}-file" name="file" accept="application/pdf,.pdf" required class="te-in">
+						<div class="te-count text-left">{{ "monitoring.calibration.file_hint"|t|replace("{mb}", cal.max_mb|string) }}</div>
+					</div>
+				</div>
+				<div class="te-row">
+					<label class="te-lbl" for="{{ cal.card_id }}-date">{{ "monitoring.calibration.valid_until_label"|t }}</label>
+					<div class="min-w-0"><input type="date" id="{{ cal.card_id }}-date" name="valid_until" required class="te-in max-w-48"></div>
+				</div>
+				<div class="te-row">
+					<label class="te-lbl" for="{{ cal.card_id }}-note">{{ "monitoring.calibration.note_label"|t }}</label>
+					<div class="min-w-0"><input type="text" id="{{ cal.card_id }}-note" name="note" maxlength="500" class="te-in"
+						placeholder="{{ "monitoring.calibration.note_placeholder"|t }}"></div>
+				</div>
+				<div class="te-actions">
+					<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" @click="up = false">{{ "common.actions.cancel"|t }}</button>
+					<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm gap-1.5">
+						{{ ic.icon("plus", "h-4 w-4") }}{{ "monitoring.calibration.upload_button"|t }}
+					</button>
+				</div>
+			</form>
+			{% endif %}
+			</div>
+		</div>
+		{% endif %}
+	</div>
+</div>
+</section>

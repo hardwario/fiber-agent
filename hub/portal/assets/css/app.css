@@ -1,0 +1,878 @@
+/* Tailwind v4 auto-detects sources project-wide by default, and `@source`
+   directives below only ADD to that scan — they don't replace it. Once
+   control-core's ~79 kLOC of Rust landed in the repo, that auto-detection
+   started scanning Rust source too, so English words and identifiers in the
+   Rust tree were matched as utility class names and drifted the committed
+   stylesheet. `source(none)` disables the auto-detection so the build output
+   is a pure function of the explicit `@source` lines below (templates/). */
+@import "tailwindcss" source(none);
+@source "../../templates";
+/* The Client info page (plan/decisions.md #46) is styled by this sheet too. */
+@source "../../crates/proximos-control/src/client_page.html";
+@source not "../../vendor/daisyui*.mjs";
+/* SVG path data ("M14 4v10.54a4 4…") scans as utility candidates and v4's
+   calc-based spacing scale accepts most of them, so the icon table would
+   otherwise add a few hundred dead rules. Every call site passes its own
+   size/colour classes, which are scanned from the template that calls. */
+@source not "../../templates/partials/icons.html";
+
+/* themes: false — we register only our own "proximos"/"proximos-dark"
+   themes below via daisyui-theme.mjs; without this daisyUI also enables its
+   built-in "light --default" and "dark --prefersdark" and they'd fight ours
+   for the same :root/prefers-color-scheme selectors. */
+@plugin "../../vendor/daisyui.mjs" {
+	themes: false;
+}
+
+/*
+ * Tokens v1 has but daisyUI has no slot for. Written as Tailwind theme
+ * colours so the usual utilities and opacity modifiers work on them
+ * (`bg-alarm/10`, `text-muted-fg`, `border-sidebar-border`).
+ *
+ * v1 var             -> here
+ * --alarm            -> --color-alarm            (24 95% 53%; the 4th severity
+ *                       between warning and critical — daisyUI stops at three)
+ * --critical         -> --color-critical         (same value as --color-error)
+ * --muted            -> --color-muted
+ * --muted-foreground -> --color-muted-fg
+ * --sidebar          -> --color-sidebar          (page chrome: sidebar + top bar)
+ * --sidebar-border   -> --color-sidebar-border
+ * shadow-card        -> --shadow-card            (v1 tailwind.config.ts boxShadow)
+ */
+@theme {
+	--color-alarm: hsl(24 95% 53%);
+	--color-critical: hsl(0 84% 60%);
+	--color-muted: hsl(30 10% 96%);
+	--color-muted-fg: hsl(30 5% 45%);
+	--color-sidebar: hsl(30 20% 97%);
+	--color-sidebar-border: hsl(30 12% 91%);
+
+	--shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+	--shadow-card-hover: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+	/* Self-hosted Inter (see @font-face below). Overriding --font-sans makes
+	   it the document default via Tailwind's --default-font-family. */
+	--font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/*
+ * Inter, self-hosted: the Hub is an offline device, so no Google Fonts link.
+ * Variable weight axis 100–900, two subsets (~134 KB total): latin plus
+ * latin-ext, which is what Czech diacritics need. Files fetched once from
+ * fonts.gstatic.com (Inter is SIL OFL 1.1) and committed under static/fonts/.
+ */
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/static/fonts/inter-latin-ext.woff2") format("woff2");
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: "Inter";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/static/fonts/inter-latin.woff2") format("woff2");
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
+ * Custom theme "proximos": palette lifted from the v1 frontend
+ * (viewer/frontend/tailwind.config.ts + app/globals.css shadcn variables).
+ * v1 stores colors as bare "H S% L%" triples consumed via hsl(var(--x));
+ * here they are just written as hsl(...) literals. See docs/DECISIONS.md /
+ * plan/viewer/stack.md for why: custom Daisy theme with the v1 palette from
+ * day one, DaisyUI tokens by default, raw Tailwind only where we deliberately
+ * keep the familiar v1 look (stat tiles, probe table, charts, alarm rows).
+ *
+ * v1 var            -> daisyUI token          -> value (light)
+ * --background/--card -> --color-base-100     -> hsl(0 0% 100%)  (page AND cards)
+ * --sidebar          -> --color-base-200       -> hsl(30 20% 97%) (chrome only)
+ * --border/--input   -> --color-base-300       -> hsl(30 10% 90%)
+ * --foreground       -> --color-base-content   -> hsl(345 6% 13%)
+ * --primary          -> --color-primary        -> hsl(31 94% 63%)  (FIBER orange)
+ * --primary-foreground -> --color-primary-content -> hsl(0 0% 100%)
+ * --secondary        -> --color-secondary      -> hsl(30 20% 96%)
+ * --secondary-foreground -> --color-secondary-content -> hsl(345 6% 13%)
+ * --accent           -> --color-accent         -> hsl(31 90% 50%)  (darker orange)
+ * --accent-foreground -> --color-accent-content -> hsl(0 0% 100%)
+ * --foreground       -> --color-neutral        -> hsl(345 6% 13%)  (dark surface)
+ * --background       -> --color-neutral-content -> hsl(0 0% 100%)
+ * (no v1 source)     -> --color-info           -> hsl(217 91% 60%) (kept generic)
+ * --success          -> --color-success        -> hsl(142 76% 36%)
+ * --warning          -> --color-warning        -> hsl(38 92% 50%)
+ * --destructive (== --critical) -> --color-error -> hsl(0 84% 60%)
+ *
+ * radius: v1 --radius 0.75rem is shadcn's `rounded-lg`, which its Card uses as
+ * `rounded-xl`; box 0.75rem / field 0.5rem reproduces the pairing v1's cards
+ * and inputs actually render at.
+ */
+@plugin "../../vendor/daisyui-theme.mjs" {
+	name: "proximos";
+	default: true;
+	color-scheme: light;
+
+	--color-base-100: hsl(0 0% 100%);
+	--color-base-200: hsl(30 20% 97%);
+	--color-base-300: hsl(30 10% 90%);
+	--color-base-content: hsl(345 6% 13%);
+
+	--color-primary: hsl(31 94% 63%);
+	--color-primary-content: hsl(0 0% 100%);
+	--color-secondary: hsl(30 20% 96%);
+	--color-secondary-content: hsl(345 6% 13%);
+	--color-accent: hsl(31 90% 50%);
+	--color-accent-content: hsl(0 0% 100%);
+	--color-neutral: hsl(345 6% 13%);
+	--color-neutral-content: hsl(0 0% 100%);
+
+	--color-info: hsl(217 91% 60%);
+	--color-info-content: hsl(0 0% 100%);
+	--color-success: hsl(142 76% 36%);
+	--color-success-content: hsl(0 0% 100%);
+	--color-warning: hsl(38 92% 50%);
+	--color-warning-content: hsl(0 0% 100%);
+	--color-error: hsl(0 84% 60%);
+	--color-error-content: hsl(0 0% 100%);
+
+	--radius-selector: 1rem;
+	--radius-field: 0.5rem;
+	--radius-box: 0.75rem;
+	--size-selector: 0.25rem;
+	--size-field: 0.25rem;
+	--border: 1px;
+	--depth: 0;
+	--noise: 0;
+}
+
+/*
+ * "proximos-dark": v1's `.dark` variable block. prefersdark makes it apply
+ * automatically off the OS color-scheme when no data-theme attribute is set.
+ * v1 never shipped a working dark mode, so this is kept in step with the
+ * light theme's token list but is not a design we verify.
+ */
+@plugin "../../vendor/daisyui-theme.mjs" {
+	name: "proximos-dark";
+	prefersdark: true;
+	color-scheme: dark;
+
+	--color-base-100: hsl(345 6% 10%);
+	--color-base-200: hsl(345 6% 11%);
+	--color-base-300: hsl(345 6% 20%);
+	--color-base-content: hsl(30 20% 98%);
+
+	--color-primary: hsl(31 94% 63%);
+	--color-primary-content: hsl(345 6% 10%);
+	--color-secondary: hsl(345 6% 15%);
+	--color-secondary-content: hsl(30 20% 98%);
+	--color-accent: hsl(31 90% 55%);
+	--color-accent-content: hsl(345 6% 10%);
+	--color-neutral: hsl(30 20% 98%);
+	--color-neutral-content: hsl(345 6% 8%);
+
+	--color-info: hsl(217 91% 65%);
+	--color-info-content: hsl(345 6% 10%);
+	--color-success: hsl(142 71% 45%);
+	--color-success-content: hsl(345 6% 10%);
+	--color-warning: hsl(38 92% 50%);
+	--color-warning-content: hsl(345 6% 10%);
+	--color-error: hsl(0 72% 51%);
+	--color-error-content: hsl(30 20% 98%);
+
+	--radius-selector: 1rem;
+	--radius-field: 0.5rem;
+	--radius-box: 0.75rem;
+	--size-selector: 0.25rem;
+	--size-field: 0.25rem;
+	--border: 1px;
+	--depth: 0;
+	--noise: 0;
+}
+
+/* The @theme tokens above that daisyUI does not re-derive per theme. */
+[data-theme="proximos-dark"] {
+	--color-muted: hsl(345 6% 15%);
+	--color-muted-fg: hsl(30 10% 60%);
+	--color-sidebar: hsl(345 6% 11%);
+	--color-sidebar-border: hsl(345 6% 16%);
+}
+
+/*
+ * "fiber": the FIBER brand (PROXIMOS_BRAND=fiber, plan/portal/branding.md §4).
+ * Pages pick it through `data-theme="{{ brand.theme }}"`; every theme lives in
+ * this one stylesheet, so the committed build does not depend on the brand.
+ * HARDWARIO's palette as the provisioning app uses it
+ * (provisioning/tailwind.config.ts `brand.*`, src/globals.css):
+ *
+ * HARDWARIO token        -> daisyUI token                 -> value
+ * logo red               -> --color-primary               -> #e30427
+ * (darker red)           -> primary :hover/:active        -> #b8001f
+ * (darker red)           -> --color-error, critical       -> #b8001f
+ * brand.emphasis         -> --color-accent                -> #06367a
+ * brand.primary (blue)   -> --color-info                  -> #009cfa
+ * brand.text             -> --color-base-content/neutral  -> #252532
+ * brand.muted (logo grey) -> --color-muted-fg             -> #6b6a6a
+ * --border 0 0% 90%      -> --color-base-300              -> hsl(0 0% 90%)
+ *
+ * HARDWARIO's red is the brand and button colour. Errors and critical alarms
+ * take the darker #b8001f, so an alarm stays distinguishable from a red
+ * button. Secondary, base-200 and the chrome are neutral greys
+ * where ProXimos has its warm beige. warning is a deeper amber (#d97706), and
+ * status surfaces are white with a coloured left rule instead of a coloured
+ * wash (the overrides after this block). success and the 4th-severity alarm
+ * orange are ProXimos'. Light only: pages set data-theme, so a prefersdark
+ * variant would never apply.
+ */
+@plugin "../../vendor/daisyui-theme.mjs" {
+	name: "fiber";
+	color-scheme: light;
+
+	--color-base-100: hsl(0 0% 100%);
+	--color-base-200: hsl(0 0% 97%);
+	--color-base-300: hsl(0 0% 90%);
+	--color-base-content: #252532;
+
+	--color-primary: #e30427;
+	--color-primary-content: hsl(0 0% 100%);
+	--color-secondary: hsl(240 5% 96%);
+	--color-secondary-content: #252532;
+	--color-accent: #06367a;
+	--color-accent-content: hsl(0 0% 100%);
+	--color-neutral: #252532;
+	--color-neutral-content: hsl(0 0% 100%);
+
+	--color-info: #009cfa;
+	--color-info-content: hsl(0 0% 100%);
+	--color-success: hsl(142 76% 36%);
+	--color-success-content: hsl(0 0% 100%);
+	--color-warning: #d97706;
+	--color-warning-content: hsl(0 0% 100%);
+	--color-error: #b8001f;
+	--color-error-content: hsl(0 0% 100%);
+
+	--radius-selector: 1rem;
+	--radius-field: 0.5rem;
+	--radius-box: 0.75rem;
+	--size-selector: 0.25rem;
+	--size-field: 0.25rem;
+	--border: 1px;
+	--depth: 0;
+	--noise: 0;
+}
+
+/* Outside the component layer, so it wins over the rules it refines: the
+   critical severity is the error red, and a primary button darkens to the
+   same deeper red instead of fading. */
+[data-theme="fiber"] {
+	--color-critical: #b8001f;
+	--color-muted: hsl(240 5% 96%);
+	--color-muted-fg: #6b6a6a;
+	--color-sidebar: hsl(0 0% 98%);
+	--color-sidebar-border: hsl(0 0% 90%);
+}
+[data-theme="fiber"] .btn-v1-primary:hover,
+[data-theme="fiber"] .btn-primary:hover,
+[data-theme="fiber"] .btn-primary:active {
+	background-color: #b8001f;
+	border-color: #b8001f;
+}
+
+/*
+ * FIBER status surfaces: white, a 1px base-300 outline and a 4px left rule in
+ * the status colour, the icon in that colour and the text in base-content,
+ * where daisyUI and the templates fill alerts and warning cards with a wash.
+ * Theme-scoped, so ProXimos keeps its look and no template changes.
+ *
+ * Unlayered on purpose: `bg-warning/10` and friends are Tailwind utilities,
+ * and the utilities layer beats the components layer whatever the
+ * specificity, so an override inside @layer components would lose to the
+ * very classes it is meant to replace.
+ */
+[data-theme="fiber"] .alert-info,
+[data-theme="fiber"] .alert-success,
+[data-theme="fiber"] .alert-warning,
+[data-theme="fiber"] .alert-error {
+	background-color: var(--color-base-100);
+	background-image: none;
+	color: var(--color-base-content);
+	border: 1px solid var(--color-base-300);
+	border-left-width: 4px;
+	box-shadow: none;
+}
+[data-theme="fiber"] .alert-info { border-left-color: var(--color-info); }
+[data-theme="fiber"] .alert-success { border-left-color: var(--color-success); }
+[data-theme="fiber"] .alert-warning { border-left-color: var(--color-warning); }
+[data-theme="fiber"] .alert-error { border-left-color: var(--color-error); }
+[data-theme="fiber"] .alert-info svg:not(:is(.btn, .btn-v1) svg) { color: var(--color-info); }
+[data-theme="fiber"] .alert-success svg:not(:is(.btn, .btn-v1) svg) { color: var(--color-success); }
+[data-theme="fiber"] .alert-warning svg:not(:is(.btn, .btn-v1) svg) { color: var(--color-warning); }
+[data-theme="fiber"] .alert-error svg:not(:is(.btn, .btn-v1) svg) { color: var(--color-error); }
+[data-theme="fiber"] .bg-warning\/5,
+[data-theme="fiber"] .bg-warning\/10,
+[data-theme="fiber"] .bg-warning\/20 {
+	background-color: var(--color-base-100);
+	border-left: 4px solid var(--color-warning);
+}
+
+/* ------------------------------------------------------------------ *
+ * Component classes reproducing v1's shadcn variants. Written as plain
+ * CSS (not @apply) so they survive a Tailwind major and stay readable
+ * next to the v1 file they came from.
+ *
+ * They MUST sit in @layer components: unlayered CSS outranks every layered
+ * rule, so outside a layer `.input-v1 { width: 100% }` would quietly beat
+ * `sm:w-[160px]` and `.input-v1 { padding: … }` would beat `pl-9`.
+ * ------------------------------------------------------------------ */
+@layer components {
+
+	/* v1 components/ui/card.tsx, variant "default". */
+	.card-v1 {
+		border-radius: 0.75rem;
+		border: 1px solid var(--color-base-300);
+		background-color: var(--color-base-100);
+	}
+
+	/* Status pills, v1 lib/status-colors.ts `alarmStateBadgeColors` — filled,
+	   white text, used in the probe table's Status column. */
+	.badge-status {
+		display: inline-flex;
+		align-items: center;
+		border-radius: 9999px;
+		border: 1px solid transparent;
+		padding: 0.125rem 0.625rem;
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+	.badge-status-normal { background-color: oklch(69.6% 0.17 162.48); color: #fff; }
+	.badge-status-warning { background-color: oklch(70% 0.166 62); color: #fff; }
+	.badge-status-alarm { background-color: var(--color-alarm); color: #fff; }
+	.badge-status-critical { background-color: oklch(57.7% 0.245 27.325); color: #fff; }
+	.badge-status-offline { background-color: oklch(44.6% 0.043 257.281); color: #fff; }
+	.badge-status-neutral { background-color: oklch(70.4% 0.04 256.788); color: #fff; }
+
+	/* Sensor settings table (devices.node.md, amendment 2026-10-13): the vertical rules
+	   between the sensor's state, the block of bounds, the delivery to the Node and the
+	   action. A step darker than the row borders so the groups read at a glance. */
+	.col-sep { border-right: 1px solid color-mix(in oklab, var(--color-base-content) 22%, transparent); }
+
+	/* v1 components/ui/tabs.tsx: a muted rail on which the active pill lifts
+	   out as a white card. The History page's Time Window / Aggregation
+	   groups — every pill is a plain link (the whole selection lives in the
+	   URL), so the group needs no JS to work. */
+	.pill-group {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.125rem;
+		border-radius: 0.5rem;
+		background-color: var(--color-muted);
+		padding: 0.125rem;
+	}
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		border-radius: 0.375rem;
+		height: 1.75rem;
+		padding: 0 0.625rem;
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		white-space: nowrap;
+		color: var(--color-muted-fg);
+	}
+	.pill:hover { color: var(--color-base-content); }
+	.pill.is-active {
+		background-color: var(--color-base-100);
+		color: var(--color-base-content);
+		box-shadow: var(--shadow-card);
+	}
+
+	/* The History sensor picker's checkbox: v1 draws a round orange control
+	   that fills in with a white tick when selected. A <span>, not an
+	   <input>, because the row is a link — toggling a sensor rewrites the
+	   URL rather than mutating client state. */
+	.sensor-check {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		height: 1rem;
+		width: 1rem;
+		flex-shrink: 0;
+		border-radius: 9999px;
+		border: 1.5px solid color-mix(in oklab, var(--color-primary) 55%, transparent);
+		color: transparent;
+	}
+	.sensor-check.is-checked {
+		background-color: var(--color-primary);
+		border-color: var(--color-primary);
+		color: var(--color-primary-content);
+	}
+
+	/* Fullscreen chart card, inset from the viewport but below the navbar
+	   (min-h-16 = 4rem + 1px border, layout/nav.html) so the nav stays
+	   visible and clickable — UI-fixes #1. `left: 0` (unlike the other three
+	   sides) because the history page's sensor-picker column sits directly
+	   to the card's left — a 1rem inset there reveals a sliver of it, while
+	   the other sides only ever reveal plain page background. Flex column so
+	   `.chart-island` below can fill exactly the space left over from the
+	   header/summary/filters/alarms instead of a fixed viewport fraction
+	   that ignores how tall those siblings are and pushes the chart (and its
+	   zoom slider) toward or past the visible edge. */
+	.chart-fullscreen {
+		position: fixed;
+		top: calc(4rem + 1px);
+		right: 1rem;
+		bottom: 1rem;
+		left: 0;
+		z-index: 50;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+	}
+	/* Height is a class, not an Alpine `:style` binding, because
+	   static/js/portal-charts.js also writes `display` on the island to
+	   swap in the "no data" block — and Alpine's string `:style` rewrites
+	   the whole attribute, so the two would fight over it. `flex: 1 1 auto`
+	   uses the element's own `style="height:25rem"` as a starting size and
+	   grows/shrinks it to the fullscreen card's actual remaining height.
+	   `min-height: 50vh` keeps the chart legible when a long "Recent
+	   alarms" table sits below it; the card then scrolls instead. */
+	.chart-fullscreen .chart-island { flex: 1 1 auto; min-height: 50vh; }
+
+	/* v1 components/ui/badge.tsx, variant "outline" plus the tinted status
+	   variants — used for Active/Pending style labels. */
+	.badge-outline-v1 {
+		display: inline-flex;
+		align-items: center;
+		border-radius: 9999px;
+		border: 1px solid var(--color-base-300);
+		padding: 0.125rem 0.625rem;
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		white-space: nowrap;
+		color: var(--color-base-content);
+	}
+	.badge-outline-success { border-color: color-mix(in oklab, var(--color-success) 40%, transparent); color: var(--color-success); }
+	.badge-outline-warning { border-color: color-mix(in oklab, var(--color-warning) 40%, transparent); color: var(--color-warning); }
+	.badge-outline-alarm { border-color: color-mix(in oklab, var(--color-alarm) 40%, transparent); color: var(--color-alarm); }
+	.badge-outline-critical { border-color: color-mix(in oklab, var(--color-critical) 40%, transparent); color: var(--color-critical); }
+
+	/* v1 components/ui/button.tsx. `.btn-v1` is the shared base; the variant
+	   classes below match `default`/`outline`/`ghost`/`destructive`. */
+	.btn-v1 {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		white-space: nowrap;
+		border-radius: 0.5rem;
+		height: 2.25rem;
+		padding: 0 0.75rem;
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		font-weight: 500;
+		border: 1px solid transparent;
+		cursor: pointer;
+		transition: all 200ms ease-out;
+	}
+	.btn-v1:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--color-base-100), 0 0 0 4px var(--color-primary);
+	}
+	.btn-v1:disabled { pointer-events: none; opacity: 0.5; }
+	.btn-v1:active { transform: scale(0.98); }
+	.btn-v1-primary {
+		background-color: var(--color-primary);
+		color: var(--color-primary-content);
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+	}
+	.btn-v1-primary:hover {
+		background-color: color-mix(in oklab, var(--color-primary) 90%, transparent);
+		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+	}
+	.btn-v1-outline {
+		border-color: var(--color-base-300);
+		background-color: var(--color-base-100);
+		color: var(--color-base-content);
+	}
+	.btn-v1-outline:hover {
+		background-color: color-mix(in oklab, var(--color-accent) 50%, transparent);
+		border-color: color-mix(in oklab, var(--color-accent) 50%, transparent);
+		color: var(--color-accent-content);
+	}
+	.btn-v1-ghost { background-color: transparent; color: var(--color-base-content); }
+	.btn-v1-ghost:hover {
+		background-color: color-mix(in oklab, var(--color-accent) 50%, transparent);
+		color: var(--color-accent-content);
+	}
+	.btn-v1-destructive {
+		background-color: var(--color-error);
+		color: var(--color-error-content);
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+	}
+	.btn-v1-destructive:hover { background-color: color-mix(in oklab, var(--color-error) 90%, transparent); }
+	/* v1's green "Acknowledge alarm" button (components/alarms/AlarmDetailDialog.tsx) —
+	   not a shadcn button variant, just success-tinted like `.btn-v1-primary`. */
+	.btn-v1-success {
+		background-color: var(--color-success);
+		color: var(--color-success-content);
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+	}
+	.btn-v1-success:hover { background-color: color-mix(in oklab, var(--color-success) 90%, transparent); }
+	.btn-v1-sm { height: 2rem; padding: 0 0.75rem; font-size: 0.75rem; line-height: 1rem; }
+	.btn-v1-icon { height: 2rem; width: 2rem; padding: 0; }
+
+	/* House convention: every action button is set in caps. One rule for both
+	   button families — `.btn-v1` (the shadcn rebuild the portal uses) and
+	   daisyUI's `.btn`, still used by the threshold dialogs and a few small
+	   table actions. Inter needs a touch of tracking once uppercased. */
+	.btn-v1, .btn {
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	/* v1 components/ui/input.tsx, variant "default" + the same look for <select>. */
+	.input-v1 {
+		display: flex;
+		width: 100%;
+		appearance: none;
+		height: 2.5rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.5rem;
+		border: 1px solid var(--color-base-300);
+		background-color: var(--color-base-100);
+		color: var(--color-base-content);
+		font-size: 0.875rem;
+		line-height: 1.25rem;
+		transition: all 200ms;
+	}
+	.input-v1::placeholder { color: var(--color-muted-fg); }
+	.input-v1:hover { border-color: color-mix(in oklab, var(--color-primary) 50%, transparent); }
+	.input-v1:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--color-base-100), 0 0 0 4px var(--color-primary);
+	}
+	.input-v1-sm { height: 2rem; padding: 0.375rem 0.75rem; font-size: 0.75rem; line-height: 1rem; }
+	/* v1 components/ui/button.tsx, variant "destructive" — the group dialog's
+	   Delete. Filled rather than an outlined red, so it reads as the one
+	   irreversible action in the footer. */
+	.btn-v1-destructive {
+		background-color: var(--color-critical);
+		color: var(--color-base-100);
+		box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+	}
+	.btn-v1-destructive:hover {
+		background-color: color-mix(in oklab, var(--color-critical) 90%, transparent);
+	}
+
+	/* v1 components/ui/checkbox.tsx (radix + shadcn): a primary-bordered box
+	   that fills with primary and shows a white tick when checked. Native
+	   `<input type=checkbox>` cannot be styled that far, so this is the usual
+	   appearance:none rebuild — the tick is a background image because a
+	   pseudo-element cannot be placed on a replaced element. */
+	.checkbox-v1 {
+		appearance: none;
+		flex-shrink: 0;
+		height: 1.125rem;
+		width: 1.125rem;
+		/* A rounded square, which is what v1's own source asks for
+		   (`rounded-sm`). Its running build drew circles, but the circle
+		   reads as a radio button next to real radios, so the square wins. */
+		border-radius: 0.375rem;
+		border: 1px solid var(--color-primary);
+		background-color: var(--color-base-100);
+		cursor: pointer;
+	}
+	.checkbox-v1:checked {
+		background-color: var(--color-primary);
+		background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='M20 6 9 17l-5-5'/%3e%3c/svg%3e");
+		background-repeat: no-repeat;
+		background-position: center;
+		background-size: 0.875rem 0.875rem;
+	}
+	.checkbox-v1:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px var(--color-base-100), 0 0 0 4px var(--color-primary);
+	}
+	.checkbox-v1:disabled { cursor: not-allowed; opacity: 0.5; }
+	.checkbox-v1-xs { height: 1rem; width: 1rem; }
+	/* An edit-set box outside edit mode (ui_components.md §3): it shows the
+	   state but is plainly not a control, neutral grey, no pointer. */
+	.es-check:disabled { opacity: 1; cursor: default; border-color: var(--color-base-300); background-color: var(--color-base-200); }
+	.es-check:disabled:checked { background-color: color-mix(in oklab, var(--color-muted-fg) 55%, var(--color-base-200)); border-color: transparent; }
+
+	.select-v1 {
+		background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23787270' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpath d='m6 9 6 6 6-6'/%3e%3c/svg%3e");
+		background-repeat: no-repeat;
+		background-position: right 0.5rem center;
+		background-size: 1rem 1rem;
+		padding-right: 2rem;
+	}
+
+	/* "Device information" (partials/device_info.html, metadata.cs.md §5):
+	   the collapsible card around an edit block. */
+	.di { padding: 0; }
+	/* Every collapsible card header is 3rem: 2rem btn-v1-sm + 2 × 0.5rem (2026-10-15). */
+	.di-head { display: flex; width: 100%; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; min-width: 0; min-height: 3rem; }
+	.di-toggle { display: flex; align-items: center; gap: 0.5rem; text-align: left; min-width: 0; flex-shrink: 0; }
+	.di-rest { display: flex; flex: 1 1 0; align-items: center; gap: 0.5rem; min-width: 0; align-self: stretch; text-align: left; }
+	.di-chev { transition: transform 150ms; }
+	/* Rotation follows the toggle's aria-expanded (Alpine-bound, same state as
+	   the body's x-show). Not the card's di-open class: htmx settle restores a
+	   swapped card's server-rendered class, dropping di-open while open. */
+	[aria-expanded="true"] > .di-chev { transform: rotate(90deg); }
+	.di-body { padding: 0 1rem 1rem; }
+
+	/* Inline text edit (partials/ui.html edit_block / text_field,
+	   plan/portal/ui_components.md §1). View text and the edit input share
+	   one 34 px box: no border, the underline is an inset shadow, so
+	   switching modes shifts nothing. */
+	.te-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+	.te-tools { display: inline-flex; align-items: center; gap: 0.125rem; flex-shrink: 0; }
+	.te-tools .btn-v1-icon { height: 1.75rem; width: 1.75rem; }
+	.te-save { color: var(--color-success); }
+	.te-saved { font-size: 0.75rem; color: var(--color-success); margin-left: 0.25rem; white-space: nowrap; }
+	.te-form { display: flex; flex-direction: column; gap: 0.25rem; container-type: inline-size; }
+	.te-row {
+		display: grid; grid-template-columns: 7rem minmax(0, 1fr);
+		gap: 0.5rem; align-items: start;
+	}
+	@container (max-width: 420px) {
+		.te-row { grid-template-columns: 5rem minmax(0, 1fr); }
+	}
+	.te-lbl {
+		display: block; font-size: 0.8125rem; line-height: 1.5rem;
+		padding-top: calc(0.25rem + 1px); color: var(--color-muted-fg);
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	/* Values set in the facts' mono (device_info dd.font-mono), view and
+	   edit alike (amendment 2026-10-15). */
+	.te-val, .te-in {
+		box-sizing: border-box; display: block; width: 100%; margin: 0;
+		font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.5rem; padding: calc(0.25rem + 1px) 0.5rem;
+		border: 0; border-radius: 0.375rem; min-height: calc(2rem + 2px);
+	}
+	.te-in {
+		appearance: none; height: calc(2rem + 2px);
+		background-color: var(--color-base-200); color: var(--color-base-content);
+		box-shadow: inset 0 -2px 0 var(--color-primary);
+		border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+		transition: box-shadow 150ms, background-color 150ms;
+	}
+	.te-in::placeholder { color: var(--color-muted-fg); }
+	/* Date and date-time fields (amendment 2026-10-15): the values' mono, a
+	   fixed width so From/To do not grow with their content, and the
+	   ProXimos primary as the accent. color-scheme comes from the theme. */
+	input[type="datetime-local"].input-v1, input[type="datetime-local"].te-in,
+	input[type="date"].input-v1, input[type="date"].te-in {
+		font-family: var(--font-mono); font-size: 0.8125rem;
+		accent-color: var(--color-primary); flex: none; max-width: 100%;
+	}
+	input[type="datetime-local"].input-v1, input[type="datetime-local"].te-in { width: 13.5rem; }
+	input[type="date"].input-v1, input[type="date"].te-in, .te-in.te-date { width: 10rem; }
+	.te-in.te-date { font-family: var(--font-mono); font-size: 0.8125rem; cursor: pointer; }
+	input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+	input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
+	.te-in:hover { background-color: color-mix(in oklab, var(--color-base-300) 60%, var(--color-base-200)); }
+	.te-in:focus, .te-in:focus-visible { outline: none; box-shadow: inset 0 -3px 0 var(--color-primary); }
+	.te-in[aria-invalid="true"] { box-shadow: inset 0 -2px 0 var(--color-error); }
+	.te-in[aria-invalid="true"]:focus { box-shadow: inset 0 -3px 0 var(--color-error); }
+	.te-in:disabled { cursor: not-allowed; opacity: 0.6; box-shadow: inset 0 -2px 0 var(--color-base-300); }
+	/* The textarea takes the view's height (editBlock start() measures it),
+	   and the counter sits inside its corner, so the row does not grow. */
+	textarea.te-in { resize: vertical; max-height: 8rem; overflow-y: auto; }
+	.te-area-wrap { position: relative; }
+	.te-area-wrap textarea.te-in { padding-right: 4.5rem; }
+	.te-area-wrap .te-count { position: absolute; right: 0.5rem; bottom: 0.25rem; margin: 0; pointer-events: none; }
+	input[type="file"].te-in { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+	.te-err { font-size: 0.75rem; color: var(--color-error); margin-top: 2px; }
+	.te-count { font-size: 0.75rem; color: var(--color-muted-fg); text-align: right; margin-top: 2px; }
+	.te-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+	@container (max-width: 420px) {
+		.te-actions > * { flex: 1 1 0; }
+	}
+	.di-sep { border: 0; border-top: 1px solid var(--color-base-300); margin: 0.75rem 0 0.25rem; }
+	.di-grid {
+		/* At most two columns (one on a phone), so a value wraps instead of
+		   being cut off with an ellipsis. */
+		display: grid; grid-template-columns: minmax(0, 1fr);
+		gap: 0 1.5rem;
+	}
+	@media (min-width: 768px) {
+		.di-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	}
+	.di-fact {
+		display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem;
+		min-width: 0; padding: 0.3rem 0; border-bottom: 1px solid var(--color-base-300);
+		font-size: 0.8125rem;
+	}
+	.di-fact dt { color: var(--color-muted-fg); white-space: nowrap; }
+	.di-fact dd {
+		min-width: 0; overflow-wrap: anywhere; text-align: right;
+	}
+	.di-copy { display: inline-flex; vertical-align: middle; height: 1.25rem; width: 1.25rem; margin-left: 0.25rem; }
+	/* The Calibration card's collapsible sub-sections (calibration.cs.md,
+	   amendment 2026-10-15): History and Upload, collapsed on load. */
+	.cal-sub { border-top: 1px solid var(--color-base-300); margin-top: 0.75rem; }
+	.cal-subhead {
+		display: flex; align-items: center; gap: 0.5rem; width: 100%;
+		padding: 0.5rem 0; font-size: 0.875rem; font-weight: 600; text-align: left;
+	}
+	.cal-hist { width: 100%; font-size: 0.8125rem; border-collapse: collapse; }
+	.cal-hist th {
+		text-align: left; font-weight: 500; font-size: 0.75rem; color: var(--color-muted-fg);
+		padding: 0.3rem 0.75rem 0.3rem 0; border-bottom: 1px solid var(--color-base-300);
+	}
+	.cal-hist td {
+		padding: 0.3rem 0.75rem 0.3rem 0; border-bottom: 1px solid var(--color-base-300);
+		vertical-align: top;
+	}
+	/* The Channels card (partials/channels_card.html, ui_components.md
+	   §2.6): ten rows, then the body scrolls under a sticky header. The
+	   select column is always there (fixed width) so entering Set channels
+	   shifts nothing. */
+	.ch-scroll { max-height: calc(2.75rem * 10 + 3rem); overflow: auto; }
+	.ch-table { width: 100%; font-size: 0.875rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+	.ch-table thead th { position: sticky; top: 0; z-index: 2; background: var(--color-base-100); border-bottom: 1px solid var(--color-base-300); }
+	.ch-table td { height: 2.75rem; padding: 0 1rem; border-bottom: 1px solid var(--color-base-300); white-space: nowrap; }
+	.ch-table tbody tr:last-child td { border-bottom: 0; }
+	.ch-sel { width: 2.75rem; padding-left: 1rem !important; padding-right: 0 !important; }
+	.ch-stale td, .ch-off td { color: var(--color-muted-fg); }
+	.ch-src {
+		display: inline-block; font-size: 0.72rem; line-height: 1.1rem; padding: 0 0.45rem; border-radius: 9999px;
+		border: 1px solid var(--color-base-300); color: var(--color-muted-fg);
+	}
+	.ch-src-payload { color: var(--color-primary); border-color: color-mix(in oklab, var(--color-primary) 40%, transparent); }
+	/* Channels' Limits column and inline editor (ui_components.md §2.8). */
+	.ch-scroll.ch-scroll-open { max-height: none; }
+	.ch-lim-wrap { display: flex; align-items: center; gap: 0.375rem; min-height: 1.75rem; }
+	/* Service functions card (ui_components.md §7). */
+	.svc-banner { display: flex; align-items: center; font-size: 0.75rem; color: var(--color-muted-fg); margin-bottom: 0.5rem; }
+	.svc-banner > span { display: inline-flex; align-items: center; gap: 0.375rem; }
+	.svc-banner-open { color: var(--color-warning); font-weight: 500; }
+	.svc-rows { display: flex; flex-direction: column; }
+	.svc-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.625rem 0; border-top: 1px solid var(--color-base-300); }
+	.svc-row:first-child { border-top: 0; }
+	.svc-row > button { flex-shrink: 0; }
+	.svc-panel { padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0.5rem; background: color-mix(in oklab, var(--color-muted) 40%, transparent); }
+	/* Events card (ui_components.md §5). */
+	.ev-head { padding-right: 5.5rem; }
+	.ev-csv { position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); }
+	.ev-list { display: flex; flex-direction: column; }
+	.ev-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 2rem; align-items: center; gap: 0.25rem 0.75rem; padding: 0.25rem 0; font-size: 0.875rem; border-bottom: 1px solid color-mix(in oklab, var(--color-base-300) 60%, transparent); }
+	.ev-at { font-size: 0.75rem; color: var(--color-muted-fg); white-space: nowrap; }
+	.ev-text { overflow-wrap: anywhere; }
+	.ev-author { font-size: 0.75rem; white-space: nowrap; }
+	@media (max-width: 639px) {
+		.ev-row { grid-template-columns: minmax(0, 1fr) auto 2rem; }
+		.ev-at { grid-column: 1 / 2; }
+		.ev-text { grid-column: 1 / 3; grid-row: 2; }
+		.ev-del { grid-column: 3; grid-row: 1 / 3; }
+	}
+	.ch-lim .te-tools { display: inline-flex; min-width: 3.5rem; }
+	.ch-mini { position: relative; width: 5rem; height: 0.5rem; flex-shrink: 0; }
+	.ch-mini-bar { height: 100%; border-radius: 9999px; }
+	.ch-mini-val { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--color-base-content); border-radius: 1px; }
+	.ch-mini-off { filter: grayscale(1); opacity: 0.45; }
+	.ch-lim-cell { padding: 1rem 1rem 1.25rem; background: color-mix(in oklab, var(--color-muted) 40%, transparent); }
+	.ch-lim-ed { contain: inline-size; position: sticky; left: 1rem; max-width: min(48rem, calc(100vw - 4rem)); }
+	.ch-lim-ed fieldset { min-width: 0; }
+	.ch-lim-ed { white-space: normal; }
+	.ch-lim-off [x-ref="limslider"] { filter: grayscale(1); opacity: 0.55; }
+	.es-changed td { background: color-mix(in oklab, var(--color-warning) 12%, transparent); }
+	.ch-off-badge {
+		font-size: 0.7rem; padding: 0 0.4rem; border-radius: 9999px; margin-left: 0.35rem;
+		background: var(--color-muted); color: var(--color-muted-fg);
+	}
+	/* ui.edit_set (ui_components.md §3): the pending change of a row. */
+	.es-to-off td { background: color-mix(in oklab, var(--color-error) 12%, transparent); }
+	.es-to-on td { background: color-mix(in oklab, var(--color-success) 12%, transparent); }
+	.es-head.es-head-plain { padding: 0 0 0.75rem; border-bottom: 0; }
+	.es-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-left: auto; }
+	.es-count { font-size: 0.8rem; color: var(--color-muted-fg); }
+	.es-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; min-height: 3rem; border-bottom: 1px solid var(--color-base-300); }
+	[data-channels-card]:not(.di-open) > .es-head { border-bottom: 0; }
+}
+
+@layer utilities {
+	/* v1 dims the page behind a dialog with `bg-black/80`; daisyUI's own open
+	   state is 40%, which left the metric tiles legible through the modal and
+	   made it read as a panel rather than a modal. Applies to every dialog in
+	   the portal, which is what v1 does too.
+
+	   It lives in `utilities` rather than `components` because that is where
+	   daisyUI's own `.modal[open]` lands, and layer order beats specificity —
+	   from `components` no selector, however specific, could reach it.
+	   `dialog.` then wins inside the layer, being one point more specific. */
+	dialog.modal[open] {
+		background-color: oklch(0% 0 0 / 0.8);
+	}
+
+	/* Alpine loads deferred; anything with x-show + x-cloak would flash in
+	   its raw state until then (the history custom-range form did). */
+	[x-cloak] { display: none !important; }
+	/* v1 app/globals.css utilities the shell relies on. */
+	.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+	.pulse-dot { animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+	@keyframes pulse-dot {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
+	}
+	/* The custom-range calendar (cally, partials/history_controls.html).
+	   daisyUI paints a selected day with `base-content`, so a picked range
+	   came out as a black slab. Repainted in the theme's orange: the two
+	   endpoints solid primary, the days between them a pale accent wash,
+	   and today an outline instead of a fill so it does not compete with an
+	   endpoint. Here rather than in `components` for the same reason as
+	   `dialog.modal[open]` above — daisyUI's `.cally` rules sit in the
+	   components layer, and layer order beats specificity. */
+	.cally ::part(selected) {
+		background: color-mix(in oklab, var(--color-accent) 18%, transparent);
+		color: var(--color-base-content);
+	}
+	.cally ::part(selected):hover {
+		background: color-mix(in oklab, var(--color-accent) 28%, transparent);
+	}
+	.cally ::part(range-start),
+	.cally ::part(range-end),
+	.cally ::part(range-start):hover,
+	.cally ::part(range-end):hover {
+		background: var(--color-primary);
+		color: var(--color-primary-content);
+	}
+	.cally ::part(button day today) {
+		background: transparent;
+		color: var(--color-base-content);
+		box-shadow: inset 0 0 0 1.5px var(--color-primary);
+	}
+	.cally ::part(button day today):hover { background: var(--color-base-200); }
+	/* A single-day picker (History request From/To): the picked day is an
+	   endpoint, so solid primary like a range end. */
+	calendar-date.cally ::part(selected),
+	calendar-date.cally ::part(selected):hover,
+	calendar-date.cally ::part(button day today selected) {
+		background: var(--color-primary);
+		color: var(--color-primary-content);
+		box-shadow: none;
+	}
+	.cally ::part(button day today selected) {
+		background: color-mix(in oklab, var(--color-accent) 18%, transparent);
+	}
+	.cally ::part(button day today range-start),
+	.cally ::part(button day today range-end) {
+		background: var(--color-primary);
+		color: var(--color-primary-content);
+	}
+
+	/* v1 login hero headline: `.text-gradient` (primary → accent). */
+	.text-gradient {
+		background-image: linear-gradient(to right, var(--color-primary), var(--color-accent));
+		background-clip: text;
+		color: transparent;
+	}
+}

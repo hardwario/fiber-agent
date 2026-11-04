@@ -1,0 +1,123 @@
+[Unit]
+Description=ChirpStack LoRaWAN Network Server
+Documentation=https://www.chirpstack.io/
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/radio/lorawan.md
+
+# A BOOT UNIT, unlike its two concentratord-side siblings, and the difference is
+# not an inconsistency. chirpstack-concentratord.service is started from udev
+# because the question "is a concentrator fitted" has a device to answer it; a
+# network server has no such device - nothing plugs in to announce that a Hub is
+# supposed to be running one. So this unit installs on every image and the
+# runtime gate is the rendered config below.
+#
+# THE RENDERED CONFIG IS THE GATE. proximosctl render emits
+# /run/proximos/chirpstack/chirpstack.toml only when radio.mode ∈ {lorawan,
+# dual}; on a P2P-only or radio-off Hub the file is simply absent and this unit
+# reports "condition failed" instead of failing - absence means not asked for.
+# Same mechanism, same spelling as fiber-portal.service's ConditionPathExists= on
+# its own rendered config (the client/server role gate, system/design.md §7).
+ConditionPathExists=/run/proximos/chirpstack/chirpstack.toml
+
+# Requires, not Wants, for both. Without the rendered toml this process has no
+# configuration at all, and every session, metric, device queue item and event
+# stream ChirpStack owns lives in redis - a chirpstack that outlived its redis is
+# a server that still answers RPCs and quietly loses uplinks.
+#
+# /run/proximos/chirpstack itself is created by proximos-render.service's
+# RuntimeDirectory=, not here: one unit owns that directory's lifetime, and it is
+# the one that writes into it.
+Requires=proximos-render.service redis.service
+After=proximos-render.service redis.service chirpstack-bootstrap.service data.mount
+RequiresMountsFor=/data
+
+# chirpstack-bootstrap.service is ordering only, deliberately NOT Requires=. It
+# mints the admin API key and replaces the `admin`/`admin` password before this
+# listener ever exists (lorawan.md §4, Option B), and it condition-skips itself on
+# every boot after the first. If it fails - redis slow on first boot, a
+# half-written token file - the repairable state is a *running* server an
+# operator can bootstrap by hand over the ssh tunnel of §4, not a LoRaWAN chain
+# that refuses to start. A missing token surfaces where it can be diagnosed:
+# radio-setup.service exits 10 (NotBootstrapped) with the file named.
+
+# The broker is loopback-only and ChirpStack's MQTT integration reconnects on its
+# own, so this is Wants=/After= exactly as in chirpstack-mqtt-forwarder.service:
+# a slow or briefly absent mosquitto costs events, not the unit.
+Wants=mosquitto.service
+After=mosquitto.service
+
+[Service]
+Type=simple
+User=chirpstack
+Group=chirpstack
+
+# -c takes a DIRECTORY, not a file - verified against the 4.19.1 binary
+# (`--config <DIR>`; it reads chirpstack.toml plus any region_*.toml beside it).
+# That is why the renderer owns the whole directory and why the ConditionPathExists
+# above names the file inside it rather than the directory: the directory exists
+# on every boot (RuntimeDirectory=), the file only when a LoRaWAN mode asked for
+# it.
+#
+# The rendered toml carries [api] secret - the JWT signing key behind every token
+# lorawan.md §4 mints - so the renderer writes it 0640 root:chirpstack, i.e.
+# group-readable by this unit's User= and by nobody else. That group is a
+# cross-file contract with the renderer: change it there and this unit stops
+# being able to read its own configuration.
+ExecStart=/usr/bin/chirpstack -c /run/proximos/chirpstack
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening - MDR 2017/745 Annex I 17.4. Same baseline as
+# chirpstack-mqtt-forwarder.service, which is the closest sibling: a userspace
+# daemon that speaks loopback TCP and touches no hardware.
+#
+# ProtectSystem=strict makes everything read-only except /dev, /proc and /sys, so
+# the two paths this daemon actually needs are handed back explicitly below.
+# ReadWritePaths=/data/chirpstack is the SQLite database, its -wal/-shm files and
+# nothing else on /data. The directory is created (0700 chirpstack:chirpstack) by
+# migration 005-chirpstack-seed.sh, which this recipe also ships - deliberately
+# not by a tmpfiles fragment, because systemd-tmpfiles-setup.service is not
+# ordered after the nofail data.mount and would create it inside the rootfs mount
+# point instead (see proximos-config's data-dirs.conf header for the full version
+# of that race, which v1 lost with exactly these directories).
+#
+# NOT here, and named rather than silently absent: SystemCallFilter= and
+# MemoryDenyWriteExecute=, which radio-setup.service does carry. ChirpStack
+# embeds a QuickJS interpreter (rquickjs) for payload codecs; decision #8 forbids
+# using codecs at all in this product, so W^X is very likely fine - but "very
+# likely" is not a basis for a directive whose failure mode is a network server
+# that will not start, and nobody has yet run this binary under one on target.
+# Adding both wants one bench session, the same way the concentratord unit's
+# DevicePolicy= note does.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Loopback IPv4 (its own API listener on 127.0.0.1:8080, redis on 6379, mosquitto
+# on 1883) plus unix sockets is the whole of this process's networking - the same
+# set, and the same omission of AF_INET6, as chirpstack-mqtt-forwarder.service.
+# The renderer pins every one of those addresses to 127.0.0.1, so a family this
+# list does not name is a configuration mistake, not a deployment variant.
+RestrictAddressFamilies=AF_UNIX AF_INET
+
+ReadWritePaths=/data/chirpstack
+
+# A declaration of intent rather than a change: ProtectSystem=strict has already
+# made /run read-only. It is here so that the day somebody relaxes ProtectSystem
+# to `full`, the rendered configuration - which this daemon must never rewrite -
+# does not silently become writable with it.
+ReadOnlyPaths=/run/proximos/chirpstack
+
+[Install]
+WantedBy=multi-user.target

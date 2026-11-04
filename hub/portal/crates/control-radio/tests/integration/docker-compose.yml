@@ -1,0 +1,66 @@
+# The CI integration stack — plan/control/radio/lorawan.md §10.
+#
+# It runs the Option-B bootstrap exactly as radio-setup.service will, then drives the real
+# dispatch path through `control-radio-harness` with **no agent subsystems started** — which is
+# the acceptance criterion for the standalone guarantee (decision #12 / monolith.md §11.7).
+#
+# Backend caveat, stated rather than discovered: upstream publishes no SQLite container, so this
+# runs the PostgreSQL build. The device runs the SQLite build, so what this does not cover is
+# SQLite-specific bootstrap behaviour — including the duplicate-key message text, which is
+# exactly why converge asks before creating instead of parsing errors.
+name: control-radio-integration
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: chirpstack
+      POSTGRES_PASSWORD: chirpstack
+      POSTGRES_DB: chirpstack
+    volumes:
+      # ChirpStack's migrations need both extensions to exist before they run.
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chirpstack"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  chirpstack:
+    # Pinned. lorawan.md §3 requires the chirpstack_api crate version to equal this pin; the
+    # crate tops out at 4.19.0 and no 4.19.1 exists, which is carried to the plan-feedback set.
+    image: chirpstack/chirpstack:4.19.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    ports:
+      # Loopback only, matching the device: upstream's default bind is 0.0.0.0:8080 and the
+      # renderer template must pin it to 127.0.0.1 explicitly.
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: postgres://chirpstack:chirpstack@postgres/chirpstack?sslmode=disable
+      REDIS_HOST: redis://redis:6379
+      MQTT_BROKER_HOST: tcp://mosquitto:1883
+    volumes:
+      - ./chirpstack.toml:/etc/chirpstack/chirpstack.toml:ro
+      - ./region_eu868.toml:/etc/chirpstack/region_eu868.toml:ro
+    command: -c /etc/chirpstack/

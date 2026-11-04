@@ -1,0 +1,58 @@
+{#
+  Unpaired-Hub banner (GitLab #109; devices.hub.md §3, dodatky 2026-10-10 and
+  2026-10-13).
+
+  A Hub this portal is not paired with takes no signed command: no Beacon or
+  Node registration, no limit or Hub setting goes through. Every page whose
+  actions need a signature carries this one banner — the dashboard (the Hub
+  the portal runs on), every Hub tab, the Beacon and Node lists and details,
+  their registration forms and /limits — so the state reads the same wherever
+  it is met. An admin pairs right here (partials/pair_form.html, the System
+  tab's form) and lands back on the same page; anyone else is told who can.
+  Pairing is a full-page POST that redirects, so a page showing this is always
+  rendered after the state it shows.
+
+  Context:
+    unpaired: routes::UnpairedBanner|undefined
+      hubs: [{hostname, local}]  -- the unpaired Hubs; empty renders nothing
+      can_pair: bool             -- admin: the pairing form inline
+      return_to: string          -- where a successful pairing lands
+      link: bool                 -- optional, the Hub's own tabs: "Go to
+                                    pairing" for a manager, who cannot pair
+#}
+{% import "partials/icons.html" as ic %}
+{% from "partials/pair_form.html" import pair_form %}
+{% if unpaired is defined and unpaired %}
+{% for hub in unpaired.hubs %}
+<div role="alert" class="alert alert-warning flex-col items-stretch gap-2 sm:flex-row sm:items-center" data-unpaired-hub="{{ hub.hostname }}">
+	<div class="flex items-start gap-2 min-w-0 flex-1">
+		{{ ic.icon("triangle-alert", "h-4 w-4 shrink-0 mt-0.5") }}
+		<div class="min-w-0">
+			<p>{{ "monitoring.device.unpaired_banner"|t|replace("{hub}", hub.hostname) }}</p>
+			<p class="text-sm opacity-80">
+				{%- if unpaired.can_pair -%}
+				{{ ("monitoring.device.pair_inline_local_hint" if hub.local else "monitoring.device.pair_inline_code_hint")|t }}
+				{%- else -%}
+				{{ "monitoring.device.pair_admin_only"|t }}
+				{%- endif -%}
+			</p>
+			{# GitLab #155: how to put the Hub in pairing mode; the menu label is the Hub
+			   display's own (control-core display::MENU_ITEMS), quoted verbatim. #}
+			<div class="text-sm opacity-80 mt-1" data-pairing-steps>
+				<p>{{ "monitoring.device.pairing_steps_heading"|t }}</p>
+				<ol class="list-decimal pl-5">
+					<li>{{ "monitoring.device.pairing_step_button"|t }}</li>
+					<li>{{ "monitoring.device.pairing_step_menu"|t }}</li>
+					<li>{{ "monitoring.device.pairing_step_portal"|t }}</li>
+				</ol>
+			</div>
+		</div>
+	</div>
+	{% if unpaired.can_pair %}
+	{{ pair_form(hub.hostname, hub.local, unpaired.return_to) }}
+	{% elif unpaired.link | default(false) %}
+	<a href="/hubs/{{ hub.hostname }}/system#pairing" class="btn-v1 btn-v1-outline btn-v1-sm shrink-0">{{ "monitoring.device.go_to_pairing"|t }}</a>
+	{% endif %}
+</div>
+{% endfor %}
+{% endif %}

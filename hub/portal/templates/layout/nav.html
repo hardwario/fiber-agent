@@ -1,0 +1,178 @@
+{#
+  Sidebar: sticky on md and up, an off-canvas drawer below md (opened by
+  the hamburger in `layout/topbar.html`, closed by the overlay, Esc or the X;
+  `html.nav-open` is the switch, toggled in `layout/base.html`). Replaces
+  v1's bottom tab bar, which ran out of room at ten entries.
+
+  Context: `current_user` = {
+    username: string, full_name: string|none,
+    user_role: "viewer"|"manager"|"admin", is_superuser: bool
+  }; `nav_active` = an id from `layout/nav_items.html`, or none;
+  `experimental_features_enabled` = bool, threaded by `routes::render()` from
+  `AppState` on every render (not just this one). All are read defensively,
+  but `layout/base.html` only includes this file for a logged-in visitor —
+  the anonymous surface (login/setup) renders through `layout/bare.html` and
+  never reaches here.
+
+  The item list itself lives in `layout/nav_items.html` (imported below), so
+  the top bar's page icon/title come from the same table. Role gates are
+  applied here, from each entry's `gate` field.
+
+  Collapse (md and up only): the sidebar shrinks to w-16 and the choice
+  survives a reload in `localStorage["proximos_sidebar_collapsed"]`.
+  `layout/base.html` applies `html.sidebar-collapsed` before first paint, so
+  a collapsed sidebar does not flash open on every navigation. The drawer
+  ignores it, hence the `md:` prefix on every collapsed variant.
+
+  Every collapsed rule keys off `html.sidebar-collapsed` — the class the HEAD
+  script sets from localStorage — and none off a class added later. They used
+  to differ: the width was pre-paint, the labels inside were not, so a
+  collapsed sidebar rendered with full-width labels in a 4 rem box and then
+  animated them away on every single page load. One class, one moment.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "layout/nav_items.html" as navdef %}
+{% set current_user = current_user if current_user is defined else none %}
+{% set nav_active = nav_active if nav_active is defined else none %}
+{% set experimental_features_enabled = experimental_features_enabled if experimental_features_enabled is defined else false %}
+{% set lang = lang if lang is defined else "en" %}
+{% set nav_alarm_count = nav_alarm_count if nav_alarm_count is defined else 0 %}
+
+{% set is_admin = current_user and (current_user.user_role == "admin" or current_user.is_superuser) %}
+{% set is_manager = is_admin or (current_user and current_user.user_role == "manager") %}
+{# The gate is checked inside each render loop rather than pre-filtered into a
+   list: a `{% set %}` inside a `{% for %}` does not escape the loop body. #}
+{% set visible_gates = ["manager" if is_manager else "-", "admin" if is_admin else "-", "experimental" if experimental_features_enabled else "-"] %}
+
+{# Drawer backdrop (below md only); clicking it closes the drawer. #}
+<div id="nav-backdrop" class="fixed inset-0 z-40 bg-black/40 md:hidden hidden [html.nav-open_&]:block"></div>
+
+{# Drawer backdrop (below md only); clicking it closes the drawer. #}
+<div id="nav-backdrop" class="fixed inset-0 z-40 bg-black/40 md:hidden hidden [html.nav-open_&]:block"></div>
+
+{% set display_name = current_user.full_name | default(current_user.username, true) %}
+{% if current_user.is_superuser %}
+	{% set role_label = "common.role.superuser"|t %}
+{% else %}
+	{% set role_label = ("common.role." ~ current_user.user_role)|t %}
+{% endif %}
+<aside id="app-sidebar"
+	class="flex flex-col bg-sidebar h-screen shrink-0 z-50 w-60 fixed inset-y-0 left-0 -translate-x-full transition-transform duration-200 [html.nav-open_&]:translate-x-0 md:sticky md:top-0 md:translate-x-0 md:transition-[width] md:[html.sidebar-collapsed_&]:w-16">
+	<div class="flex items-center justify-between h-16 shrink-0 px-5 md:[html.sidebar-collapsed_&]:justify-center md:[html.sidebar-collapsed_&]:px-2">
+		<a href="/" class="min-w-0">
+			<img src="/static/logo.svg?v={{ asset_v }}" alt="{{ brand.product }}" width="{{ brand.logo_width }}" height="{{ brand.logo_height }}" class="h-12 w-auto max-w-full translate-y-1 md:[html.sidebar-collapsed_&]:h-8 md:[html.sidebar-collapsed_&]:translate-y-0">
+		</a>
+		<button type="button" id="nav-close" class="md:hidden p-2 -mr-2 rounded-lg text-muted-fg hover:text-base-content hover:bg-base-content/5" aria-label="{{ "common.nav.close_menu"|t }}">
+			{{ ic.icon("x", "h-5 w-5") }}
+		</button>
+	</div>
+
+	{#- Section headings are drawn on the GROUP CHANGE between two rendered
+	    entries, never from the table alone: a group every one of whose entries
+	    this role cannot see would otherwise leave its heading standing over
+	    nothing. `ns.group` has to be a namespace — a plain `{% set %}` inside
+	    the loop body does not survive the iteration. -#}
+	{#- Collapsed, a scrollbar would take ~15 px of a 64 px rail and cut the
+	    active pill, so it is hidden there (wheel/touch still scroll);
+	    expanded, it is thin. -#}
+	<nav class="flex-1 py-3 px-2 space-y-1.5 overflow-y-auto [scrollbar-width:thin] md:[html.sidebar-collapsed_&]:[scrollbar-width:none] md:[html.sidebar-collapsed_&]:[&::-webkit-scrollbar]:hidden">
+		{% set ns = namespace(group=none, started=false) %}
+		{% for id, href, icon, gate, group in navdef.nav_items %}{% if gate is none or gate in visible_gates %}
+		{% if ns.started and group != ns.group %}
+		{#- Collapsed, the heading is three unreadable characters, so it goes
+		    and only the rule and the gap remain to say a section started. -#}
+		{#- Fixed height in both states, so the icons below never shift when
+		    the sidebar is toggled. -#}
+		<div class="flex items-end h-9 pb-1.5 px-3">
+			<div class="hidden md:[html.sidebar-collapsed_&]:block h-px w-full bg-sidebar-border -mx-1"></div>
+			<span class="block text-[11px] font-semibold uppercase tracking-wider text-muted-fg/70 md:[html.sidebar-collapsed_&]:hidden">{{ ("common.nav.group_" ~ group)|t }}</span>
+		</div>
+		{% endif %}
+		{% set ns.group = group %}
+		{% set ns.started = true %}
+		{% set label = ("common.nav." ~ id)|t %}
+		<a href="{{ href }}" title="{{ label }}"
+			class="flex items-center gap-3 h-11 px-3 rounded-lg md:[html.sidebar-collapsed_&]:justify-center md:[html.sidebar-collapsed_&]:gap-0 md:[html.sidebar-collapsed_&]:px-0 text-sm font-medium transition-colors {% if nav_active == id %}bg-primary text-primary-content shadow-sm{% else %}text-muted-fg hover:text-base-content hover:bg-base-content/5{% endif %}">
+			{{ ic.icon(icon, "h-5 w-5 shrink-0") }}
+			<span class="overflow-hidden whitespace-nowrap transition-all duration-200 max-w-[160px] md:[html.sidebar-collapsed_&]:max-w-0 md:[html.sidebar-collapsed_&]:opacity-0">{{ label }}</span>
+			{#- Self-loading and live: `load` fills it on every page,
+			    `sse:alarm-table` refills it on the same nudge that re-renders
+			    the alarm table, so opening or clearing an alarm moves the
+			    number without a reload. `hx-target="this"` + `innerHTML` —
+			    this element carries the trigger and must survive the swap. -#}
+			{% if id == "alarms" %}
+			{#- The pill is drawn HERE, server-side, from `nav_alarm_count`
+			    (`routes::render`, the count cached by the last `/alarms/badge`
+			    fetch). The `load` fetch stays and re-swaps the same markup, so
+			    a cache that is stale (the first page after a restart) corrects
+			    itself; what it no longer does is arrive into an empty box on
+			    every navigation, which is the flash. `min-h` keeps the row's
+			    height steady when the count is zero and nothing renders. -#}
+			<span id="nav-alarm-badge" class="ml-auto shrink-0 inline-flex items-center min-h-6 md:[html.sidebar-collapsed_&]:hidden"
+				hx-get="/alarms/badge" hx-trigger="load, sse:alarm-table"
+				hx-target="this" hx-swap="innerHTML">{% with active_count = nav_alarm_count %}{% include "partials/nav_alarm_badge.html" %}{% endwith %}</span>
+			{% endif %}
+		</a>
+		{% endif %}{% endfor %}
+	</nav>
+
+	{#- The user card sits at the foot of the sidebar, not in the top bar
+	    (enerooo-spark's v2 shell). It is where an account belongs once the
+	    chrome is one surface: the header is then free for the page's own
+	    identity, and the account stops competing with it on every screen.
+
+	    Its menu opens UPWARDS — `bottom-full` — because there is nothing
+	    below. A `<details>`, like the one it replaces, so the Esc and
+	    click-outside handling in layout/base.html keeps working unchanged. -#}
+	<div class="relative shrink-0 border-t border-sidebar-border">
+		<details class="user-menu">
+			<summary class="flex items-center gap-2.5 w-full px-4 py-4 cursor-pointer hover:bg-base-content/5 transition-colors list-none md:[html.sidebar-collapsed_&]:px-2 md:[html.sidebar-collapsed_&]:justify-center">
+				<span class="flex items-center justify-center h-10 w-10 shrink-0 rounded-full bg-primary/10 text-primary font-semibold">{{ display_name[:1]|upper }}</span>
+				<span class="flex-1 min-w-0 flex flex-col items-start leading-tight overflow-hidden transition-all duration-200 max-w-[160px] md:[html.sidebar-collapsed_&]:max-w-0 md:[html.sidebar-collapsed_&]:opacity-0">
+					<span class="text-sm font-semibold truncate max-w-full">{{ display_name }}</span>
+					<span class="text-xs text-muted-fg truncate max-w-full">{{ role_label }}</span>
+				</span>
+				{{ ic.icon("chevrons-up-down", "h-4 w-4 text-muted-fg shrink-0 md:[html.sidebar-collapsed_&]:hidden") }}
+			</summary>
+			<div class="absolute left-2 right-2 bottom-full mb-1.5 rounded-xl border border-base-300 bg-base-100 shadow-card-hover p-1 z-50 md:[html.sidebar-collapsed_&]:left-2 md:[html.sidebar-collapsed_&]:w-56">
+				{#- The language switcher, moved down from the top bar (the top
+				    bar's right slot is the connection pill + Refresh now). Same
+				    M9 mechanics: two POST forms to `/lang`, with `next` filled
+				    in client-side by `layout/base.html`. -#}
+				<div class="flex items-center justify-between gap-2 px-2 py-1.5 text-sm">
+					<span class="flex items-center gap-2 min-w-0">
+						{{ ic.icon("globe", "h-4 w-4 shrink-0") }}<span class="truncate">{{ "common.lang.switch_language"|t }}</span>
+					</span>
+					<div class="flex items-center border border-base-300 rounded-lg p-0.5 gap-0.5 shrink-0">
+						{% for code in ["en", "cs"] %}
+						<form method="post" action="/lang" class="contents">
+							<input type="hidden" name="lang" value="{{ code }}">
+							<input type="hidden" name="next" class="lang-next" value="">
+							<button type="submit" class="px-2 py-0.5 rounded-md text-xs font-semibold uppercase transition-colors {% if lang == code %}bg-primary text-primary-content{% else %}text-muted-fg hover:text-base-content{% endif %}">{{ code }}</button>
+						</form>
+						{% endfor %}
+					</div>
+				</div>
+				{#- The operator's own page. `/settings/users/{id}` is admin-gated
+				    (user_routes.rs), so the link is too — a viewer would land on
+				    a 403. -#}
+				{% if is_admin %}
+				<a href="/settings/users/{{ current_user.id }}" class="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm hover:bg-base-content/5">
+					{{ ic.icon("user", "h-4 w-4") }}{{ "common.nav.profile"|t }}
+				</a>
+				{% endif %}
+				{#- Everyone changes their own password here; an admin's reset is for
+				    someone else's account (auth.errors.self_guard_use_change_password). -#}
+				<a href="/settings/password" class="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm hover:bg-base-content/5">
+					{{ ic.icon("key", "h-4 w-4") }}{{ "common.nav.change_password"|t }}
+				</a>
+				<form method="post" action="/logout">
+					<button type="submit" class="flex w-full items-center gap-2 px-2 py-1.5 rounded-md text-sm text-error hover:bg-error/10">
+						{{ ic.icon("log-out", "h-4 w-4") }}{{ "common.nav.logout"|t }}
+					</button>
+				</form>
+			</div>
+		</details>
+	</div>
+
+</aside>

@@ -1,0 +1,29 @@
+{#
+  Add Hub — devices.hub.md §4 as a page (dodatek 2026-10-14), the shape of
+  /beacons/add: a back link and one card. ADMIN ONLY and only with a Server
+  to add to; the route redirects to /hubs otherwise, and every POST behind
+  the form stays RequireAdmin.
+
+  `#add-hub-body` is the htmx target of the form, of Retry and of the
+  completion screen (partials/hub_join_bundle.html), exactly as in the
+  dialog that Retry still uses: the join bundle is shown once, here, and
+  "Done" leaves for /hubs, which drops the password from the DOM.
+  Context: { add_hub: cluster_routes::AddHubCtx }
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "monitoring.hubs.add_hub_title"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{{ ui.back_link("/hubs", "monitoring.hubs.back_to_list"|t) }}
+	<div class="card-v1 p-4">
+		{% call ui.page_header("router", "monitoring.hubs.add_hub_title"|t) %}{% endcall %}
+		<div id="add-hub-body" class="mt-3 max-w-2xl">
+			{% include "partials/hub_add_form.html" %}
+		</div>
+	</div>
+</div>
+{% endblock %}

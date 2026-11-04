@@ -1,0 +1,391 @@
+{#
+  Monitoring — v1's /monitoring page. One section per sensor group, and
+  nothing else: a sensor in no group does not appear here. Until the operator
+  makes their first group the page is the empty state below, exactly as v1
+  behaves. An ungrouped probe is still on /nodes, /beacons and /history.
+
+  Each section renders through one of four layouts, chosen by the operator
+  and stored on their account (`users.monitoring_view_mode`, migration V8):
+  card/table × detailed/simplified — partials/group_cards.html and
+  partials/group_table.html.
+
+  The connection pill, Refresh and the four metric tiles above this are NOT
+  this page's business: layout/base.html renders them on every authenticated
+  page, as v1's (dashboard) layout does.
+
+  Context contract (nested shapes live with their partials):
+  - nav_active = "dashboard"
+  - mqtt = { connected: bool, reason: string|none }
+  - unpaired: routes::UnpairedBanner -- partials/unpaired_banner.html:
+    the Hub this portal runs on while it is not paired (GitLab #109)
+  - device = none OR { hostname, online, version, last_seen, standby, sensors }
+  - hostname: string|none
+  - can_edit: bool         -- manager/admin: the group dialogs and the wired
+                              threshold pencil
+  - view_mode: one of monitoring::VIEW_MODES
+  - view_modes: that list, for the dropdown
+  - view_cards / view_simple: the two axes that mode decomposes into,
+    resolved server-side so this template never parses the mode string
+  - sections: [ monitoring::GroupSectionCtx ]   -- one per group
+  - edit_groups: [ monitoring::GroupEditCtx ]   -- one edit dialog each
+  - picker: [ monitoring::PickerDeviceCtx ]     -- the dialogs' sensor list
+  - error: string|none     -- already translated, from a mutation's redirect
+  - stats — merged in centrally, see layout/base.html.
+
+  SSE: the connection lives on layout/base.html's app shell; this page marks
+  its live region with `data-sse-refresh`, opting into the mqtt banner and the
+  M1-H broadcast-lag `refresh` hint — and since MB2 each row and each group
+  header is its own swap target, listening on the id-only `mon-…` nudges
+  described in partials/group_row.html and src/sse.rs. A group *mutation*
+  still redirects here rather than swapping (a section appears or vanishes),
+  and tells the other open tabs through `ChangeEvent::Groups` -> `refresh`.
+
+  The toolbar is partials/list_toolbar.html driven by
+  /static/js/portal-list.js — the same component and script as /nodes and
+  /beacons. It filters client-side over `.monitoring-row` (data-kind /
+  data-oor / data-connected / data-search; data-fault is emitted for #64's
+  tile and deliberately has NO control here, monitoring.md §2.2), which all
+  four layouts emit through the one row partial, and it hides a section whose
+  every row it hid.
+
+  The whole filter state now lives in the URL query (monitoring.md §2.2,
+  which monitoring.backend.md §15 had deferred). The value filter kept the
+  param name `status` and the `alarming` option so the metric tiles in
+  layout/base.html still deep-link into the state they counted
+  (partials/page_stats.html) — one tile counting "with alarms" spans two
+  value classes and cannot point at a filter that names only one.
+
+  The filter re-applies on `htmx:afterSettle`, not `htmx:afterSwap`: a row's
+  outerHTML swap keeps the same `id`, so htmx's own id-matching logic
+  (`attributesToSettle`: class/style/width/height) copies the OLD row's
+  `class` onto the new one at swap time, then restores the fresh
+  server-rendered `class` (i.e. without our `hidden`) a settle-tick later,
+  right before `htmx:afterSettle` fires — see htmx.min.js's `Oe`/`Ae`
+  helpers. Hooking `afterSwap` re-hides the row a tick too early, before htmx
+  wipes the class back; `afterSettle` runs after that restore, so it wins.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "common.nav.dashboard"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{# M1-H: broadcast-lag hint — server sends an empty "refresh" SSE event #}
+{# when a subscriber falls behind; browser just does a full page reload.  #}
+<div data-sse-refresh data-list-key="monitoring" class="space-y-4">
+	{% include "partials/mqtt_banner.html" %}
+	{% include "partials/unpaired_banner.html" %}
+	{% include "partials/command_status.html" %}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+
+	{% if device is none %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		{% set readme = '<code class="font-mono">dev/README.md</code>' %}
+		{% set mock_cmd = '<code class="font-mono">docker compose -f dev/docker-compose.yml --profile mock up -d</code>' %}
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">
+			{{ "monitoring.dashboard.no_device_body"|t|replace("{readme}", readme)|replace("{command}", mock_cmd)|safe }}
+		</p>
+	</div>
+	{% else %}
+	{#- The toolbar is partials/list_toolbar.html, the same component /nodes
+	    and /beacons use (enerooo-spark's smart-list shape). Monitoring's own
+	    differences are all parameters: it is the one list that mixes entity
+	    kinds, so it gets the Druh field and nobody else does; it has no
+	    Location or Gateway field and no optional columns, because it has the
+	    four view modes instead; and its value filter answers to `?status=`
+	    rather than `?oor=`, because that is the param the metric tiles above
+	    it already link to — including `alarming`, which spans two classes.
+
+	    No control for Poruchy, deliberately: the operational class is filtered
+	    by clicking the Poruchy tile and nothing else (monitoring.md §2.2,
+	    decided 2026-09-01). `data-fault` is on the row for that tile. -#}
+	{% set list_key = "monitoring" %}
+	{% set search_placeholder = "monitoring.dashboard.search_placeholder"|t %}
+	{% set search_title = "monitoring.dashboard.search_title"|t %}
+	{% set entity_label = "common.metrics.total_sensors"|t %}
+	{% set show_kind = true %}
+	{% set show_location = false %}
+	{% set show_gateway = false %}
+	{% set show_proto = false %}
+	{% set oor_alarming = true %}
+	{% set oor_param = "status" %}
+	{% set columns = [] %}
+	{#- The gate is in the VALUE, not an `{% if %}` around the assignment: a
+	    `set` inside an if-block does not escape it, and the button would
+	    silently never render. An empty label renders no button. -#}
+	{% set action_label = "monitoring.groups.new_button"|t if can_edit else "" %}
+	{% set action_href = "/monitoring/groups/new" %}
+	{% set extra_filters %}
+	<div class="flex flex-col gap-1.5">
+		<label class="text-[11.5px] font-semibold uppercase tracking-wide text-muted-fg" for="f-monitoring-field">{{ "monitoring.limits.quantity"|t }}</label>
+		<select id="f-monitoring-field" data-list-filter="field" class="input-v1 select-v1 w-full">
+			<option value="all">{{ "monitoring.list.filter_all"|t }}</option>
+			{% for name, label in quantity_options() %}<option value="{{ name }}">{{ label }}</option>{% endfor %}
+		</select>
+	</div>
+	{% endset %}
+	{% include "partials/list_toolbar.html" %}
+
+	{% for s in sections %}
+	<section data-section="{{ s.id }}" data-section-name="{{ s.name|lower }}">
+		{% set is_first, is_last = loop.first, loop.last %}
+		{% include "partials/group_header.html" %}
+
+		{# The collapse target (§3.2). Always rendered expanded; the script
+		   below sets the `hidden` ATTRIBUTE from localStorage. An attribute
+		   rather than a CSS class so assistive technology sees the same
+		   state as the eye, which is what the spec asks for. #}
+		<div id="group-body-{{ s.id }}">
+			{% if not s.rows %}
+			<div class="card-v1 px-4 py-8 text-center text-sm text-muted-fg">
+				{{ "monitoring.groups.empty_group"|t }}
+			</div>
+			{% else %}
+			{#- portal-list.js swaps these two when the toolbar filter leaves
+			    the group no matching row: the header stays, so every group
+			    keeps its place and totals, and the body says why it is empty
+			    (monitoring.md, amendment 2026-10-15). -#}
+			<div data-filter-content>
+			{% if view_cards %}
+			{% set rows = s.rows %}
+			{% include "partials/group_cards.html" %}
+			{% else %}
+			{% call ui.table_card() %}
+			{% set rows = s.rows %}
+			{% include "partials/group_table.html" %}
+			{% endcall %}
+			{% endif %}
+			</div>
+			<div data-filter-empty class="hidden card-v1 px-4 py-8 text-center text-sm text-muted-fg">
+				{{ "monitoring.groups.filter_empty"|t }}
+			</div>
+			{% endif %}
+		</div>
+	</section>
+	{% endfor %}
+
+	{% if not sections %}
+	<div class="text-center py-12 text-muted-fg">
+		{{ "monitoring.groups.none_yet"|t }}{% if can_edit %} {{ "monitoring.groups.none_yet_hint"|t }}{% endif %}
+	</div>
+	{% endif %}
+
+	{# One export dialog per group — a date range, then a GET download that the
+	   script below fetches (#114), so a failure is said in the dialog. #}
+	{% for s in sections %}
+	<dialog id="group-export-{{ s.id }}" class="modal">
+		<div class="modal-box card-v1">
+			<h3 class="font-bold text-lg">{{ "monitoring.groups.export_title"|t|replace("{name}", s.name) }}</h3>
+			{#- Opens on the last 24 h (display zone, as the server reads it). A
+			    reversed range is refused here, in the dialog, rather than by
+			    the endpoint's plain-text 400 on a page of its own; so is any
+			    answer that is not the file (`.group-export-form` below). The
+			    `data-export-*` messages are that script's, translated here. -#}
+			<form method="get" action="/export/group/{{ s.id }}.csv" class="group-export-form flex flex-col gap-3 mt-3"
+				data-export-failed="{{ "monitoring.groups.export_failed"|t }}"
+				data-export-too-wide="{{ "monitoring.groups.export_range_too_wide"|t }}"
+				data-export-unreachable="{{ "monitoring.groups.export_unreachable"|t }}">
+				<div class="grid grid-cols-2 gap-3">
+					<div>
+						<label class="text-sm font-medium" for="export-from-{{ s.id }}">{{ "monitoring.groups.export_from"|t }}</label>
+						<input id="export-from-{{ s.id }}" type="datetime-local" name="from" class="input-v1 mt-1" required
+							value="{{ export_from | default('', true) }}">
+					</div>
+					<div>
+						<label class="text-sm font-medium" for="export-to-{{ s.id }}">{{ "monitoring.groups.export_to"|t }}</label>
+						<input id="export-to-{{ s.id }}" type="datetime-local" name="to" class="input-v1 mt-1" required
+							value="{{ export_to | default('', true) }}">
+					</div>
+				</div>
+				<p data-range-error role="alert" class="hidden text-sm text-error">{{ "monitoring.groups.export_range_invalid"|t }}</p>
+				<div class="flex justify-end gap-2 mt-2">
+					<button type="button" class="btn-v1 btn-v1-outline"
+						onclick="document.getElementById('group-export-{{ s.id }}').close()">{{ "common.actions.cancel"|t }}</button>
+					<button type="submit" class="btn-v1 btn-v1-primary"><span class="loading loading-spinner loading-xs" data-export-busy hidden aria-hidden="true"></span>{{ "monitoring.groups.export_button"|t }}</button>
+				</div>
+			</form>
+		</div>
+		<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+	</dialog>
+	{% endfor %}
+
+	{% endif %}
+</div>
+
+<script>
+	// ---- Group CSV export (#114) -------------------------------------
+	//
+	// The dialog fetches the file instead of letting the browser navigate
+	// to it. In #114 that navigation was answered with a 503 and left the
+	// operator nothing: the dialog stayed open, no file arrived, nothing
+	// was said. Here any answer that is not the file — an error status, or
+	// none at all — is said in the dialog's alert line, and the dialog
+	// stays open on its range with Download ready for another try.
+	//
+	// It also keeps base.html's `window.proximosLeaving` down. The native
+	// submit raised it, and a download never leaves the page, so the flag
+	// stayed up and every later `sse:refresh` reload was skipped. The
+	// listener sits on the form, so its preventDefault lands before the
+	// document-level one in base.html reads `defaultPrevented`.
+	document.querySelectorAll('.group-export-form').forEach(function (form) {
+		var dialog = form.closest('dialog');
+		var line = form.querySelector('[data-range-error]');
+		var rangeInvalid = line.textContent;
+		var button = form.querySelector('button[type=submit]');
+		var busy = button.querySelector('[data-export-busy]');
+		var pending = null;
+
+		function say(text) {
+			line.textContent = text || '';
+			line.classList.toggle('hidden', !text);
+		}
+		function setBusy(on) {
+			button.disabled = on;
+			busy.hidden = !on;
+			if (on) button.setAttribute('aria-busy', 'true');
+			else button.removeAttribute('aria-busy');
+		}
+		// `attachment; filename="group_<slug>_<YYYYMMDD>.csv"`: slug() keeps
+		// quotes out of the name, so the quoted form is the only one.
+		function filenameOf(res) {
+			var m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+			return m ? m[1] : 'group_' + form.action.split('/').pop();
+		}
+
+		// Cancel, Esc or the backdrop: the file is no longer wanted, and a
+		// message left in a closed dialog would greet its next opening.
+		dialog.addEventListener('close', function () {
+			if (pending) pending.abort();
+			say('');
+		});
+
+		form.addEventListener('submit', function (ev) {
+			ev.preventDefault();
+			if (pending) return;
+			// Two `datetime-local` values of the same shape compare as strings.
+			if (!(form.to.value > form.from.value)) { say(rangeInvalid); return; }
+			say('');
+			var controller = new AbortController();
+			pending = controller;
+			setBusy(true);
+			var url = form.action + '?' + new URLSearchParams(new FormData(form)).toString();
+			fetch(url, { credentials: 'same-origin', signal: controller.signal })
+				.then(function (res) {
+					// An expired session is a 303 to /login, which fetch
+					// follows to a 200 page that is not the file. Go there,
+					// as the native submit did; its `next` asks for the
+					// file again once the operator has signed in.
+					if (res.redirected) {
+						window.proximosLeaving = true;
+						window.location.assign(res.url);
+						return;
+					}
+					if (!res.ok) {
+						say(res.status === 422
+							? form.dataset.exportTooWide
+							: form.dataset.exportFailed.replace('{status}', res.status));
+						return;
+					}
+					return res.blob().then(function (blob) {
+						var href = URL.createObjectURL(blob);
+						var a = document.createElement('a');
+						a.href = href;
+						a.download = filenameOf(res);
+						document.body.appendChild(a);
+						a.click();
+						a.remove();
+						// The click has handed the blob to the download; the
+						// delay only spares a slow browser a revoked URL.
+						setTimeout(function () { URL.revokeObjectURL(href); }, 1000);
+						pending = null;
+						dialog.close();
+					});
+				})
+				.catch(function (err) {
+					if (err.name !== 'AbortError') say(form.dataset.exportUnreachable);
+				})
+				.finally(function () {
+					if (pending === controller) pending = null;
+					setBusy(false);
+				});
+		});
+	});
+
+	// ---- Group collapse (monitoring.md §3.2) -------------------------
+	//
+	// Per browser profile, per group, client-side only: localStorage, no
+	// server round trip, no audit — it is a personal preference, unlike
+	// group ORDER, which is a shared property of the page and therefore a
+	// POST. "Per browser profile" and not "per user": localStorage is keyed
+	// by origin, so signing in as somebody else in the same browser inherits
+	// their collapse state, and the same person on a second machine starts
+	// expanded (review item 14, 2026-09-10).
+	//
+	// The header is re-rendered by its own SSE fragment route, and it
+	// always arrives expanded (the server has nothing to render collapse
+	// from), so the stored state is re-applied on every htmx settle as well
+	// as on load. A collapsed group keeps its `hx-get`/`hx-trigger` and so
+	// keeps updating its badges — that is the point of putting the status
+	// on the header.
+	(function () {
+		var KEY = 'proximos.monitoring.collapsed';
+		function read() {
+			try { return JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+			catch (err) { return {}; }
+		}
+		function write(state) {
+			try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (err) { /* private mode */ }
+		}
+		function paint(header, collapsed) {
+			var id = header.dataset.group;
+			var body = document.getElementById('group-body-' + id);
+			var section = header.closest('section[data-section]');
+			var desc = section ? section.querySelector('.group-description') : null;
+			header.setAttribute('aria-expanded', String(!collapsed));
+			if (body) body.hidden = collapsed;
+			// The description is part of the group's content, not of its
+			// status line: a collapsed group is "just the name and the
+			// arrow" plus the two indicators (§3.2). Hidden by visibility, not
+			// display: the line keeps its space, so the header does not change
+			// height or jump when the group collapses.
+			if (desc) desc.style.visibility = collapsed ? 'hidden' : '';
+			// Both chevrons are in the markup; this picks one. Swapping the
+			// <svg> from here would need a second copy of the icon set in
+			// JS, which is the thing partials/icons.html exists to avoid.
+			var down = header.querySelector('.chevron-expanded');
+			var right = header.querySelector('.chevron-collapsed');
+			if (down) down.hidden = collapsed;
+			if (right) right.hidden = !collapsed;
+		}
+		function applyAll() {
+			var state = read();
+			document.querySelectorAll('.group-collapse').forEach(function (header) {
+				paint(header, state[header.dataset.group] === true);
+			});
+		}
+		document.addEventListener('click', function (ev) {
+			var header = ev.target.closest('.group-collapse');
+			if (!header) return;
+			var state = read();
+			var id = header.dataset.group;
+			var collapsed = !(state[id] === true);
+			if (collapsed) { state[id] = true; } else { delete state[id]; }
+			write(state);
+			paint(header, collapsed);
+		});
+		document.body.addEventListener('htmx:afterSettle', applyAll);
+		applyAll();
+	})();
+
+</script>
+
+{# The toolbar's filtering and sorting. echarts went with the probe modal
+   (2026-09-15): the only chart this page ever drew was inside it, and the
+   probe's own page loads its own copy. #}
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

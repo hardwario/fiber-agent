@@ -1,0 +1,48 @@
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Per-device overrides go in /data/proximos/config/proximos.config.yaml,
+# merged over /usr/share/proximos/templates/defaults.yaml.
+#
+# ChirpStack MQTT Forwarder configuration.
+# Bridges the concentratord IPC sockets to the loopback Mosquitto broker.
+
+[logging]
+  level="info"
+  log_to_syslog=false
+
+[backend]
+  enabled="concentratord"
+
+  # Must match chirpstack-concentratord.toml's [concentratord.api]
+  # event_bind/command_bind exactly. A mismatch here is the worst kind of
+  # misconfiguration this pair has: the forwarder starts, stays running, reports
+  # nothing wrong, and no uplink ever reaches MQTT.
+  #
+  # /run rather than upstream's /tmp default because both units set
+  # PrivateTmp=true, which would give each end its own /tmp; /run is shared. The
+  # concentratord unit's RuntimeDirectory= creates the directory 0750 root:root.
+  [backend.concentratord]
+    event_url="ipc:///run/chirpstack-concentratord/event"
+    command_url="ipc:///run/chirpstack-concentratord/command"
+
+[mqtt]
+  # Matches the concentratord region (EU868). A ChirpStack server reading these
+  # events must be configured with the same prefix or it subscribes to topics
+  # nothing publishes to — which is why this is no longer a literal: it and
+  # region_eu868.toml's [regions.gateway.backend.mqtt] topic_prefix are the
+  # same radio.region, rendered twice in one pass.
+  topic_prefix="eu868"
+
+  # Client role (plan/control/cluster.md §4.3): this Hub runs no ChirpStack, so
+  # the concentrator's traffic goes to the Server's broker - its TLS listener,
+  # under this Hub's own peer account, trusting only the Server's CA. Values
+  # from /data/proximos/cluster/; tls_cert/tls_key stay empty because a Client
+  # holds no key of its own (no mTLS, cluster.md §6). The password is inline:
+  # this forwarder has no password-file option, and this file is 0640 root:root
+  # for a unit that runs as root, so nothing else on the Hub can read it.
+  server="ssl://proximos-1a2b3c4d.local:8883"
+  username="peer-proximos-5e6f7a8b"
+  password="Zm9vYmFyYmF6cXV4cXV1eA"
+  ca_cert="/data/proximos/cluster/ca.crt"
+  tls_cert=""
+  tls_key=""

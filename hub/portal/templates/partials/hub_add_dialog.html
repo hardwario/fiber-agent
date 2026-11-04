@@ -1,0 +1,27 @@
+{#
+  "Přidat hub" dialog shell — plan/portal/devices.hub.md §4 (C5).
+
+  Context: { add_hub: cluster_routes::AddHubCtx }  -- see hub_add_form.html
+
+  Included by pages/hubs.html and by the Server's cluster card on the
+  System tab (§3.4) for Retry only: Add hub itself is the page /hubs/add
+  since 2026-10-14 (pages/hub_add.html), around the same form partial. ADMIN ONLY: the callers render it
+  only for an admin, and every POST behind it is RequireAdmin regardless.
+
+  `#add-hub-body` is the htmx target of the form, of Retry, and of the
+  completion screen that replaces the form. The completion screen carries
+  `data-reload-on-close`: closing the dialog then reloads the page, which
+  drops the one copy of the password from the DOM and shows the new row
+  (§4 step 4: "Zavření obrazovky = heslo je pryč").
+#}
+{% import "partials/icons.html" as ic %}
+<dialog id="add-hub-dialog" class="modal"
+	onclose="if (this.querySelector('[data-reload-on-close]')) { document.getElementById('add-hub-body').innerHTML = ''; location.reload(); }">
+	<div class="modal-box max-w-2xl">
+		<h3 class="font-bold text-lg">{{ "monitoring.hubs.add_hub_title"|t }}</h3>
+		<div id="add-hub-body" class="mt-3">
+			{% include "partials/hub_add_form.html" %}
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+</dialog>

@@ -1,0 +1,9 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Satisfy uart_proto.c's DT_ALIAS(host_uart) on the simulator: TX via
+ * uart_poll_out() goes to native_sim's uart0 (stdout), harmlessly.
+ */
+/ {
+	aliases {
+		host-uart = &uart0;
+	};
+};

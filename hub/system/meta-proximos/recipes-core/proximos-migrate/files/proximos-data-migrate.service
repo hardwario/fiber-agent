@@ -1,0 +1,34 @@
+[Unit]
+Description=Migrate the ProXimos /data layout to this image's schema
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/system/design.md
+RequiresMountsFor=/data
+Requires=proximos-data-dirs.service
+After=proximos-data-dirs.service systemd-sysusers.service data.mount
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/proximos-data-migrate
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proximos-data-migrate
+TimeoutStartSec=300s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=sysinit.target

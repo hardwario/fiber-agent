@@ -1,0 +1,67 @@
+{
+  "_source": "plan/control/ble/beacon-btsmp1.md §1 'Test vectors (public capture set + vendor worked example)'",
+  "_note": "Manufacturer-data VALUE bytes, after the 0x089A company id. Fields absent from `expect` must decode as absent (null) or false — never as zero.",
+  "vectors": [
+    {
+      "bytes": "01 83 09 AB 3F 6A",
+      "why": "v1, flags 0x83 = bits 0,1,7",
+      "expect": { "temperature_c": 24.75, "humidity_pct": 63, "battery_mv": 3060 }
+    },
+    {
+      "bytes": "01 87 09 B5 40 6B",
+      "why": "flags 0x87 adds magnet present (bit 2), magnet not detected (bit 3 clear)",
+      "expect": {
+        "temperature_c": 24.85,
+        "humidity_pct": 64,
+        "battery_mv": 3070,
+        "magnet_present": true,
+        "magnet_detected": false
+      }
+    },
+    {
+      "bytes": "01 B7 08 B4 12 0C CB 0B FF C7 67",
+      "why": "vendor worked example, flags 0xB7 = bits 0,1,2,4,5,7",
+      "expect": {
+        "temperature_c": 22.28,
+        "humidity_pct": 18,
+        "magnet_present": true,
+        "magnet_detected": false,
+        "moving": false,
+        "movement_count": 3275,
+        "pitch_deg": 11,
+        "roll_deg": -57,
+        "battery_mv": 3030
+      }
+    },
+    {
+      "bytes": "01 10 80 05",
+      "why": "movement only: raw 0x8005 -> MSB set means moving, low 15 bits are the counter",
+      "expect": { "moving": true, "movement_count": 5 }
+    },
+    {
+      "bytes": "01 01 FE 0C",
+      "why": "negative temperature, i16 BE 0xFE0C",
+      "expect": { "temperature_c": -5.0 }
+    },
+    {
+      "bytes": "01 40",
+      "why": "low-battery flag only; no value fields at all",
+      "expect": { "low_battery": true }
+    },
+    {
+      "bytes": "01",
+      "why": "a frame shorter than version+flags",
+      "error": "too_short"
+    },
+    {
+      "bytes": "02 00",
+      "why": "unknown protocol version — counted and dropped whole, never an error to the loop",
+      "error": "unknown_version"
+    },
+    {
+      "bytes": "01 01 09",
+      "why": "flags claim temperature (2 bytes), only one is present",
+      "error": "truncated"
+    }
+  ]
+}

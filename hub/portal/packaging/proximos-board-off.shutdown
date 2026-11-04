@@ -1,0 +1,11 @@
+#!/bin/sh
+# systemd-shutdown runs every executable in /usr/lib/systemd/system-shutdown/
+# after all services have stopped, just before the kernel halts; $1 is
+# halt, poweroff, reboot or kexec. On a power-off the CM4 halts with the
+# board's rails still up, so put the panel backlight out and hold the
+# Southbridge in reset (plan/system/factory_test.md §5.2). The next boot
+# undoes both. A reboot needs neither.
+case "$1" in
+    halt|poweroff) exec /usr/bin/fiberctl hw-off ;;
+esac
+exit 0

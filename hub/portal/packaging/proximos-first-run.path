@@ -1,0 +1,27 @@
+[Unit]
+Description=Watch for the portal's first-run transport choice
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/decisions.md https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/system/design.md
+# Decision #37. The portal's /setup page writes the operator's choice (`p2p` or `lorawan`)
+# to this file. It is the portal's only way to ask for it: the portal runs sandboxed as
+# `proximos` and can write nothing outside /data/portal. proximos-first-run.service is
+# what answers it, as root.
+#
+# RequiresMountsFor= is not a formality. The watch is an inotify watch, and one set up
+# on the rootfs mount point before the `nofail` /data mount lands keeps watching the
+# directory underneath that mount, where the portal never writes. So this unit starts
+# only once /data is mounted.
+#
+# PathExists=, not PathChanged=: it also fires when the unit starts and the file is
+# already there, which is how a request left behind by a power cut is answered at the
+# next boot. The service removes the request on every outcome but an I/O failure, so
+# the trigger does not repeat on an answered request.
+RequiresMountsFor=/data/portal
+
+[Path]
+# /data/ + proximos_render's data_paths::RADIO_MODE_REQUEST. A test in that crate reads
+# this line.
+PathExists=/data/portal/requested-radio-mode
+Unit=proximos-first-run.service
+
+[Install]
+WantedBy=paths.target

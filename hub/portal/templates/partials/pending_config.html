@@ -1,0 +1,65 @@
+{#
+  The Node pending-configuration banner (B4 / WP4.2 context contract —
+  plan/portal/devices.backend.md §7, spec plan/portal/devices.node.md §3.5).
+
+  Context: `pending` = none OR {
+    node_key: string,
+    rows: [ { param_key: string,      -- storage key; the DOM id suffix
+              label: string,          -- what the key column shows
+              kind: "config"|"threshold",
+              desired: string,        -- already unwrapped from its JSON
+              current: string|none,   -- none = the portal has never read it
+              author: string,
+              changed_at: string,     -- HH:MM:SS
+              state: "pending"|"sending"|"confirmed"|"error",
+              last_error: string|none,
+              stale: bool },            -- sending far past any walk's budget:
+                                        -- rendered as error with its own reason
+            ... ],
+    can_edit: bool,                   -- manager+; gates Send and Discard
+    sending: bool,                    -- a walk is in flight
+    failed: bool                      -- at least one row stopped
+  }
+
+  `pending` is read defensively (defaults to none) so a page can include the
+  shell without carrying a draft in its own contract — the same rule
+  partials/command_status.html follows, and for the same reason: the outer
+  <div> ALWAYS renders because it is the SSE swap target
+  (id/sse-swap "pending-config-{node_key}"). Without a draft it renders
+  empty, and the first edit swaps a populated banner into the shell that was
+  already there. A conditional shell would mean the very first frame after
+  an edit had nowhere to land -- which is the 404 the B4 browser check was
+  written to catch.
+
+  **hx-swap is innerHTML, not outerHTML**, and the body lives in
+  partials/pending_config_body.html — which is what the SSE frame carries.
+  See that file's header: replacing the element the SSE listener is attached
+  to loses any frame that arrives before htmx re-binds the replacement, and
+  a send walk emits its nudges close enough together to hit that window.
+
+  Exactly ONE instance per page: the id carries the node_key, so a page
+  showing two Nodes would need two, and no page does.
+
+  Both buttons target #command-status for their SUMMARY (a send either
+  finished or stopped at one key) and let the banner repaint over SSE from
+  the walk's own nudges. Discard is destructive but bounded and reversible
+  by retyping, so it confirms with hx-confirm rather than a typed dialog --
+  contrast the Node-removal dialog, which is neither.
+
+  A viewer sees the banner and cannot act on it: a colleague's pending
+  change is exactly the thing that explains why a Node is about to behave
+  differently, so hiding it from readers would be worse than useless.
+#}
+{% set pending = pending if pending is defined else none %}
+{% set pending_key = pending.node_key if pending is not none else (node_key if node_key is defined else "") %}
+{#- N31 (night test): after a reconnect the banner re-reads itself — a portal restart turns a
+    `sending` walk into an error, and the open page kept showing it sending, Send and Discard
+    disabled, until a reload. `hx-disinherit` keeps the re-read's select/swap off the buttons. -#}
+{#- Collapsed or open is this element's, which no frame replaces, so the choice survives the
+    SSE swaps of the body; collapsed on every page load (amendment 2026-10-15). -#}
+<div id="pending-config-{{ pending_key }}" sse-swap="pending-config-{{ pending_key }}" hx-swap="innerHTML"
+	hx-get="/nodes/{{ pending_key }}/pending" hx-trigger="portal:sse-resync from:body"
+	hx-select="#pending-config-{{ pending_key }} > *" hx-disinherit="*"
+	x-data="{ open: false }">
+	{% include "partials/pending_config_body.html" %}
+</div>

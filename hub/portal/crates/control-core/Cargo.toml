@@ -1,0 +1,199 @@
+[package]
+name = "control-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# renamed to control_core in the §11.3 rename sweep (later MR)
+name = "fiber_app"
+path = "src/lib.rs"
+
+# Transitional second service binary (decision #9, monolith.md §11.1): the
+# workspace builds `portal` AND `fiber_app` until the two event loops are
+# collapsed into one process in §11.4. Keeping the v1 name here is what makes
+# the import reviewable as an import.
+[[bin]]
+name = "fiber_app"
+path = "src/main.rs"
+
+# Control CLI client (#79). Talks to the running fiber_app daemon over the
+# control socket; the daemon embeds the server side (libs::control).
+[[bin]]
+name = "fiberctl"
+path = "src/bin/fiberctl.rs"
+
+# Phase-2 factory reset executor. Runs unsandboxed at early boot from
+# fiber-factory-reset.service (shipped by meta-fiber) and wipes /data when the
+# phase-1 ledger fiber_app armed says to. The hyphenated name is load-bearing:
+# libs::factory_reset::PHASE2_EXECUTOR_BINARY preflights
+# /usr/bin/fiber-factory-reset before arming anything.
+[[bin]]
+name = "fiber-factory-reset"
+path = "src/bin/fiber_factory_reset.rs"
+
+[dependencies]
+# The v2 radio stack, for its config schema and `radio.mode` only — `libs::radio_gate` reads
+# the rendered `/run/proximos/control/config.yaml` to decide whether this crate's own legacy
+# LoRaWAN stack must stand down (decision #12). The direction is deliberate and one-way:
+# control-radio's standalone guarantee (monolith.md §11.7, its own tests/standalone.rs) says
+# it may depend on nothing in this workspace, so nothing here may ever be imported there.
+control-radio = { path = "../control-radio" }
+# The build-time brand (plan/portal/branding.md): the LCD boot splash and the Client-hostname
+# prefix. A constants crate with no dependencies of its own.
+proximos-brand = { path = "../proximos-brand" }
+
+# The one threshold grading rule (`fiber_protocol::grading`, decision #41): the portal grades
+# every source with it and the Hub runs the same function for its LCD, LEDs and buzzer.
+fiber-protocol = { path = "../fiber-protocol" }
+
+# The Hub's one Bluetooth component (plan/control/ble/*.md). The dependency runs
+# control-core -> control-ble and never the other way: decision #12's standalone
+# rule binds the crate, not its consumers, and control-ble's tests/standalone.rs
+# asserts it depends on nothing in this workspace.
+control-ble = { path = "../control-ble" }
+rppal = "0.22.1"
+embedded-graphics = "0.8.1"
+i2cdev = "0.6"
+serialport = { version = "4", default-features = false }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+qrcode = "0.14"
+rusqlite = { version = "0.30", features = ["bundled-sqlcipher", "chrono"] }
+crossbeam = "0.8"
+
+# MQTT dependencies
+# Uses native-tls (OpenSSL) instead of rustls: rumqttc 0.25.1 pins
+# rustls-webpki 0.102.8 and rustls-pemfile 2.2.0 directly in its own Cargo.toml
+# (confirmed unchanged even on rumqttc's unreleased main branch), which carry
+# RUSTSEC advisories no version bump on our side can clear. native-tls avoids
+# rustls entirely. "vendored" builds OpenSSL from source (same approach as
+# rusqlite's bundled-sqlcipher below) so the target sysroot doesn't need
+# OpenSSL dev headers.
+rumqttc = { version = "0.25", default-features = false, features = ["use-native-tls"] }
+openssl = { version = "0.10", features = ["vendored"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util", "process", "fs"] }
+async-trait = "0.1"
+rand = "0.8"
+
+# Cryptography dependencies (Ed25519 signatures for EU MDR compliance)
+ed25519-dalek = { version = "2.1", features = ["std", "rand_core"] }
+base64 = "0.21"
+hex = "0.4"
+
+# UUID generation for challenge_id
+uuid = { version = "1.6", features = ["v4", "fast-rng", "serde"] }
+
+# Replay protection (LRU cache for nonce tracking)
+lru = "0.16"
+
+# Pairing protocol encryption
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+# cluster-client-add's sealed password (libs/cluster_clients/seal.rs): X25519, already in the
+# lock through ed25519-dalek, and wiping its secrets.
+curve25519-dalek = "4.1"
+zeroize = "1.8"
+
+# BLE GATT server (in-app, replaces ble-fiber Yocto recipe)
+bluer = { version = "0.17", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+regex = "1.10"
+subtle = "2.5"  # timing-safe equality for PIN comparison
+ctrlc = "3.4"
+libc = "0.2"
+
+# Protobuf codec for STICKER LoRaWAN payloads (proto/app_config.proto, sticker-firmware v1.4.0)
+prost = "0.13"
+
+# avahi's ResolveHostName for the Client's Server line in the runtime hosts file
+# (libs/mqtt/server_hosts.rs, plan/control/cluster.md §8). Already in the tree through
+# bluer, which links libdbus the same way; no new crate.
+dbus = "0.9"
+
+# Control CLI (fiberctl client + in-daemon control socket server, #79)
+clap = { version = "4", features = ["derive"] }
+
+[build-dependencies]
+prost-build = "0.13"
+
+[features]
+default = []
+dev-platform = []
+
+[dev-dependencies]
+# v1 had an unpinned "3"; aligned to the portal package's exact pin so the one
+# workspace lockfile resolves a single tempfile version.
+tempfile = "3.27.0"
+# The cluster join's round-trip test: the files `libs::cluster_join` writes are rendered by the
+# renderer's own reader, so a value the join accepts but the renderer degrades on is a failing
+# test here. Tests only — the agent and the renderer meet through /data/proximos/cluster, never
+# through a type. Nothing new in the lockfile: the crate is already in the workspace.
+proximos-render = { path = "../proximos-render" }
+
+# ---------------------------------------------------------------------------
+# Inherited v1 lint debt — burn-down expected. See plan/portal/control.md.
+#
+# v1's own pipeline ran `cargo clippy --all-targets -- -D warnings` as a
+# NON-blocking job (allow_failure: true, "~157 pre-existing findings"). The
+# portal workspace gate is blocking, and the import must stay byte-identical to
+# application@3e22122 (decision #3, copy-and-edit — monolith.md §11.8), so the
+# backlog is parked here, per lint, with its occurrence count, instead of being
+# silenced with a blanket allow or fixed by editing imported files.
+#
+# Burn-down protocol: pick a line, fix its occurrences in src/, delete the
+# line, keep `cargo clippy --workspace --all-targets -- -D warnings` green.
+#
+# Counts are unique findings from
+#   cargo clippy -p control-core --all-targets --message-format=json
+# on Rust 1.94.0, deduplicated by (lint, file, line, column) — the raw warning
+# stream double-counts everything that compiles in both the lib and the lib
+# test target. 189 total: 169 clippy + 20 rustc.
+# ---------------------------------------------------------------------------
+
+[lints.clippy]
+needless_borrows_for_generic_args = "allow" # 46
+too_many_arguments = "allow"                # 30
+useless_conversion = "allow"                # 15
+needless_borrow = "allow"                   # 9
+unnecessary_cast = "allow"                  # 7
+io_other_error = "allow"                    # 6
+redundant_closure = "allow"                 # 4
+unnecessary_map_or = "allow"                # 4
+field_reassign_with_default = "allow"       # 4
+unnecessary_get_then_check = "allow"        # 4
+manual_range_contains = "allow"             # 3
+new_without_default = "allow"               # 3
+should_implement_trait = "allow"            # 2
+manual_is_multiple_of = "allow"             # 2
+collapsible_if = "allow"                    # 2
+derivable_impls = "allow"                   # 2
+large_enum_variant = "allow"                # 2
+await_holding_lock = "allow"                # 2 — real correctness smells; fix by hand, do not just delete this line
+unnecessary_lazy_evaluations = "allow"      # 2
+needless_range_loop = "allow"               # 2
+useless_vec = "allow"                       # 2
+while_let_loop = "allow"                    # 1
+manual_contains = "allow"                   # 1
+regex_creation_in_loops = "allow"           # 1
+let_and_return = "allow"                    # 1
+manual_range_patterns = "allow"             # 1
+manual_flatten = "allow"                    # 1
+unused_unit = "allow"                       # 1
+type_complexity = "allow"                   # 1
+bool_assert_comparison = "allow"            # 1
+items_after_test_module = "allow"           # 1
+
+# rustc's own warnings, which `-D warnings` also promotes to errors. Same debt,
+# same burn-down; separate table because they are not clippy lints.
+[lints.rust]
+unused_variables = "allow"  # 9
+unused_imports = "allow"    # 5
+unused_assignments = "allow" # 5
+dead_code = "allow"         # 5
+unused_mut = "allow"        # 2

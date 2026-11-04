@@ -1,0 +1,53 @@
+{#
+  Diagnostics "Alarm messages" card (plan/portal/ui_components.md, amendment
+  2026-10-15), shared by the Node, Beacon and Hub pages.
+
+  Context: { diag_id: str (the card's DOM id), alarms: [render::DiagAlarmCtx] }
+  — alarm and clear lines, newest first. Five show; "Load N more" reveals the
+  next five client-side (the list is at most fifty and already on the page).
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{%- set step = 5 %}
+<div x-data="{ shown: {{ step }} }">
+{% call ui.collapsible_card(diag_id, "alert-triangle", "monitoring.diag.alarms_heading"|t,
+	summary=("monitoring.diag.alarms_summary"|t|replace("{n}", alarms|length|string) if alarms else "monitoring.diag.alarms_none"|t)) %}
+	{% if alarms %}
+	<div class="relative w-full overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+				<tr>
+					{{ ui.th("monitoring.node_detail.messages_time"|t, "!px-0 !pr-4") }}
+					{{ ui.th("monitoring.node_detail.last_alarm_event"|t, "!px-0 !pr-4") }}
+					{{ ui.th("monitoring.node_detail.last_alarm_field"|t, "!px-0 !pr-4") }}
+					{{ ui.th("monitoring.shared.value_column"|t, "!px-0 text-right") }}
+				</tr>
+			</thead>
+			<tbody>
+				{% for a in alarms %}
+				<tr class="border-b border-base-300 last:border-0 [&>td]:py-2 [&>td]:pr-4 [&>td]:align-top{% if loop.index > step %} hidden{% endif %}" :class="{ hidden: {{ loop.index }} > shown }">
+					<td class="tabular-nums whitespace-nowrap text-muted-fg">{{ a.at | short_dt | default("—", true) }}</td>
+					<td class="whitespace-nowrap">
+						{% if a.kind == "clear" %}
+						<span class="badge-status badge-status-normal">{{ "monitoring.diag.alarm_kind_clear"|t }}</span>
+						{% else %}
+						<span class="badge-status {% if a.severity|lower == "critical" %}badge-status-critical{% else %}badge-status-warning{% endif %}">{{ ui.alarm_type_label(a.alarm_type) }}</span>
+						{% endif %}
+					</td>
+					<td>{% if a.field %}{{ a.field|field_label(a.field) }}{% else %}—{% endif %}</td>
+					<td class="text-right font-mono tabular-nums whitespace-nowrap !pr-0">{% if a.value is not none %}{{ a.value }}{% if a.threshold is not none %} <span class="text-muted-fg">/ {{ a.threshold }}</span>{% endif %}{% else %}—{% endif %}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% if alarms|length > step %}
+	<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm self-start" :class="{ hidden: shown >= {{ alarms|length }} }"
+		@click="shown += {{ step }}"
+		x-text="'{{ "monitoring.diag.load_more"|t }}'.replace('{n}', Math.min({{ step }}, {{ alarms|length }} - shown))">{{ "monitoring.diag.load_more"|t|replace("{n}", step|string) }}</button>
+	{% endif %}
+	{% else %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.diag.alarms_none"|t }}</p>
+	{% endif %}
+{% endcall %}
+</div>

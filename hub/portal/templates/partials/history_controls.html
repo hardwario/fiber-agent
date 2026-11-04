@@ -1,0 +1,161 @@
+{#
+  History card, header row: the title, the Time Window pills, the
+  Aggregation dropdown and the CSV download. Split out of the old
+  history_panel.html so the card skeleton can live in pages/history.html and
+  every partial stay balanced — this one renders the header div and nothing
+  around it.
+
+  Context: selected, selected_tokens, selected_range, ranges[],
+  selected_agg, aggs[], custom_from/custom_to — built by
+  `routes::history_routes::history_page`.
+
+  The window pills are plain links, so the window stays in the URL;
+  `Custom` is the one exception, a button opening the `#history-range`
+  popover at the bottom of this file (a date range cannot be a link). Inside
+  it: a two-month range calendar from the vendored `cally` web component
+  (DaisyUI ships the `.cally` skin for it), and nothing else. Whole days
+  only — it submits the same `from`/`to` datetime-local pair the inline form
+  used to, with the time ends pinned to 00:00 and 23:59.
+
+  No Apply button: `cally` fires `change` once, when the second click
+  completes the range (the first only parks a tentative start), so the
+  second click can submit. The swap that follows replaces this element,
+  which is also what closes the popover.
+
+  It is a native `popover`, not a dialog: click-outside and Esc close it for
+  free, it renders in the top layer so the card's `overflow-hidden` cannot
+  clip it, and `anchor-name`/`position-anchor` hang it under the pill — the
+  DaisyUI 5 `.dropdown` recipe, no positioning JS. Where anchor positioning
+  is missing the popover falls back to the middle of the viewport, which is
+  usable, just not pretty.
+
+  Aggregation is `ui.single_select` (amendment 2026-10-15; before that a
+  bare SELECT) rather than a second pill group: seven buckets
+  next to six windows made the row read as one undifferentiated strip of
+  chips. It submits its own GET form on change, which hx-boost turns into
+  the same partial swap every link here does.
+
+  The page defaults to 10-minute buckets (amendment 2026-10-15) and "Auto"
+  is one of the options. Unless the URL names a bucket, the chart JS selects whichever bucket the server
+  actually served, from the response's `agg_effective` — that is also how a
+  downgraded request ("30s buckets" over minute rows) shows up honestly
+  instead of silently lying. `data-agg-explicit` tells it to keep its hands
+  off a bucket the operator picked.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% set qs = "s=" ~ selected_tokens ~ "&range=" ~ selected_range ~ "&agg=" ~ selected_agg %}
+{% set custom_qs = ("&from=" ~ custom_from ~ "&to=" ~ custom_to) if custom_from and custom_to else "" %}
+
+<div class="px-4 pt-4 pb-3 border-b border-base-300">
+	{% call ui.page_header("bar-chart-3", "monitoring.history.comparison_heading"|t) %}
+		<div class="pill-group">
+			{% for r in ranges %}
+			<a href="/trends?s={{ selected_tokens }}&range={{ r }}&agg={{ selected_agg }}{{ ev_qs }}"
+				class="pill {% if r == selected_range %}is-active{% endif %}">{{ r|upper }}</a>
+			{% endfor %}
+			<button type="button" popovertarget="history-range" style="anchor-name:--history-range-pill"
+				class="pill {% if selected_range == 'custom' %}is-active{% endif %}"
+				title="{{ "monitoring.history.custom"|t }}" aria-label="{{ "monitoring.history.custom"|t }}">
+				{{ ic.icon("calendar", "h-3 w-3") }}
+			</button>
+		</div>
+
+		{#- Aggregation, Events and the download stay on one line together
+		    when the header wraps on a phone. -#}
+		<div class="flex items-center gap-2">
+		<form method="get" action="/trends" class="flex items-center" hx-push-url="true">
+			<input type="hidden" name="s" value="{{ selected_tokens }}">
+			<input type="hidden" name="range" value="{{ selected_range }}">
+			{% if ev_on %}<input type="hidden" name="ev" value="1">{% if ev_evt %}<input type="hidden" name="evt" value="{{ ev_evt }}">{% endif %}{% endif %}
+			{% if custom_qs %}
+			<input type="hidden" name="from" value="{{ custom_from }}">
+			<input type="hidden" name="to" value="{{ custom_to }}">
+			{% endif %}
+			{% set ns = namespace(aggs=[]) %}
+			{% for a in aggs %}{% set ns.aggs = ns.aggs + [[a, ("monitoring.chart.agg." ~ a)|t]] %}{% endfor %}
+			{{ ui.single_select("history-agg-group", "monitoring.history.aggregation"|t, ns.aggs, value=selected_agg,
+				name="agg", icon="clock",
+				select_attrs=('data-agg-explicit="1" ' if agg_explicit else '') ~ 'onchange="this.form.requestSubmit()"') }}
+		</form>
+
+		{#- Rendered with no channel too, disabled, so the toolbar keeps its
+		    shape and 0 -> 1 channel does not move anything (2026-10-15). -#}
+		{#- Events in the chart (monitoring.md, amendments 2026-10-15): a
+		    dropdown dressed like the toolbar's Columns button. Each box is a
+		    link to this URL with its kind flipped (`ev`/`evt` stay in the
+		    URL); checked = drawn, none checked = events off. A native
+		    popover, like the Custom range, so the card cannot clip it. -#}
+		<button type="button" popovertarget="history-events" style="anchor-name:--history-events-btn"
+			class="btn-v1 btn-v1-outline h-10 gap-2 shrink-0" aria-haspopup="true"
+			{% if not selected %}disabled{% endif %}>
+			{{ ic.icon("activity", "h-4 w-4") }}
+			<span class="hidden sm:inline">{{ "monitoring.history.events"|t }}</span>
+			{% if ev_count %}<span class="inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-primary text-primary-content text-[11px] font-semibold tabular-nums">{{ ev_count }}</span>{% endif %}
+			{{ ic.icon("chevron-down", "h-4 w-4") }}
+		</button>
+		<div id="history-events" popover style="position-anchor:--history-events-btn"
+			class="dropdown dropdown-end w-60 max-h-72 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-card-hover">
+			<div class="px-3.5 pt-2.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">{{ "monitoring.history.events"|t }}</div>
+			<div class="px-1.5 pb-1.5">
+				{% for k in ev_kinds %}
+				<a href="{{ k.href }}" role="menuitemcheckbox" data-kind="{{ k.kind }}" aria-checked="{{ 'true' if k.checked else 'false' }}"
+					class="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-muted/60 cursor-pointer select-none">
+					<input type="checkbox" tabindex="-1" class="checkbox-v1 pointer-events-none" {% if k.checked %}checked{% endif %}>
+					<span class="inline-block h-3 w-0.5" style="background-color:{{ {"alarm":"var(--color-error)","warning":"var(--color-warning)","log":"var(--color-muted-fg, #9ca3af)"}[k.kind] }}" aria-hidden="true"></span>
+					<span class="text-sm truncate">{{ ("auth.audit.kind." ~ k.kind)|t }}</span>
+				</a>
+				{% endfor %}
+			</div>
+		</div>
+		{#- Download (ui_components.md, amendment 2026-10-15): one icon
+		    button opening a popover like Events — CSV (server export) or
+		    PNG of the drawn chart (client-side, static/js/portal-charts.js
+		    reads `data-chart-png`). Disabled with nothing selected. -#}
+		<button type="button" popovertarget="history-download" style="anchor-name:--history-download-btn"
+			class="btn-v1 btn-v1-ghost btn-v1-icon" aria-haspopup="true"
+			title="{{ "monitoring.history.download"|t }}" aria-label="{{ "monitoring.history.download"|t }}"
+			{% if not selected %}disabled{% endif %}>{{ ic.icon("download", "h-4 w-4") }}</button>
+		{% if selected %}
+		<div id="history-download" popover style="position-anchor:--history-download-btn"
+			class="dropdown dropdown-end w-60 rounded-xl border border-base-300 bg-base-100 shadow-card-hover">
+			<div class="px-1.5 py-1.5">
+				<a href="/export/history.csv?{{ qs }}{{ custom_qs }}" hx-boost="false" download role="menuitem" aria-label="{{ "monitoring.history.download_csv"|t }}"
+					class="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-muted/60 cursor-pointer select-none text-sm">{{ ic.icon("download", "h-4 w-4") }}CSV</a>
+				<button type="button" role="menuitem" data-chart-png="history-chart" data-chart-png-prefix="trends" aria-label="{{ "monitoring.history.download_png"|t }}"
+					class="w-full flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-muted/60 cursor-pointer select-none text-sm text-left">{{ ic.icon("bar-chart-3", "h-4 w-4") }}PNG</button>
+			</div>
+		</div>
+		{% endif %}
+		</div>
+	{% endcall %}
+
+	<div id="history-range" popover style="position-anchor:--history-range-pill"
+		class="dropdown dropdown-end w-auto max-w-fit p-2 bg-base-100 border border-base-300 rounded-box shadow-lg"
+		x-data>
+		<form method="get" action="/trends" x-ref="form" hx-push-url="true">
+			<input type="hidden" name="s" value="{{ selected_tokens }}">
+			<input type="hidden" name="range" value="custom">
+			<input type="hidden" name="agg" value="{{ selected_agg }}">
+			<input type="hidden" name="from" x-ref="from">
+			<input type="hidden" name="to" x-ref="to">
+			{% if ev_on %}<input type="hidden" name="ev" value="1">{% if ev_evt %}<input type="hidden" name="evt" value="{{ ev_evt }}">{% endif %}{% endif %}
+
+			<calendar-range class="cally" months="2" locale="{{ lang|default('en') }}"
+				value="{{ (custom_from[:10] ~ '/' ~ custom_to[:10]) if custom_from and custom_to else '' }}"
+				:max="new Date().toISOString().slice(0, 10)"
+				@change="const [a, b] = $event.target.value.split('/');
+					$refs.from.value = a + 'T00:00';
+					$refs.to.value = (b || a) + 'T23:59';
+					$refs.form.requestSubmit()">
+				{{ ic.icon("chevron-left", "h-4 w-4", 'slot="previous"') }}
+				{{ ic.icon("chevron-right", "h-4 w-4", 'slot="next"') }}
+				<div class="flex flex-col sm:flex-row gap-4">
+					<calendar-month></calendar-month>
+					<calendar-month offset="1"></calendar-month>
+				</div>
+			</calendar-range>
+		</form>
+	</div>
+</div>

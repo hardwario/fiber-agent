@@ -1,0 +1,27 @@
+{#
+  Force send's confirmation (nodes_phase1.cs.md WP6).
+
+  Context: { watch: render::ForceSendCtx }.
+
+  The firmware answers a force-send with an extra fPort-2 uplink and nothing on fPort 85, so
+  there is no ack: the first reading at or after `since` confirms it. While `waiting`, the
+  element polls GET .../service/force-send/watch and replaces itself; `confirmed`,
+  `no_response` and `error` carry no trigger, so the polling stops there. The wait is the Node's
+  answer budget (`pending::downlink_answer_budget`, two report intervals and a minute): the
+  downlink goes out only when the Node transmits, at its next uplink on LoRaWAN and at the
+  second on P2P.
+#}
+{% if watch.state == "waiting" %}
+<div class="text-sm flex items-center gap-2"
+	hx-get="/nodes/{{ watch.node_key }}/service/force-send/watch?since={{ watch.since }}&until={{ watch.until }}"
+	hx-trigger="every 15s" hx-swap="outerHTML">
+	<span class="loading loading-spinner loading-xs"></span>
+	<span>{{ "monitoring.service.force_send_waiting"|t|replace("{sent}", watch.sent_at|short_dt)|replace("{until}", watch.until_at|short_dt) }}</span>
+</div>
+{% elif watch.state == "confirmed" %}
+<div class="text-sm text-success">{{ "monitoring.service.force_send_confirmed"|t|replace("{at}", watch.reading_at|short_dt) }}</div>
+{% elif watch.state == "no_response" %}
+<div class="text-sm text-warning">{{ "monitoring.service.force_send_no_response"|t|replace("{until}", watch.until_at|short_dt) }}</div>
+{% else %}
+<div class="text-sm text-critical">{{ watch.error }}</div>
+{% endif %}

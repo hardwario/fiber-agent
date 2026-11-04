@@ -1,0 +1,66 @@
+{#- The history request card, one copy for the Node and the Beacon History
+    tabs, so the two pages cannot drift apart again.
+
+    Context:
+      req_url: string   -- where a window is posted
+      req_target: string -- id of the jobs table the answer replaces
+
+    Amended 2026-10-15 (ui_components.md §9): the third of the History tab's
+    collapsible cards, collapsed on load. The quick choices (1 h / 24 h /
+    7 d) only choose the window, as unix seconds back from now; the one
+    primary Request sends it. The 2026-10-09 test showed why a quick choice
+    must not also look like a form filler that sends on its own: an
+    operator then sent two requests. Amended later 2026-10-15: From/To are
+    days picked on the vendored `cally` calendar (as the Trends custom
+    range); picking a day clears the quick choice. -#}
+{% import "partials/ui.html" as ui %}{% import "partials/icons.html" as ic %}
+{% call ui.collapsible_card(req_target ~ "-request", "database-import", "monitoring.backfill.request_heading"|t, open=false) %}
+{%- set cal_id = req_target ~ "-cal" %}
+{%- set today = backfill_to[:10] %}
+<form hx-post="{{ req_url }}"
+	hx-target="#{{ req_target }}" hx-swap="outerHTML"
+	x-data="{ preset: null, from: null, to: null,
+		fd: '{{ backfill_from[:10] }}', td: '{{ today }}', today: '{{ today }}', nowLocal: '{{ backfill_to }}',
+		spans: { '1h': 3600, '24h': 86400, '7d': 604800 },
+		choose(p) { this.preset = p; const now = Math.floor(Date.now() / 1000); this.from = now - this.spans[p]; this.to = now; },
+		pick(which, v) { this.preset = null; this[which] = v; if (this.fd > this.td) { if (which === 'fd') this.td = v; else this.fd = v; } } }"
+	class="flex flex-col gap-3">
+	<div class="pill-group self-start" role="group" aria-label="{{ "monitoring.backfill.quick_choice"|t }}">
+		{% for p in ["1h", "24h", "7d"] %}
+		<button type="button" class="pill" :class="preset === '{{ p }}' && 'is-active'" :aria-pressed="(preset === '{{ p }}').toString()" @click="choose('{{ p }}')">{{ ("monitoring.backfill.range_" ~ p)|t }}</button>
+		{% endfor %}
+	</div>
+	{#- A quick choice sends its window as unix seconds; otherwise the two
+	    days, read in the display zone: From at 00:00, To at 23:59 or now
+	    when To is today. -#}
+	<template x-if="preset">
+		<div><input type="hidden" name="from_unix" :value="from"><input type="hidden" name="to_unix" :value="to"></div>
+	</template>
+	<template x-if="!preset">
+		<div><input type="hidden" name="from" :value="fd + 'T00:00'"><input type="hidden" name="to" :value="td === today ? nowLocal : td + 'T23:59'"></div>
+	</template>
+	<div class="flex flex-wrap items-end gap-3">
+		{% for which, label in [["fd", "monitoring.shared.from_label"], ["td", "monitoring.shared.to_label"]] %}
+		<div>
+			<label class="block text-xs font-medium mb-1" for="{{ cal_id }}-{{ which }}-btn">{{ label|t|replace("{zone}", display_tz()) }}</label>
+			<button type="button" id="{{ cal_id }}-{{ which }}-btn" class="te-in te-date inline-flex items-center justify-between gap-2" :class="preset && 'opacity-50'"
+				popovertarget="{{ cal_id }}-{{ which }}" style="anchor-name:--{{ cal_id }}-{{ which }}">
+				<span x-text="{{ which }}"></span>{{ ic.icon("calendar", "h-4 w-4 shrink-0 text-muted-fg") }}
+			</button>
+			<div id="{{ cal_id }}-{{ which }}" popover style="position-anchor:--{{ cal_id }}-{{ which }}"
+				class="dropdown w-auto max-w-fit p-2 bg-base-100 border border-base-300 rounded-box shadow-lg">
+				<calendar-date class="cally" locale="{{ lang|default('en') }}" :value="{{ which }}" max="{{ today }}"
+					{% if which == "td" %}:min="fd"{% endif %}
+					@change="pick('{{ which }}', $event.target.value); $el.closest('[popover]').hidePopover()">
+					{{ ic.icon("chevron-left", "h-4 w-4", 'slot="previous"') }}
+					{{ ic.icon("chevron-right", "h-4 w-4", 'slot="next"') }}
+					<calendar-month></calendar-month>
+				</calendar-date>
+			</div>
+		</div>
+		{% endfor %}
+		<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">{{ "monitoring.backfill.request_button"|t }}</button>
+	</div>
+</form>
+<script src="/static/js/cally.js?v={{ asset_v }}" type="module"></script>
+{% endcall %}

@@ -1,0 +1,1225 @@
+//! Versioned migrations for `fiber.config.yaml`.
+//!
+//! The yaml on `/data/fiber/config/fiber.config.yaml` persists across firmware
+//! upgrades. New firmware will routinely encounter older yaml shapes. This
+//! module provides forward migrations on the raw `serde_yaml::Value` AST so
+//! we can rename, move, add, or drop keys without forcing the user to edit
+//! their on-device file by hand.
+//!
+//! **Usage:** `Config::from_file` calls `migrate_and_persist` before any
+//! typed parsing. If a migration runs, the file is rewritten (with a
+//! `.vN.bak` backup) so the next boot reads the new shape natively.
+//!
+//! **Versioning rule:** when changing the yaml shape (adding a field that
+//! should appear in users' files, renaming, moving, dropping, or retyping
+//! a key), bump [`CURRENT_CONFIG_VERSION`] and add a `migrate_vN_to_vN+1`
+//! that produces the next shape. See `feedback_config_yaml_versioning.md`
+//! in user memory.
+//!
+//! **Adding optional fields with `#[serde(default)]`** does NOT require a
+//! version bump on its own — serde fills missing fields at parse time.
+//! Bump only when the field SHOULD appear explicitly in users' files so
+//! they can tune it without docs.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde_yaml::Value;
+
+/// Current target version for `fiber.config.yaml`. Increment when adding a
+/// new `migrate_vN_to_vN+1` function below.
+pub const CURRENT_CONFIG_VERSION: u32 = 4;
+
+/// Read `path`, migrate forward in place if needed, write back with a
+/// versioned backup of the original. Returns the migrated YAML as a string
+/// so the caller can parse it into the typed `Config` without re-reading.
+pub fn migrate_and_persist(path: &Path) -> Result<String, MigrationError> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| MigrationError::Io(format!("read {:?}: {}", path, e)))?;
+
+    let raw: Value = serde_yaml::from_str(&content)
+        .map_err(|e| MigrationError::Parse(format!("parse {:?}: {}", path, e)))?;
+
+    let from_version = read_version(&raw);
+    if from_version == CURRENT_CONFIG_VERSION {
+        return Ok(content);
+    }
+    if from_version > CURRENT_CONFIG_VERSION {
+        return Err(MigrationError::NewerThanFirmware {
+            file: from_version,
+            firmware: CURRENT_CONFIG_VERSION,
+        });
+    }
+
+    let migrated = migrate_chain(raw, from_version, CURRENT_CONFIG_VERSION)?;
+
+    let backup = backup_path(path, from_version);
+    fs::copy(path, &backup)
+        .map_err(|e| MigrationError::Io(format!("backup to {:?}: {}", backup, e)))?;
+
+    let new_content = serde_yaml::to_string(&migrated)
+        .map_err(|e| MigrationError::Parse(format!("serialize: {}", e)))?;
+    fs::write(path, &new_content)
+        .map_err(|e| MigrationError::Io(format!("write {:?}: {}", path, e)))?;
+
+    eprintln!(
+        "[config] migrated yaml v{} → v{} (backup: {:?})",
+        from_version, CURRENT_CONFIG_VERSION, backup
+    );
+
+    Ok(new_content)
+}
+
+fn read_version(raw: &Value) -> u32 {
+    raw.get("config_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32
+}
+
+fn backup_path(path: &Path, from_version: u32) -> PathBuf {
+    let stem = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    dir.join(format!("{}.v{}.bak", stem, from_version))
+}
+
+fn migrate_chain(mut value: Value, from: u32, to: u32) -> Result<Value, MigrationError> {
+    for step in from..to {
+        value = match step {
+            0 => migrate_v0_to_v1(value)?,
+            1 => migrate_v1_to_v2(value)?,
+            2 => migrate_v2_to_v3(value)?,
+            3 => migrate_v3_to_v4(value)?,
+            // Future:
+            //   4 => migrate_v4_to_v5(value)?,
+            other => return Err(MigrationError::UnknownStep(other)),
+        };
+    }
+    Ok(value)
+}
+
+/// v3 -> v4: rename the default device label from `FIBER` to `HUB`.
+///
+/// `system.device_label` is the device's user-facing name: it is the LCD overview
+/// header and it rides in every `system_info` MQTT payload, which is where the
+/// viewer and the portal read a device's display name from. Under the naming
+/// policy (docs/naming.md in the v1 tree) FIBER is the internal name and
+/// user-facing text says Hub, so the shipped template now seeds `HUB`.
+///
+/// Changing the template alone would only ever reach a factory-fresh unit:
+/// `fiber-config-seed.sh` copies the template to `/data` only when the file is
+/// absent, and `/data` survives RAUC updates. Without this step every unit in the
+/// field keeps displaying the old name forever.
+///
+/// Guarded on the exact string `FIBER`, unlike `migrate_v2_to_v3` below. That
+/// step rewrote an explicit `false` unconditionally and says why it could: there
+/// had never been a way to set the value on purpose, so every `false` on disk
+/// traced to the template rather than to a decision — and it warns that a later
+/// step must not repeat the trick. This is that later step, and `set_device_label`
+/// (signed, over both BLE FB0A and MQTT) is exactly such a way. A label of
+/// "Ward 3 Freezer" is an operator's decision and must survive; only a label
+/// still sitting at the old template default is safe to rewrite.
+///
+/// An absent `device_label` is left absent rather than filled in: `None` means
+/// "fall back to the hostname" at runtime, so inserting a label here would change
+/// the displayed name on units that deliberately never had one.
+fn migrate_v3_to_v4(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(4u32.into()),
+    );
+
+    let label_key = Value::String("device_label".into());
+    if let Some(system) = root
+        .get_mut(&Value::String("system".into()))
+        .and_then(|v| v.as_mapping_mut())
+    {
+        if system.get(&label_key).and_then(|v| v.as_str()) == Some("FIBER") {
+            system.insert(label_key, Value::String("HUB".into()));
+        }
+    }
+
+    Ok(value)
+}
+
+/// v2 -> v3: switch the EYE BLE tag subsystem on.
+///
+/// `eye.enabled` shipped as `false` in the config template, so every unit in the
+/// field has that value written out explicitly — which suppresses the serde
+/// default no matter what the struct says. The result is a gateway whose BLE
+/// hardware is up and whose tags are configured with `enabled: true`, while the
+/// monitor logs `[EYE Monitor] Disabled in config` once at boot and never runs.
+/// Nothing surfaces that: `queue_beacon_command` returns false because the state
+/// was never registered, so an operator's "Add tag" is accepted, signed,
+/// confirmed, and then has nobody to hand it to. The viewer polls for 90 s and
+/// blames the BLE environment.
+///
+/// Set unconditionally, including over an explicit `false`. There has never been
+/// a way to turn the subsystem off on purpose — no command, no GUI toggle — so
+/// every `false` on disk traces to the template rather than to a decision, and
+/// there is nothing to preserve. `set_beacon_enabled` is now that way, which is why
+/// a future v3 -> v4 step must NOT repeat this: from here on a `false` can mean
+/// something.
+fn migrate_v2_to_v3(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(3u32.into()),
+    );
+
+    let eye_key = Value::String("eye".into());
+    let enabled_key = Value::String("enabled".into());
+    match root.get_mut(&eye_key).and_then(|v| v.as_mapping_mut()) {
+        Some(eye) => {
+            eye.insert(enabled_key, Value::Bool(true));
+        }
+        None => {
+            // No `eye:` section at all, or one that is not a mapping. Write a
+            // minimal enabled block; serde fills the rest from BeaconConfig.
+            let mut eye = serde_yaml::Mapping::new();
+            eye.insert(enabled_key, Value::Bool(true));
+            root.insert(eye_key, Value::Mapping(eye));
+        }
+    }
+
+    Ok(value)
+}
+
+/// v1 → v2: add `eye` to `mqtt.export.streams`.
+///
+/// `MqttExportConfig::default_streams()` already lists `eye`, but that serde
+/// default only applies when the key is *absent* — and `migrate_v0_to_v1` writes
+/// the streams list out explicitly. So every device that went through the v0→v1
+/// migration has a list frozen without `eye`: the drain never runs for eye
+/// readings, nothing lands on `export/eye/<mac>`, and the viewer's `eye_readings`
+/// table stays empty. The BLE history charts then render nothing, with no error
+/// anywhere to explain it.
+///
+/// Appended rather than replacing the list, so a deployment that deliberately
+/// pruned a stream keeps its choice.
+fn migrate_v1_to_v2(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(2u32.into()),
+    );
+
+    let eye = Value::String("eye".into());
+    if let Some(streams) = root
+        .get_mut(&Value::String("mqtt".into()))
+        .and_then(|v| v.as_mapping_mut())
+        .and_then(|m| m.get_mut(&Value::String("export".into())))
+        .and_then(|v| v.as_mapping_mut())
+        .and_then(|m| m.get_mut(&Value::String("streams".into())))
+        .and_then(|v| v.as_sequence_mut())
+    {
+        if !streams.contains(&eye) {
+            streams.push(eye);
+        }
+    }
+
+    Ok(value)
+}
+
+/// v0 → v1: insert `mqtt.export` defaults (save-and-feed pipeline).
+///
+/// v0 had no `config_version` field and no `mqtt.export` block. v1 adds
+/// both. The export defaults are deliberately conservative:
+/// `enabled: false` and one disabled `local` destination — operators flip
+/// `enabled: true` per destination when they're ready.
+fn migrate_v0_to_v1(mut value: Value) -> Result<Value, MigrationError> {
+    let root = value
+        .as_mapping_mut()
+        .ok_or_else(|| MigrationError::Parse("root is not a mapping".into()))?;
+
+    // 1. Stamp config_version at the top.
+    root.insert(
+        Value::String("config_version".into()),
+        Value::Number(1u32.into()),
+    );
+
+    // 2. Inject mqtt.export defaults if absent.
+    let mqtt_key = Value::String("mqtt".into());
+    if let Some(mqtt) = root.get_mut(&mqtt_key).and_then(|v| v.as_mapping_mut()) {
+        let export_key = Value::String("export".into());
+        if !mqtt.contains_key(&export_key) {
+            mqtt.insert(export_key, default_export_block());
+        }
+    }
+
+    Ok(value)
+}
+
+/// Defaults injected when a v0 yaml lacks `mqtt.export`: feature ON with
+/// one always-on local destination. Save-and-feed is a core invariant of
+/// the runtime (firmware DB ↔ viewer DB), not an optional feature, so we
+/// default-enable it on migration. Operators on `localhost:1883` get the
+/// pipeline running without touching the yaml; non-localhost destinations
+/// still require manual config (host/credentials/TLS).
+fn default_export_block() -> Value {
+    let mut tls = serde_yaml::Mapping::new();
+    tls.insert(Value::String("enabled".into()), Value::Bool(false));
+
+    let mut local = serde_yaml::Mapping::new();
+    local.insert(
+        Value::String("broker_id".into()),
+        Value::String("local".into()),
+    );
+    local.insert(Value::String("enabled".into()), Value::Bool(true));
+    local.insert(
+        Value::String("host".into()),
+        Value::String("localhost".into()),
+    );
+    local.insert(Value::String("port".into()), Value::Number(1883.into()));
+    local.insert(Value::String("username".into()), Value::String("".into()));
+    local.insert(Value::String("password".into()), Value::String("".into()));
+    local.insert(Value::String("tls".into()), Value::Mapping(tls));
+
+    let mut export = serde_yaml::Mapping::new();
+    export.insert(Value::String("enabled".into()), Value::Bool(true));
+    export.insert(
+        Value::String("streams".into()),
+        Value::Sequence(vec![
+            Value::String("sticker".into()),
+            Value::String("probe".into()),
+            Value::String("probe_1m".into()),
+            Value::String("alarm".into()),
+        ]),
+    );
+    export.insert(
+        Value::String("batch_size".into()),
+        Value::Number(200.into()),
+    );
+    export.insert(
+        Value::String("drain_interval_ms".into()),
+        Value::Number(500.into()),
+    );
+    export.insert(Value::String("publish_qos".into()), Value::Number(1.into()));
+    export.insert(
+        Value::String("destinations".into()),
+        Value::Sequence(vec![Value::Mapping(local)]),
+    );
+    Value::Mapping(export)
+}
+
+// ---------------------------------------------------------------------------
+// fiber.sensors.config.yaml: the shipped default bands (2026-09-28)
+// ---------------------------------------------------------------------------
+
+/// `common_alarms` as `fiber.sensors.config.yaml` shipped it until 2026-09-28, in
+/// `(key, value)` form. A Hub whose `/data` copy still holds exactly these gets
+/// [`NEW_COMMON_ALARMS`]; one where anybody changed a bound keeps its own.
+const OLD_COMMON_ALARMS: [(&str, f64); 4] = [
+    ("critical_low_celsius", 18.0),
+    ("warning_low_celsius", 27.0),
+    ("warning_high_celsius", 38.5),
+    ("critical_high_celsius", 41.0),
+];
+
+/// `common_alarms` from 2026-09-28 (plan/portal/threshold_defaults.md §1): the portal's
+/// default temperature band, −10/0/40/50 °C.
+pub const NEW_COMMON_ALARMS: [(&str, f64); 4] = [
+    ("critical_low_celsius", -10.0),
+    ("warning_low_celsius", 0.0),
+    ("warning_high_celsius", 40.0),
+    ("critical_high_celsius", 50.0),
+];
+
+/// The deprecated alarm pair. The shipped block never set it, so a block that sets it
+/// was edited and is left alone.
+const DEPRECATED_ALARM_KEYS: [&str; 2] = ["low_alarm_celsius", "high_alarm_celsius"];
+
+/// The four bounds of one `common_lorawan_field_thresholds` entry, in
+/// `critical_low, warning_low, warning_high, critical_high` order.
+type Band = [f64; 4];
+
+const BAND_KEYS: [&str; 4] = [
+    "critical_low",
+    "warning_low",
+    "warning_high",
+    "critical_high",
+];
+
+/// The temperature fields `common_lorawan_field_thresholds` shipped a default for.
+///
+/// These describe the file as it shipped before the band change and stay as
+/// they are: the `w1_{slot}_*` defaults added for sticker-firmware v2.0.0
+/// (#430) shipped with the new bands already, so there is nothing to migrate.
+const LORAWAN_TEMPERATURE_FIELDS: [&str; 5] = [
+    "temperature",
+    "ext_temperature_1",
+    "ext_temperature_2",
+    "machine_probe_temperature_1",
+    "machine_probe_temperature_2",
+];
+
+/// The humidity fields it shipped a default for.
+const LORAWAN_HUMIDITY_FIELDS: [&str; 3] = [
+    "humidity",
+    "machine_probe_humidity_1",
+    "machine_probe_humidity_2",
+];
+
+const OLD_TEMPERATURE_BAND: Band = [0.0, 5.0, 30.0, 40.0];
+const OLD_HUMIDITY_BAND: Band = [15.0, 25.0, 75.0, 85.0];
+/// The portal's default bands (threshold_defaults.md §1), which this block states too so
+/// the file does not carry two sets of defaults, although nothing on v2 reads it.
+pub const NEW_TEMPERATURE_BAND: Band = [-10.0, 0.0, 40.0, 50.0];
+pub const NEW_HUMIDITY_BAND: Band = [0.0, 10.0, 80.0, 90.0];
+
+/// Moves the `/data` copy of `fiber.sensors.config.yaml` to the 2026-09-28 default bands
+/// when it still holds the old shipped ones (plan/portal/threshold_defaults.md §4), and
+/// returns the file's content either way.
+///
+/// `fiber-config-seed.sh` copies the shipped file only when `/data` has none, so without
+/// this every Hub in the field would keep 18/27/38.5/41 °C for its wired lines forever. It
+/// is guarded on the exact old values, per block, for the reason `migrate_v3_to_v4` gives:
+/// a bound an operator set is a decision, and only a block still at the old template's
+/// numbers is safe to rewrite. `common_alarms` and `common_lorawan_field_thresholds` are
+/// judged separately, so an edited one does not hold back the other.
+///
+/// The file has no `config_version` and needs none: the guard is the version. Once
+/// rewritten the old values are gone, so a second run finds nothing to do. A rewrite keeps a
+/// backup of the original (`<file>.pre-defaults.bak`, never overwritten) and goes through a
+/// temporary file and a rename, because several tasks read this file at boot and none of
+/// them may see it half written. Like every rewrite here it drops the file's comments.
+pub fn migrate_sensor_defaults_and_persist(path: &Path) -> Result<String, MigrationError> {
+    // One rewrite at a time in this process: the second caller then reads the new file and
+    // finds nothing to do, instead of racing the first one to the backup and the rename.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+
+    let content = fs::read_to_string(path)
+        .map_err(|e| MigrationError::Io(format!("read {:?}: {}", path, e)))?;
+    let mut raw: Value = serde_yaml::from_str(&content)
+        .map_err(|e| MigrationError::Parse(format!("parse {:?}: {}", path, e)))?;
+
+    let moved = migrate_sensor_defaults(&mut raw);
+    if moved.is_empty() {
+        return Ok(content);
+    }
+
+    let new_content = serde_yaml::to_string(&raw)
+        .map_err(|e| MigrationError::Parse(format!("serialize: {}", e)))?;
+
+    let backup = sensor_defaults_backup_path(path);
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(content.as_bytes())
+                .map_err(|e| MigrationError::Io(format!("backup to {:?}: {}", backup, e)))?;
+        }
+        // An earlier rewrite's backup is the older original; keep it.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(MigrationError::Io(format!("backup to {:?}: {}", backup, e))),
+    }
+
+    let tmp = path.with_extension(format!("yaml.tmp-{}", std::process::id()));
+    fs::write(&tmp, &new_content)
+        .map_err(|e| MigrationError::Io(format!("write {:?}: {}", tmp, e)))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        MigrationError::Io(format!("rename {:?} -> {:?}: {}", tmp, path, e))
+    })?;
+
+    eprintln!(
+        "[config] {:?}: moved {} to the 2026-09-28 default bands (backup: {:?})",
+        path,
+        moved.join(" and "),
+        backup
+    );
+    Ok(new_content)
+}
+
+fn sensor_defaults_backup_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{}.pre-defaults.bak", name))
+}
+
+/// The AST half of [`migrate_sensor_defaults_and_persist`]: rewrites each block that still
+/// holds its old shipped values and names the ones it rewrote.
+fn migrate_sensor_defaults(value: &mut Value) -> Vec<&'static str> {
+    let mut moved = Vec::new();
+    let Some(root) = value.as_mapping_mut() else {
+        return moved;
+    };
+
+    if let Some(common) = root
+        .get_mut(&Value::String("common_alarms".into()))
+        .and_then(|v| v.as_mapping_mut())
+    {
+        let untouched = OLD_COMMON_ALARMS
+            .iter()
+            .all(|(key, old)| number_at(common, key) == Some(*old))
+            && DEPRECATED_ALARM_KEYS
+                .iter()
+                .all(|key| !common.contains_key(&Value::String((*key).into())));
+        if untouched {
+            for (key, new) in NEW_COMMON_ALARMS {
+                common.insert(Value::String(key.into()), Value::from(new));
+            }
+            moved.push("common_alarms");
+        }
+    }
+
+    if let Some(fields) = root
+        .get_mut(&Value::String("common_lorawan_field_thresholds".into()))
+        .and_then(|v| v.as_mapping_mut())
+    {
+        let expected = LORAWAN_TEMPERATURE_FIELDS
+            .iter()
+            .map(|f| (*f, OLD_TEMPERATURE_BAND))
+            .chain(
+                LORAWAN_HUMIDITY_FIELDS
+                    .iter()
+                    .map(|f| (*f, OLD_HUMIDITY_BAND)),
+            );
+        let same_fields =
+            fields.len() == LORAWAN_TEMPERATURE_FIELDS.len() + LORAWAN_HUMIDITY_FIELDS.len();
+        let untouched = same_fields
+            && expected.clone().all(|(field, band)| {
+                fields
+                    .get(&Value::String(field.into()))
+                    .and_then(|v| v.as_mapping())
+                    .is_some_and(|entry| holds_band(entry, band))
+            });
+        if untouched {
+            for (field, _) in expected {
+                let band = if LORAWAN_HUMIDITY_FIELDS.contains(&field) {
+                    NEW_HUMIDITY_BAND
+                } else {
+                    NEW_TEMPERATURE_BAND
+                };
+                let mut entry = serde_yaml::Mapping::new();
+                for (key, v) in BAND_KEYS.iter().zip(band) {
+                    entry.insert(Value::String((*key).into()), Value::from(v));
+                }
+                fields.insert(Value::String(field.into()), Value::Mapping(entry));
+            }
+            moved.push("common_lorawan_field_thresholds");
+        }
+    }
+
+    moved
+}
+
+/// A mapping entry's number, integer or float alike (`18` and `18.0` are one value).
+fn number_at(map: &serde_yaml::Mapping, key: &str) -> Option<f64> {
+    map.get(&Value::String(key.into())).and_then(Value::as_f64)
+}
+
+/// Exactly these four bounds and no other key.
+fn holds_band(entry: &serde_yaml::Mapping, band: Band) -> bool {
+    entry.len() == BAND_KEYS.len()
+        && BAND_KEYS
+            .iter()
+            .zip(band)
+            .all(|(key, v)| number_at(entry, key) == Some(v))
+}
+
+#[derive(Debug)]
+pub enum MigrationError {
+    Io(String),
+    Parse(String),
+    NewerThanFirmware { file: u32, firmware: u32 },
+    UnknownStep(u32),
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(s) => write!(f, "config migration I/O: {}", s),
+            Self::Parse(s) => write!(f, "config migration parse: {}", s),
+            Self::NewerThanFirmware { file, firmware } => write!(
+                f,
+                "yaml config_version {} is newer than firmware {}; refusing to downgrade",
+                file, firmware,
+            ),
+            Self::UnknownStep(v) => write!(f, "no migration step defined for v{}", v),
+        }
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v0_yaml_gets_config_version_and_export_block_injected() {
+        let v0 = r#"
+mqtt:
+  enabled: true
+  broker:
+    host: localhost
+ble:
+  enabled: false
+"#;
+        let raw: Value = serde_yaml::from_str(v0).unwrap();
+        let migrated = migrate_v0_to_v1(raw).unwrap();
+
+        let root = migrated.as_mapping().unwrap();
+        assert_eq!(
+            root.get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
+            Some(1),
+        );
+
+        let mqtt = root
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let export = mqtt
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        // Save-and-feed defaults to ON so the firmware↔viewer mirror is live
+        // from first boot without operator intervention.
+        assert_eq!(
+            export
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            export
+                .get(&Value::String("batch_size".into()))
+                .unwrap()
+                .as_u64(),
+            Some(200)
+        );
+        // All four streams must be present — probe_1m is the long-term history
+        // path; if a v0 upgrade drops it the viewer mirror silently loses every
+        // minute-aggregate beyond the 30-day raw retention window.
+        let streams: Vec<&str> = export
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(streams, vec!["sticker", "probe", "probe_1m", "alarm"]);
+        // And the always-on `local` destination must also default-enabled.
+        let dests = export
+            .get(&Value::String("destinations".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        let local = dests[0].as_mapping().unwrap();
+        assert_eq!(
+            local
+                .get(&Value::String("broker_id".into()))
+                .unwrap()
+                .as_str(),
+            Some("local")
+        );
+        assert_eq!(
+            local
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn v0_yaml_with_existing_export_block_keeps_user_values() {
+        let v0 = r#"
+config_version: 0
+mqtt:
+  export:
+    enabled: true
+    batch_size: 50
+ble:
+  enabled: false
+"#;
+        let raw: Value = serde_yaml::from_str(v0).unwrap();
+        let migrated = migrate_v0_to_v1(raw).unwrap();
+
+        let mqtt = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let export = mqtt
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        // User had enabled=true with custom batch_size; migration must not stomp it.
+        assert_eq!(
+            export
+                .get(&Value::String("enabled".into()))
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            export
+                .get(&Value::String("batch_size".into()))
+                .unwrap()
+                .as_u64(),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn v1_yaml_gets_eye_appended_to_export_streams() {
+        // The shape a device that already ran v0→v1 has on disk: streams written
+        // out explicitly, which suppresses the serde default that does list eye.
+        let v1 = r#"
+config_version: 1
+mqtt:
+  enabled: true
+  export:
+    enabled: true
+    streams:
+      - sticker
+      - probe
+      - probe_1m
+      - alarm
+"#;
+        let raw: Value = serde_yaml::from_str(v1).unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+
+        let root = migrated.as_mapping().unwrap();
+        assert_eq!(
+            root.get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
+            Some(2),
+        );
+        let streams: Vec<&str> = root
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        // Appended, not replaced: the existing four keep their order so a
+        // deployment that pruned one does not silently get it back.
+        assert_eq!(
+            streams,
+            vec!["sticker", "probe", "probe_1m", "alarm", "eye"]
+        );
+    }
+
+    /// Read `system.device_label` out of a migrated document.
+    fn device_label(migrated: &Value) -> Option<&str> {
+        migrated
+            .as_mapping()?
+            .get(&Value::String("system".into()))?
+            .as_mapping()?
+            .get(&Value::String("device_label".into()))?
+            .as_str()
+    }
+
+    /// Does `system` carry a `device_label` key at all?
+    fn has_device_label_key(migrated: &Value) -> bool {
+        migrated
+            .as_mapping()
+            .and_then(|m| m.get(&Value::String("system".into())))
+            .and_then(|v| v.as_mapping())
+            .map(|s| s.contains_key(&Value::String("device_label".into())))
+            .unwrap_or(false)
+    }
+
+    fn config_version_of(migrated: &Value) -> Option<u64> {
+        migrated
+            .as_mapping()?
+            .get(&Value::String("config_version".into()))?
+            .as_u64()
+    }
+
+    #[test]
+    fn v3_to_v4_renames_an_untouched_fiber_label() {
+        // A unit that was seeded from the old template and never renamed.
+        let v3 = r#"
+config_version: 3
+system:
+  app_name: FIBER Application
+  device_label: FIBER
+  led_brightness: 25
+"#;
+        let raw: Value = serde_yaml::from_str(v3).unwrap();
+        let migrated = migrate_v3_to_v4(raw).unwrap();
+
+        assert_eq!(config_version_of(&migrated), Some(4));
+        assert_eq!(device_label(&migrated), Some("HUB"));
+        // Siblings in the same section are untouched — app_name in particular is
+        // deliberately not part of this rename.
+        let system = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("system".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            system
+                .get(&Value::String("app_name".into()))
+                .and_then(|v| v.as_str()),
+            Some("FIBER Application"),
+        );
+        assert_eq!(
+            system
+                .get(&Value::String("led_brightness".into()))
+                .and_then(|v| v.as_u64()),
+            Some(25),
+        );
+    }
+
+    #[test]
+    fn v3_to_v4_keeps_an_operator_chosen_label() {
+        // Set through the signed `set_device_label` path; this is a decision and
+        // must survive the migration.
+        let v3 = "config_version: 3\nsystem:\n  device_label: Ward 3 Freezer\n";
+        let raw: Value = serde_yaml::from_str(v3).unwrap();
+        let migrated = migrate_v3_to_v4(raw).unwrap();
+
+        assert_eq!(config_version_of(&migrated), Some(4));
+        assert_eq!(device_label(&migrated), Some("Ward 3 Freezer"));
+    }
+
+    #[test]
+    fn v3_to_v4_leaves_an_absent_label_absent() {
+        // No label means "fall back to the hostname" at runtime. Inserting one
+        // here would change what such a device displays.
+        let v3 = "config_version: 3\nsystem:\n  led_brightness: 25\n";
+        let raw: Value = serde_yaml::from_str(v3).unwrap();
+        let migrated = migrate_v3_to_v4(raw).unwrap();
+
+        assert_eq!(config_version_of(&migrated), Some(4));
+        assert!(
+            !has_device_label_key(&migrated),
+            "migration must not invent a device_label",
+        );
+    }
+
+    #[test]
+    fn v3_to_v4_stamps_the_version_without_a_system_block() {
+        let v3 = "config_version: 3\nmqtt:\n  enabled: true\n";
+        let raw: Value = serde_yaml::from_str(v3).unwrap();
+        let migrated = migrate_v3_to_v4(raw).unwrap();
+
+        assert_eq!(config_version_of(&migrated), Some(4));
+        assert!(!has_device_label_key(&migrated));
+    }
+
+    #[test]
+    fn v3_to_v4_does_not_rename_a_label_that_merely_contains_fiber() {
+        // Only the exact old default is rewritten. A label like this one came
+        // from an operator and is not the template's value.
+        let v3 = "config_version: 3\nsystem:\n  device_label: FIBER-001\n";
+        let raw: Value = serde_yaml::from_str(v3).unwrap();
+        let migrated = migrate_v3_to_v4(raw).unwrap();
+
+        assert_eq!(device_label(&migrated), Some("FIBER-001"));
+    }
+
+    #[test]
+    fn v3_to_v4_persists_the_rename_with_a_backup() {
+        // The upgrade as a field unit experiences it: a real v3 file on disk gets
+        // rewritten in place, with the original kept as .v3.bak.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        fs::write(&path, "config_version: 3\nsystem:\n  device_label: FIBER\n").unwrap();
+
+        let migrated_str = migrate_and_persist(&path).unwrap();
+        assert!(
+            migrated_str.contains("device_label: HUB"),
+            "{}",
+            migrated_str
+        );
+        assert!(!migrated_str.contains("device_label: FIBER"));
+
+        let backup = backup_path(&path, 3);
+        assert!(backup.exists(), "expected backup at {:?}", backup);
+        let backed_up = fs::read_to_string(&backup).unwrap();
+        assert!(
+            backed_up.contains("device_label: FIBER"),
+            "the backup must preserve the pre-migration label",
+        );
+        let _ = fs::remove_file(&backup);
+
+        // Second boot is a no-op: already at the current version.
+        assert_eq!(migrate_and_persist(&path).unwrap(), migrated_str);
+    }
+
+    /// Read `eye.enabled` out of a migrated document.
+    fn beacon_enabled(migrated: &Value) -> Option<bool> {
+        migrated
+            .as_mapping()?
+            .get(&Value::String("eye".into()))?
+            .as_mapping()?
+            .get(&Value::String("enabled".into()))?
+            .as_bool()
+    }
+
+    #[test]
+    fn v2_to_v3_turns_on_an_explicitly_disabled_eye_subsystem() {
+        // Exactly what a field unit looks like: the template's `false`, with a
+        // tag the operator added through the GUI sitting under it enabled.
+        let v2 = r#"
+config_version: 2
+eye:
+  enabled: false
+  publish_interval_s: 30
+  tags:
+    - mac: "7C:D9:F4:13:10:DE"
+      enabled: true
+"#;
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+
+        assert_eq!(
+            migrated
+                .as_mapping()
+                .unwrap()
+                .get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
+            Some(3),
+        );
+        assert_eq!(beacon_enabled(&migrated), Some(true));
+    }
+
+    #[test]
+    fn v2_to_v3_keeps_the_rest_of_the_eye_section() {
+        let v2 = r#"
+config_version: 2
+eye:
+  enabled: false
+  publish_interval_s: 45
+  tags:
+    - mac: "7C:D9:F4:13:10:DE"
+"#;
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+        let eye = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("eye".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            eye.get(&Value::String("publish_interval_s".into()))
+                .and_then(|v| v.as_u64()),
+            Some(45),
+        );
+        assert_eq!(
+            eye.get(&Value::String("tags".into()))
+                .and_then(|v| v.as_sequence())
+                .map(|s| s.len()),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn v2_to_v3_creates_the_eye_section_when_it_is_missing() {
+        let v2 = "config_version: 2\nmqtt:\n  enabled: true\n";
+        let raw: Value = serde_yaml::from_str(v2).unwrap();
+        let migrated = migrate_v2_to_v3(raw).unwrap();
+        assert_eq!(beacon_enabled(&migrated), Some(true));
+    }
+
+    #[test]
+    fn v1_to_v2_does_not_duplicate_an_existing_eye_stream() {
+        let v1 = r#"
+config_version: 1
+mqtt:
+  export:
+    streams:
+      - eye
+      - sticker
+"#;
+        let raw: Value = serde_yaml::from_str(v1).unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+        let streams: Vec<&str> = migrated
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("mqtt".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("export".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap()
+            .get(&Value::String("streams".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(streams, vec!["eye", "sticker"]);
+    }
+
+    #[test]
+    fn v1_to_v2_stamps_the_version_even_without_an_export_block() {
+        // `mqtt.export` absent means the serde default applies at load time, and
+        // that default already lists eye — so there is nothing to append, but the
+        // version must still advance or the file migrates forever.
+        let raw: Value =
+            serde_yaml::from_str("config_version: 1\nble:\n  enabled: false\n").unwrap();
+        let migrated = migrate_v1_to_v2(raw).unwrap();
+        assert_eq!(
+            migrated
+                .as_mapping()
+                .unwrap()
+                .get(&Value::String("config_version".into()))
+                .and_then(|v| v.as_u64()),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn migrate_and_persist_writes_backup_and_updates_version() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        fs::write(&path, "mqtt:\n  enabled: true\nble:\n  enabled: false\n").unwrap();
+
+        let migrated_str = migrate_and_persist(&path).unwrap();
+        // A v0 file runs the whole chain in one pass, so it lands on the current
+        // version, not on 1.
+        assert!(migrated_str.contains(&format!("config_version: {}", CURRENT_CONFIG_VERSION)));
+        assert!(migrated_str.contains("export"));
+        // And the chain, not just the last step, must have produced the eye
+        // stream — a v0 device is the case that was silently missing it.
+        assert!(migrated_str.contains("eye"));
+
+        // Backup exists with the prior version stamp.
+        let backup = backup_path(&path, 0);
+        assert!(backup.exists(), "expected backup at {:?}", backup);
+        let _ = fs::remove_file(&backup);
+
+        // Re-running is a no-op (no further backup, content stable).
+        let re_run = migrate_and_persist(&path).unwrap();
+        assert_eq!(re_run, migrated_str);
+    }
+
+    // ---- fiber.sensors.config.yaml default bands (threshold_defaults.md §4) ----
+
+    /// The shipped file as it was before 2026-09-28, in the parts the migration reads.
+    const OLD_SENSORS_YAML: &str = r#"
+alarm_patterns:
+  warning:
+    led_color: yellow
+common_alarms:
+  critical_low_celsius: 18.0
+  critical_high_celsius: 41.0
+  warning_low_celsius: 27.0
+  warning_high_celsius: 38.5
+  reconnect_blinks: 5
+common_lorawan_field_thresholds:
+  temperature: { critical_low: 0.0, warning_low: 5.0, warning_high: 30.0, critical_high: 40.0 }
+  humidity: { critical_low: 15.0, warning_low: 25.0, warning_high: 75.0, critical_high: 85.0 }
+  ext_temperature_1: { critical_low: 0.0, warning_low: 5.0, warning_high: 30.0, critical_high: 40.0 }
+  ext_temperature_2: { critical_low: 0.0, warning_low: 5.0, warning_high: 30.0, critical_high: 40.0 }
+  machine_probe_temperature_1: { critical_low: 0, warning_low: 5, warning_high: 30, critical_high: 40 }
+  machine_probe_temperature_2: { critical_low: 0.0, warning_low: 5.0, warning_high: 30.0, critical_high: 40.0 }
+  machine_probe_humidity_1: { critical_low: 15.0, warning_low: 25.0, warning_high: 75.0, critical_high: 85.0 }
+  machine_probe_humidity_2: { critical_low: 15.0, warning_low: 25.0, warning_high: 75.0, critical_high: 85.0 }
+lines:
+  - line: 0
+    enabled: true
+    name: "Sensor 1"
+    critical_high_celsius: 30.0
+"#;
+
+    fn band_of(doc: &Value, field: &str) -> [f64; 4] {
+        let entry = &doc["common_lorawan_field_thresholds"][field];
+        [
+            entry["critical_low"].as_f64().unwrap(),
+            entry["warning_low"].as_f64().unwrap(),
+            entry["warning_high"].as_f64().unwrap(),
+            entry["critical_high"].as_f64().unwrap(),
+        ]
+    }
+
+    #[test]
+    fn an_unchanged_sensors_file_moves_to_the_new_default_bands() {
+        let mut doc: Value = serde_yaml::from_str(OLD_SENSORS_YAML).unwrap();
+        let moved = migrate_sensor_defaults(&mut doc);
+        assert_eq!(moved, ["common_alarms", "common_lorawan_field_thresholds"]);
+
+        let common = &doc["common_alarms"];
+        for (key, want) in NEW_COMMON_ALARMS {
+            assert_eq!(common[key].as_f64(), Some(want), "{key}");
+        }
+        assert_eq!(
+            common["reconnect_blinks"].as_u64(),
+            Some(5),
+            "the rest stays"
+        );
+        for field in LORAWAN_TEMPERATURE_FIELDS {
+            assert_eq!(band_of(&doc, field), NEW_TEMPERATURE_BAND, "{field}");
+        }
+        for field in LORAWAN_HUMIDITY_FIELDS {
+            assert_eq!(band_of(&doc, field), NEW_HUMIDITY_BAND, "{field}");
+        }
+        // A line's own override is the operator's, whatever the defaults do.
+        assert_eq!(
+            doc["lines"][0]["critical_high_celsius"].as_f64(),
+            Some(30.0)
+        );
+
+        // A second run finds nothing to do.
+        assert!(migrate_sensor_defaults(&mut doc).is_empty());
+    }
+
+    #[test]
+    fn a_changed_block_keeps_its_values_and_the_other_block_still_moves() {
+        let edited =
+            OLD_SENSORS_YAML.replace("warning_high_celsius: 38.5", "warning_high_celsius: 37.0");
+        let mut doc: Value = serde_yaml::from_str(&edited).unwrap();
+        assert_eq!(
+            migrate_sensor_defaults(&mut doc),
+            ["common_lorawan_field_thresholds"]
+        );
+        assert_eq!(
+            doc["common_alarms"]["critical_low_celsius"].as_f64(),
+            Some(18.0)
+        );
+        assert_eq!(
+            doc["common_alarms"]["warning_high_celsius"].as_f64(),
+            Some(37.0)
+        );
+
+        // One field edited, one added, or the deprecated pair set: each is a decision.
+        for edit in [
+            OLD_SENSORS_YAML.replacen("critical_high: 85.0", "critical_high: 80.0", 1),
+            OLD_SENSORS_YAML.replace(
+                "lines:",
+                "  illuminance: { critical_low: 1, warning_low: 2, warning_high: 3, critical_high: 4 }\nlines:",
+            ),
+            OLD_SENSORS_YAML.replace("  reconnect_blinks: 5", "  reconnect_blinks: 5\n  low_alarm_celsius: 10.0"),
+        ] {
+            let mut doc: Value = serde_yaml::from_str(&edit).unwrap();
+            let moved = migrate_sensor_defaults(&mut doc);
+            assert_eq!(moved.len(), 1, "{moved:?} for {edit}");
+        }
+        let mut doc: Value = serde_yaml::from_str(&OLD_SENSORS_YAML.replacen(
+            "critical_high: 85.0",
+            "critical_high: 80.0",
+            1,
+        ))
+        .unwrap();
+        migrate_sensor_defaults(&mut doc);
+        assert_eq!(band_of(&doc, "humidity"), [15.0, 25.0, 75.0, 80.0]);
+        assert_eq!(band_of(&doc, "temperature"), OLD_TEMPERATURE_BAND);
+    }
+
+    #[test]
+    fn the_sensors_rewrite_is_persisted_with_a_backup_and_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiber.sensors.config.yaml");
+        fs::write(&path, OLD_SENSORS_YAML).unwrap();
+
+        let migrated = migrate_sensor_defaults_and_persist(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), migrated);
+        let doc: Value = serde_yaml::from_str(&migrated).unwrap();
+        assert_eq!(
+            doc["common_alarms"]["critical_high_celsius"].as_f64(),
+            Some(50.0)
+        );
+        let backup = sensor_defaults_backup_path(&path);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), OLD_SENSORS_YAML);
+        let entries = fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(
+            entries, 2,
+            "the file and its backup, no temporary left behind"
+        );
+
+        // Nothing left to move: the file is returned as it is and not rewritten.
+        let again = migrate_sensor_defaults_and_persist(&path).unwrap();
+        assert_eq!(again, migrated);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), OLD_SENSORS_YAML);
+    }
+
+    #[test]
+    fn a_changed_sensors_file_is_not_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fiber.sensors.config.yaml");
+        let edited = OLD_SENSORS_YAML
+            .replace("critical_low_celsius: 18.0", "critical_low_celsius: 2.0")
+            .replacen("critical_low: 0.0", "critical_low: -5.0", 1);
+        fs::write(&path, &edited).unwrap();
+
+        assert_eq!(migrate_sensor_defaults_and_persist(&path).unwrap(), edited);
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited, "byte for byte");
+        assert!(!sensor_defaults_backup_path(&path).exists());
+    }
+
+    /// The migration's target is the shipped file: a factory-fresh Hub and a migrated one
+    /// hold the same bands.
+    #[test]
+    fn the_shipped_sensors_file_holds_the_new_default_bands() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fiber.sensors.config.yaml");
+        let mut doc: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        for (key, want) in NEW_COMMON_ALARMS {
+            assert_eq!(doc["common_alarms"][key].as_f64(), Some(want), "{key}");
+        }
+        for field in LORAWAN_TEMPERATURE_FIELDS {
+            assert_eq!(band_of(&doc, field), NEW_TEMPERATURE_BAND, "{field}");
+        }
+        for field in LORAWAN_HUMIDITY_FIELDS {
+            assert_eq!(band_of(&doc, field), NEW_HUMIDITY_BAND, "{field}");
+        }
+        assert!(migrate_sensor_defaults(&mut doc).is_empty());
+    }
+
+    #[test]
+    fn newer_yaml_than_firmware_is_rejected() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        fs::write(&path, "config_version: 999\nmqtt:\n  enabled: false\n").unwrap();
+
+        let err = migrate_and_persist(&path).unwrap_err();
+        match err {
+            MigrationError::NewerThanFirmware { file, firmware } => {
+                assert_eq!(file, 999);
+                assert_eq!(firmware, CURRENT_CONFIG_VERSION);
+            }
+            other => panic!("expected NewerThanFirmware, got {:?}", other),
+        }
+    }
+}

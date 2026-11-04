@@ -1,0 +1,524 @@
+{#
+  Beacon (BLE BTSMP1 tag) detail page — devices.beacon.md §3, built by B5
+  (devices.backend.md §8 WP5.2 + WP5.4). Until this page existed the whole
+  Beacon surface was list-only.
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "beacons",
+    hostname: string,                   -- route 404s before render when no
+                                           Hub in the store knows the MAC
+    b: partials/beacon_card.html's `b`, in full — this page and the list row
+       are built by ONE builder (render::beacon_ctx over
+       render::BeaconRowData::inputs), so they cannot disagree about
+       liveness, thresholds or metadata. The keys this page reads that the
+       row does not:
+         hubs:   [ {hostname, rssi: int|none, last_seen: string|none,
+                    connected: bool, best: bool, home: bool}, ... ]  -- §3.2, live Hubs
+                    first then strongest; `connected` false = this Hub heard
+                    the Beacon once and no longer does (the row stays, it is
+                    marked), and only a connected Hub is ever `best`
+         fields: [ {name, label, unit, value: float|none,
+                    alarm_state: "Normal"|"Warning"|"Critical"}, ... ]
+                    -- always exactly temperature + humidity (§3.4)
+         meta:   render::DeviceMetaCtx  -- the device_meta row behind the
+                    system-configuration half
+         fault / fault_since / signal / battery / description / created_at
+    charts: [ {name, label, config}, ... ]  -- one 24 h chart-island config
+                                           per field, JSON already `</`-escaped
+    can_remove: bool,                   -- admin; gates the removal button and dialog
+    can_edit: bool,                     -- manager+; gates the threshold
+                                           dialogs, the metadata form, the
+                                           reconfiguration request, the
+                                           history request and removal
+    offline_k_default: int,             -- beacons.offline_detector from YAML
+                                           — what a BLANK override inherits
+    meta_ok: string|none, meta_error: string|none   -- flash from the
+                                           metadata form's redirect
+    remove_error: string|none           -- the removal dialog's refusal
+    cal: render::CalibrationCardCtx|none -- the Overview tab's calibration
+                                           card (calibration.cs.md §2); none
+                                           for a discovered candidate
+  }
+  plus `cmd` (defaults to none inside partials/command_status.html).
+
+  Section order is devices.beacon.md §3's, dealt across the four tabs:
+  static info and active faults stay above them; Overview holds telemetry +
+  thresholds, Configuration the two configuration halves, History the
+  archive download, Diagnostics the Hubs & signal and the last message.
+
+  MAC in the "Popis zarizeni" block, not the header (§3.1, decided
+  2026-09-01, symmetric with DevEUI on a Node). The header identity is the
+  SERIAL NUMBER — B6 gave the portal somewhere to keep it
+  (`device_meta.serial`, V14), typed at registration because the BTSMP1
+  advertisement carries none. A Beacon registered before B6 reads "not
+  recorded"; nothing invents one.
+
+  JSON preview under "last message" (§3.3): `b.last_payload_json`, the raw
+  `eye/sensors` tag the store received, in a `<details>` with a copy button.
+  ONE message and no ring — §3.3 rules the ten-message ring out for Beacons,
+  because at a ~10 s cadence ten of them cover under two minutes.
+
+  Four tabs, the same shape as pages/node_detail.html and
+  pages/hub_detail.html: Overview carries the readings, the chart and the
+  thresholds; Configuration the system metadata, the automatic-history
+  switch and the read-only BLE parameters; History the archive download;
+  Diagnostics the Hubs and the last message. Tabs are plain `<a>` links
+  carrying the tab in the path (`/beacons/{mac}/{tab}`), so the SSE `refresh` reload (layout/base.html) lands on
+  the same tab.
+
+  The readings are the shared Channels card (2026-10-15, context `ch`,
+  plan/portal/ui_components.md §2): temperature, humidity and battery in a
+  stats table; the chart is in Trends. It replaced the metric rail + one
+  chart.
+
+  History (plan/portal/beacon_history.md §4.3, §7.1) is the Node's History
+  tab: the same card, quick buttons, od-do form, and
+  partials/backfill_jobs.html addressed by `swap_id`/`post_url`, live over
+  SSE as `beacon-history-{mac_id}`. Context: `jobs`, `gaps`,
+  `backfill_from`/`backfill_to`, `history_auto` (the switch's state).
+
+  Thresholds use partials/limits_editor.html, action-parameterised
+  to /beacons/{mac}/thresholds/{field}, opened as an accordion row under the
+  field rather than in a modal — the same editor the Beacon list row opens
+  (partials/beacon_thresholds_row.html), and it needs
+  /static/js/portal-list.js for `proximosCollapse`. Those POSTs relay to the Hub, which
+  is what evaluates a Beacon's bounds (fleet config, `set_eye_field_threshold`)
+  — so they DO render into #command-status, one-shot, no pending flow. §3.4's
+  "nothing is sent to the Beacon" is satisfied: nothing reaches the device.
+
+  The metadata form is a plain POST + redirect (partials/device_meta_form.html's
+  own header says why), so this page has no per-card SSE swap region and the
+  dialogs need no hx-preserve — same as pages/node_detail.html.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ b.name | default(b.mac, true) }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set state = b.alarm_state %}
+{% set active_tab = active_tab if active_tab is defined else "overview" %}
+{% set selected_range = selected_range if selected_range is defined else "24h" %}
+{#- A MAC is not DOM-id material (colons); every id on this page is built
+    from this one slug, the same substitution the list row does. -#}
+{% set mac_id = b.mac | replace(":", "-") %}
+
+{% set tabs = [
+	("overview", "monitoring.node_detail.tab_overview"|t, "activity"),
+	("settings", "monitoring.node_detail.tab_settings"|t, "settings"),
+	("history", "monitoring.node_detail.tab_history"|t, "database-backup"),
+	("diagnostics", "monitoring.node_detail.tab_diagnostics"|t, "bluetooth"),
+] %}
+
+<div data-sse-refresh class="space-y-4">
+	<div class="flex items-center justify-between gap-2 flex-wrap">
+		{{ ui.back_link("/beacons", "monitoring.beacons.back_to_list"|t) }}
+		{% if can_remove %}
+		<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm text-critical"
+			onclick="var p = document.getElementById('beacon-remove'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+			{{ "monitoring.beacons.remove_button"|t }}
+		</button>
+		{% endif %}
+	</div>
+	{% if remove_error is defined and remove_error %}
+	<div role="alert" class="alert alert-error"><span>{{ remove_error }}</span></div>
+	{% endif %}
+	{#- #120: the sensor switch went through. -#}
+	{% if sensor_ok is defined and sensor_ok %}
+	<div role="status" class="alert alert-success"><span>{{ sensor_ok }}</span></div>
+	{% endif %}
+
+	{# --- §3.1 identity header ------------------------------------------
+	   One row, as pages/node_detail.html and pages/hub_detail.html open:
+	   who this is and what state it is in. The MAC rides under the name
+	   (§3.1 keeps the SERIAL as the header identity), the description and
+	   the registration date live on the Configuration tab — the metadata
+	   form owns both and its own header already dates the registration. #}
+	<div class="card-v1 p-4 flex flex-wrap items-center justify-between gap-3">
+		<div class="flex items-center gap-3 min-w-0">
+			{{ ui.status_dot(b.connected, "h-2.5 w-2.5") }}
+			{{ ic.icon("bluetooth", "h-5 w-5 text-info shrink-0") }}
+			<div class="min-w-0">
+				<div class="flex items-baseline gap-2 flex-wrap">
+					<h1 class="text-lg font-bold truncate">{{ b.name | default(b.mac, true) }}</h1>
+					{% if b.location %}
+					<span class="text-xs uppercase tracking-wide text-muted-fg">{{ b.location }}</span>
+					{% endif %}
+				</div>
+				<p class="text-xs font-mono text-muted-fg truncate">
+					{{ b.mac }} · {{ "monitoring.beacon_detail.serial_label"|t }}
+					{%- if b.serial %} {{ b.serial }}{% else %} <span class="italic">{{ "monitoring.beacon_detail.serial_missing"|t }}</span>{% endif %}
+				</p>
+			</div>
+		</div>
+		<div class="flex items-center gap-2 flex-wrap">
+			{% if b.battery %}
+			<span class="flex items-center gap-1.5 text-xs {% if b.low_battery %}text-warning{% else %}text-muted-fg{% endif %}">
+				{{ ic.icon("battery-charging", "h-3.5 w-3.5") }}{{ b.battery }}
+			</span>
+			{% endif %}
+			<span class="flex items-center gap-1.5 text-xs text-muted-fg">
+				{{ ic.icon("clock", "h-3.5 w-3.5") }}
+				{{ b.last_seen | short_dt | default(("common.never"|t), true) }}
+			</span>
+			{#- "Normální" is a verdict only against a limit; with none set the
+			    badge says so, as the Monitoring card does (UX-033). `has_limits`
+			    is the Monitoring rule, `render::any_bounded` (D3). -#}
+			{% if state == "Normal" and not has_limits %}
+			{{ ui.status_badge("none", "monitoring.threshold_table.no_threshold_set"|t) }}
+			{% else %}
+			{{ ui.status_badge(state, ("monitoring.alarm_state." ~ state)|t) }}
+			{% endif %}
+			<span class="badge-outline-v1">BLE</span>
+			{# B6: the same four labels the list row shows, from the
+			   same render.rs mapping. `provisioned` shows nothing. #}
+			{% if b.provisioning_state %}
+			<span class="badge-status {% if b.provisioning_state in ['failed', 'differs'] %}badge-status-warning{% elif b.provisioning_state == 'configured' %}badge-status-normal{% else %}badge-status-neutral{% endif %}">
+				{{ ("monitoring.beacon." ~ "prov_" ~ b.provisioning_state)|t }}
+			</span>
+			{% elif b.waiting_for_first_message %}
+			<span class="badge-status badge-status-neutral">{{ "monitoring.beacon.waiting_first_message"|t }}</span>
+			{% endif %}
+		</div>
+	</div>
+
+	{# --- Tabs ------------------------------------------------------------ #}
+	<div class="border-b border-base-300">
+		<nav class="flex gap-6 -mb-px">
+			{% for id, label, icon in tabs %}
+			<a href="/beacons/{{ b.mac }}/{{ id }}"
+				{% if active_tab == id %}aria-current="page"{% endif %}
+				class="flex items-center gap-1.5 pb-2.5 text-sm font-medium border-b-2 transition-colors {% if active_tab == id %}border-primary text-primary{% else %}border-transparent text-muted-fg hover:text-base-content{% endif %}">
+				{{ ic.icon(icon, "h-4 w-4") }}{{ label }}
+			</a>
+			{% endfor %}
+		</nav>
+	</div>
+
+	{% include "partials/command_status.html" %}
+	{#- GitLab #109: one banner, one pairing form, on every page with signed actions. -#}
+	{% include "partials/unpaired_banner.html" %}
+
+	{# --- Active faults banner (§3.1b via devices.node.md) --------------- #}
+	{% if b.fault %}
+	<div role="alert" class="alert alert-warning">
+		{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0") }}
+		<div class="min-w-0">
+			<span class="font-medium">{{ ("monitoring.beacons.fault_" ~ b.fault)|t }}</span>
+			{% if b.fault_since %}
+			<span class="block text-xs opacity-80">{{ "monitoring.node_detail.fault_since"|t|replace("{value}", b.fault_since | short_dt) }}</span>
+			{% endif %}
+		</div>
+	</div>
+	{% endif %}
+
+	{# ================= Overview ========================================= #}
+	{% if active_tab == "overview" %}
+
+	{#- Device information (metadata.cs.md §5, amendment 2026-10-15): name,
+	    description, location and the Beacon's facts; replaces the Settings
+	    tab's metadata card. -#}
+	{% if di %}<div class="mb-4">{% include "partials/device_info.html" %}</div>{% endif %}
+
+	{# --- Channels (plan/portal/ui_components.md §2, 2026-10-15) in place
+	   of the metric rail + one chart. #}
+	{% if ch %}{% include "partials/channels_card.html" %}{% endif %}
+
+	{# --- Calibration (calibration.cs.md §2) ------------------------------
+	   Same card as the Node page's. `cal` is none for a discovered
+	   candidate, which is not a sensor yet. #}
+	{% if cal is defined and cal %}
+	{% include "partials/calibration_card.html" %}
+	{% endif %}
+
+	{# --- Events (ui_components.md §5): operator notes only --- #}
+	{% if evc is defined and evc %}{% include "partials/events_card.html" %}{% endif %}
+
+	{# ================= Configuration ==================================== #}
+	{% elif active_tab == "settings" %}
+
+	{# === Device configuration (ui_components.md §6, 2026-10-15) =========
+	   Portal-side, saved at once, nothing sent to the Beacon. The report
+	   interval is cluster-wide and read-only (#141). #}
+	{% set k_default = (offline_k_default | string) if offline_k_default is not none else "" %}
+	{% set k_val = (b.meta.offline_k_override | string) if b.meta and b.meta.offline_k_override is not none else "" %}
+	{% with dc = {"kind": "beacon", "action": "/beacons/" ~ b.mac ~ "/device-config", "items": [
+		{"name": "report_interval", "label": "monitoring.device_config.interval_report",
+		 "help": "monitoring.device_config.interval_report_help_beacon",
+		 "value": report_interval_s | string, "unit": "s", "editable": false},
+		{"name": "offline_k", "label": "monitoring.device_config.offline_k", "help": "monitoring.device_config.offline_k_help",
+		 "value": k_val, "unit": "", "editable": true, "placeholder": k_default,
+		 "empty": "monitoring.device_config.inherited"|t|replace("{value}", k_default)},
+		{"name": "history", "label": "monitoring.device_config.history", "help": "monitoring.device_config.history_help_beacon",
+		 "value": ("on" if history_auto else "off"), "editable": true,
+		 "options": [["on", "monitoring.device_config.on"], ["off", "monitoring.device_config.off"]]}]} %}
+	<div class="mb-4">{% include "partials/device_config.html" %}</div>
+	{% endwith %}
+	{% if meta_error %}<div role="alert" class="alert alert-error mb-4"><span>{{ meta_error }}</span></div>{% endif %}
+
+	{# Half 2: BLE PARAMETERS — read-only for everyone (§3.5 point 2). The
+	   rows show what the Hub READ BACK from the Beacon — right after it was
+	   registered, or after a provisioning session verified it — the
+	   `eye/sensors` tag's `ble_config` (devices.backend.md §22.13, amended
+	   2026-09-22), never the fleet profile the Hub meant to write. The line
+	   under them says which of the two it was. Until the Hub reports one,
+	   each row is a labelled placeholder rather than an invented number.
+
+	   B6 added the ONE action §3.5 allows here: "Odeslat žádost o
+	   rekonfiguraci" -> POST /beacons/{mac}/reconfigure -> #command-status.
+	   One route, two labels: on a `failed` Beacon the same button reads
+	   "Zkusit znovu", because retrying is what it is. Hidden entirely for a
+	   `read_only` Beacon — offering an action the device will refuse is
+	   worse than not offering it. #}
+	{% set ble_read = b.ble_config.read_at if b.ble_config else none %}
+	{% call ui.collapsible_card("beacon-settings-" ~ mac_id, "bluetooth", "monitoring.beacon_detail.ble_config_heading"|t,
+		summary=("monitoring.device_settings.last_sync"|t|replace("{when}", ble_read|short_dt) if ble_read else "monitoring.device_settings.never_synced"|t)) %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.beacon_detail.ble_config_intro"|t }}</p>
+			{# Written out rather than looped over a list of key strings:
+			   `every_static_template_key_exists` reads literal `"…"|t`
+			   calls, and a loop variable would hide all three from it. #}
+			{% set ble = b.ble_config %}
+			<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+				<dt class="text-muted-fg">{{ "monitoring.beacon_detail.advertising_interval_label"|t }}</dt>
+				{% if ble and ble.interval_ms is not none %}
+				<dd class="tabular-nums">{% if ble.interval_s is not none %}{{ ble.interval_s }}&nbsp;s{% else %}{{ ble.interval_ms }}&nbsp;ms{% endif %}</dd>
+				{% else %}
+				<dd class="text-muted-fg italic">{{ "monitoring.beacon_detail.not_reported_yet"|t }}</dd>
+				{% endif %}
+				<dt class="text-muted-fg">{{ "monitoring.beacon_detail.tx_power_label"|t }}</dt>
+				{% if ble and ble.tx_power_dbm is not none %}
+				<dd class="tabular-nums">{{ ble.tx_power_dbm }}&nbsp;dBm</dd>
+				{% else %}
+				<dd class="text-muted-fg italic">{{ "monitoring.beacon_detail.not_reported_yet"|t }}</dd>
+				{% endif %}
+				{# The protocol by name (the BTSMP1 `e61c0001` table), with the raw
+				   code beside it so an unfamiliar value stays checkable. #}
+				<dt class="text-muted-fg">{{ "monitoring.beacon_detail.protocol_label"|t }}</dt>
+				{% if ble and ble.protocol is not none %}
+				<dd>
+					{%- if ble.protocol == "ibeacon" %}{{ "monitoring.beacon_detail.protocol_ibeacon"|t }}
+					{%- elif ble.protocol == "eddystone" %}{{ "monitoring.beacon_detail.protocol_eddystone"|t }}
+					{%- elif ble.protocol == "eye_sensor" %}{{ "monitoring.beacon_detail.protocol_eye_sensor"|t }}
+					{%- elif ble.protocol == "ibeacon_eye_sensor" %}{{ "monitoring.beacon_detail.protocol_ibeacon_eye_sensor"|t }}
+					{%- elif ble.protocol == "eddystone_eye_sensor" %}{{ "monitoring.beacon_detail.protocol_eddystone_eye_sensor"|t }}
+					{%- else %}{{ "monitoring.beacon_detail.protocol_other"|t|replace("{code}", ble.protocol_type|string) }}{% endif %}
+					{%- if ble.protocol != "unknown" %} <span class="text-muted-fg tabular-nums">({{ ble.protocol_type }})</span>{% endif %}
+				</dd>
+				{% else %}
+				<dd class="text-muted-fg italic">{{ "monitoring.beacon_detail.not_reported_yet"|t }}</dd>
+				{% endif %}
+				{# Every sensor the active-sensor mask can switch, each on or off.
+				   A Beacon without that characteristic (firmware older than
+				   01.02.10) cannot be read for it; the rows then come from what
+				   its advertisement carries, and the note under them says so.
+				   Nothing heard yet: "senzory dané typem beaconu". #}
+				<dt class="text-muted-fg">{{ "monitoring.beacon_detail.sensors_label"|t }}</dt>
+				{% if ble %}
+				{% if ble.sensors is none %}
+				<dd>{{ "monitoring.beacon_detail.sensors_fixed"|t }}</dd>
+				{% else %}
+				<dd>
+					<ul class="flex flex-col gap-0.5">
+						{% for s in ble.sensors %}
+						<li class="flex gap-2">
+							<span class="w-24">{% if s.code == "temperature" %}{{ ("monitoring.beacon_detail.sensor_temperature"|t)|capitalize }}{% elif s.code == "humidity" %}{{ ("monitoring.beacon_detail.sensor_humidity"|t)|capitalize }}{% elif s.code == "magnet" %}{{ ("monitoring.beacon_detail.sensor_magnet"|t)|capitalize }}{% elif s.code == "movement" %}{{ ("monitoring.beacon_detail.sensor_movement"|t)|capitalize }}{% else %}{{ s.code }}{% endif %}</span>
+							{% if s.active %}<span class="text-success">{{ "monitoring.beacon_detail.sensor_on"|t }}</span>{% else %}<span class="text-muted-fg">{{ "monitoring.beacon_detail.sensor_off"|t }}</span>{% endif %}
+						</li>
+						{% endfor %}
+					</ul>
+					{% if ble.sensors_from_broadcast %}<p class="text-xs text-muted-fg mt-1">{{ "monitoring.beacon_detail.sensors_from_broadcast"|t }}</p>{% endif %}
+				</dd>
+				{% endif %}
+				{% else %}
+				<dd class="text-muted-fg italic">{{ "monitoring.beacon_detail.not_reported_yet"|t }}</dd>
+				{% endif %}
+				{#- beacon_history.md §3: `recording` and `logging_interval_min` come from
+				    the record info, which the Hub reads after a recording command or a
+				    download and keeps in memory only; until then it is unknown. -#}
+				<dt class="text-muted-fg">{{ "monitoring.beacon_detail.recording_label"|t }}</dt>
+				{% if ble and ble.recording == true %}
+				<dd>{% if ble.logging_interval_min is not none %}{{ "monitoring.beacon_detail.recording_on"|t|replace("{min}", ble.logging_interval_min|string) }}{% else %}{{ "monitoring.beacon_detail.recording_on_no_interval"|t }}{% endif %}</dd>
+				{% elif ble and ble.recording == false %}
+				<dd class="text-warning">{{ "monitoring.beacon_detail.recording_off"|t }}</dd>
+				{% else %}
+				<dd class="text-muted-fg italic">{{ "monitoring.beacon_detail.recording_unknown"|t }}</dd>
+				{% endif %}
+			</dl>
+			{#- `differs` without a reason left the operator guessing. The Hub
+			    judges against the profile in its own config, which it does not
+			    publish, so the list compares with the default profile
+			    (render::beacon::profile_differences) and says so; the defaults
+			    in the texts are that function's constants. -#}
+			{% if b.profile_diffs is not none %}
+			<div class="text-xs text-warning">
+				{% if b.profile_diffs %}
+				<p>{{ "monitoring.beacon_detail.differs_heading"|t }}</p>
+				<ul class="list-disc pl-5">
+					{% for d in b.profile_diffs %}
+					<li>
+						{%- if d == "advertising_interval" %}{{ "monitoring.beacon_detail.differs_advertising_interval"|t }}
+						{%- elif d == "tx_power" %}{{ "monitoring.beacon_detail.differs_tx_power"|t }}
+						{%- elif d == "protocol" %}{{ "monitoring.beacon_detail.differs_protocol"|t }}
+						{%- elif d == "sensors" %}{{ "monitoring.beacon_detail.differs_sensors"|t }}
+						{%- elif d == "recording" %}{{ "monitoring.beacon_detail.differs_recording"|t }}
+						{%- endif -%}
+					</li>
+					{% endfor %}
+				</ul>
+				{% else %}
+				<p>{{ "monitoring.beacon_detail.differs_none"|t }}</p>
+				{% endif %}
+				<p class="text-muted-fg mt-1">{{ "monitoring.beacon_detail.differs_note"|t }}</p>
+			</div>
+			{% endif %}
+			{% if ble and ble.read_at %}
+			{% if ble.verified %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.beacon_detail.ble_verified_at"|t|replace("{when}", ble.read_at|short_dt) }}</p>
+			{% else %}
+			<p class="text-xs text-muted-fg">{{ "monitoring.beacon_detail.ble_read_at"|t|replace("{when}", ble.read_at|short_dt) }}</p>
+			{% endif %}
+			{% endif %}
+
+			{% if b.provisioning_state == "failed" %}
+			{# The wire carries a state and no reason (§22.5); the page
+			   states the failure and points at the retry below. #}
+			<p class="text-xs text-warning">{{ "monitoring.beacon.prov_no_reason"|t }}</p>
+			{% endif %}
+
+	{% endcall %}
+
+	{#- Service functions (ui_components.md §7, 2026-10-15): the one Beacon
+	    action, "request reconfiguration", behind the card's lock with an
+	    inline confirm. Manager+ like the route; hidden for a read_only
+	    Beacon, which refuses it. -#}
+	{% if can_edit and b.provisioning_state != "read_only" %}
+	{% import "partials/service_card.html" as svc %}
+	{% set rc_label = ("monitoring.beacon_detail.reconfigure_retry_button" if b.provisioning_state == "failed" else "monitoring.beacon_detail.reconfigure_button")|t %}
+	<div class="mt-4">
+	{% call svc.card("beacon-service-" ~ b.mac|replace(":", "-")) %}
+		{% call svc.row("reconf", "monitoring.service.reconfigure"|t, "monitoring.beacon_detail.reconfigure_hint"|t, rc_label) %}
+		<form hx-post="/beacons/{{ b.mac }}/reconfigure" hx-target="#command-status" hx-swap="innerHTML"
+			@htmx:after-request="done($event)" class="flex flex-col gap-3">
+			<p class="text-sm">{{ "monitoring.service.reconfigure_confirm"|t|replace("{name}", b.name | default(b.mac, true)) }}</p>
+			{{ svc.actions(rc_label) }}
+		</form>
+		{% endcall %}
+	{% endcall %}
+	</div>
+	{% endif %}
+
+	{# ================= History ========================================== #}
+	{% elif active_tab == "history" %}
+
+	{#- beacon_history.md §4.3 / §7.1: the Node's History tab (node_detail.html), the same cards,
+	    quick choices, form and table, posting to /beacons/{mac}/history. The archive is the
+	    Hub's to download (§2.4), so the rows report what the Hub says. No link to /history:
+	    that page does not chart Beacons in this phase. -#}
+	{#- Amended 2026-10-15 (ui_components.md §9): the Node's three cards. The not-recording
+	    warning sits above them: the live re-render of the Coverage card does not know
+	    the Beacon's record info. -#}
+	<div class="flex flex-col gap-4 [&>*]:min-w-0">
+		{#- §4.3 item 1: the Hub reads `recording` off the record info (§8); until it has,
+		    nothing is claimed either way. -#}
+		{% if b.ble_config and b.ble_config.recording == false %}
+		<div role="alert" class="alert alert-warning">
+			<span>{{ "monitoring.beacon_history.not_recording"|t }}</span>
+		</div>
+		{% endif %}
+		{% set swap_id = "beacon-history-" ~ mac_id %}
+		{% set post_url = "/beacons/" ~ b.mac ~ "/history" %}
+		{% include "partials/backfill_jobs.html" %}
+		{% if can_edit %}
+		{% set req_url = post_url %}
+		{% set req_target = swap_id %}
+		{% include "partials/backfill_request.html" %}
+		{% endif %}
+	</div>
+
+	{# ================= Diagnostics ====================================== #}
+	{% else %}
+
+	{# --- Diagnostics (ui_components.md, amendment 2026-10-15): the Node's
+	   cards where a Beacon has a source for them. No Device card — a Beacon
+	   sends no boot Info/ConfigDump; no request buttons — BLE has no
+	   DevStatusReq. #}
+	{%- set mid = b.mac | replace(":", "-") %}
+	{%- set dg = diag or {} %}
+	<div class="flex flex-col gap-4 [&>*]:min-w-0">
+		{% call ui.collapsible_card("diag-radio-" ~ mid, "antenna", "monitoring.diag.radio_heading"|t, head_end=ui.signal_bars(b.signal),
+			summary="BLE · RSSI " ~ ((b.hubs[0].rssi ~ " dBm") if (b.hubs and b.hubs[0].rssi is not none) else "–") ~ " · " ~ "monitoring.diag.hubs_count"|t|replace("{n}", b.hubs|length|string)) %}
+		<div class="flex items-center gap-2 flex-wrap">
+			<span class="badge-outline-v1">{{ "monitoring.transport.ble"|t }}</span>
+		</div>
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+			<dt class="text-muted-fg">{{ "monitoring.node_detail.battery_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ b.battery | default("–", true) }}{%- if b.low_battery %} <span class="text-warning font-medium font-sans">· {{ "monitoring.beacon_card.low_battery_label"|t }}</span>{% endif %}</dd>
+			<dt class="text-muted-fg">{{ "monitoring.list.column_home_hub"|t }}</dt>
+			<dd class="font-mono text-xs">{{ b.home_hub | default("–", true) }}</dd>
+			<dt class="text-muted-fg">{{ "monitoring.beacon_detail.received_at_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ b.last_seen | short_dt | default(("common.never"|t), true) }}</dd>
+		</dl>
+		<div class="border-t border-base-300 pt-3 flex flex-col gap-1.5">
+			<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.hubs_heading"|t }}</p>
+			<p class="text-xs text-muted-fg">{{ "monitoring.beacon_detail.hubs_intro"|t }}</p>
+			{% if b.hubs %}
+			{{ ui.diag_heard_by(b.hubs, b.home_hub, false, b.last_seen, snr=false, label="monitoring.beacon_detail.hub_column"|t) }}
+			{% else %}
+			<p class="text-sm text-muted-fg">{{ "monitoring.beacon_detail.no_hubs"|t }}</p>
+			{% endif %}
+		</div>
+		{% endcall %}
+
+		{% with diag_id = "diag-alarms-" ~ mid, alarms = dg.alarms or [] %}{% include "partials/diag_alarms_card.html" %}{% endwith %}
+		{#- §3.3 rules a ring out for Beacons (ten messages at a ~10 s cadence is
+		    a hundred seconds): the history is the one last message. -#}
+		{% with diag_id = "diag-messages-" ~ mid, messages = dg.messages or [], csv_name = "beacon-" ~ mid ~ "-messages.csv" %}{% include "partials/diag_messages_card.html" %}{% endwith %}
+	</div>
+
+	{% endif %}
+
+</div>
+
+{% if can_remove %}
+{# --- §5 removal -----------------------------------------------------
+   Same shape as pages/node_detail.html's, deliberately: removal is a
+   device-page action behind a TYPED confirmation, never a one-click button
+   in the list. The MAC is checked ON THE SERVER (`remove_beacon` compares
+   it against the path), so the `required` here is a courtesy to the person
+   typing, and a mismatch is audited as a refusal rather than ignored.
+
+   A full-page POST + redirect: the page this modal sits on is about a
+   registration that will not exist afterwards, so there is nothing to swap.
+
+   The body says the reappearance out loud. Removal is two steps (the
+   handler's own header): the Hub is asked to rewrite the Beacon's
+   configuration, then the registration goes. The Beacon keeps advertising
+   and comes back among the discovered ones, and an operator who is not
+   told that reads it as a failed removal. #}
+<div id="beacon-remove" hidden data-confirm-panel class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+		<h3 class="font-bold text-lg">{{ "monitoring.beacons.remove_heading"|t }}</h3>
+		<p class="text-sm mt-2">{{ "monitoring.beacons.remove_body"|t }}</p>
+		<p class="text-xs text-muted-fg mt-2">{{ "monitoring.beacons.removed_reappears_note"|t }}</p>
+		<form method="post" action="/beacons/{{ b.mac }}/remove" class="flex flex-col gap-3 mt-3">
+			<fieldset class="flex flex-col gap-1">
+				<legend class="text-sm font-medium mb-1">{{ "monitoring.beacons.remove_confirm_prompt"|t|replace("{mac}", b.mac) }}</legend>
+				<input type="text" name="confirm" class="input-v1 font-mono text-sm"
+					autocomplete="off" spellcheck="false" required>
+			</fieldset>
+			<div class="flex justify-end gap-2">
+				<button type="button" class="btn-v1 btn-v1-outline"
+					onclick="this.closest('[data-confirm-panel]').hidden = true;">{{ "common.actions.cancel"|t }}</button>
+				<button type="submit" class="btn-v1 btn-v1-primary">{{ "monitoring.beacons.remove_button"|t }}</button>
+			</div>
+		</form>
+</div>
+{% endif %}
+
+{% if active_tab == "overview" %}
+{# proximosCollapse/proximosToggleCollapse for the threshold accordion. #}
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+
+{% endif %}
+{% endblock %}

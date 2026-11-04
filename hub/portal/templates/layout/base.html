@@ -1,0 +1,202 @@
+{#
+  The application shell — v1 app/layout.tsx: a fixed-height flex row of
+  sidebar + content column, with the content column scrolling on its own.
+
+  Context (all optional, all read defensively):
+  - `current_user` — none renders the page with no chrome at all, which is
+    what `pages/not_found.html` needs for an anonymous visitor. The
+    login/setup surface has its own split layout and extends
+    `layout/bare.html` instead.
+  - `nav_active` — see `layout/nav_items.html`; drives both the sidebar
+    highlight and the top bar's icon/title.
+  - `page_title` / `page_icon` — top bar overrides for a sub-page with no
+    nav entry (see `layout/topbar.html`).
+  - `stats` — the four metric tiles. v1 drew them above EVERY authenticated
+    page (its `(dashboard)` layout did), and so did this until 2026-09-14.
+    They count the fleet — probes, online, out of range, critical — which is
+    context on a page about the fleet and noise on one about the portal, so
+    the administration block — settings, the audit log, the user list — opts
+    out by name below. Built by
+    `render::page_stats_ctx` and merged in by
+    `routes::render()`/`http::dashboard_handler`, so no page carries it.
+  - `lang` ("en"|"cs") — merged into every top-level render by
+    `routes::render()`/`http::dashboard_handler`/`sse::send_rendered()`.
+
+  Pages override `{% block content %}`; `{% block page_actions %}` puts
+  buttons in the right-hand slot of the stats row (the dashboard's Refresh).
+#}
+{% set current_user = current_user if current_user is defined else none %}
+<!doctype html>
+<html lang="{{ lang | default('en') }}" data-theme="{{ brand.theme }}">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{% block title %}{{ brand.product }}{% endblock %}</title>
+	<link rel="icon" href="/static/favicon.ico" sizes="any">
+	{# `asset_v` is a template global (render::Templates::asset_version), a
+	   hash of static/css and static/js. Every script and stylesheet URL
+	   carries it, so an upgrade is a new URL and never a stale cached copy. #}
+	<link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}">
+	{# Before first paint: a sidebar collapsed on the previous page must not
+	   flash open on this one, nor animate its labels away once the deferred
+	   scripts run. Everything the collapsed state changes keys off THIS class
+	   (layout/nav.html), so one line here settles the whole sidebar before
+	   anything is drawn. #}
+	<script>
+		try {
+			if (localStorage.getItem('proximos_sidebar_collapsed') === '1') {
+				document.documentElement.classList.add('sidebar-collapsed');
+			}
+		} catch (e) {}
+	</script>
+</head>
+<body class="bg-base-100 text-base-content antialiased" data-tz="{{ display_tz() }}">
+	{# The one SSE connection per tab (sse.rs's contract) lives here, on the
+	   app shell, so every authenticated page receives live fragments — swap
+	   targets only need to exist somewhere below. The `refresh` full-reload
+	   hint stays opt-in: it fires `sse:refresh` on this element (hx-trigger
+	   is what makes the SSE extension dispatch it), and the handler reloads
+	   only when the page declared a live region with `data-sse-refresh` —
+	   a form page must not lose its input to some other page's event.
+	   Nor while a full-page form submit is on its way out: the refresh its
+	   own command causes (removing a Beacon changes the Hub's snapshot
+	   before the POST returns) would reload the page it is leaving, cancel
+	   the navigation, and land on a detail page for a device that no longer
+	   exists. htmx forms prevent the native submit, so they do not count.
+
+	   A reconnect is announced as `portal:sse-resync` on the body (N31, night test): the
+	   stream missed whatever happened while it was down — a portal restart turns a
+	   `sending` draft into an error — and a region that must not go stale re-reads itself
+	   on it. The first open is not a reconnect, so it says nothing. #}
+	{% if current_user %}<script>
+		document.addEventListener('submit', function (e) {
+			if (!e.defaultPrevented) window.proximosLeaving = true;
+		});
+	</script>{% endif %}
+	<div class="h-screen flex bg-base-100 overflow-hidden"{% if current_user %} hx-ext="sse" sse-connect="/events" hx-trigger="sse:refresh" hx-on:sse:refresh="if (!window.proximosLeaving && document.querySelector('[data-sse-refresh]')) window.location.reload()" hx-on::sse-open="if (this.dataset.sseOpened) { document.body.dispatchEvent(new CustomEvent('portal:sse-resync')) } this.dataset.sseOpened = '1'"{% endif %}>
+		{% if current_user %}{% include "layout/nav.html" %}{% endif %}
+		{#- The chrome surface behind the content panel. Without it the panel's
+		    notch would show the body, which is base-100 too, and white rounded
+		    against white is nothing. Sidebar and top bar already paint
+		    `bg-sidebar`; this completes the same surface behind the corner. -#}
+		<div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-sidebar">
+			{% if current_user %}{% include "layout/topbar.html" %}{% endif %}
+			{#- The content panel is tucked into the chrome with the card's own
+			    radius — one radius in the design, not one per surface. Only the
+			    top-left is rounded: it is the single corner that meets both the
+			    header and the sidebar, the other three run to the edge.
+
+			    The radius has to sit on whatever SCROLLS, or it scrolls away
+			    with the first wheel click. It does here: `<main>` is already
+			    this app's scroll container (the shell is `h-screen` with
+			    `overflow-hidden`), so the panel stays put below the header and
+			    its corner clips the content running past. It also has to paint
+			    its own paper — a radius on a transparent box that lets the
+			    chrome through has nothing to round. -#}
+			<main class="flex-1 flex flex-col overflow-y-auto bg-base-100 rounded-tl-xl">
+				<div class="px-4 md:px-6 py-4 md:py-6 space-y-4 shrink-0">
+					{% if current_user %}{% include "partials/page_stats.html" %}{% endif %}
+					{% block content %}{% endblock %}
+				</div>
+				{#- Version and copyright, the one line that says which build this
+				    is. It sits at the foot of the page's own scroll, not in the
+				    sidebar: a build number is about the page you are reading, and
+				    down here it stays out of the way until you reach the end.
+				    `app_version` / `build_year` are globals (render.rs). -#}
+				<div class="mt-auto shrink-0 px-4 md:px-6 pb-4 pt-6 text-center font-mono text-[11px] text-muted-fg/50">
+					{{ app_version if app_version is startingwith("v") else "v" ~ app_version }} <span class="text-muted-fg/30">&middot;</span> &copy; {{ build_year }} HARDWARIO a.s.
+				</div>
+			</main>
+		</div>
+		{% if current_user %}{% include "partials/alarm_toasts.html" %}{% endif %}
+	</div>
+
+	{#- htmx settle would copy a swapped element's server-rendered class/style
+	    back over Alpine's bindings (a collapsible card's di-open, a closed
+	    body's display:none) after Alpine has applied the restored state. -#}
+	<meta name="htmx-config" content='{"attributesToSettle":["width","height"]}'>
+	<script src="/static/js/htmx.min.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/htmx-sse.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/portal-thresholds.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/portal-limits.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/portal-editset.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/portal-select.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/portal-single-select.js?v={{ asset_v }}" defer></script>
+	<script src="/static/js/alpine.min.js?v={{ asset_v }}" defer></script>
+	<script>
+		// Sidebar collapse, the mobile drawer, the <details> user menu and the
+		// language forms' `next` field — the only client-side state in the shell.
+		document.querySelectorAll('.lang-next').forEach(function (el) {
+			el.value = location.pathname + location.search;
+		});
+		(function () {
+			// `html.sidebar-collapsed` is the ONE piece of state, and the
+			// head script has already set it from localStorage before the
+			// first paint. Nothing here re-derives it onto the aside: a
+			// second class applied after paint is what used to make a
+			// collapsed sidebar animate its labels away on every load.
+			var btn = document.getElementById('sidebar-collapse');
+			if (btn) {
+				btn.addEventListener('click', function () {
+					var next = document.documentElement.classList.toggle('sidebar-collapsed');
+					try { localStorage.setItem('proximos_sidebar_collapsed', next ? '1' : '0'); } catch (e) {}
+				});
+			}
+			var root = document.documentElement;
+			function setDrawer(open) { root.classList.toggle('nav-open', open); }
+			var openBtn = document.getElementById('nav-open');
+			var closeBtn = document.getElementById('nav-close');
+			var backdrop = document.getElementById('nav-backdrop');
+			if (openBtn) openBtn.addEventListener('click', function () { setDrawer(true); });
+			if (closeBtn) closeBtn.addEventListener('click', function () { setDrawer(false); });
+			if (backdrop) backdrop.addEventListener('click', function () { setDrawer(false); });
+			document.addEventListener('click', function (e) {
+				document.querySelectorAll('details.user-menu[open]').forEach(function (d) {
+					if (!d.contains(e.target)) d.removeAttribute('open');
+				});
+			});
+			document.addEventListener('keydown', function (e) {
+				if (e.key !== 'Escape') return;
+				setDrawer(false);
+				document.querySelectorAll('details.user-menu[open]').forEach(function (d) {
+					d.removeAttribute('open');
+				});
+			});
+
+			// Row click opens the row's object. `data-row-href` marks the row
+			// and names the target; the name cell keeps its real <a>, which is
+			// what a keyboard and a screen reader follow — this is a pointer
+			// convenience on top of a link, never the only way in.
+			//
+			// Delegated from the shell, so it covers every list on every page
+			// and survives an SSE row swap without re-binding. It lives here
+			// rather than in portal-list.js because tables outlive that
+			// script's seven pages.
+			function rowTarget(ev) {
+				var el = ev.target instanceof Element ? ev.target : null;
+				var row = el && el.closest('[data-row-href]');
+				if (!row || ev.defaultPrevented) return null;
+				// Everything the operator could have meant instead of the row:
+				// a link, a control, a field, or a drag that selected text.
+				if (el.closest('a, button, input, select, textarea, label, dialog, summary, [role="button"], [contenteditable]')) return null;
+				var sel = window.getSelection();
+				if (sel && String(sel).length) return null;
+				return row.getAttribute('data-row-href');
+			}
+			document.addEventListener('click', function (ev) {
+				var href = rowTarget(ev);
+				if (!href) return;
+				if (ev.metaKey || ev.ctrlKey || ev.shiftKey) { window.open(href, '_blank', 'noopener'); return; }
+				location.assign(href);
+			});
+			// Middle click, the other "open in a new tab" an operator reaches
+			// for. It never fires as a plain `click`.
+			document.addEventListener('auxclick', function (ev) {
+				if (ev.button !== 1) return;
+				var href = rowTarget(ev);
+				if (href) window.open(href, '_blank', 'noopener');
+			});
+		})();
+	</script>
+</body>
+</html>

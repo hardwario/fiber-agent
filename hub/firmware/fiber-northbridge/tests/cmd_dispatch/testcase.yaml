@@ -1,0 +1,19 @@
+tests:
+  firmware.northbridge.cmd_dispatch:
+    platform_allow:
+      - native_sim
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim
+    tags:
+      - northbridge
+  firmware.northbridge.cmd_dispatch.rx_inject:
+    extra_configs:
+      - CONFIG_NB_TWR_RX_INJECT=y
+    platform_allow:
+      - native_sim
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim
+    tags:
+      - northbridge

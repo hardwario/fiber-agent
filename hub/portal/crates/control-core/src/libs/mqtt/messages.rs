@@ -1,0 +1,2169 @@
+// MQTT message types for channel communication
+
+use crate::libs::alarms::{AlarmState, AlarmThreshold};
+use crate::libs::authorization::level::Envelope;
+use crate::libs::crypto::UserCertificate;
+use crate::libs::pairing::messages::{PairingError, PairingResponse};
+use crate::libs::sensors::aggregation::AggregationPeriod;
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+/// Messages sent to the MQTT monitor thread for publishing
+/// A command response's `result` document. Its own type so that `Debug` — every `{:?}` of an
+/// [`MqttMessage`] — prints the keys and never the values: `cluster-client-add`'s carries a broker
+/// password that must reach the signer once and no log line. The portal's twin is
+/// `fiber_protocol::payloads::config_response::ResponseResult`.
+#[derive(Clone, PartialEq)]
+pub struct ResultDoc(pub Value);
+
+impl std::fmt::Debug for ResultDoc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys: Vec<&str> = self
+            .0
+            .as_object()
+            .map(|m| m.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        write!(f, "ResultDoc {{ keys: {keys:?}, values: <redacted> }}")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MqttMessage {
+    /// Publish aggregated sensor data
+    PublishAggregatedSensorData {
+        period: AggregationPeriod,
+        names: [String; 8],
+        locations: [Option<String>; 8],
+    },
+
+    /// Publish one sample cycle of every line on `sensors/summary` — the live
+    /// view (plan/control/storage_intervals.md §4). Same document shape as
+    /// `sensors/aggregated`, one sample per line, QoS 0, never stored.
+    PublishSensorSummary {
+        period: AggregationPeriod,
+        names: [String; 8],
+        locations: [Option<String>; 8],
+    },
+
+    /// Publish an alarm state transition event
+    PublishAlarmEvent {
+        line: u8,
+        name: String,
+        from_state: AlarmState,
+        to_state: AlarmState,
+        temperature: f32,
+    },
+
+    /// Publish a system-level alarm event (power, wifi, ethernet)
+    PublishSystemAlarmEvent {
+        alarm_type: String, // "POWER_DISCONNECT", "WIFI_DISCONNECT", "ETHERNET_DISCONNECT"
+        name: String,       // "Power Supply", "WiFi", "Ethernet"
+        from_state: String, // "NORMAL" or "CRITICAL"
+        to_state: String,   // "CRITICAL" or "NORMAL"
+        message: String,    // Human-readable message
+    },
+
+    /// Publish the device's standby state.
+    ///
+    /// Retained, because "this device is off because someone turned it off" is
+    /// only useful if a Viewer that subscribes later still learns it. Without a
+    /// retained state a standby device is indistinguishable from a crashed one.
+    PublishStandbyState {
+        standby: bool,
+        /// Reason from the signed power-off command, or how it woke.
+        reason: String,
+        /// Signer of the power-off. Empty when the device woke by itself.
+        requested_by: String,
+        /// RFC 3339, when standby began. `None` once awake.
+        entered_at: Option<String>,
+        vin_mv: u16,
+    },
+
+    /// Publish an accelerometer motion transition event
+    PublishAccelerometerEvent {
+        x_g: f32,     // X-axis acceleration at transition (g)
+        y_g: f32,     // Y-axis acceleration at transition (g)
+        z_g: f32,     // Z-axis acceleration at transition (g)
+        position: u8, // Box orientation 1..6 (see MotionDetector::position)
+    },
+
+    /// Publish combined system status (power, network, storage, uptime)
+    PublishSystemStatus {
+        /// Hostname
+        hostname: String,
+        /// Device label (user-friendly name)
+        device_label: String,
+        /// Firmware version
+        version: String,
+        /// Uptime in seconds
+        uptime_seconds: u64,
+        /// Battery voltage in mV
+        battery_mv: u16,
+        /// Battery percentage (0-100)
+        battery_percent: u8,
+        /// Input voltage in mV
+        vin_mv: u16,
+        /// On DC power
+        on_dc_power: bool,
+        /// Last DC loss timestamp (epoch seconds)
+        last_dc_loss_time: Option<u64>,
+        /// WiFi connected
+        wifi_connected: bool,
+        /// WiFi signal in dBm
+        wifi_signal_dbm: i32,
+        /// WiFi IP address
+        wifi_ip: Option<String>,
+        /// Ethernet connected
+        ethernet_connected: bool,
+        /// Ethernet IP address
+        ethernet_ip: Option<String>,
+        /// Storage total bytes
+        storage_total_bytes: u64,
+        /// Storage available bytes
+        storage_available_bytes: u64,
+        /// Storage used percent
+        storage_used_percent: u8,
+        /// LoRaWAN gateway present. These three are `None` when the Hub cannot say: on a Hub
+        /// where `radio.mode` names a transport they come from the v2 stack's LoRaWAN document
+        /// (`radio_gate::current_lorawan_units`), which may be missing or stale.
+        lorawan_gateway_present: Option<bool>,
+        /// LoRaWAN concentratord running
+        lorawan_concentratord_running: Option<bool>,
+        /// LoRaWAN chirpstack running
+        lorawan_chirpstack_running: Option<bool>,
+        /// LoRaWAN sensor count
+        lorawan_sensor_count: usize,
+        /// `setup:` from the device's own config, republished so the portal need keep no copy
+        /// (GitLab #58).
+        setup_provisioned: bool,
+        setup_role: Option<String>,
+    },
+
+    /// Publish configuration challenge (preview of changes)
+    PublishConfigChallenge {
+        challenge_id: String,
+        request_id: String,
+        signer_id: String,
+        expires_at: i64,
+        preview: Value, // ChangePreview as JSON
+    },
+
+    /// Publish configuration response (success/error)
+    PublishConfigResponse {
+        challenge_id: String,
+        request_id: String,
+        status: String, // SUCCESS, ERROR
+        applied_at: Option<i64>,
+        effective_at: Option<i64>,
+        message: String,
+        /// The verb's structured answer, for the few that have one (`cluster-client-add` /
+        /// `-remove`, plan/control/cluster.md §7). Published as `result`; `None` everywhere else.
+        result: Option<ResultDoc>,
+    },
+
+    /// Publish sensor configuration data
+    PublishSensorConfig { sensors: Vec<SensorConfigData> },
+
+    /// Publish interval configuration data
+    PublishIntervalConfig {
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    },
+
+    /// Publish full device config state (brightness, intervals, sensors, label)
+    PublishConfigState {
+        led_brightness: u8,
+        screen_brightness: u8,
+        screen_timeout_secs: u32,
+        buzzer_volume: u8,
+        system_info_interval_s: u64,
+        device_label: String,
+        sensors: Vec<SensorConfigData>,
+        lorawan_sensors: Vec<LoRaWANSensorConfigData>,
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+        /// EYE subsystem flags, so the viewer can reflect the real state of the
+        /// auto-provision / auto-discover toggles.
+        beacon_enabled: bool,
+        beacon_auto_provision: bool,
+        beacon_auto_discover: bool,
+        /// The **enrolled** EYE tags, i.e. `eye.tags` in the device config —
+        /// the authoritative registered inventory, exactly as
+        /// `lorawan_sensors` is for Nodes: a MAC missing from this list has
+        /// been removed from the fleet (devices.backend.md §22.2).
+        ///
+        /// `None` when this Hub cannot say (a malformed `eye:` section), and
+        /// then the key is omitted from the document rather than published as
+        /// an empty array — the portal reads `[]` as "prune everything".
+        eye_tags: Option<Vec<EyeTagConfigData>>,
+        /// The LCD overview rows, i.e. `display.custom_lines` in the device
+        /// config — what the portal's display picker pre-checks. Always
+        /// published, and `[]` means the built-in layout.
+        display_lines: Vec<crate::libs::config::DisplayLine>,
+    },
+
+    /// Publish LoRaWAN sensor data
+    PublishLoRaWANSensorData { sensors: Vec<LoRaWANSensorPayload> },
+
+    /// Publish external LoRaWAN gateway status
+    PublishLoRaWANGatewayData {
+        gateways: Vec<LoRaWANGatewayPayload>,
+    },
+
+    /// Publish a NODE's fPort-85 config read-back (Feature C) to
+    /// `lorawan/sensors/<dev_eui>/config`.
+    PublishNodeConfig {
+        dev_eui: String,
+        /// Flattened `group.field` → JSON value (projected from ConfigValue).
+        config: BTreeMap<String, Value>,
+        page_index: u32,
+        page_count: u32,
+        /// Seq + result of the last Ack/Error (the viewer renders
+        /// pending / awaiting-Ack / ok from this).
+        last_seq: u32,
+        last_result: String,
+    },
+
+    /// Publish a NODE's full non-secret config read-back to
+    /// `lorawan/sensors/<dev_eui>/full-config`.
+    ///
+    /// A wide read is many Class-A round trips, so a chunk failing is normal
+    /// rather than exceptional: `read_status` and `missing` say which keys never
+    /// came back, so the panel can show "not read" instead of implying the device
+    /// does not have them. Secret keys are absent because the firmware never
+    /// requests them, not because they are filtered here.
+    PublishNodeFullConfig {
+        dev_eui: String,
+        /// Flattened `group.field` → JSON value (projected from ConfigValue).
+        config: BTreeMap<String, Value>,
+        page_count: u32,
+        last_seq: u32,
+        /// `complete` when every requested key came back, else `partial`.
+        read_status: String,
+        /// Keys whose chunk failed — the gap, named.
+        missing: Vec<String>,
+    },
+
+    /// Publish a NODE's fPort-85 device info (#65) to
+    /// `lorawan/sensors/<dev_eui>/info`, **retained**.
+    ///
+    /// Emitted both for an explicit `get_node_info` query and for the
+    /// unsolicited `Response{seq=0, Info}` the node sends on every join, so
+    /// `source` says which. `info` is already projected by
+    /// `node_config::info_to_json` with `claim_token` redacted — never build
+    /// this payload by hand.
+    PublishNodeInfo { dev_eui: String, info: Value },
+
+    /// Clear the retained device-info of a decommissioned node (#65). Sent when
+    /// a node is removed: without it the broker keeps replaying a deleted
+    /// device's info to every new subscriber.
+    ClearNodeInfo { dev_eui: String },
+
+    /// Publish the outcome of a NODE control command (#71) to
+    /// `lorawan/sensors/<dev_eui>/command`. Not retained — it is the result of one
+    /// operator action, and replaying it to a new subscriber would look like a
+    /// fresh command.
+    PublishNodeCommandResult {
+        dev_eui: String,
+        command: String,
+        seq: u32,
+        /// `ok` | `requested` | a device error code | `transport_error` |
+        /// `device_busy` | `rate_limited`.
+        result: String,
+        /// What still has to happen for the command to be observably complete, or
+        /// `None` when the reply was final. Lets the viewer say "requested" instead
+        /// of claiming success for a command that has no acknowledgement.
+        expect: Option<String>,
+        detail: Option<String>,
+        fault_key: Option<String>,
+    },
+
+    /// Publish one page of a NODE's on-device history (Feature D) to
+    /// `lorawan/sensors/<dev_eui>/history`.
+    PublishNodeHistory {
+        dev_eui: String,
+        frame_index: u32,
+        frame_count: u32,
+        /// Each record is `{ time, fields{}, counters{} }` as JSON.
+        records: Vec<Value>,
+    },
+
+    /// Publish EYE BLE tag sensor data.
+    ///
+    /// `discovered_capped` is the BLE host's own verdict — its discovered set
+    /// sits at `discovered_max`, so strangers it can hear are not in `tags`.
+    /// `build_eye_sensors_payload` ORs its own cap into it: the portal has to
+    /// know that *this snapshot* is incomplete, not which of the two layers
+    /// truncated it (`control.ble.md` §5, Part B UI-12).
+    PublishBeaconSensorData {
+        tags: Vec<BeaconTagPayload>,
+        discovered_capped: bool,
+    },
+
+    /// Publish one Beacon storage window on `eye/aggregated` (QoS 1, not
+    /// retained). `payload` is `control_ble::host::AggregatedSnapshot`,
+    /// serialized by the BLE host: the wire is the crate's, field for field.
+    PublishBeaconAggregated { payload: Value },
+
+    /// Publish the result of a detect_eye_tag probe (async; on `eye/detect`).
+    /// `is_en12830` is `None` when the probe was inconclusive; `status` is
+    /// "ok" | "unreachable" | "error".
+    PublishBeaconDetectResult {
+        mac: String,
+        is_en12830: Option<bool>,
+        status: String,
+    },
+
+    /// One `eye/history` message of an archive download (beacon_history.md §2.2–2.3), already
+    /// in its wire shape. Published QoS 1, never retained.
+    PublishBeaconHistory { payload: Value },
+
+    /// The Server's view for `hub` on `<hub>/eye/cluster` (decision #42), already serialized.
+    /// QoS 1, retained: a Client that reconnects reads its registry and home set at once.
+    PublishBeaconCluster { hub: String, payload: String },
+
+    /// The Server's `eye/homes` (decision #42), already serialized. QoS 1, retained.
+    PublishBeaconHomes { payload: String },
+
+    /// The Server's radio mode for one Client, `<client>/cluster/radio` (decision #48).
+    /// QoS 1, retained.
+    PublishClusterRadio { hub: String, payload: String },
+
+    /// Publish successful pairing response
+    PublishPairingResponse(PairingResponse),
+
+    /// Publish pairing error
+    PublishPairingError(PairingError),
+
+    /// Ask the portal on this machine to pair with this device (GitLab #61, BLE FB1A).
+    ///
+    /// Carries the code the operator typed into the phone. The device does not check it — it never
+    /// could, since the code is only the password the *response* is encrypted under — so a wrong
+    /// one fails at the portal, which is the only party that can tell.
+    PublishPairingInvite { code: String, origin: String },
+
+    /// Update connection state (internal message)
+    SetConnectionState(super::connection::ConnectionState),
+
+    /// Graceful shutdown signal
+    Shutdown,
+}
+
+/// External LoRaWAN gateway status payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct LoRaWANGatewayPayload {
+    pub gateway_eui: String,
+    pub name: Option<String>,
+    pub online: bool,
+    pub last_seen: Option<String>,
+}
+
+/// EYE BLE tag data payload for MQTT publishing.
+#[derive(Debug, Clone)]
+pub struct BeaconTagPayload {
+    /// Hostname of the gateway that heard this tag (system#6).
+    ///
+    /// A tag can be in range of several FIBERs, so a reading is only meaningful
+    /// together with who captured it. The topic carries the hostname too — always,
+    /// since P5 retired the `mqtt.include_hostname` knob that could omit it
+    /// (design.md §9.3) — but the payload states it unconditionally, so a consumer
+    /// that has the document and not the topic it arrived on still knows.
+    pub gateway: String,
+    pub mac: String,
+    pub name: Option<String>,
+    pub temperature_c: Option<f32>,
+    pub humidity_pct: Option<u8>,
+    pub battery_mv: Option<u16>,
+    pub low_battery: bool,
+    pub magnet_present: bool,
+    pub magnet_detected: bool,
+    pub moving: Option<bool>,
+    pub movement_count: Option<u16>,
+    pub pitch_deg: Option<i8>,
+    pub roll_deg: Option<i16>,
+    pub rssi: Option<i16>,
+    pub last_seen_ts: Option<i64>,
+    /// Whether the tag has not been seen within the configured `tag_timeout_s`.
+    pub stale: bool,
+    pub provisioning: String,
+    /// Heard advertising but not registered in `eye.tags` — an adoption
+    /// candidate, surfaced by `auto_discover`.
+    ///
+    /// `provisioning` cannot answer this on its own: a registered tag that has
+    /// not been provisioned yet also reports `pending`, so a consumer filtering
+    /// on that alone would offer a tag the operator has already added. This flag
+    /// is the registered/not-registered axis, `provisioning` the profile-written
+    /// one, and they move independently.
+    pub discovered: bool,
+    /// `Some(true)` = EN12830 recorder (white) variant, `Some(false)` = standard
+    /// (black), `None` = not yet determined. Surfaced so the viewer can label
+    /// the tag type and expose recorder controls.
+    pub is_en12830: Option<bool>,
+    /// Per-field alarm state (field → NORMAL/WARNING/CRITICAL), evaluated on
+    /// device from the tag's configured thresholds. Empty when none are set.
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    /// Aggregate (worst-of-fields) alarm state string.
+    pub alarm_state: String,
+    /// The configuration the beacon read back after its last verified
+    /// provisioning session (control-ble central.md §5, amended 2026-09-22).
+    /// `None` until a session has verified it, and again after one that
+    /// failed mid-write — the beacon may no longer hold it.
+    pub ble_config: Option<control_ble::host::BleConfigPayload>,
+}
+
+/// LoRaWAN sensor data payload for MQTT publishing (v2 generic-field model)
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorPayload {
+    pub dev_eui: String,
+    pub name: String,
+    pub serial_number: Option<String>,
+    pub location: Option<String>,
+    pub fields: std::collections::HashMap<String, f64>,
+    pub field_alarm_states: std::collections::HashMap<String, String>,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+    pub counters: std::collections::HashMap<String, u64>,
+    pub events: Vec<crate::libs::lorawan::chirpstack::NodeEvent>,
+    /// Every gateway that received the latest uplink, with its own RSSI/SNR.
+    pub gateways: Vec<crate::libs::lorawan::chirpstack::GatewayRx>,
+    /// LoRaWAN data-rate index of the latest uplink.
+    pub dr: Option<i64>,
+    /// Gateway ChirpStack used to transmit the last downlink (from `event/txack`).
+    pub downlink_gateway_id: Option<String>,
+    pub rssi: Option<i32>,
+    pub snr: Option<f32>,
+    pub last_seen: Option<String>,
+    pub alarm_state: String,
+}
+
+/// Sensor configuration data for query response
+#[derive(Debug, Clone)]
+pub struct SensorConfigData {
+    pub line: u8,
+    pub name: String,
+    pub location: Option<String>,
+    pub enabled: bool,
+    pub has_override: bool, // true if using per-line thresholds, false if using common defaults
+    pub thresholds: AlarmThreshold,
+}
+
+/// LoRaWAN sensor configuration data for config state publishing (v2)
+#[derive(Debug, Clone)]
+pub struct LoRaWANSensorConfigData {
+    pub dev_eui: String,
+    pub name: Option<String>,
+    pub serial_number: Option<String>,
+    pub location: Option<String>,
+    pub enabled: bool,
+    pub field_thresholds: Vec<crate::libs::config::FieldThreshold>,
+}
+
+/// One enrolled EYE tag for config state publishing.
+///
+/// Two fields and not three: the wire shape is `{mac, name, location}`, but
+/// `control_ble::config::EyeTag` — the schema actually in force on the Hub —
+/// has no `location`, so the builder omits the key instead of publishing a
+/// null the device never held.
+#[derive(Debug, Clone)]
+pub struct EyeTagConfigData {
+    pub mac: String,
+    pub name: Option<String>,
+}
+
+fn default_join_eui() -> String {
+    "0000000000000000".to_string()
+}
+
+/// LoRaWAN activation mode for NODE registration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ActivationMode {
+    /// OTAA: device joins the network using AppKey + JoinEUI.
+    Otaa {
+        app_key: String,
+        /// 16 hex chars. Defaults to all-zeros for compatibility with viewers
+        /// that pre-date the configurable JoinEUI field.
+        #[serde(default = "default_join_eui")]
+        join_eui: String,
+        /// Vendor device-profile number (1-99) off the node's QR label, which
+        /// is what fixes its region. Absent for manual entry and for viewers
+        /// that pre-date it; see `resolve_otaa_profile`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<u32>,
+    },
+    /// ABP: device pre-personalised with session keys.
+    Abp {
+        devaddr: String,
+        nwkskey: String,
+        appskey: String,
+    },
+}
+
+/// What the device does immediately after a factory reset finishes wiping
+/// its data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostResetAction {
+    Reboot,
+    PowerOff,
+}
+
+/// Commands received from MQTT broker
+#[derive(Debug, Clone)]
+pub enum MqttCommand {
+    /// Set sensor alarm threshold
+    SetSensorThreshold {
+        line: u8,
+        critical_low: f32,
+        alarm_low: f32,
+        warning_low: f32,
+        warning_high: f32,
+        alarm_high: f32,
+        critical_high: f32,
+        /// The portal's hysteresis for the line (decision #41); `None` keeps the line's
+        /// current one (an older portal sends none).
+        hysteresis: Option<f32>,
+        /// The band's switch (#167); a command without it switches the band on.
+        enabled: bool,
+    },
+
+    /// Get current sensor status
+    GetSensorStatus {
+        line: u8,
+    },
+
+    /// Switch display screen
+    SetDisplayScreen {
+        screen: String,
+    },
+
+    /// Flush storage to disk
+    FlushStorage,
+
+    /// Get device information
+    GetDeviceInfo,
+
+    /// Get sensor configuration (all 8 sensors)
+    GetSensorConfig,
+
+    /// Set sensor name (signed via ConfigRequest)
+    SetSensorName {
+        line: u8,
+        name: String,
+    },
+
+    /// Set sensor probe location (signed via ConfigRequest)
+    SetSensorLocation {
+        line: u8,
+        location: String,
+    },
+
+    /// Reboot the device at OS level. Unlike `PowerOffDevice` the unit comes
+    /// back on its own, but the interruption is a gap in monitoring either way,
+    /// so the executor flushes and audits before it goes down.
+    ///
+    /// `requested_by` is carried for the same reason as on `PowerOffDevice`: the
+    /// executor never sees the signer, and the authorization audit lives on
+    /// tmpfs (`/run/fiber/fiber_audit.db`), which a reboot wipes just as
+    /// thoroughly as a power-off.
+    RestartApplication {
+        reason: String,
+        requested_by: String,
+    },
+
+    /// Power the device off at OS level. Unlike `RestartApplication` the unit
+    /// does not come back on its own — it has to be powered on by hand — so the
+    /// executor flushes the audit trail before the rails drop.
+    ///
+    /// `requested_by` is carried in the command rather than read at the call
+    /// site because the executor never sees the signer, and the authorization
+    /// audit for this command lives on tmpfs (`/run/fiber/fiber_audit.db`) — the
+    /// power-off destroys it. The durable row in the encrypted DB is the only
+    /// surviving evidence of who took the monitoring function offline.
+    PowerOffDevice {
+        reason: String,
+        requested_by: String,
+    },
+
+    /// Wipe the device back to factory state, then reboot or power off per
+    /// `post_action`.
+    ///
+    /// `reason` and `requested_by` are carried inline in the variant rather
+    /// than looked up from the authorization audit log later, because that
+    /// audit log is exactly what the wipe this command triggers is about to
+    /// destroy. If the wipe fails partway, this is the only surviving record
+    /// of who requested it and why, for on-device forensics.
+    ///
+    /// `request_id` is the original signed request's id (the same one
+    /// `PendingChallenge::request_id` carries), threaded through so the
+    /// phase-1 ledger can record it — a result reported after re-pairing (the
+    /// wipe destroys the old pairing) needs a value the server side already
+    /// knows about to correlate against, which a device-minted id could never
+    /// provide.
+    FactoryReset {
+        post_action: PostResetAction,
+        reason: String,
+        requested_by: String,
+        request_id: String,
+    },
+
+    /// Set the 1-Wire read interval alone (config_sync.md §13 Q19).
+    SetSampleInterval {
+        sample_interval_s: u64,
+    },
+
+    /// Set sensor intervals (sample, aggregation, report)
+    SetInterval {
+        sample_interval_ms: u64,
+        aggregation_interval_ms: u64,
+        report_interval_ms: u64,
+    },
+
+    /// Get current sensor intervals
+    GetInterval,
+
+    /// Set system info report interval (signed via ConfigRequest)
+    SetSystemInfoInterval {
+        interval_seconds: u64,
+    },
+
+    /// Set device label (signed via ConfigRequest)
+    SetDeviceLabel {
+        label: String,
+    },
+
+    /// Set the one MQTT export destination BLE FB18 owns (signed via ConfigRequest).
+    ///
+    /// The port is absent on purpose: 8883 over TLS is the settled client contract
+    /// (`plan/control/ble/peripheral.md` §6.4), so it is not something a caller can get wrong.
+    SetExportDestination {
+        host: String,
+        username: String,
+        password: String,
+        enabled: bool,
+    },
+
+    /// Mark setup complete and record the role (signed via ConfigRequest).
+    ///
+    /// The signed twin of BLE FB17 (`plan/control/ble/peripheral.md` §6.3): both reach the same
+    /// applier method, so there is no second way to write `setup:`.
+    SetupComplete {
+        role: String,
+    },
+
+    /// Set LED brightness (signed via ConfigRequest)
+    SetLedBrightness {
+        brightness: u8,
+    },
+
+    /// Set screen brightness (signed via ConfigRequest)
+    SetScreenBrightness {
+        brightness: u8,
+    },
+
+    /// Set screen idle timeout in seconds (signed via ConfigRequest).
+    /// 0 disables the timeout (display always on).
+    SetScreenTimeout {
+        timeout_secs: u32,
+    },
+
+    /// Set buzzer volume (signed via ConfigRequest)
+    /// 0 = muted, 1-100 = active (full volume)
+    SetBuzzerVolume {
+        volume: u8,
+    },
+
+    /// Replace the configured physical-display lines (signed via ConfigRequest).
+    /// An empty list restores the built-in overview layout.
+    SetDisplayLines {
+        lines: Vec<crate::libs::config::DisplayLine>,
+    },
+
+    /// Silence buzzer (from alarm acknowledgment)
+    /// Stops current pattern but re-arms for new alarms
+    SilenceBuzzer,
+
+    /// Set network configuration (signed via ConfigRequest)
+    SetNetworkConfig {
+        interface: String,   // "ethernet" or "wifi"
+        config_type: String, // "dhcp" or "static"
+        ip_address: Option<String>,
+        subnet_mask: Option<String>,
+        gateway: Option<String>,
+        dns_primary: Option<String>,
+        dns_secondary: Option<String>,
+    },
+
+    /// Set LoRaWAN sensor metadata (name/serial/location) — signed via ConfigRequest.
+    /// Per-field thresholds live in dedicated commands (`SetLoRaWANFieldThreshold` / `DeleteLoRaWANFieldThreshold`).
+    SetLoRaWANSensorConfig {
+        dev_eui: String,
+        name: Option<String>,
+        serial_number: Option<String>,
+        location: Option<String>,
+    },
+
+    /// Set a single per-field threshold for a LoRaWAN sensor.
+    ///
+    /// `enabled: false` switches the alarm OFF for this field and is the only
+    /// way to do so: an omitted bound inherits the YAML default, and the
+    /// defaults arm temperature, humidity and the probe fields on every paired
+    /// node. Absent from the request means `true`, so an older viewer keeps
+    /// behaving exactly as before.
+    SetLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+        enabled: bool,
+    },
+
+    /// Remove a per-field threshold for a LoRaWAN sensor
+    DeleteLoRaWANFieldThreshold {
+        dev_eui: String,
+        field: String,
+    },
+
+    /// Set a single per-field alarm threshold for an EYE tag.
+    SetBeaconFieldThreshold {
+        mac: String,
+        field: String,
+        critical_low: Option<f64>,
+        warning_low: Option<f64>,
+        warning_high: Option<f64>,
+        critical_high: Option<f64>,
+        /// The portal's hysteresis (decision #41); `None` = the field's default.
+        hysteresis: Option<f64>,
+    },
+
+    /// Remove a per-field alarm threshold for an EYE tag.
+    DeleteBeaconFieldThreshold {
+        mac: String,
+        field: String,
+    },
+
+    /// Add LoRaWAN node: provision in ChirpStack + save sensor config (signed via ConfigRequest)
+    AddLoRaWANNode {
+        dev_eui: String,
+        name: String,
+        serial_number: String,
+        activation: ActivationMode,
+    },
+
+    /// Enrol a LoRaWAN Node through the v2 radio stack — the signed `node-add` of
+    /// plan/portal/control.radio.md §7, the MQTT twin of `proximosctl control.radio
+    /// node-add`. This is the arm a portal uses on a Hub whose `radio.mode` names a
+    /// transport, where `AddLoRaWANNode` is refused by `libs::radio_gate`.
+    NodeAdd {
+        /// `"lorawan"` or `"p2p"`. Only the LoRaWAN arm is wired; P2P answers
+        /// `Phase2NotImplemented`, as the CLI does.
+        radio: String,
+        /// A `device_profiles.otaa.<name>` key of the rendered radio config.
+        profile: String,
+        serial: String,
+        dev_eui: String,
+        name: Option<String>,
+        /// Hex, 32 chars. OTAA is the only enrollable activation in phase 1.
+        app_key: String,
+        /// Hex, 16 chars, lowercase — the operator's JoinEUI (#86). `None` means the
+        /// rendered `radio.join_eui`, the same default `proximosctl` applies without
+        /// `--join-eui`. LoRaWAN only; the parser refuses it with `radio: "p2p"`.
+        join_eui: Option<String>,
+    },
+
+    /// Mint or rotate a Client Hub's broker account and register its gateway — the signed
+    /// `cluster-client-add`, twin of `proximosctl cluster client-add` (plan/control/cluster.md
+    /// §7). Every field was validated at the one construction site. `reply` is the requester's
+    /// signed `reply_key` and the signed request's id, which the new password is sealed to.
+    ClusterClientAdd {
+        hostname: String,
+        gateway_eui: Option<String>,
+        reply: crate::libs::cluster_clients::ReplyTo,
+    },
+
+    /// Grant a registered Client Hub's account its gateway and register it, keeping its
+    /// password — the signed `cluster-client-gateway` (cluster.md amendment 2026-10-28, #164).
+    /// Both fields were validated at the one construction site.
+    ClusterClientGateway {
+        hostname: String,
+        gateway_eui: String,
+    },
+
+    /// Revoke a Client Hub's broker account and deregister its gateway — the signed
+    /// `cluster-client-remove`, twin of `proximosctl cluster client-remove`.
+    ClusterClientRemove {
+        hostname: String,
+    },
+
+    /// Change this Hub's `radio.mode` at runtime — the signed `radio-set-mode`, twin of
+    /// `control.radio set-mode` (`plan/control/radio/node_registry.md` §11, amended R7).
+    /// `mode` is one of `off`/`lorawan`/`p2p`/`dual`, checked at the one construction site.
+    SetRadioMode {
+        mode: String,
+    },
+
+    /// Flash this Hub's Northbridge with the firmware its image bundles — the signed
+    /// `northbridge-update`, twin of `proximosctl control.radio northbridge-update --radio p2p
+    /// [--force] --no-wait` (`plan/control/radio/northbridge_update.md` §3.4, amended
+    /// 2026-10-09). The P2P task in `proximos-control` does the flashing; the command only
+    /// hands it the request.
+    NorthbridgeUpdate {
+        force: bool,
+    },
+
+    /// Flash this Hub's Southbridge with the firmware its image bundles — the signed
+    /// `southbridge-update` (`plan/system/southbridge_update.md` §3.7). `fiber_app` flashes it
+    /// itself on a thread of its own; the command only starts it.
+    SouthbridgeUpdate {
+        force: bool,
+    },
+
+    /// Deregister a Node through the v2 radio stack — the signed `node-remove`, twin of
+    /// `proximosctl control.radio node-remove --dev-eui`. Same split as `NodeAdd` vs
+    /// `AddLoRaWANNode`.
+    NodeRemove {
+        radio: String,
+        dev_eui: String,
+    },
+
+    /// Move a Node to the other carrier — the signed `node-move` of
+    /// plan/portal/control.radio.md §7 (amendment 2026-09-27), twin of `proximosctl
+    /// control.radio node-move --dev-eui --to`. The Node itself is not told
+    /// (node_registry.md §10 Q1).
+    NodeMove {
+        dev_eui: String,
+        /// `"lorawan"` or `"p2p"`: the carrier it moves to. Not gated by `radio.mode`.
+        to: String,
+    },
+
+    /// Remove LoRaWAN node: remove sensor config (signed via ConfigRequest)
+    RemoveLoRaWANNode {
+        dev_eui: String,
+    },
+
+    /// Read a NODE's own fPort-85 parameters over MQTT (unsigned query).
+    /// `keys` empty/None = read the full settable set.
+    GetNodeConfig {
+        dev_eui: String,
+        keys: Option<Vec<String>>,
+    },
+
+    /// Read every readable NODE parameter, not just the settable ones
+    /// (unsigned query). `GetNodeConfig` covers what the panel can write;
+    /// this covers what it can only display — the `lorawan.*` identity group,
+    /// the 1-Wire ROMs, `application.calibration` and `vendor_reset_allow`.
+    ///
+    /// Its own command and its own topic rather than `GetNodeConfig { keys }`
+    /// with a wide list, because the two reads have different lifetimes: a
+    /// Feature-C write republishes `config`, and the read-only snapshot must
+    /// survive that.
+    GetNodeFullConfig {
+        dev_eui: String,
+    },
+
+    /// Read a NODE's device info over MQTT (unsigned query, #65). One
+    /// `GetInfo` downlink and one `Info` uplink — the cheapest node round trip
+    /// there is, which is why it is a query rather than a signed command.
+    GetNodeInfo {
+        dev_eui: String,
+    },
+
+    /// Cold-reboot a NODE (#71, signed). Acks, then restarts 8 s later,
+    /// discarding any staged-but-unsaved config.
+    NodeReboot {
+        dev_eui: String,
+    },
+
+    /// Reset a NODE to defaults, keeping identity and the LoRaWAN keys (#71,
+    /// signed). Proto id 8 `device_reset` — the node stays joined, but every
+    /// parameter and alarm rule is lost.
+    ///
+    /// Deliberately NOT called "factory reset": the real `factory_reset` (id 23) is
+    /// NFC/shell-only and the device rejects it over the radio.
+    NodeDeviceReset {
+        dev_eui: String,
+    },
+
+    /// Clear a NODE's pulse counters (#71, signed). Selective per channel —
+    /// each flag is sent explicitly because the firmware treats an absent flag as
+    /// "leave this counter alone".
+    NodeResetCounters {
+        dev_eui: String,
+        hall_left: bool,
+        hall_right: bool,
+        input_a: bool,
+        input_b: bool,
+    },
+
+    /// Ask a NODE to report immediately (#71, unsigned). Changes no device
+    /// state, so it is the same risk class as a read — it only costs airtime.
+    /// Produces **no** fPort-85 reply: the telemetry uplink is the answer.
+    NodeForceSend {
+        dev_eui: String,
+    },
+
+    /// Set a NODE's RTC (#71, signed). `unix_time = Some(..)` sets the clock
+    /// directly and the device answers with an `Info` carrying the new time;
+    /// `None` asks it to re-sync from the network instead, which produces no
+    /// immediate reply and a deferred `Info` later.
+    NodeClockSync {
+        dev_eui: String,
+        unix_time: Option<u32>,
+    },
+
+    /// Write a NODE's fPort-85 parameters over MQTT (signed via ConfigRequest).
+    /// `fields` maps SETTABLE keys (`application.interval_report`, …) to string
+    /// values parsed + range-checked by the fPort-85 engine. `save` persists to
+    /// flash (reboots the node) vs RAM-staging a dry run.
+    SetNodeConfig {
+        dev_eui: String,
+        fields: BTreeMap<String, String>,
+        save: bool,
+    },
+
+    /// Request a NODE's on-device history buffer (fPort-85 ReqHistory,
+    /// unsigned query). `from_unix`/`to_unix` bound the window; None = whole buffer.
+    GetNodeHistory {
+        dev_eui: String,
+        from_unix: Option<u32>,
+        to_unix: Option<u32>,
+    },
+
+    /// Send a raw fPort downlink to a NODE verbatim (signed via ConfigRequest).
+    /// `bytes` is the exact protobuf `Command` produced by an operator's downlink
+    /// generator; `fport` defaults to 85. Fire-and-forget — no response is
+    /// correlated (expert / advanced use).
+    SendNodeRaw {
+        dev_eui: String,
+        bytes: Vec<u8>,
+        fport: u8,
+    },
+
+    /// Switch the whole EYE BLE tag subsystem on or off (`eye.enabled`).
+    ///
+    /// Every other EYE command operates on a tag, so once the subsystem was off
+    /// there was no way back except SSH — and the subsystem shipped off.
+    SetBeaconEnabled {
+        enabled: bool,
+    },
+
+    /// Toggle `eye.auto_provision` / `eye.auto_discover` at runtime. Each field
+    /// is optional and `None` leaves the current value untouched; at least one
+    /// must be present. Persisted through the applier (so it gets the usual
+    /// backup, validation and audit trail) and mirrored into the live
+    /// `SharedBeaconConfig`, so the scan loop picks it up on the next poll — no
+    /// restart. Signed via ConfigRequest, same permission as `set_eye_enabled`.
+    ///
+    /// `auto_provision` only ever applies the PROXIMOS profile to a tag already
+    /// in `eye.tags`; it never registers an unknown MAC. `auto_discover` is the
+    /// separate, visibility-only switch that lists unregistered tags in range
+    /// as candidates without writing anything to `eye.tags`.
+    SetBeaconConfig {
+        auto_provision: Option<bool>,
+        auto_discover: Option<bool>,
+    },
+
+    /// Set the EN12830 recording interval for an EYE tag and (re)start recording.
+    SetBeaconRecording {
+        mac: String,
+        interval_min: u16,
+    },
+
+    /// Write the ProXimos sensor profile into a Beacon over GATT.
+    ///
+    /// New in v2. v1 could only auto-provision on discovery, so a Beacon that failed its one
+    /// attempt — flat battery, out of range, wrong password — stayed unprovisioned until it was
+    /// physically power-cycled near the Hub. `beacon-provision` is the retry.
+    ProvisionBeacon {
+        mac: String,
+    },
+
+    /// Manually back-fill the EN12830 temperature archive for an EYE tag. The window and the job
+    /// id are optional (beacon_history.md §2.1): without `from` the download resumes after the
+    /// newest stored record, without `job` the Hub makes one.
+    DownloadBeaconHistory {
+        mac: String,
+        from: Option<i64>,
+        to: Option<i64>,
+        job: Option<String>,
+    },
+
+    /// Register an EYE tag in the device config (`eye.tags[]`) so it is
+    /// tracked/named explicitly. Auto-provisioning still discovers unknown
+    /// tags; this pins a name/override. Signed via ConfigRequest.
+    /// Replace the fleet allowlist of EYE MACs this gateway may listen for
+    /// (system#6). Not a registration: ownership stays with whichever gateway has
+    /// the tag in its own `eye.tags[]`.
+    SetBeaconKnownTags {
+        macs: Vec<String>,
+    },
+    AddBeaconTag {
+        mac: String,
+        name: Option<String>,
+    },
+
+    /// Remove an EYE tag from the device config (`eye.tags[]`). Signed via
+    /// ConfigRequest.
+    RemoveBeaconTag {
+        mac: String,
+    },
+
+    /// Connect to an EYE tag over BLE and determine whether it is an EN12830
+    /// recorder (white) or a standard tag (black). Result surfaces
+    /// asynchronously via `is_en12830` in the `eye/sensors` snapshot. Signed
+    /// via ConfigRequest.
+    DetectBeaconTag {
+        mac: String,
+    },
+
+    /// Reset the save-and-feed export cursor for `(broker_id, stream)` so the
+    /// next drain pass replays the stream from row 1. Use after a viewer DB
+    /// wipe or to force a backfill. `stream` may be "sticker" | "probe" |
+    /// "alarm" | "all".
+    ResetExportCursor {
+        broker_id: String,
+        stream: String,
+    },
+
+    /// Add external LoRaWAN gateway: register in ChirpStack + save gateway config (signed via ConfigRequest)
+    AddExternalGateway {
+        gateway_eui: String,
+        name: String,
+    },
+
+    /// Remove external LoRaWAN gateway: remove gateway config + deregister from ChirpStack (signed via ConfigRequest)
+    RemoveExternalGateway {
+        gateway_eui: String,
+    },
+
+    /// Add signer (signed via ConfigRequest)
+    AddSigner {
+        signer_data: Value,
+    },
+
+    /// Remove signer (signed via ConfigRequest)
+    RemoveSigner {
+        signer_id: String,
+    },
+
+    /// Update signer (signed via ConfigRequest)
+    UpdateSigner {
+        signer_id: String,
+        changes: Value,
+    },
+
+    /// Configuration change request (signed with Ed25519)
+    ConfigRequest {
+        /// Which envelope it arrived in, and the level it claims
+        /// (plan/portal/mqtt/design.md §3). Always `V2` since P4 — the
+        /// variant is kept because the level rides in it, not because
+        /// there is another envelope to be.
+        envelope: Envelope,
+        request_id: String,
+        command_type: String,
+        params: Value, // Command-specific parameters as JSON
+        reason: Option<String>,
+        signer_id: String,
+        signature: String, // Base64-encoded Ed25519 signature
+        timestamp: i64,
+        nonce: String,
+        certificate: UserCertificate, // User certificate signed by CA
+    },
+
+    /// Configuration change confirmation (signed)
+    ConfigConfirm {
+        /// Must match the envelope — and the level — of the request whose
+        /// challenge this confirms.
+        envelope: Envelope,
+        challenge_id: String,
+        confirmation: String, // APPROVED or REJECTED
+        signer_id: String,
+        signature: String, // Base64-encoded Ed25519 signature
+        timestamp: i64,
+        nonce: String,
+        certificate: UserCertificate, // User certificate signed by CA
+    },
+
+    /// Pairing request from viewer backend
+    PairingRequest {
+        request_id: String,
+        timestamp: i64,
+        admin_username: String,
+    },
+}
+
+/// The optional `from`/`to`/`job` of a `beacon-history` (beacon_history.md §2.1), checked here so
+/// a malformed window is refused at the signature rather than failing later in the dial worker.
+/// Absent and `null` are the same; a value of the wrong type is an error, never ignored.
+pub fn beacon_history_window(
+    params: &Value,
+) -> Result<(Option<i64>, Option<i64>, Option<String>), String> {
+    let field = |name: &str| params.get(name).filter(|v| !v.is_null());
+    let ts = |name: &str| -> Result<Option<i64>, String> {
+        field(name)
+            .map(|v| {
+                v.as_i64()
+                    .ok_or_else(|| format!("{name} must be unix seconds (an integer)"))
+            })
+            .transpose()
+    };
+    let from = ts("from")?;
+    let to = ts("to")?;
+    let job = field("job")
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "job must be a string".to_string())
+        })
+        .transpose()?;
+    control_ble::central::history::HistoryRequest::new(from, to, job.clone(), 0)
+        .map_err(|e| e.message().to_string())?;
+    Ok((from, to, job))
+}
+
+impl MqttCommand {
+    /// Get command name for logging
+    pub fn name(&self) -> &'static str {
+        match self {
+            MqttCommand::SetSensorThreshold { .. } => "set_sensor_threshold",
+            MqttCommand::GetSensorStatus { .. } => "get_sensor_status",
+            MqttCommand::SetDisplayScreen { .. } => "set_display_screen",
+            MqttCommand::FlushStorage => "flush_storage",
+            MqttCommand::GetDeviceInfo => "get_device_info",
+            MqttCommand::GetSensorConfig => "get_sensor_config",
+            MqttCommand::SetSensorName { .. } => "set_sensor_name",
+            MqttCommand::SetSensorLocation { .. } => "set_sensor_location",
+            MqttCommand::RestartApplication { .. } => "restart_application",
+            MqttCommand::PowerOffDevice { .. } => "power_off",
+            MqttCommand::FactoryReset { .. } => "factory_reset",
+            MqttCommand::SetInterval { .. } => "set_interval",
+            MqttCommand::SetSampleInterval { .. } => "set_sample_interval",
+            MqttCommand::GetInterval => "get_interval",
+            MqttCommand::SetSystemInfoInterval { .. } => "set_system_info_interval",
+            MqttCommand::SetDeviceLabel { .. } => "set_device_label",
+            MqttCommand::SetupComplete { .. } => "setup-complete",
+            MqttCommand::SetExportDestination { .. } => "export-destination-set",
+            MqttCommand::SetLedBrightness { .. } => "set_led_brightness",
+            MqttCommand::SetScreenBrightness { .. } => "set_screen_brightness",
+            MqttCommand::SetScreenTimeout { .. } => "set_screen_timeout",
+            MqttCommand::SetBuzzerVolume { .. } => "set_buzzer_volume",
+            MqttCommand::SetDisplayLines { .. } => "set_display_lines",
+            MqttCommand::SilenceBuzzer => "silence_buzzer",
+            MqttCommand::SetNetworkConfig { .. } => "set_network_config",
+            MqttCommand::SetLoRaWANSensorConfig { .. } => "set_lorawan_sensor_config",
+            MqttCommand::SetLoRaWANFieldThreshold { .. } => "set_lorawan_field_threshold",
+            MqttCommand::DeleteLoRaWANFieldThreshold { .. } => "delete_lorawan_field_threshold",
+            MqttCommand::SetBeaconFieldThreshold { .. } => "set_eye_field_threshold",
+            MqttCommand::DeleteBeaconFieldThreshold { .. } => "delete_eye_field_threshold",
+            MqttCommand::AddLoRaWANNode { .. } => "add_lorawan_sticker",
+            MqttCommand::NodeAdd { .. } => "node-add",
+            MqttCommand::NodeRemove { .. } => "node-remove",
+            MqttCommand::SetRadioMode { .. } => "radio-set-mode",
+            MqttCommand::NorthbridgeUpdate { .. } => "northbridge-update",
+            MqttCommand::SouthbridgeUpdate { .. } => "southbridge-update",
+            MqttCommand::ClusterClientAdd { .. } => "cluster-client-add",
+            MqttCommand::ClusterClientRemove { .. } => "cluster-client-remove",
+            MqttCommand::ClusterClientGateway { .. } => "cluster-client-gateway",
+            MqttCommand::NodeMove { .. } => "node-move",
+            MqttCommand::SetBeaconEnabled { .. } => "beacon-monitoring",
+            MqttCommand::SetBeaconConfig { .. } => "beacon-send",
+            MqttCommand::SetBeaconRecording { .. } => "beacon-recording",
+            MqttCommand::DownloadBeaconHistory { .. } => "beacon-history",
+            MqttCommand::SetBeaconKnownTags { .. } => "known-beacons",
+            MqttCommand::AddBeaconTag { .. } => "beacon-add",
+            MqttCommand::RemoveBeaconTag { .. } => "beacon-remove",
+            MqttCommand::DetectBeaconTag { .. } => "beacon-detect",
+            MqttCommand::ProvisionBeacon { .. } => "beacon-provision",
+            MqttCommand::RemoveLoRaWANNode { .. } => "remove_lorawan_sticker",
+            MqttCommand::GetNodeConfig { .. } => "get_sticker_config",
+            MqttCommand::GetNodeFullConfig { .. } => "get_sticker_full_config",
+            MqttCommand::GetNodeInfo { .. } => "get_sticker_info",
+            MqttCommand::NodeReboot { .. } => "sticker_reboot",
+            MqttCommand::NodeDeviceReset { .. } => "sticker_device_reset",
+            MqttCommand::NodeResetCounters { .. } => "sticker_reset_counters",
+            MqttCommand::NodeForceSend { .. } => "sticker_force_send",
+            MqttCommand::NodeClockSync { .. } => "sticker_clock_sync",
+            MqttCommand::SetNodeConfig { .. } => "set_sticker_config",
+            MqttCommand::SendNodeRaw { .. } => "send_sticker_raw",
+            MqttCommand::GetNodeHistory { .. } => "get_sticker_history",
+            MqttCommand::ResetExportCursor { .. } => "reset_export_cursor",
+            MqttCommand::AddExternalGateway { .. } => "add_external_gateway",
+            MqttCommand::RemoveExternalGateway { .. } => "remove_external_gateway",
+            MqttCommand::AddSigner { .. } => "add_signer",
+            MqttCommand::RemoveSigner { .. } => "remove_signer",
+            MqttCommand::UpdateSigner { .. } => "update_signer",
+            MqttCommand::ConfigRequest { .. } => "config_request",
+            MqttCommand::ConfigConfirm { .. } => "config_confirm",
+            MqttCommand::PairingRequest { .. } => "pairing_request",
+        }
+    }
+
+    /// Parse a `set_node_config` params object `{dev_eui, config{}, save?}`
+    /// into [`MqttCommand::SetNodeConfig`]. Shared by the production
+    /// (challenge) and dev-platform signed-command builders so both paths parse
+    /// identically. Config values may be JSON string/number/bool and are
+    /// stringified for the fPort-85 engine's typed parser.
+    /// Validate a node `dev_eui` out of a signed command's `params`.
+    fn params_dev_eui(params: &Value) -> Result<String, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
+        }
+        Ok(dev_eui.to_lowercase())
+    }
+
+    /// Parse `factory_reset` params `{post_action}` plus the signed command's
+    /// `reason`/`requested_by`/`request_id`, into [`MqttCommand::FactoryReset`].
+    ///
+    /// `post_action` has no default: an unrecognized or missing value must
+    /// never silently become a reboot given what this command does to the
+    /// device. `reason` is required (not defaulted like `parse_restart`'s)
+    /// because it's the only copy of it that survives the wipe this command
+    /// triggers. `requested_by` and `request_id` are the already-validated
+    /// signer id and the original request's id, passed through as-is.
+    pub fn parse_factory_reset(
+        params: &Value,
+        reason: Option<&str>,
+        requested_by: &str,
+        request_id: &str,
+    ) -> Result<MqttCommand, String> {
+        let post_action = match params.get("post_action").and_then(|v| v.as_str()) {
+            Some("reboot") => PostResetAction::Reboot,
+            Some("power_off") => PostResetAction::PowerOff,
+            Some(other) => {
+                return Err(format!(
+                    "Invalid post_action: {other} (must be one of: reboot, power_off)"
+                ))
+            }
+            None => return Err("Missing 'post_action' field".to_string()),
+        };
+
+        let reason = reason.ok_or_else(|| "Missing 'reason' field".to_string())?;
+        if reason.trim().is_empty() {
+            return Err("'reason' must not be empty".to_string());
+        }
+        if reason.len() > 256 {
+            return Err("Reason too long (max 256 characters)".to_string());
+        }
+
+        Ok(MqttCommand::FactoryReset {
+            post_action,
+            reason: reason.to_string(),
+            requested_by: requested_by.to_string(),
+            request_id: request_id.to_string(),
+        })
+    }
+
+    /// Parse `node_reboot` (#71).
+    pub fn parse_node_reboot(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::NodeReboot {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
+    }
+
+    /// Parse `node_device_reset` (#71).
+    pub fn parse_node_device_reset(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::NodeDeviceReset {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
+    }
+
+    /// Parse `node_force_send` (#71).
+    /// `get_sticker_config`: read a NODE's fPort-85 parameters. Optional
+    /// `keys` narrows the read; absent or null means every readable key.
+    ///
+    /// This and the three below live on `MqttCommand` rather than on the
+    /// subscriber because they have two callers now: the subscriber's
+    /// unsigned arm (deleted in P4) and the authorization manager, which
+    /// builds the same command for a single-shot signed `read`
+    /// (plan/portal/mqtt/design.md §5.1). One parser, so the two paths
+    /// cannot mean different things.
+    pub fn parse_get_node_config(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::params_dev_eui(params)?;
+        let keys = match params.get("keys") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let arr = v
+                    .as_array()
+                    .ok_or_else(|| "'keys' must be an array".to_string())?;
+                let mut out = Vec::with_capacity(arr.len());
+                for k in arr {
+                    let s = k
+                        .as_str()
+                        .ok_or_else(|| "'keys' entries must be strings".to_string())?;
+                    out.push(s.to_string());
+                }
+                Some(out)
+            }
+        };
+        Ok(MqttCommand::GetNodeConfig { dev_eui, keys })
+    }
+
+    /// `get_sticker_full_config`: read every readable key. No `keys` field —
+    /// the point of this command is that the caller does not have to know the
+    /// registry, so accepting a subset here would just duplicate
+    /// `get_sticker_config`.
+    pub fn parse_get_node_full_config(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::GetNodeFullConfig {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
+    }
+
+    /// `get_sticker_info` (#65): read a NODE's device info. `dev_eui` is
+    /// the only field — `GetInfo` has an empty body.
+    pub fn parse_get_node_info(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::GetNodeInfo {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
+    }
+
+    /// `get_sticker_history`: request a NODE's on-device history buffer.
+    /// Optional `from`/`to` (Unix seconds) bound the window.
+    pub fn parse_get_node_history(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::params_dev_eui(params)?;
+        let from_unix = Self::parse_opt_u32(params, "from")?;
+        let to_unix = Self::parse_opt_u32(params, "to")?;
+        if let (Some(f), Some(t)) = (from_unix, to_unix) {
+            if f > t {
+                return Err(format!("Invalid range: from ({}) must be <= to ({})", f, t));
+            }
+        }
+        Ok(MqttCommand::GetNodeHistory {
+            dev_eui,
+            from_unix,
+            to_unix,
+        })
+    }
+
+    /// Parse an optional u32 field (absent or null → None).
+    fn parse_opt_u32(params: &Value, field: &str) -> Result<Option<u32>, String> {
+        match params.get(field) {
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(v) => {
+                let n = v.as_u64().ok_or_else(|| {
+                    format!("Invalid '{}' field (expected unsigned integer)", field)
+                })?;
+                if n > u32::MAX as u64 {
+                    return Err(format!("'{}' out of u32 range: {}", field, n));
+                }
+                Ok(Some(n as u32))
+            }
+        }
+    }
+
+    pub fn parse_node_force_send(params: &Value) -> Result<MqttCommand, String> {
+        Ok(MqttCommand::NodeForceSend {
+            dev_eui: Self::params_dev_eui(params)?,
+        })
+    }
+
+    /// Parse `node_reset_counters` (#71).
+    ///
+    /// Accepts either `{"counters": ["hall_left", ...]}` or `{"all": true}`.
+    ///
+    /// **An empty selection is rejected.** The firmware Acks a ResetCounters with
+    /// no channels set while clearing nothing, so accepting one would report
+    /// success for a guaranteed no-op. Requiring an explicit selection also makes
+    /// the signed-command confirmation preview name the channels an operator is
+    /// about to clear.
+    pub fn parse_node_reset_counters(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = Self::params_dev_eui(params)?;
+        const CHANNELS: [&str; 4] = ["hall_left", "hall_right", "input_a", "input_b"];
+
+        if params.get("all").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(MqttCommand::NodeResetCounters {
+                dev_eui,
+                hall_left: true,
+                hall_right: true,
+                input_a: true,
+                input_b: true,
+            });
+        }
+
+        let mut selected = [false; 4];
+        if let Some(arr) = params.get("counters").and_then(|v| v.as_array()) {
+            for entry in arr {
+                let name = entry
+                    .as_str()
+                    .ok_or_else(|| "'counters' entries must be strings".to_string())?;
+                match CHANNELS.iter().position(|c| *c == name) {
+                    Some(i) => selected[i] = true,
+                    None => {
+                        return Err(format!(
+                            "unknown counter {name:?} (expected one of {CHANNELS:?}); \
+                             motion_count and accel_motion_count are RAM-only on the device \
+                             and cannot be reset"
+                        ))
+                    }
+                }
+            }
+        } else {
+            // Accept per-channel booleans too, matching the proto field names.
+            for (i, name) in CHANNELS.iter().enumerate() {
+                if params.get(*name).and_then(|v| v.as_bool()) == Some(true) {
+                    selected[i] = true;
+                }
+            }
+        }
+
+        if !selected.iter().any(|s| *s) {
+            return Err(format!(
+                "no counters selected; pass \"all\": true or a non-empty \"counters\" list \
+                 from {CHANNELS:?} (an empty reset would be acknowledged but clear nothing)"
+            ));
+        }
+        Ok(MqttCommand::NodeResetCounters {
+            dev_eui,
+            hall_left: selected[0],
+            hall_right: selected[1],
+            input_a: selected[2],
+            input_b: selected[3],
+        })
+    }
+
+    /// Parse `node_clock_sync` (#71).
+    ///
+    /// `unix_time` absent/null means "re-sync from the network" (no immediate
+    /// reply, deferred `Info` later). A supplied value is range-checked against the
+    /// firmware's own accepted window (2024-01-01 .. 2100-01-01,
+    /// `APP_CMD_CLOCK_UNIX_MIN/MAX`) so a bad value fails here instead of burning a
+    /// downlink to be told `BAD_REQUEST` "bad epoch".
+    pub fn parse_node_clock_sync(params: &Value) -> Result<MqttCommand, String> {
+        const CLOCK_MIN: u64 = 1_704_067_200; // 2024-01-01T00:00:00Z
+        const CLOCK_MAX: u64 = 4_102_444_800; // 2100-01-01T00:00:00Z
+        let dev_eui = Self::params_dev_eui(params)?;
+        let unix_time = match params.get("unix_time") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let n = v
+                    .as_u64()
+                    .ok_or_else(|| "'unix_time' must be a number".to_string())?;
+                if !(CLOCK_MIN..=CLOCK_MAX).contains(&n) {
+                    return Err(format!(
+                        "unix_time {n} outside the firmware's accepted range \
+                         {CLOCK_MIN}..={CLOCK_MAX} (2024-01-01 .. 2100-01-01)"
+                    ));
+                }
+                Some(n as u32)
+            }
+        };
+        Ok(MqttCommand::NodeClockSync { dev_eui, unix_time })
+    }
+
+    pub fn parse_set_node_config(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
+        }
+        let config_obj = params
+            .get("config")
+            .and_then(|v| v.as_object())
+            .ok_or("Missing or invalid 'config' object")?;
+        let mut fields = BTreeMap::new();
+        for (k, v) in config_obj {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                Value::Bool(b) => b.to_string(),
+                Value::Number(n) => n.to_string(),
+                _ => {
+                    return Err(format!(
+                        "config value for '{}' must be a string, number or bool",
+                        k
+                    ))
+                }
+            };
+            fields.insert(k.clone(), s);
+        }
+        if fields.is_empty() {
+            return Err("config must contain at least one key".to_string());
+        }
+        let save = params
+            .get("save")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(MqttCommand::SetNodeConfig {
+            dev_eui: dev_eui.to_lowercase(),
+            fields,
+            save,
+        })
+    }
+
+    /// Parse a `send_node_raw` params object `{dev_eui, hex, fport?}` into
+    /// [`MqttCommand::SendNodeRaw`]. `hex` is an even-length hex string of at
+    /// most 51 bytes (the DR0 downlink budget); `fport` defaults to 85 (1..=223).
+    pub fn parse_send_node_raw(params: &Value) -> Result<MqttCommand, String> {
+        let dev_eui = params
+            .get("dev_eui")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing dev_eui")?;
+        if dev_eui.len() != 16 || !dev_eui.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "Invalid dev_eui {:?} (expected 16 hex chars)",
+                dev_eui
+            ));
+        }
+        let hex_str = params
+            .get("hex")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing hex")?
+            .trim();
+        let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex: {e}"))?;
+        if bytes.is_empty() {
+            return Err("hex must contain at least one byte".to_string());
+        }
+        if bytes.len() > 51 {
+            return Err(format!(
+                "raw downlink too large: {} bytes (max 51)",
+                bytes.len()
+            ));
+        }
+        let fport = match params.get("fport") {
+            None => 85u8,
+            Some(v) => {
+                let n = v.as_u64().ok_or("fport must be a number")?;
+                if !(1..=223).contains(&n) {
+                    return Err(format!("fport {} out of range (1..=223)", n));
+                }
+                n as u8
+            }
+        };
+        Ok(MqttCommand::SendNodeRaw {
+            dev_eui: dev_eui.to_lowercase(),
+            bytes,
+            fport,
+        })
+    }
+
+    /// Parse `set_eye_config` params `{auto_provision?, auto_discover?}` into
+    /// [`MqttCommand::SetBeaconConfig`]. Shared by the signed (challenge) and
+    /// dev/unsigned command paths so both reject identically. An explicit JSON
+    /// `null` reads as absent, same as an omitted key; at least one of the two
+    /// must be present, since a command that changes nothing would still burn a
+    /// challenge and write a config backup.
+    pub fn parse_set_beacon_config(params: &Value) -> Result<MqttCommand, String> {
+        let parse_bool = |key: &str| -> Result<Option<bool>, String> {
+            match params.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(v) => v
+                    .as_bool()
+                    .map(Some)
+                    .ok_or_else(|| format!("{key} must be a boolean")),
+            }
+        };
+        let auto_provision = parse_bool("auto_provision")?;
+        let auto_discover = parse_bool("auto_discover")?;
+        if auto_provision.is_none() && auto_discover.is_none() {
+            return Err(
+                "set_eye_config requires at least one of auto_provision / auto_discover"
+                    .to_string(),
+            );
+        }
+        Ok(MqttCommand::SetBeaconConfig {
+            auto_provision,
+            auto_discover,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_names() {
+        let cmd = MqttCommand::SetSensorThreshold {
+            line: 0,
+            critical_low: 32.0,
+            alarm_low: 34.0,
+            warning_low: 35.0,
+            warning_high: 39.0,
+            alarm_high: 40.0,
+            critical_high: 42.0,
+            hysteresis: None,
+            enabled: true,
+        };
+
+        assert_eq!(cmd.name(), "set_sensor_threshold");
+
+        let cmd2 = MqttCommand::FlushStorage;
+        assert_eq!(cmd2.name(), "flush_storage");
+    }
+
+    #[test]
+    fn reset_export_cursor_command_has_name_and_carries_fields() {
+        // MqttCommand isn't serde-derived (other variants carry non-serde
+        // types), so we exercise the variant directly rather than via JSON
+        // roundtrip. Parsing from JSON is the subscriber's job.
+        let cmd = MqttCommand::ResetExportCursor {
+            broker_id: "local".into(),
+            stream: "all".into(),
+        };
+        assert_eq!(cmd.name(), "reset_export_cursor");
+        match cmd {
+            MqttCommand::ResetExportCursor { broker_id, stream } => {
+                assert_eq!(broker_id, "local");
+                assert_eq!(stream, "all");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn node_commands_have_names() {
+        assert_eq!(
+            MqttCommand::GetNodeConfig {
+                dev_eui: "0102030405060708".into(),
+                keys: None
+            }
+            .name(),
+            "get_sticker_config"
+        );
+        // The viewer sends this literal string and subscribes to the matching
+        // "/full-config" topic; a rename here silently dead-ends its read.
+        assert_eq!(
+            MqttCommand::GetNodeFullConfig {
+                dev_eui: "0102030405060708".into()
+            }
+            .name(),
+            "get_sticker_full_config"
+        );
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "application.interval_report".to_string(),
+            "1200".to_string(),
+        );
+        assert_eq!(
+            MqttCommand::SetNodeConfig {
+                dev_eui: "0102030405060708".into(),
+                fields,
+                save: false,
+            }
+            .name(),
+            "set_sticker_config"
+        );
+        assert_eq!(
+            MqttCommand::GetNodeHistory {
+                dev_eui: "0102030405060708".into(),
+                from_unix: None,
+                to_unix: None,
+            }
+            .name(),
+            "get_sticker_history"
+        );
+    }
+
+    #[test]
+    fn factory_reset_command_has_name() {
+        let cmd = MqttCommand::FactoryReset {
+            post_action: PostResetAction::Reboot,
+            reason: "test".into(),
+            requested_by: "admin".into(),
+            request_id: "req-1".into(),
+        };
+        assert_eq!(cmd.name(), "factory_reset");
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_reboot() {
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some("customer requested wipe"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset {
+                post_action,
+                reason,
+                requested_by,
+                request_id,
+            } => {
+                assert_eq!(post_action, PostResetAction::Reboot);
+                assert_eq!(reason, "customer requested wipe");
+                assert_eq!(requested_by, "signer-1");
+                assert_eq!(request_id, "req-1");
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_power_off() {
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "power_off" }),
+            Some("decommissioning"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset { post_action, .. } => {
+                assert_eq!(post_action, PostResetAction::PowerOff);
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_missing_post_action() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({}),
+            Some("reason"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("post_action"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_unknown_post_action() {
+        // No default: an unrecognized post-action must never silently
+        // become a reboot.
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reformat" }),
+            Some("reason"),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reformat"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_missing_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            None,
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_blank_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(""),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_whitespace_only_reason() {
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some("   \t  "),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("reason"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_rejects_oversized_reason() {
+        let reason = "a".repeat(257);
+        let err = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(reason.as_str()),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap_err();
+        assert!(err.contains("too long"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_factory_reset_accepts_reason_at_the_256_char_boundary() {
+        let reason = "a".repeat(256);
+        let cmd = MqttCommand::parse_factory_reset(
+            &serde_json::json!({ "post_action": "reboot" }),
+            Some(reason.as_str()),
+            "signer-1",
+            "req-1",
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::FactoryReset { reason: r, .. } => assert_eq!(r.len(), 256),
+            other => panic!("expected FactoryReset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn post_reset_action_wire_format_is_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&PostResetAction::Reboot).unwrap(),
+            "\"reboot\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PostResetAction::PowerOff).unwrap(),
+            "\"power_off\""
+        );
+        assert_eq!(
+            serde_json::from_str::<PostResetAction>("\"reboot\"").unwrap(),
+            PostResetAction::Reboot
+        );
+        assert_eq!(
+            serde_json::from_str::<PostResetAction>("\"power_off\"").unwrap(),
+            PostResetAction::PowerOff
+        );
+    }
+
+    #[test]
+    fn parse_node_reset_counters_rejects_an_empty_selection() {
+        // The firmware Acks a ResetCounters with no channels set while clearing
+        // NOTHING, so accepting an empty selection would report success for a
+        // guaranteed no-op. This is the host-side guard for that firmware quirk.
+        let err = MqttCommand::parse_node_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2"
+        }))
+        .unwrap_err();
+        assert!(err.contains("no counters selected"), "got {err:?}");
+
+        let err = MqttCommand::parse_node_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "counters": []
+        }))
+        .unwrap_err();
+        assert!(err.contains("no counters selected"), "got {err:?}");
+    }
+
+    #[test]
+    fn parse_node_reset_counters_selects_channels() {
+        match MqttCommand::parse_node_reset_counters(&serde_json::json!({
+            "dev_eui": "70B3D57ED80051B2", "counters": ["hall_left", "input_b"]
+        }))
+        .unwrap()
+        {
+            MqttCommand::NodeResetCounters {
+                dev_eui,
+                hall_left,
+                hall_right,
+                input_a,
+                input_b,
+            } => {
+                assert_eq!(dev_eui, "70b3d57ed80051b2");
+                assert_eq!(
+                    (hall_left, hall_right, input_a, input_b),
+                    (true, false, false, true)
+                );
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        match MqttCommand::parse_node_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "all": true
+        }))
+        .unwrap()
+        {
+            MqttCommand::NodeResetCounters {
+                hall_left,
+                hall_right,
+                input_a,
+                input_b,
+                ..
+            } => {
+                assert_eq!(
+                    (hall_left, hall_right, input_a, input_b),
+                    (true, true, true, true)
+                );
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+    }
+
+    #[test]
+    fn parse_node_reset_counters_names_the_unresettable_counters() {
+        // motion_count / accel_motion_count are RAM-only on the device, so asking
+        // for them must fail with an explanation rather than silently doing nothing.
+        let err = MqttCommand::parse_node_reset_counters(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "counters": ["motion_count"]
+        }))
+        .unwrap_err();
+        assert!(err.contains("unknown counter"), "got {err:?}");
+        assert!(
+            err.contains("RAM-only"),
+            "the error should explain why: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_node_clock_sync_modes_and_range() {
+        // Absent unix_time = "re-sync from the network": no immediate reply.
+        match MqttCommand::parse_node_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2"
+        }))
+        .unwrap()
+        {
+            MqttCommand::NodeClockSync { unix_time, .. } => assert_eq!(unix_time, None),
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        // A supplied time is accepted inside the firmware's own window.
+        match MqttCommand::parse_node_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "unix_time": 1_782_198_249u64
+        }))
+        .unwrap()
+        {
+            MqttCommand::NodeClockSync { unix_time, .. } => {
+                assert_eq!(unix_time, Some(1_782_198_249))
+            }
+            other => panic!("wrong command: {}", other.name()),
+        }
+
+        // Out of range fails here rather than burning a downlink to be told
+        // BAD_REQUEST "bad epoch". 1600000000 is 2020, below APP_CMD_CLOCK_UNIX_MIN.
+        let err = MqttCommand::parse_node_clock_sync(&serde_json::json!({
+            "dev_eui": "70b3d57ed80051b2", "unix_time": 1_600_000_000u64
+        }))
+        .unwrap_err();
+        assert!(
+            err.contains("outside the firmware's accepted range"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn control_command_names_are_stable() {
+        // These strings are the MQTT wire contract with the viewer.
+        let eui = "70b3d57ed80051b2".to_string();
+        assert_eq!(
+            MqttCommand::NodeReboot {
+                dev_eui: eui.clone()
+            }
+            .name(),
+            "sticker_reboot"
+        );
+        assert_eq!(
+            MqttCommand::NodeDeviceReset {
+                dev_eui: eui.clone()
+            }
+            .name(),
+            "sticker_device_reset"
+        );
+        assert_eq!(
+            MqttCommand::NodeForceSend {
+                dev_eui: eui.clone()
+            }
+            .name(),
+            "sticker_force_send"
+        );
+        assert_eq!(
+            MqttCommand::NodeClockSync {
+                dev_eui: eui.clone(),
+                unix_time: None
+            }
+            .name(),
+            "sticker_clock_sync"
+        );
+        assert_eq!(
+            MqttCommand::NodeResetCounters {
+                dev_eui: eui,
+                hall_left: true,
+                hall_right: true,
+                input_a: true,
+                input_b: true,
+            }
+            .name(),
+            "sticker_reset_counters"
+        );
+    }
+
+    #[test]
+    fn parse_send_node_raw_validates_and_defaults() {
+        use serde_json::json;
+        assert_eq!(
+            MqttCommand::SendNodeRaw {
+                dev_eui: "0102030405060708".into(),
+                bytes: vec![8],
+                fport: 85
+            }
+            .name(),
+            "send_sticker_raw"
+        );
+        // The docs.hardwario.com generator example (SetParam interval_report=600, save).
+        let cmd = MqttCommand::parse_send_node_raw(
+            &json!({ "dev_eui": "d7653371A0EF363F", "hex": "08011207120318d8041801" }),
+        )
+        .unwrap();
+        match cmd {
+            MqttCommand::SendNodeRaw {
+                dev_eui,
+                bytes,
+                fport,
+            } => {
+                assert_eq!(dev_eui, "d7653371a0ef363f"); // lowercased
+                assert_eq!(fport, 85); // default
+                assert_eq!(
+                    bytes,
+                    vec![0x08, 0x01, 0x12, 0x07, 0x12, 0x03, 0x18, 0xd8, 0x04, 0x18, 0x01]
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+        // fport override in range.
+        assert!(matches!(
+            MqttCommand::parse_send_node_raw(
+                &json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 10 })
+            )
+            .unwrap(),
+            MqttCommand::SendNodeRaw { fport: 10, .. }
+        ));
+        // Rejections: bad hex, bad dev_eui, empty, oversize (52 bytes), fport OOR.
+        assert!(MqttCommand::parse_send_node_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "zz" })
+        )
+        .is_err());
+        assert!(
+            MqttCommand::parse_send_node_raw(&json!({ "dev_eui": "short", "hex": "08" })).is_err()
+        );
+        assert!(MqttCommand::parse_send_node_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "" })
+        )
+        .is_err());
+        assert!(MqttCommand::parse_send_node_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "aa".repeat(52) })
+        )
+        .is_err());
+        assert!(MqttCommand::parse_send_node_raw(
+            &json!({ "dev_eui": "0102030405060708", "hex": "08", "fport": 300 })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parse_set_beacon_config_parses_and_validates() {
+        use serde_json::json;
+        assert_eq!(
+            MqttCommand::SetBeaconConfig {
+                auto_provision: None,
+                auto_discover: None,
+            }
+            .name(),
+            "beacon-send"
+        );
+        match MqttCommand::parse_set_beacon_config(
+            &json!({ "auto_provision": false, "auto_discover": true }),
+        )
+        .unwrap()
+        {
+            MqttCommand::SetBeaconConfig {
+                auto_provision,
+                auto_discover,
+            } => {
+                assert_eq!(auto_provision, Some(false));
+                assert_eq!(auto_discover, Some(true));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // Only one field given: the other stays None ("leave untouched").
+        assert!(matches!(
+            MqttCommand::parse_set_beacon_config(&json!({ "auto_provision": true })).unwrap(),
+            MqttCommand::SetBeaconConfig {
+                auto_provision: Some(true),
+                auto_discover: None,
+            }
+        ));
+        // An explicit null is treated the same as an absent key.
+        assert!(matches!(
+            MqttCommand::parse_set_beacon_config(
+                &json!({ "auto_provision": null, "auto_discover": false })
+            )
+            .unwrap(),
+            MqttCommand::SetBeaconConfig {
+                auto_provision: None,
+                auto_discover: Some(false),
+            }
+        ));
+        // Neither field given: rejected before a challenge/config write happens.
+        assert!(MqttCommand::parse_set_beacon_config(&json!({})).is_err());
+        // Wrong type.
+        assert!(MqttCommand::parse_set_beacon_config(&json!({ "auto_provision": "yes" })).is_err());
+    }
+
+    #[test]
+    fn activation_mode_otaa_roundtrip() {
+        let app_key: String = "ab".repeat(16);
+        let join_eui: String = "cd".repeat(8);
+        let v = ActivationMode::Otaa {
+            app_key: app_key.clone(),
+            join_eui: join_eui.clone(),
+            profile_id: None,
+        };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            s,
+            serde_json::json!({"mode": "otaa", "app_key": app_key, "join_eui": join_eui})
+        );
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_otaa_legacy_payload_defaults_join_eui_to_zeros() {
+        // Old viewers send {"mode": "otaa", "app_key": "..."} with no join_eui.
+        let app_key: String = "ab".repeat(16);
+        let payload = serde_json::json!({"mode": "otaa", "app_key": app_key});
+        let back: ActivationMode = serde_json::from_value(payload).unwrap();
+        match back {
+            ActivationMode::Otaa { join_eui, .. } => {
+                assert_eq!(join_eui, "0000000000000000");
+            }
+            _ => panic!("expected Otaa"),
+        }
+    }
+
+    #[test]
+    fn activation_mode_abp_roundtrip() {
+        let nwkskey: String = "0".repeat(32);
+        let appskey: String = "f".repeat(32);
+        let v = ActivationMode::Abp {
+            devaddr: "01020304".to_string(),
+            nwkskey: nwkskey.clone(),
+            appskey: appskey.clone(),
+        };
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            s,
+            serde_json::json!({
+                "mode": "abp",
+                "devaddr": "01020304",
+                "nwkskey": nwkskey,
+                "appskey": appskey,
+            })
+        );
+        let back: ActivationMode = serde_json::from_value(s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn activation_mode_unknown_mode_rejected() {
+        let s = serde_json::json!({"mode": "xyz"});
+        let r: Result<ActivationMode, _> = serde_json::from_value(s);
+        assert!(r.is_err());
+    }
+}

@@ -1,0 +1,135 @@
+{#
+  The device pages' Events card (plan/portal/ui_components.md §5,
+  2026-10-15): operator notes only — no alarms, warnings, liveness or
+  config changes. Shared by pages/node_detail.html, pages/beacon_detail.html
+  and pages/hub_sensor.html; replaces partials/probe_events.html there.
+
+  Context: evc = routes::probe_routes::EventsCardCtx {
+    token, hub,               -- the probe the routes resolve; hub only for
+                              -- a wired line
+    card_id, can_edit, now_local, csv_name,
+    events: [{id, at, text, author}, ...],  -- newest first
+    unreadable: bool
+  }
+
+  Writes reuse POST /monitoring/probe/{token}/events and …/{id}/delete.
+  Those answer with a redirect to the probe window; the card posts with
+  fetch and reloads its own page instead, and reads `error=` off the
+  redirect's URL.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% macro ev_row(e) -%}
+<li class="ev-row">
+	<span class="ev-at font-mono tabular-nums" title="{{ e.at | short_dt("full") }}">{{ e.at | short_dt }}</span>
+	<span class="ev-text">{{ e.text }}</span>
+	<span class="ev-author text-muted-fg">{{ e.author }}</span>
+	{% if evc.can_edit %}
+	<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon text-critical ev-del" @click="remove({{ e.id }})"
+		title="{{ "monitoring.probe_detail.event_delete"|t }}" aria-label="{{ "monitoring.probe_detail.event_delete"|t }}">
+		{{ ic.icon("trash-2", "h-4 w-4") }}
+	</button>
+	{% else %}<span></span>{% endif %}
+</li>
+{%- endmacro %}
+{% set shown = 3 %}
+{% set older = evc.events | length - shown %}
+{% set base = "/monitoring/probe/" ~ evc.token ~ "/events" %}
+<section id="{{ evc.card_id }}" class="card-v1 di" data-events-card>
+<div x-data='eventsCard({{ evc.events | tojson }}, {{ evc.csv_name | tojson }}, {{ base | tojson }}, {{ evc.hub | tojson }})' :class="open && 'di-open'">
+	<div class="relative">
+	<button type="button" class="di-head ev-head" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ evc.card_id }}-body">
+		{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+		{{ ui.card_icon("notebook-pen") }}
+		<span class="text-base font-semibold whitespace-nowrap">{{ "monitoring.events_card.heading"|t }}</span>
+		<span class="text-sm text-muted-fg truncate" x-show="!open" x-cloak>{{ evc.events | length }}</span>
+	</button>
+	<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm gap-1 ev-csv" @click="csv()" {% if not evc.events %}disabled{% endif %}
+		title="{{ "monitoring.events_card.csv"|t }}">
+		{{ ic.icon("download", "h-4 w-4") }}CSV
+	</button>
+	</div>
+	<div class="di-body" id="{{ evc.card_id }}-body" x-show="open" x-cloak>
+		<p class="alert alert-error mb-2 text-sm" role="alert" x-show="err" x-cloak x-text="err"></p>
+		{% if evc.unreadable %}<p class="text-xs text-critical mb-1">{{ "monitoring.probe_detail.events_unreadable"|t }}</p>{% endif %}
+		<ul class="ev-list">
+			{% for e in evc.events[:shown] %}{{ ev_row(e) }}
+			{% else %}
+			<li class="py-1.5 text-sm text-muted-fg">{{ "monitoring.events_card.empty"|t }}</li>
+			{% endfor %}
+		</ul>
+		{% if older > 0 %}
+		<div class="cal-sub" :class="more && 'cal-sub-open'">
+			<button type="button" class="cal-subhead" @click="more = !more" :aria-expanded="more.toString()">
+				{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}{{ "monitoring.events_card.show_older"|t|replace("{n}", older|string) }}
+			</button>
+			<ul class="ev-list pb-1" x-show="more" x-cloak>
+				{% for e in evc.events[shown:] %}{{ ev_row(e) }}{% endfor %}
+			</ul>
+		</div>
+		{% endif %}
+
+		{% if evc.can_edit %}
+		<div class="cal-sub" :class="add && 'cal-sub-open'">
+			<button type="button" class="cal-subhead" @click="add = !add" :aria-expanded="add.toString()">
+				{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}{{ "monitoring.events_card.add_heading"|t }}
+			</button>
+			<div x-show="add" x-cloak>
+			<form class="te-form pb-1" action="{{ base }}" @submit.prevent="save($el)">
+				<input type="hidden" name="hub" value="{{ evc.hub }}">
+				<div class="te-row">
+					<label class="te-lbl" for="{{ evc.card_id }}-at">{{ "monitoring.probe_detail.event_when"|t }}</label>
+					<div class="min-w-0"><input id="{{ evc.card_id }}-at" type="datetime-local" name="at" class="te-in max-w-56"
+						value="{{ evc.now_local }}" required></div>
+				</div>
+				<div class="te-row">
+					<label class="te-lbl" for="{{ evc.card_id }}-text">{{ "monitoring.probe_detail.event_text"|t }}</label>
+					<div class="min-w-0"><input id="{{ evc.card_id }}-text" type="text" name="text" class="te-in"
+						maxlength="240" required placeholder="{{ "monitoring.probe_detail.event_text_placeholder"|t }}"></div>
+				</div>
+				<div class="te-actions">
+					<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" @click="add = false">{{ "common.actions.cancel"|t }}</button>
+					<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm" :disabled="busy">{{ "monitoring.probe_detail.event_save"|t }}</button>
+				</div>
+			</form>
+			</div>
+		</div>
+		{% endif %}
+	</div>
+</div>
+</section>
+<script>
+	// One definition however many cards a page holds.
+	window.eventsCard = window.eventsCard || function (rows, csvName, base, hub) {
+		var errs = {
+			event_text_required: {{ "monitoring.groups.err_event_text_required"|t|tojson }},
+			_: {{ "monitoring.groups.err_event_save_failed"|t|tojson }}
+		};
+		return {
+			open: false, more: false, add: false, busy: false, err: '',
+			send: function (url, body) {
+				var self = this;
+				self.busy = true; self.err = '';
+				return fetch(url, { method: 'POST', body: body, credentials: 'same-origin' })
+					.then(function (r) {
+						var m = /[?&]error=([^&]+)/.exec(r.url || '');
+						if (!r.ok || m) throw new Error(m ? m[1] : '_');
+						window.location.reload();
+					})
+					.catch(function (e) { self.err = errs[e.message] || errs._; self.busy = false; });
+			},
+			save: function (form) { this.send(form.action, new URLSearchParams(new FormData(form))); },
+			remove: function (id) {
+				var b = new URLSearchParams(); b.set('hub', hub);
+				this.send(base + '/' + id + '/delete', b);
+			},
+			csv: function () {
+				var q = function (v) { v = String(v == null ? '' : v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+				var lines = ['time,text,author'].concat(rows.map(function (e) { return [e.at, e.text, e.author].map(q).join(','); }));
+				var a = document.createElement('a');
+				a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\n') + '\n'], { type: 'text/csv' }));
+				a.download = csvName; document.body.appendChild(a); a.click(); a.remove();
+			}
+		};
+	};
+</script>

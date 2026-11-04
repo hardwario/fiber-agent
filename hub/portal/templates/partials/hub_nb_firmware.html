@@ -1,0 +1,53 @@
+{#
+  The System tab's "Northbridge firmware" card, beside the Southbridge one
+  (northbridge_update.md §3.4/§3.5; ui_components.md §13, amended
+  2026-10-15: moved out of the Overview Radio card).
+
+  Context: { radio: render::RadioCardCtx } — `northbridge.update`
+    { state, verdict, badge, bundled, running, attempts, last_error, note },
+    `northbridge.fw_version`, `nb_update_allowed`, `nb_progress`.
+    `oob` (optional): render as an out-of-band swap (the update's own answer).
+
+  „Aktualizovat firmware Northbridge“ (admin; an `update` object, not
+  `flashing`, no update being followed) opens `#nb-update-dialog`, which
+  lives in pages/hub_detail.html outside this swap target. The card refetches
+  itself from GET /hubs/{hub}/nb-firmware on the `radio-{hostname}` nudge, and
+  every 3 s with the update's phase in its query while it follows one.
+  Without an `update` object (an image without bundled firmware) the card is
+  read-only: the running version and a note.
+#}
+{#- Amended 2026-10-15: the shared firmware card (partials/fw_card.html). -#}
+{% import "partials/fw_card.html" as fwc %}
+{% set r = radio %}
+{#- `nb_firmware`, not `northbridge` (#158): a Hub without P2P reports the
+    firmware from its idle Northbridge task in a `disabled` document. The
+    Update button is disabled only with a reason: Hub offline, an update
+    running, the Northbridge not answering, no document (older Hub software)
+    or no bundled firmware. -#}
+{% set nb = r.nb_firmware %}
+{% set u = nb.update if nb else none %}
+{% set busy = (u and u.state == "flashing") or (r.nb_progress and r.nb_progress.poll) %}
+{% set why = ("monitoring.hubs.fw_update_why_offline" if not r.online
+	else ("monitoring.hubs.fw_update_why_running" if busy
+	else ("monitoring.hubs.fw_update_why_nb_not_reported" if not nb
+	else ("monitoring.hubs.fw_update_why_nb_silent" if nb.state == "unreachable"
+	else (none if u else "monitoring.hubs.fw_update_why_no_image"))))) %}
+<div id="hub-nb-firmware" data-nb-state="{{ u.state if u and u.state else "" }}"
+	hx-get="/hubs/{{ r.hostname }}/nb-firmware{{ r.nb_progress.query if r.nb_progress else "" }}"
+	hx-trigger="sse:radio-{{ r.hostname }}{% if r.nb_progress and r.nb_progress.poll %}, every 3s{% endif %}"
+	hx-swap="outerHTML"{% if oob is defined and oob %} hx-swap-oob="true"{% endif %}>
+	{{ fwc.fw_card({
+		"kind": "nb", "card_id": "hub-nb-fw-" ~ r.hostname, "icon": "radio",
+		"heading": "monitoring.hubs.nb_fw_heading"|t, "desc": "monitoring.hubs.nb_fw_desc"|t,
+		"running": (u.running if u and u.running else (nb.fw_version if nb else none)),
+		"bundled": u.bundled if u else none,
+		"state_key": u.verdict if u else "",
+		"state_label": (("monitoring.hubs.radio_nb_update." ~ u.verdict)|t) if u else none,
+		"state_badge": u.badge if u else "neutral",
+		"attempts": u.attempts if u else none, "last_error": u.last_error if u else none,
+		"last_update": none, "note": u.note if u else none,
+		"not_reported": not u,
+		"button": r.nb_update_allowed, "why": why, "dialog": "nb-update-dialog",
+		"progress": r.nb_progress, "progress_keys": "monitoring.hubs.nb_update_",
+	}) }}
+</div>

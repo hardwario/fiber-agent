@@ -1,0 +1,106 @@
+{#
+  Diagnostics "Message history" card (plan/portal/ui_components.md, amendment
+  2026-10-15), shared by the Node and Beacon pages.
+
+  Context: { diag_id: str, messages: [render::DiagMessageCtx] (newest first),
+  csv_name: str (download file name), json_url: str|none (the full ring as
+  JSON) }.
+
+  A row is direction | time | fPort | size | decoded summary; a click opens
+  the stored message as hex (when it carries its bytes) and pretty JSON. The
+  pills filter by direction; the Downlink pill only shows when there is a
+  downlink (the portal stores what arrived; what it sent is the audit log's).
+  CSV is built in the browser from the rows the filter shows.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{%- set has_down = messages|selectattr("dir", "equalto", "down")|list|length > 0 %}
+<div x-data="{
+	f: 'all',
+	csv() {
+		const q = v => '&quot;' + String(v ?? '').replaceAll('&quot;', '&quot;&quot;') + '&quot;';
+		const rows = [...this.$root.querySelectorAll('[data-msg]')]
+			.map(e => JSON.parse(e.dataset.msg))
+			.filter(m => this.f === 'all' || m.dir === this.f)
+			.map(m => [m.dir, m.at, m.port, m.size, m.kind, m.summary, m.hex].map(q).join(','));
+		const blob = new Blob([['direction,time,fport,size,kind,summary,hex', ...rows].join('\n')], { type: 'text/csv' });
+		const a = document.createElement('a');
+		a.href = URL.createObjectURL(blob); a.download = '{{ csv_name }}'; a.click();
+		setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+	}
+}">
+{% set head_end %}
+	{% if messages %}
+	<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5 shrink-0" @click="csv()">
+		{{ ic.icon("download", "h-4 w-4") }}{{ "monitoring.diag.csv"|t }}
+	</button>
+	{% endif %}
+{% endset %}
+{% call ui.collapsible_card(diag_id, "messages", "monitoring.diag.messages_heading"|t, head_end=head_end,
+	summary=("monitoring.diag.messages_summary"|t|replace("{n}", messages|length|string) if messages else "monitoring.node_detail.messages_none"|t)) %}
+	{% if messages %}
+	<div class="flex items-center gap-1.5 flex-wrap" role="group">
+		{% for id, label in [("all", "monitoring.diag.filter_all"), ("up", "monitoring.diag.filter_up"), ("down", "monitoring.diag.filter_down")] %}
+		{% if id != "down" or has_down %}
+		<button type="button" class="btn-v1 btn-v1-sm" :class="f === '{{ id }}' ? 'btn-v1-primary' : 'btn-v1-outline'"
+			:aria-pressed="(f === '{{ id }}').toString()" @click="f = '{{ id }}'">{{ label|t }}</button>
+		{% endif %}
+		{% endfor %}
+	</div>
+	<div class="relative w-full overflow-x-auto">
+		<table class="w-full text-sm">
+			<thead class="[&_tr]:border-b [&_tr]:border-base-300">
+				<tr>
+					<th class="w-6 py-1.5"><span class="sr-only">{{ "monitoring.diag.direction"|t }}</span></th>
+					{{ ui.th("monitoring.node_detail.messages_time"|t, "!h-auto py-1.5 !px-0 !pr-4") }}
+					{{ ui.th("monitoring.node_detail.messages_port"|t, "!h-auto py-1.5 !px-0 !pr-4") }}
+					{{ ui.th("monitoring.diag.size"|t, "!h-auto py-1.5 !px-0 !pr-4 text-right") }}
+					{{ ui.th("monitoring.diag.summary"|t, "!h-auto py-1.5 !px-0 w-full") }}
+				</tr>
+			</thead>
+			{% for m in messages %}
+			<tbody x-data="{ o: false }" :class="{ hidden: !(f === 'all' || f === '{{ m.dir }}') }" class="border-b border-base-300 last:border-0">
+				<tr class="cursor-pointer hover:bg-base-200 [&>td]:py-1.5 [&>td]:pr-4 [&>td]:align-top" @click="o = !o" :aria-expanded="o.toString()"
+					data-msg='{{ {"dir": m.dir, "at": m.at, "port": m.port, "size": m.size, "kind": m.kind, "summary": m.summary, "hex": m.hex}|tojson }}'>
+					<td class="!pr-2" title="{{ ("monitoring.diag.filter_" ~ m.dir)|t }}">
+						{% if m.dir == "down" %}{{ ic.icon("arrow-down", "h-4 w-4 text-primary") }}{% else %}{{ ic.icon("arrow-up", "h-4 w-4 text-success") }}{% endif %}
+					</td>
+					<td class="tabular-nums whitespace-nowrap text-muted-fg">{{ m.at | short_dt | default("—", true) }}</td>
+					<td class="tabular-nums whitespace-nowrap">{% if m.port is not none %}{{ m.port }}{% else %}—{% endif %}</td>
+					<td class="tabular-nums whitespace-nowrap text-right">{% if m.size is not none %}{{ m.size }} B{% else %}—{% endif %}</td>
+					<td class="!pr-0 min-w-0">
+						<span class="badge-outline-v1 font-mono mr-1">{{ m.kind }}</span>
+						{%- if m.ok == false %} <span class="text-critical text-xs">{{ "monitoring.diag.downlink_failed"|t }}</span>{% endif %}
+						<span class="font-mono text-xs break-all">{{ m.summary }}</span>
+					</td>
+				</tr>
+				<tr class="hidden" :class="{ hidden: !o }">
+					<td></td>
+					<td colspan="4" class="pb-3 !pr-0">
+						<div class="flex flex-col gap-2 min-w-0">
+							<p class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.diag.hex_label"|t }}</p>
+							{% if m.hex %}
+							<pre class="overflow-x-auto rounded bg-base-200 p-2 text-xs font-mono whitespace-pre-wrap break-all">{{ m.hex }}</pre>
+							{% else %}
+							<p class="text-xs text-muted-fg">{{ "monitoring.diag.no_hex"|t }}</p>
+							{% endif %}
+							<p class="text-xs uppercase tracking-wide text-muted-fg">JSON</p>
+							<pre class="overflow-x-auto rounded bg-base-200 p-2 text-xs font-mono max-h-80">{{ m.json }}</pre>
+						</div>
+					</td>
+				</tr>
+			</tbody>
+			{% endfor %}
+		</table>
+	</div>
+	{% else %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.node_detail.messages_none"|t }}</p>
+	{% endif %}
+	{% if json_url or trends_url %}
+	<div class="flex items-center justify-end gap-4 flex-wrap text-sm">
+		{% if json_url and messages %}<a class="link inline-flex items-center gap-1" href="{{ json_url|safe }}" download>{{ ic.icon("download", "h-4 w-4") }}{{ "monitoring.node_detail.messages_download"|t }}</a>{% endif %}
+		{% if trends_url %}<a class="link inline-flex items-center gap-1" href="{{ trends_url|safe }}">{{ "monitoring.node_detail.messages_full_history"|t }}{{ ic.icon("chevron-right", "h-4 w-4") }}</a>{% endif %}
+	</div>
+	{% endif %}
+{% endcall %}
+</div>

@@ -1,0 +1,215 @@
+//! Shared "add a LoRaWAN node" path.
+//!
+//! This is the single canonical full add: ChirpStack provision + save-and-feed
+//! provisioning-epoch bump + sensor-config YAML + optimistic shared-state stub.
+//! It is called both by the MQTT command handler
+//! (`MqttCommand::AddLoRaWANNode`) and by the BLE FB0D Node-Add
+//! characteristic, so the two transports stay byte-for-byte identical.
+//!
+//! Extracted verbatim from the former inline match arm in `mqtt/monitor.rs` —
+//! callers pass their handles via [`NodeAddDeps`]; everything else is read
+//! from disk by the provisioning functions, so it is not a dependency here. That
+//! includes the ChirpStack API credentials, which
+//! `provisioning::chirpstack_credentials` reads from `lorawan.chirpstack` in
+//! `fiber.config.yaml` on each call — deliberately, because this path is also
+//! reachable from BLE on a device where the LoRaWAN monitor never started.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use crate::libs::config::LoRaWANSensorConfig;
+use crate::libs::config_applier::ConfigApplier;
+use crate::libs::lorawan::state::LoRaWANAlarmState;
+use crate::libs::lorawan::{LoRaWANSensorState, SharedLoRaWANSensorConfigs, SharedLoRaWANState};
+use crate::libs::mqtt::messages::ActivationMode;
+use crate::libs::storage::StorageHandle;
+
+/// Handles the full add path needs. All optional — a missing handle degrades
+/// the same way the original handler did (e.g. no config applier → hard error).
+#[derive(Clone, Default)]
+pub struct NodeAddDeps {
+    pub config_applier: Option<Arc<ConfigApplier>>,
+    pub storage: Option<StorageHandle>,
+    pub lorawan_configs: Option<SharedLoRaWANSensorConfigs>,
+    pub lorawan_state: Option<SharedLoRaWANState>,
+}
+
+/// Provision a node in ChirpStack and persist its sensor config.
+///
+/// Returns `Ok(())` once the sensor config is saved. ChirpStack provisioning is
+/// best-effort (logged but not fatal — the device may be down or the node
+/// may already exist); the hard failure is an absent config applier or a failed
+/// config save. Mirrors the original `monitor.rs` behaviour exactly.
+pub fn add_lorawan_node(
+    deps: &NodeAddDeps,
+    dev_eui: String,
+    name: String,
+    serial_number: String,
+    activation: ActivationMode,
+) -> Result<(), String> {
+    // The v2 radio gate (decision #12, `libs::radio_gate`). This function is the legacy
+    // stack's *second* entry point: it reaches `provisioning` — gRPC-web straight at
+    // ChirpStack — without the LoRaWAN monitor, which is exactly why the BLE FB0D
+    // characteristic can call it on a Hub where the monitor never started. Gating only the
+    // monitor would therefore leave enrollment writing ChirpStack objects that
+    // `proximosctl control.radio node-add` owns, with no `nodes.json` record and no retained
+    // `info` document — a device visible to one stack and invisible to the other.
+    //
+    // Refused before anything is written, like the profile check below: the failure text is
+    // the FB0D response's `message` and the MQTT command's error, so it has to say what to do.
+    if let Some(why) = crate::libs::radio_gate::legacy_lorawan_disabled() {
+        return Err(format!(
+            "{why}. Enrol this node with `proximosctl control.radio node-add`"
+        ));
+    }
+
+    // Refuse a profile this gateway cannot serve BEFORE anything is written.
+    // Step 2 below deliberately saves the sensor config even when ChirpStack
+    // provisioning fails, because that failure is usually transient (the server
+    // is down; a retry reconciles). A profile mismatch is not transient — saving
+    // it would leave a sensor in the list, and in the operator's mind, that can
+    // never join no matter how long they wait.
+    if let ActivationMode::Otaa { profile_id, .. } = &activation {
+        crate::libs::lorawan::provisioning::check_otaa_profile(*profile_id)?;
+    }
+
+    let mode_label = match &activation {
+        ActivationMode::Otaa { .. } => "OTAA",
+        ActivationMode::Abp { .. } => "ABP",
+    };
+    eprintln!(
+        "[node_add] Provisioning node {} in ChirpStack ({})...",
+        dev_eui, mode_label
+    );
+    let provision_result = match &activation {
+        ActivationMode::Otaa {
+            app_key,
+            join_eui,
+            profile_id,
+        } => crate::libs::lorawan::provisioning::provision_node_otaa(
+            &dev_eui,
+            &name,
+            &serial_number,
+            app_key,
+            join_eui,
+            *profile_id,
+        ),
+        ActivationMode::Abp {
+            devaddr,
+            nwkskey,
+            appskey,
+        } => crate::libs::lorawan::provisioning::provision_node(
+            &dev_eui,
+            &name,
+            &serial_number,
+            devaddr,
+            nwkskey,
+            appskey,
+        ),
+    };
+    match provision_result {
+        Ok(()) => {
+            eprintln!("[node_add] ✓ Node {} provisioned in ChirpStack", dev_eui);
+
+            // Save-and-feed: bump the provisioning epoch only when this
+            // dev_eui was previously absent OR its most recent event was
+            // a node_removed marker. That way re-provisioning an
+            // already-active node is idempotent (no spurious epoch
+            // change), while a remove → re-add cycle creates a new
+            // epoch so the downstream pipeline can tell the new
+            // node apart from the old one.
+            if let Some(storage) = deps.storage.as_ref() {
+                match storage.dev_eui_last_event_was_removal_or_absent(dev_eui.clone()) {
+                    Ok(true) => match storage.bump_provisioning_epoch(dev_eui.clone()) {
+                        Ok(new_epoch) => eprintln!(
+                            "[node_add] node {} provisioning epoch bumped to {}",
+                            dev_eui, new_epoch
+                        ),
+                        Err(e) => eprintln!(
+                            "[node_add] bump_provisioning_epoch({}) failed: {}",
+                            dev_eui, e
+                        ),
+                    },
+                    Ok(false) => {
+                        // Re-provision of an already-active node; no bump.
+                    }
+                    Err(e) => eprintln!(
+                        "[node_add] dev_eui_last_event lookup for {} failed: {}",
+                        dev_eui, e
+                    ),
+                }
+            }
+        }
+        Err(e) => {
+            // Log but continue - ChirpStack may be down or device may already exist
+            eprintln!(
+                "[node_add] ⚠ ChirpStack provisioning for {}: {}",
+                dev_eui, e
+            );
+        }
+    }
+
+    // Step 2: Save sensor config to YAML (always, even if ChirpStack failed)
+    if let Some(applier) = deps.config_applier.as_ref() {
+        let result = applier.apply_lorawan_sensor_config(
+            dev_eui.clone(),
+            Some(name.clone()),
+            Some(serial_number.clone()),
+            None, // location: not set at provisioning
+        );
+        if result.success {
+            if let Some(cfgs) = deps.lorawan_configs.as_ref() {
+                if let Ok(mut v) = cfgs.write() {
+                    if !v.iter().any(|c| c.dev_eui == dev_eui) {
+                        v.push(LoRaWANSensorConfig {
+                            dev_eui: dev_eui.clone(),
+                            name: Some(name.clone()),
+                            serial_number: Some(serial_number.clone()),
+                            location: None,
+                            enabled: true,
+                            field_thresholds: Vec::new(),
+                            disarmed_fields: Vec::new(),
+                        });
+                    }
+                }
+            }
+            // Insert a stub in shared state so the next periodic publish
+            // includes the node even before its first uplink arrives.
+            // Without this, the backend's sync would consider the
+            // optimistic entry stale and drop it.
+            if let Some(state) = deps.lorawan_state.as_ref() {
+                if let Ok(mut s) = state.write() {
+                    s.sensors
+                        .entry(dev_eui.clone())
+                        .or_insert_with(|| LoRaWANSensorState {
+                            dev_eui: dev_eui.clone(),
+                            name: name.clone(),
+                            serial_number: Some(serial_number.clone()),
+                            location: None,
+                            fields: HashMap::new(),
+                            field_alarm_states: HashMap::new(),
+                            field_thresholds: Vec::new(),
+                            counters: HashMap::new(),
+                            recent_events: VecDeque::new(),
+                            gateways: Vec::new(),
+                            dr: None,
+                            rssi: None,
+                            snr: None,
+                            downlink_gateway_id: None,
+                            uplink_ring: Default::default(),
+                            last_seen: None,
+                            alarm_state: LoRaWANAlarmState::Disconnected,
+                        });
+                }
+            }
+            eprintln!("[node_add] ✓ LoRaWAN node {} config saved", dev_eui);
+            Ok(())
+        } else {
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "Unknown error".to_string()))
+        }
+    } else {
+        Err("Config applier not initialized".to_string())
+    }
+}

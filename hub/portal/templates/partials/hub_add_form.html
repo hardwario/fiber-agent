@@ -1,0 +1,57 @@
+{#
+  The Add-hub form, or why it is not offered — plan/portal/devices.hub.md §4
+  (form, preconditions, step 6) and §8.3 (validation).
+
+  Context: { add_hub: {
+      server: string,                     -- the Server's hostname ({hub} of the POST)
+      unavailable: string|none,           -- the sentence saying why no Client can be added
+      values: { hostname, gateway_eui, name },          -- kept across a refusal
+      errors: { hostname, gateway_eui, name } (string|none each)
+  } }
+
+  Rendered inside `#add-hub-body` on first paint and again by POST
+  /hubs/{server}/cluster/clients when a field is refused (200, the field's
+  sentence under it, the typed values kept). The browser patterns are UX;
+  the server re-checks every field.
+
+  The signed command can take up to the relay's 20 s timeout;
+  `hx-disabled-elt` keeps a second click from sending a second mint.
+#}
+{% import "partials/icons.html" as ic %}
+{% set a = add_hub %}
+{% if a.unavailable %}
+<div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-sm">
+	{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+	<p>{{ a.unavailable }}</p>
+</div>
+<div class="flex justify-end mt-4">
+	<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "common.actions.close"|t }}</button>
+</div>
+{% else %}
+<p class="text-sm text-muted-fg">{{ "monitoring.hubs.add_hub_intro"|t }}</p>
+<form hx-post="/hubs/{{ a.server }}/cluster/clients" hx-target="#add-hub-body" hx-swap="innerHTML"
+	hx-disabled-elt="find button[type=submit]" class="mt-3 grid gap-3">
+	<label class="grid gap-1 text-sm">
+		<span class="font-medium">{{ "monitoring.hubs.add_hub_hostname_label"|t }} *</span>
+		<input type="text" name="hostname" required value="{{ a.values.hostname }}"
+			pattern="{{ brand.hostname_pattern }}"
+			placeholder="{{ brand.hostname_prefix }}a1b2c3d4" autocomplete="off" spellcheck="false"
+			class="input-v1 input-v1-sm font-mono {% if a.errors.hostname %}border-error{% endif %}">
+		<span class="text-xs text-muted-fg">{{ "monitoring.hubs.add_hub_hostname_hint"|t }}</span>
+		{% if a.errors.hostname %}<span class="text-xs text-error">{{ a.errors.hostname }}</span>{% endif %}
+	</label>
+	<label class="grid gap-1 text-sm">
+		<span class="font-medium">{{ "monitoring.shared.name_label"|t }}</span>
+		<input type="text" name="name" maxlength="64" value="{{ a.values.name }}"
+			class="input-v1 input-v1-sm {% if a.errors.name %}border-error{% endif %}">
+		{% if a.errors.name %}<span class="text-xs text-error">{{ a.errors.name }}</span>{% endif %}
+	</label>
+	{#- No EUI field (amendment 2026-10-28); a scripted POST's refused EUI still says why. -#}
+	{% if a.errors.gateway_eui %}<p class="text-xs text-error">{{ a.errors.gateway_eui }}</p>{% endif %}
+	<p class="text-xs text-muted-fg">{{ "monitoring.hubs.add_hub_once_note"|t }}</p>
+	<div class="flex justify-end gap-2">
+		<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "common.actions.cancel"|t }}</button>
+		<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">{{ "monitoring.hubs.add_hub_submit"|t }}</button>
+	</div>
+</form>
+{% endif %}

@@ -1,0 +1,18 @@
+{
+  "deduplicationId": "c9dbe358-2578-4fb7-b295-66b44369e5ad",
+  "time": "2026-09-27T21:04:11.482161726+00:00",
+  "deviceInfo": {
+    "tenantId": "52f14cd4-c6f1-4fbd-8f87-4025e1d49242",
+    "tenantName": "ChirpStack",
+    "applicationId": "17c82e96-be03-4f38-aef3-f83d48f28d5b",
+    "applicationName": "proximos",
+    "deviceProfileId": "14855bf7-d10d-4aee-b618-ebfcb64dc7ad",
+    "deviceProfileName": "proximos-node-otaa",
+    "deviceName": "STICKER 0413",
+    "devEui": "5876070000000413",
+    "deviceClassEnabled": "CLASS_A",
+    "tags": {}
+  },
+  "devAddr": "01ab23cd",
+  "regionConfigId": "eu868"
+}

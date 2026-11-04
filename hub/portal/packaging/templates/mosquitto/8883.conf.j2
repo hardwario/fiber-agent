@@ -1,0 +1,43 @@
+{#-
+  /run/proximos/mosquitto/8883.conf — the Server's TLS listener for Client Hubs
+  (plan/control/cluster.md §2, §5; decision #38).
+
+  EMITTED ONLY ON A SERVER: when /data/proximos/cluster/role is absent or does not say
+  `client`. On a Client this file is absent, and a copy left by a previous role is
+  removed, so a Client's mosquitto is the loopback listener alone (cluster.md §2). The
+  static half — `per_listener_settings true` and the 1883 block — is
+  recipes-connectivity/mosquitto/files/proximos.conf, which ends with
+  `include_dir /run/proximos/mosquitto`. The directory exists from early boot
+  (that recipe's tmpfiles line), so an empty or never-rendered one still lets the broker
+  start; mosquitto.service is ordered after proximos-render.service, so on a Server it
+  reads this file on its first start.
+
+  The same file's presence is also what opens TCP 8883 in the firewall
+  (proximos-firewall-server.service, ConditionPathExists= on this path): the listener and
+  the open port cannot disagree.
+
+  No variables. It is a template only so that the renderer, which already owns the role
+  gate, decides whether it exists.
+-#}
+# Rendered by `proximosctl render` (crates/proximos-render) on a Server Hub only.
+# Regenerated on every boot; edits made directly to this file are lost.
+#
+# Client Hubs (plan/control/cluster.md §2, §5). TLS with the Hub-CA-signed pair that
+# proximos-tls-cert.sh keeps (it leaves server.key 0640 root:mosquitto, since
+# mosquitto.service runs as mosquitto from the start), no anonymous access, one minted
+# account per Client Hub and an explicit ACL block per account. Both files exist from
+# first boot, empty (proximos-config's data-dirs.conf), so this listener comes up with
+# no account and nobody can log in until one is minted. A mint or a removal rewrites
+# them and sends SIGHUP: mosquitto re-reads both and re-checks every connected session,
+# so a removed or rotated account's sessions are disconnected at the reload, and the
+# loopback sessions stay. A passwd it cannot open or parse makes the reload exit the
+# broker, 1883 included, so whoever writes it must get it right before the SIGHUP. All
+# of this is shown by system/tests/test-mosquitto-broker.sh.
+#
+# IPv4 only (0.0.0.0): a Client connects to its Server over IPv4.
+listener 8883 0.0.0.0
+certfile /data/tls/server.crt
+keyfile /data/tls/server.key
+allow_anonymous false
+password_file /data/mosquitto/passwd
+acl_file /data/mosquitto/acl

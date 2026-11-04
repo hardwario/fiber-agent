@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically save the system clock to the RTC
+Documentation=man:hwclock(8)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

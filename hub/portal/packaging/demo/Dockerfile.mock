@@ -1,0 +1,16 @@
+# dev/mock/mock_publisher.py with its two dependencies baked in, so a Droplet
+# reboot does not depend on PyPI the way dev/docker-compose.yml's `pip install`
+# at container start does. Context is `portal/`, like the portal Dockerfile.
+FROM python:3.12-slim
+RUN pip install --no-cache-dir 'paho-mqtt>=2.0' cryptography
+
+# The repo layout, not a flat copy of the script. `mock_publisher.py` loads the
+# signed-command vectors at import time from `../../crates/fiber-protocol/
+# vectors` — on purpose, so the mock and `control-core` read one verb table
+# instead of keeping copies that drift. Flattened to `/mock`, that path
+# resolved to `/crates/...` and the container exited on every start with
+# "cannot read /crates/fiber-protocol/vectors/catalogue.json".
+COPY dev/mock /portal/dev/mock
+COPY crates/fiber-protocol/vectors /portal/crates/fiber-protocol/vectors
+WORKDIR /portal/dev/mock
+ENTRYPOINT ["python", "mock_publisher.py"]

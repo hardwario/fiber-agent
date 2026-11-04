@@ -1,0 +1,12 @@
+[Unit]
+Description=ProXimos Hub health gate
+Documentation=man:rauc(1)
+After=multi-user.target data.mount
+RequiresMountsFor=/data /boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/proximos-health
+TimeoutStartSec=120
+
+[Install]

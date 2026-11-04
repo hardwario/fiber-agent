@@ -1,0 +1,14 @@
+-- The Hub a Beacon storage window came from (decision #42, 2026-10-13).
+--
+-- Beacons belong to the cluster: every reading of a registered Beacon is
+-- stored once, under the registry's key (the cluster Server's hostname), and
+-- only from the Beacon's home Hub. `hostname` therefore no longer says which
+-- Hub heard the window; this column does, so a chart can show where a Beacon
+-- was when, and a home move is visible in the data.
+--
+-- NULL on every row written before V34 (the Hub was `hostname` then), on
+-- `recording` rows from the Beacon archive and on a standalone Hub's rows
+-- before it saw an `eye/homes` document.
+--
+-- V34: V32 is threshold_hysteresis (!162), V33 sensor_disabled (!166).
+ALTER TABLE eye_readings ADD COLUMN source_hub TEXT;

@@ -1,0 +1,14 @@
+[Unit]
+Description=Load the system clock from the PCF85063 RTC, save it back at shutdown
+Documentation=man:hwclock(8)
+DefaultDependencies=no
+Before=time-sync.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+ExecStart=/usr/sbin/hwclock --hctosys --utc --noadjfile
+ExecStop=/usr/sbin/hwclock --systohc --utc --noadjfile

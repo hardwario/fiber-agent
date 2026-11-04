@@ -1,0 +1,44 @@
+{#
+  History page, the alarms of the selected sensors inside the window, in a
+  card under the sensor table. Built from the /alarms row
+  (partials/alarm_row.html) with the series colour after the name, so the
+  two tables cannot drift apart (monitoring.md, dodatek 2026-10-14).
+
+  Context: alarms[] (the AlarmCtx shape plus `color` and `sensor_label`),
+  selected[] — nothing selected means no section at all.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/alarm_row.html" as ar %}
+{% if selected %}
+<div class="card-v1 p-4">
+	<div class="flex items-center gap-2 mb-3">
+		{{ ic.icon("bell", "h-4 w-4 text-muted-fg") }}
+		<div class="text-sm font-semibold">{{ "monitoring.history.recent_alarms"|t }}</div>
+	</div>
+	{% if not alarms %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.history.no_recent_alarms"|t }}</p>
+	{% else %}
+	<div class="relative w-full overflow-x-auto rounded-xl border border-base-300">
+		<table class="w-full caption-bottom text-sm">
+			<thead class="[&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+				<tr>
+					{{ ui.th("monitoring.list.item_column"|t, "sticky left-0 z-30") }}
+					{{ ui.th("alarms.table.location"|t, "", "loc") }}
+					{{ ui.th("alarms.type_label"|t, "", "type") }}
+					{{ ui.th("alarms.table.state"|t, "", "state") }}
+					{{ ui.th("alarms.table.activated"|t, "", "start") }}
+					{{ ui.th("monitoring.shared.value_column"|t, "hidden", "value") }}
+					{{ ui.th("alarms.table.end"|t, "hidden", "end") }}
+					{{ ui.th("alarms.table.length"|t, "hidden", "length") }}
+					{{ ui.th("") }}
+				</tr>
+			</thead>
+			<tbody>
+				{% for a in alarms %}{{ ar.alarm_row(a, false, a.color) }}{% endfor %}
+			</tbody>
+		</table>
+	</div>
+	{% endif %}
+</div>
+{% endif %}

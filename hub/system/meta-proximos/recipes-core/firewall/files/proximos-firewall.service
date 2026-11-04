@@ -1,0 +1,20 @@
+[Unit]
+Description=ProXimos Hub packet filter
+Documentation=man:nft(8)
+Wants=network-pre.target
+Before=network-pre.target
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/share/proximos/firewall.nft
+ExecReload=/usr/sbin/nft -f /usr/share/proximos/firewall.nft
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=sysinit.target

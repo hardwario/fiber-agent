@@ -1,0 +1,69 @@
+{#
+  One probe's detail page (monitoring.md §6).
+
+  Until 2026-09-15 this was partials/probe_window.html, a fragment swapped
+  into a modal on pages/dashboard.html. A wired probe is the only sensor
+  kind with no page of its own — a Node has /nodes/{key} and a Beacon has
+  /beacons/{mac} — so the same click on the same list opened a modal for one
+  row and a page for the next. It is a page now, the modal and its ~200
+  lines of opener/pushState JS are gone, and a group row navigates like
+  every other row in the portal (`data-row-href`).
+
+  Context:
+    w      routes::probe_routes::ProbeWindowCtx
+    error  string|none — already translated, from a manual event's redirect
+
+  It is a SNAPSHOT over the chosen range, not a live region (spec §7): no
+  `hx-trigger` anywhere in this file, and the range pills are plain links,
+  so the whole page is re-rendered by the server. That is also what keeps
+  the aggregates and the curve on the same seconds — the server resolves the
+  range once and pins `from`/`to` into both.
+
+  The chart is the existing island — `static/js/echarts.min.js` +
+  `portal-charts.js`, config in a `<script type="application/json">` — with
+  no new charting dependency (§6.1).
+
+  The small script at the foot is what is left of the dialog's JS: the
+  per-viewer "events in chart" toggle (localStorage, §6.3), the client-side
+  PNG capture (§6.4) and the delete confirmations. It runs during parse,
+  before the deferred `portal-charts.js`, which is what lets it set
+  `data-chart-events` before the island is ever built — the island reads
+  that attribute once, at build time.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+{% block title %}{{ w.name }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{{ ui.back_link("/", "monitoring.groups.back_to_monitoring"|t) }}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+
+	{# --- Identity header, same one-row shape as the Node and Beacon pages.
+	   The two secondary links sit here rather than in a footer: on a page
+	   they are navigation, and navigation belongs at the top. #}
+	<div class="card-v1 p-4 flex flex-wrap items-center justify-between gap-3">
+		<div class="min-w-0">
+			<h1 class="text-lg font-bold truncate">{{ w.name }}</h1>
+			<p class="text-xs text-muted-fg truncate">
+				{{ w.device_label }}{% if w.description %} · {{ w.description }}{% endif %}
+			</p>
+		</div>
+		<div class="flex items-center gap-4 text-sm">
+			{% if w.device_href %}
+			<a class="link" href="{{ w.device_href }}">{{ "monitoring.probe_detail.device_link"|t }} →</a>
+			{% endif %}
+			{% if w.history_href %}
+			<a class="link" href="{{ w.history_href }}">{{ "monitoring.probe_detail.history_link"|t }} →</a>
+			{% endif %}
+		</div>
+	</div>
+
+	{% include "partials/probe_window.html" %}
+</div>
+{% endblock %}

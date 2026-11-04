@@ -1,0 +1,70 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+# 8883 is NOT here. mosquitto's TLS listener for Client Hubs runs on a Server
+# only (plan/control/cluster.md §2, §5), and the role is known only once /data
+# is mounted and proximos-render has run - long after this rule set must be in
+# place. So it starts closed on every Hub, and proximos-firewall-server.service
+# adds 8883 to @server_tcp below when, and only when, the renderer has written
+# the Server's listener config (/run/proximos/mosquitto/8883.conf).
+define open_tcp = { 22, 443 }
+
+define open_udp = { 5353, 68 }
+
+table inet proximos {
+    # Ports that only a Server Hub opens, filled at runtime by
+    # proximos-firewall-server.service (firewall-server.nft). Empty here, and
+    # emptied again by every reload of this file (flush ruleset), which that
+    # unit follows with ReloadPropagatedFrom=.
+    set server_tcp {
+        type inet_service
+    }
+
+    set ssh_rate_v4 {
+        type ipv4_addr
+        size 4096
+        flags dynamic, timeout
+        timeout 2m
+    }
+
+    set ssh_rate_v6 {
+        type ipv6_addr
+        size 4096
+        flags dynamic, timeout
+        timeout 2m
+    }
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iif lo accept
+
+        ct state established,related accept
+
+        ct state invalid drop
+
+        icmp type echo-request accept
+        icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query, mld-listener-report, mld-listener-done } accept
+
+        tcp dport 22 ct state new add @ssh_rate_v4 { ip saddr limit rate over 50/minute burst 50 packets } drop
+        tcp dport 22 ct state new add @ssh_rate_v6 { ip6 saddr limit rate over 50/minute burst 50 packets } drop
+
+        tcp dport $open_tcp accept
+        tcp dport @server_tcp accept
+        udp dport $open_udp accept
+
+        # Broadcast and multicast nobody listens to (DHCP, mDNS, SSDP, NetBIOS from the LAN) are
+        # most of what reaches here: dropped quietly, so the log keeps the rate-limited budget
+        # for unicast that was actually aimed at this Hub.
+        meta pkttype { broadcast, multicast } drop
+        limit rate 5/minute log prefix "PROXIMOS-FW-DROP: " level warn
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

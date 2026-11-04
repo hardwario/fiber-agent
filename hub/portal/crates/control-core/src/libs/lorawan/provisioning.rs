@@ -1,0 +1,1210 @@
+//! ChirpStack gRPC-web device provisioning
+//!
+//! Registers HARDWARIO NODE devices in ChirpStack via gRPC-web API.
+//! Manual protobuf encoding - same pattern as chirpstack-provision.py.
+
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
+
+// 127.0.0.1 instead of "localhost" to avoid IPv6 ::1 resolution surprises —
+// connect_timeout takes a single SocketAddr, so we must pick the right one.
+// ChirpStack binds 0.0.0.0:8080, so IPv4 is the safe choice.
+const CHIRPSTACK_HOST: &str = "127.0.0.1";
+const CHIRPSTACK_PORT: u16 = 8080;
+const LORAWAN_CONFIG_PATH: &str = "/data/lorawan/config.json";
+
+// --- Minimal Protobuf Encoder ---
+
+fn encode_varint(value: u64) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut v = value;
+    while v > 0x7F {
+        result.push(((v & 0x7F) | 0x80) as u8);
+        v >>= 7;
+    }
+    result.push((v & 0x7F) as u8);
+    result
+}
+
+fn encode_field(field_number: u32, wire_type: u8, data: &[u8]) -> Vec<u8> {
+    let tag = encode_varint(((field_number as u64) << 3) | wire_type as u64);
+    let mut result = tag;
+    result.extend_from_slice(data);
+    result
+}
+
+fn encode_string(field_number: u32, value: &str) -> Vec<u8> {
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let encoded = value.as_bytes();
+    let mut data = encode_varint(encoded.len() as u64);
+    data.extend_from_slice(encoded);
+    encode_field(field_number, 2, &data)
+}
+
+fn encode_submessage(field_number: u32, data: &[u8]) -> Vec<u8> {
+    let mut len_prefixed = encode_varint(data.len() as u64);
+    len_prefixed.extend_from_slice(data);
+    encode_field(field_number, 2, &len_prefixed)
+}
+
+fn encode_uint32(field_number: u32, value: u64) -> Vec<u8> {
+    encode_field(field_number, 0, &encode_varint(value))
+}
+
+/// Decode a varint from data at position. Returns (value, new_pos).
+fn decode_varint(data: &[u8], pos: usize) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    let mut p = pos;
+    loop {
+        if p >= data.len() {
+            return None;
+        }
+        let byte = data[p];
+        result |= ((byte & 0x7F) as u64) << shift;
+        p += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    Some((result, p))
+}
+
+/// Decode protobuf message into field number -> bytes map (string fields only)
+fn decode_message(data: &[u8]) -> std::collections::HashMap<u32, Vec<u8>> {
+    let mut fields = std::collections::HashMap::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let (tag, new_pos) = match decode_varint(data, pos) {
+            Some(v) => v,
+            None => break,
+        };
+        pos = new_pos;
+        let field_number = (tag >> 3) as u32;
+        let wire_type = (tag & 0x07) as u8;
+
+        match wire_type {
+            0 => {
+                // varint - skip
+                match decode_varint(data, pos) {
+                    Some((_, new_pos)) => pos = new_pos,
+                    None => break,
+                }
+            }
+            2 => {
+                // length-delimited
+                let (length, new_pos) = match decode_varint(data, pos) {
+                    Some(v) => v,
+                    None => break,
+                };
+                pos = new_pos;
+                let end = pos + length as usize;
+                if end <= data.len() {
+                    fields
+                        .entry(field_number)
+                        .or_insert_with(|| data[pos..end].to_vec());
+                }
+                pos = end;
+            }
+            5 => pos += 4, // 32-bit
+            1 => pos += 8, // 64-bit
+            _ => break,
+        }
+    }
+    fields
+}
+
+/// Read the value of a varint (wire-type 0) field by number from a protobuf
+/// message. Unlike `decode_message` (which keeps only length-delimited fields),
+/// this reads scalar varints — used to pull `seconds` out of a nested
+/// google.protobuf.Timestamp. Returns None when the field is absent.
+fn decode_varint_field(data: &[u8], target_field: u32) -> Option<u64> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (tag, np) = decode_varint(data, pos)?;
+        pos = np;
+        let field_number = (tag >> 3) as u32;
+        let wire_type = (tag & 0x07) as u8;
+        match wire_type {
+            0 => {
+                let (value, np) = decode_varint(data, pos)?;
+                pos = np;
+                if field_number == target_field {
+                    return Some(value);
+                }
+            }
+            2 => {
+                let (len, np) = decode_varint(data, pos)?;
+                pos = np.checked_add(len as usize)?;
+                if pos > data.len() {
+                    return None;
+                }
+            }
+            5 => pos = pos.checked_add(4)?,
+            1 => pos = pos.checked_add(8)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
+// --- gRPC-web Transport ---
+
+fn grpc_web_call(
+    method: &str,
+    request_data: &[u8],
+    token: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    // Frame: 1 byte flags (0x00=data) + 4 bytes big-endian length + payload
+    let mut frame = vec![0u8]; // flags = 0 (data frame)
+    frame.extend_from_slice(&(request_data.len() as u32).to_be_bytes());
+    frame.extend_from_slice(request_data);
+
+    let mut headers = format!(
+        "POST /{method} HTTP/1.1\r\n\
+         Host: {host}:{port}\r\n\
+         Content-Type: application/grpc-web+proto\r\n\
+         Accept: application/grpc-web+proto\r\n\
+         X-Grpc-Web: 1\r\n\
+         Content-Length: {len}\r\n",
+        method = method,
+        host = CHIRPSTACK_HOST,
+        port = CHIRPSTACK_PORT,
+        len = frame.len(),
+    );
+    if let Some(t) = token {
+        headers.push_str(&format!("Authorization: Bearer {}\r\n", t));
+    }
+    headers.push_str("\r\n");
+
+    let addr = format!("{}:{}", CHIRPSTACK_HOST, CHIRPSTACK_PORT);
+    let socket_addr = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve ChirpStack address {}: {}", addr, e))?
+        .next()
+        .ok_or_else(|| format!("No address found for ChirpStack at {}", addr))?;
+    let mut stream =
+        TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5)).map_err(|e| {
+            format!(
+                "Failed to connect to ChirpStack at {} (5s timeout): {}",
+                addr, e
+            )
+        })?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("Failed to set timeout: {}", e))?;
+
+    stream
+        .write_all(headers.as_bytes())
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+    stream
+        .write_all(&frame)
+        .map_err(|e| format!("Failed to send body: {}", e))?;
+
+    // Read response
+    let mut response = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => response.extend_from_slice(&buf[..n]),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
+            Err(e) => return Err(format!("Failed to read response: {}", e)),
+        }
+    }
+
+    // Find body after \r\n\r\n
+    let header_end = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "Invalid HTTP response: no header end".to_string())?;
+
+    // Check HTTP status
+    let header_str = String::from_utf8_lossy(&response[..header_end]);
+    if !header_str.starts_with("HTTP/1.1 200") && !header_str.starts_with("HTTP/1.0 200") {
+        let status_line = header_str.lines().next().unwrap_or("");
+        return Err(format!("HTTP error: {}", status_line));
+    }
+
+    // Some chirpstack endpoints return gRPC trailers as HTTP headers when the
+    // response carries no data frame (e.g. an early validation failure). Treat
+    // a non-zero grpc-status in HTTP headers as a hard error instead of
+    // silently swallowing it as success.
+    {
+        let lower = header_str.to_lowercase();
+        if let Some(idx) = lower.find("grpc-status:") {
+            let rest = &lower[idx + "grpc-status:".len()..];
+            let val: String = rest
+                .chars()
+                .take_while(|c| !matches!(c, '\r' | '\n'))
+                .collect();
+            let val = val.trim();
+            if !val.is_empty() && val != "0" {
+                let msg = lower
+                    .find("grpc-message:")
+                    .map(|i| {
+                        let r = &header_str[i + "grpc-message:".len()..];
+                        r.lines().next().unwrap_or("").trim().to_string()
+                    })
+                    .unwrap_or_default();
+                return Err(format!("gRPC error: grpc-status={} {}", val, msg));
+            }
+        }
+    }
+
+    let body = &response[header_end + 4..];
+
+    // Handle chunked transfer encoding
+    let body = if header_str
+        .to_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked(body)?
+    } else {
+        body.to_vec()
+    };
+
+    if body.len() < 5 {
+        return Ok(None);
+    }
+
+    let flags = body[0];
+    let length = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
+
+    if flags == 0 && length > 0 && body.len() >= 5 + length {
+        // Check for error in trailers after data frame
+        let trailer_start = 5 + length;
+        if trailer_start < body.len() && body[trailer_start] == 0x80 {
+            let trailer_data = parse_trailer(&body[trailer_start..])?;
+            check_grpc_status(&trailer_data)?;
+        }
+        return Ok(Some(body[5..5 + length].to_vec()));
+    }
+
+    // Trailers-only response (flags=0x80)
+    if body[0] == 0x80 {
+        let trailer_data = parse_trailer(&body)?;
+        check_grpc_status(&trailer_data)?;
+    }
+
+    Ok(None)
+}
+
+fn parse_trailer(data: &[u8]) -> Result<String, String> {
+    if data.len() < 5 || data[0] != 0x80 {
+        return Ok(String::new());
+    }
+    let length = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
+    if data.len() >= 5 + length {
+        Ok(String::from_utf8_lossy(&data[5..5 + length]).to_string())
+    } else {
+        Ok(String::new())
+    }
+}
+
+fn check_grpc_status(trailer_data: &str) -> Result<(), String> {
+    if trailer_data.contains("grpc-status:0") || trailer_data.contains("grpc-status: 0") {
+        return Ok(());
+    }
+    if trailer_data.contains("grpc-status:") {
+        return Err(format!("gRPC error: {}", trailer_data));
+    }
+    Ok(())
+}
+
+fn decode_chunked(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    loop {
+        // Find chunk size line
+        let line_end = data[pos..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .map(|p| pos + p);
+        let line_end = match line_end {
+            Some(e) => e,
+            None => break,
+        };
+        let size_str = std::str::from_utf8(&data[pos..line_end])
+            .map_err(|_| "Invalid chunk size".to_string())?
+            .trim();
+        let chunk_size = usize::from_str_radix(size_str, 16)
+            .map_err(|_| format!("Invalid chunk size: {}", size_str))?;
+        if chunk_size == 0 {
+            break;
+        }
+        let chunk_start = line_end + 2;
+        let chunk_end = chunk_start + chunk_size;
+        if chunk_end > data.len() {
+            break;
+        }
+        result.extend_from_slice(&data[chunk_start..chunk_end]);
+        pos = chunk_end + 2; // skip trailing \r\n
+    }
+    Ok(result)
+}
+
+// --- ChirpStack API Methods ---
+
+/// Load the ChirpStack API credentials from `fiber.config.yaml`.
+///
+/// Read from disk on each call rather than injected, matching what this module
+/// already does for the rest of its ChirpStack settings (every entry point
+/// re-reads [`LORAWAN_CONFIG_PATH`]) and what `detector::has_external_gateway` and
+/// `monitor::publish_lorawan_gateways` do for their own config. That matters
+/// here for a specific reason: provisioning is also reachable from the BLE
+/// Node-Add characteristic, which can fire on a device where
+/// `LoRaWANMonitor::new` never ran — so credentials cached at monitor init
+/// would be missing on exactly the path that needs them. It also means a
+/// re-provisioned password takes effect without restarting the agent.
+///
+/// A missing or blank credential is a hard error, never a fallback: a device
+/// whose credentials were not provisioned must fail visibly rather than quietly
+/// reaching ChirpStack as its factory `admin` account.
+fn chirpstack_credentials() -> Result<crate::libs::config::ChirpStackApiConfig, String> {
+    let config = crate::libs::config::Config::load_default()
+        .map_err(|e| format!("cannot read config for ChirpStack credentials: {}", e))?;
+    credentials_from(config)
+}
+
+/// The I/O-free half of [`chirpstack_credentials`], split out so the failure
+/// messages can be tested without a config file on disk.
+fn credentials_from(
+    config: crate::libs::config::Config,
+) -> Result<crate::libs::config::ChirpStackApiConfig, String> {
+    let creds = config
+        .lorawan
+        .map(|lorawan| lorawan.chirpstack)
+        .ok_or_else(|| {
+            "no `lorawan:` section in fiber.config.yaml — ChirpStack API credentials \
+             not provisioned"
+                .to_string()
+        })?;
+    creds.validate()?;
+    Ok(creds)
+}
+
+/// Build the `InternalService/Login` request body.
+///
+/// Split from [`login`] so the field numbering can be tested without a socket.
+/// Note that [`encode_string`] elides empty values, so a blank credential
+/// silently drops its field rather than sending an empty one — see
+/// `empty_password_drops_the_field_entirely`. That is why callers must run
+/// `validate()` first.
+fn login_request(username: &str, password: &str) -> Vec<u8> {
+    [encode_string(1, username), encode_string(2, password)].concat()
+}
+
+fn login() -> Result<String, String> {
+    let creds = chirpstack_credentials()?;
+    let req = login_request(&creds.username, &creds.password);
+
+    let resp = grpc_web_call("api.InternalService/Login", &req, None)?
+        .ok_or_else(|| "Login returned empty response".to_string())?;
+
+    let fields = decode_message(&resp);
+    let jwt = fields
+        .get(&1)
+        .ok_or_else(|| "No JWT in login response".to_string())?;
+    String::from_utf8(jwt.clone()).map_err(|_| "Invalid JWT encoding".to_string())
+}
+
+fn create_device(
+    token: &str,
+    dev_eui: &str,
+    name: &str,
+    description: &str,
+    application_id: &str,
+    device_profile_id: &str,
+    join_eui: Option<&str>,
+) -> Result<(), String> {
+    let mut parts = vec![
+        encode_string(1, dev_eui),
+        encode_string(2, name),
+        encode_string(3, description),
+        encode_string(4, application_id),
+        encode_string(5, device_profile_id),
+    ];
+    if let Some(je) = join_eui {
+        // chirpstack v4 Device.join_eui = 10 (field 6 is skip_fcnt_check, a bool)
+        parts.push(encode_string(10, je));
+    }
+    let device: Vec<u8> = parts.concat();
+
+    let req = encode_submessage(1, &device);
+    grpc_web_call("api.DeviceService/Create", &req, Some(token))?;
+    Ok(())
+}
+
+fn set_device_keys(token: &str, dev_eui: &str, app_key: &str) -> Result<(), String> {
+    // DeviceKeys message (proto): dev_eui=1, nwk_key=2, app_key=3.
+    // LoRaWAN 1.0.x convention: nwk_key slot stores the same value as app_key.
+    let keys = [
+        encode_string(1, dev_eui),
+        encode_string(2, app_key),
+        encode_string(3, app_key),
+    ]
+    .concat();
+
+    let req = encode_submessage(1, &keys);
+    grpc_web_call("api.DeviceService/CreateKeys", &req, Some(token))?;
+    Ok(())
+}
+
+fn delete_device(token: &str, dev_eui: &str) -> Result<(), String> {
+    // DeleteDeviceRequest { string dev_eui = 1; } — flat message, no submessage wrap.
+    let req = encode_string(1, dev_eui);
+    grpc_web_call("api.DeviceService/Delete", &req, Some(token))?;
+    Ok(())
+}
+
+fn activate_device_abp(
+    token: &str,
+    dev_eui: &str,
+    dev_addr: &str,
+    nwk_s_key: &str,
+    app_s_key: &str,
+) -> Result<(), String> {
+    // For LoRaWAN 1.0.x ABP: all three network session keys = nwkskey
+    let activation = [
+        encode_string(1, dev_eui),
+        encode_string(2, dev_addr),
+        encode_string(3, app_s_key), // app_s_key
+        encode_string(4, nwk_s_key), // nwk_s_enc_key
+        encode_string(8, nwk_s_key), // s_nwk_s_int_key
+        encode_string(9, nwk_s_key), // f_nwk_s_int_key
+    ]
+    .concat();
+
+    let req = encode_submessage(1, &activation);
+    grpc_web_call("api.DeviceService/Activate", &req, Some(token))?;
+    Ok(())
+}
+
+/// Extracts `application_id` from an already-parsed lorawan config JSON value
+/// — the same file `provision_node`/`provision_node_otaa` read below. Split
+/// out as a pure function so it's testable without touching the filesystem.
+pub fn application_id_from_config(config: &serde_json::Value) -> Option<String> {
+    config
+        .get("application_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Reads the ChirpStack application_id straight from `/data/lorawan/config.json`
+/// (written once during first-boot provisioning). Used as a startup fallback
+/// for the LoRaWAN monitor's `last_app_id` cache, so downlinks work even
+/// before any Node uplink has been observed in the current process's
+/// lifetime — otherwise every `fiber.service` restart leaves commands broken
+/// until some Node happens to transmit again.
+pub fn read_application_id() -> Result<String, String> {
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH)
+        .map_err(|e| format!("Cannot read {}: {}", LORAWAN_CONFIG_PATH, e))?;
+    let config: serde_json::Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
+    application_id_from_config(&config)
+        .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))
+}
+
+/// Provision a HARDWARIO NODE in ChirpStack: login + create device + ABP activate.
+///
+/// Reads application_id and device_profile_id from /data/lorawan/config.json.
+pub fn provision_node(
+    dev_eui: &str,
+    name: &str,
+    serial_number: &str,
+    dev_addr: &str,
+    nwk_s_key: &str,
+    app_s_key: &str,
+) -> Result<(), String> {
+    // Read provisioning config
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH).map_err(|e| {
+        format!(
+            "Cannot read {}: {}. Has ChirpStack been provisioned?",
+            LORAWAN_CONFIG_PATH, e
+        )
+    })?;
+
+    let config: serde_json::Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
+
+    let application_id = config
+        .get("application_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
+
+    let device_profile_id = config
+        .get("device_profile_id_abp")
+        .or_else(|| config.get("device_profile_id")) // legacy fallback during rollout
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing device_profile_id_abp in {}", LORAWAN_CONFIG_PATH))?;
+
+    // Login
+    let token = login()?;
+
+    // Create device (handle ALREADY_EXISTS gracefully)
+    let description = if serial_number.is_empty() {
+        "HARDWARIO NODE".to_string()
+    } else {
+        format!("HARDWARIO NODE S/N: {}", serial_number)
+    };
+
+    match create_device(
+        &token,
+        dev_eui,
+        name,
+        &description,
+        application_id,
+        device_profile_id,
+        None,
+    ) {
+        Ok(()) => {
+            eprintln!(
+                "[lorawan-provision] Created device {} in ChirpStack",
+                dev_eui
+            );
+        }
+        Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
+            eprintln!(
+                "[lorawan-provision] Device {} already exists in ChirpStack",
+                dev_eui
+            );
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Activate with ABP keys
+    activate_device_abp(&token, dev_eui, dev_addr, nwk_s_key, app_s_key)?;
+    eprintln!(
+        "[lorawan-provision] Activated device {} with ABP keys",
+        dev_eui
+    );
+
+    Ok(())
+}
+
+/// Pick the ChirpStack OTAA device profile for a node.
+///
+/// The factory QR label carries a vendor `profile_id` (1-99) that says which
+/// profile the node was built for — which is what fixes its region, and
+/// therefore whether it can talk to this gateway at all. Until now that number
+/// was decoded and thrown away, so a US915 node registered cleanly against an
+/// EU868 gateway and then simply never joined, with nothing anywhere saying why.
+///
+/// Resolution, in order:
+///
+/// 1. **No `profile_id`** (manual entry, an older viewer, the mobile app) —
+///    `device_profile_id_otaa`, exactly as before.
+/// 2. **`device_profile_ids_otaa` maps it** — that profile.
+/// 3. **The map exists and does NOT list it** — refuse. This is the whole point:
+///    a node built for a profile this gateway has no answer for is a mistake
+///    worth stopping at registration rather than discovering as silence.
+/// 4. **No map configured at all** — `device_profile_id_otaa`, so every gateway
+///    already in the field keeps working untouched.
+fn resolve_otaa_profile(
+    config: &serde_json::Value,
+    profile_id: Option<u32>,
+) -> Result<&str, String> {
+    let default = || {
+        config
+            .get("device_profile_id_otaa")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Missing device_profile_id_otaa in {} — re-run lorawan-setup to provision the OTAA profile",
+                    LORAWAN_CONFIG_PATH
+                )
+            })
+    };
+
+    let Some(id) = profile_id else {
+        return default();
+    };
+    let Some(map) = config
+        .get("device_profile_ids_otaa")
+        .and_then(|v| v.as_object())
+    else {
+        return default();
+    };
+    if let Some(uuid) = map.get(&id.to_string()).and_then(|v| v.as_str()) {
+        return Ok(uuid);
+    }
+    let mut known: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+    known.sort();
+    Err(format!(
+        "This sensor is built for device profile {} and this gateway has no such profile \
+         (it knows: {}). Registering it would create a device that never joins — check the \
+         sensor's region, or add profile {} to device_profile_ids_otaa in {}.",
+        id,
+        if known.is_empty() {
+            "none".to_string()
+        } else {
+            known.join(", ")
+        },
+        id,
+        LORAWAN_CONFIG_PATH
+    ))
+}
+
+/// Can this gateway serve a node built for `profile_id`?
+///
+/// Split out from provisioning so the answer is known **before** anything is
+/// written. A profile this gateway has no answer for is a permanent refusal, not
+/// a transient one: unlike "ChirpStack is down", retrying will never make it
+/// work, so the caller must stop rather than save a sensor that can never join.
+pub fn check_otaa_profile(profile_id: Option<u32>) -> Result<(), String> {
+    // Nothing to check, and nothing to read the config for.
+    if profile_id.is_none() {
+        return Ok(());
+    }
+    // An unreadable or unparsable config is NOT this function's problem to
+    // report. Provisioning itself is about to fail on it with a better message,
+    // and refusing here would newly reject adds on a gateway whose ChirpStack
+    // was never provisioned — which today still saves the sensor config. Only a
+    // genuine profile mismatch is a permanent refusal.
+    let Ok(config_str) = std::fs::read_to_string(LORAWAN_CONFIG_PATH) else {
+        return Ok(());
+    };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) else {
+        return Ok(());
+    };
+    resolve_otaa_profile(&config, profile_id).map(|_| ())
+}
+
+/// Provision a HARDWARIO NODE in ChirpStack via OTAA: login + create device + set keys.
+///
+/// Reads application_id and the device profile from /data/lorawan/config.json;
+/// see `resolve_otaa_profile` for how `profile_id` selects between profiles.
+pub fn provision_node_otaa(
+    dev_eui: &str,
+    name: &str,
+    serial_number: &str,
+    app_key: &str,
+    join_eui: &str,
+    profile_id: Option<u32>,
+) -> Result<(), String> {
+    let config_str = std::fs::read_to_string(LORAWAN_CONFIG_PATH).map_err(|e| {
+        format!(
+            "Cannot read {}: {}. Has ChirpStack been provisioned?",
+            LORAWAN_CONFIG_PATH, e
+        )
+    })?;
+
+    let config: serde_json::Value = serde_json::from_str(&config_str)
+        .map_err(|e| format!("Invalid JSON in {}: {}", LORAWAN_CONFIG_PATH, e))?;
+
+    let application_id = config
+        .get("application_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("Missing application_id in {}", LORAWAN_CONFIG_PATH))?;
+
+    let device_profile_id = resolve_otaa_profile(&config, profile_id)?;
+
+    let token = login()?;
+
+    let description = if serial_number.is_empty() {
+        "HARDWARIO NODE".to_string()
+    } else {
+        format!("HARDWARIO NODE S/N: {}", serial_number)
+    };
+
+    match create_device(
+        &token,
+        dev_eui,
+        name,
+        &description,
+        application_id,
+        device_profile_id,
+        Some(join_eui),
+    ) {
+        Ok(()) => {
+            eprintln!(
+                "[lorawan-provision] Created OTAA device {} in ChirpStack",
+                dev_eui
+            );
+        }
+        Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
+            eprintln!(
+                "[lorawan-provision] Device {} already exists in ChirpStack",
+                dev_eui
+            );
+        }
+        Err(e) => return Err(e),
+    }
+
+    set_device_keys(&token, dev_eui, app_key)?;
+    eprintln!("[lorawan-provision] Set OTAA keys for device {}", dev_eui);
+
+    Ok(())
+}
+
+/// Remove a HARDWARIO NODE from ChirpStack: login + DeviceService/Delete.
+/// NOT_FOUND is treated as success (idempotent — device already absent is fine).
+pub fn deprovision_node(dev_eui: &str) -> Result<(), String> {
+    let token = login()?;
+    match delete_device(&token, dev_eui) {
+        Ok(()) => {
+            eprintln!(
+                "[lorawan-provision] Deleted device {} from ChirpStack",
+                dev_eui
+            );
+            Ok(())
+        }
+        Err(e)
+            if e.contains("NOT_FOUND")
+                || e.to_lowercase().contains("not found")
+                || e.contains("grpc-status:5")
+                || e.contains("grpc-status: 5") =>
+        {
+            eprintln!(
+                "[lorawan-provision] Device {} already absent in ChirpStack",
+                dev_eui
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+// --- ChirpStack Gateway Methods ---
+
+/// Validate and normalize a Gateway EUI: strip whitespace/`:`/`-` separators,
+/// require exactly 16 hex characters, return lowercase.
+pub fn normalize_eui(eui: &str) -> Result<String, String> {
+    let s: String = eui
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
+        .collect();
+    if s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(s.to_lowercase())
+    } else {
+        Err(format!(
+            "Invalid Gateway EUI '{}': expected 16 hex characters",
+            eui
+        ))
+    }
+}
+
+/// Resolve the ChirpStack tenant UUID required by GatewayService/Create.
+///
+/// 1. Prefer `tenant_id` from /data/lorawan/config.json (written by
+///    chirpstack-provision.py — same file the device functions read).
+/// 2. Fall back to TenantService/List and take the first tenant (a fresh v4
+///    install has a single default tenant).
+fn resolve_tenant_id(token: &str) -> Result<String, String> {
+    if let Ok(config_str) = std::fs::read_to_string(LORAWAN_CONFIG_PATH) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
+            if let Some(tenant_id) = config.get("tenant_id").and_then(|v| v.as_str()) {
+                if !tenant_id.is_empty() {
+                    return Ok(tenant_id.to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback: ListTenantsRequest { uint32 limit = 1; } → ListTenantsResponse
+    // { repeated TenantListItem result = 2; }, TenantListItem { string id = 1; }.
+    let req = encode_uint32(1, 10);
+    let resp = grpc_web_call("api.TenantService/List", &req, Some(token))?
+        .ok_or_else(|| "TenantService/List returned empty response".to_string())?;
+    let fields = decode_message(&resp);
+    let result = fields
+        .get(&2)
+        .ok_or_else(|| "No tenants found in ChirpStack (TenantService/List empty)".to_string())?;
+    let tenant_fields = decode_message(result);
+    let id = tenant_fields
+        .get(&1)
+        .ok_or_else(|| "Tenant list item missing id".to_string())?;
+    String::from_utf8(id.clone()).map_err(|_| "Invalid tenant_id encoding".to_string())
+}
+
+fn create_gateway(
+    token: &str,
+    gateway_id: &str,
+    name: &str,
+    description: &str,
+    tenant_id: &str,
+) -> Result<(), String> {
+    // Gateway { gateway_id=1, name=2, description=3, tenant_id=5 (REQUIRED) }
+    let gateway = [
+        encode_string(1, gateway_id),
+        encode_string(2, name),
+        encode_string(3, description),
+        encode_string(5, tenant_id),
+    ]
+    .concat();
+
+    // CreateGatewayRequest { Gateway gateway = 1; }
+    let req = encode_submessage(1, &gateway);
+    grpc_web_call("api.GatewayService/Create", &req, Some(token))?;
+    Ok(())
+}
+
+fn delete_gateway(token: &str, gateway_id: &str) -> Result<(), String> {
+    // DeleteGatewayRequest { string gateway_id = 1; } — flat, like delete_device.
+    let req = encode_string(1, gateway_id);
+    grpc_web_call("api.GatewayService/Delete", &req, Some(token))?;
+    Ok(())
+}
+
+/// Fetch a gateway by id. Returns the raw GetGatewayResponse bytes (parsed by
+/// the status publisher) or None when ChirpStack returns no data frame.
+fn get_gateway(token: &str, gateway_id: &str) -> Result<Option<Vec<u8>>, String> {
+    // GetGatewayRequest { string gateway_id = 1; } → GetGatewayResponse
+    let req = encode_string(1, gateway_id);
+    grpc_web_call("api.GatewayService/Get", &req, Some(token))
+}
+
+/// Register an external LoRaWAN gateway in ChirpStack: login + resolve tenant +
+/// GatewayService/Create. ALREADY_EXISTS is treated as success (idempotent).
+pub fn provision_external_gateway(gateway_eui: &str, name: &str) -> Result<(), String> {
+    let token = login()?;
+    let tenant_id = resolve_tenant_id(&token)?;
+
+    match create_gateway(
+        &token,
+        gateway_eui,
+        name,
+        "External LoRaWAN gateway (FIBER)",
+        &tenant_id,
+    ) {
+        Ok(()) => {
+            eprintln!(
+                "[lorawan-provision] Created gateway {} in ChirpStack",
+                gateway_eui
+            );
+            Ok(())
+        }
+        Err(e) if e.contains("ALREADY_EXISTS") || e.to_lowercase().contains("already exists") => {
+            eprintln!(
+                "[lorawan-provision] Gateway {} already exists in ChirpStack",
+                gateway_eui
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Remove an external gateway from ChirpStack: login + GatewayService/Delete.
+/// NOT_FOUND is treated as success (idempotent — gateway already absent is fine).
+pub fn deprovision_external_gateway(gateway_eui: &str) -> Result<(), String> {
+    let token = login()?;
+    match delete_gateway(&token, gateway_eui) {
+        Ok(()) => {
+            eprintln!(
+                "[lorawan-provision] Deleted gateway {} from ChirpStack",
+                gateway_eui
+            );
+            Ok(())
+        }
+        Err(e)
+            if e.contains("NOT_FOUND")
+                || e.to_lowercase().contains("not found")
+                || e.contains("grpc-status:5")
+                || e.contains("grpc-status: 5") =>
+        {
+            eprintln!(
+                "[lorawan-provision] Gateway {} already absent in ChirpStack",
+                gateway_eui
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// A gateway counts as online when ChirpStack saw it within this window.
+const GATEWAY_ONLINE_WINDOW_SECS: u64 = 300; // 5 minutes
+
+/// Live status for one external gateway, resolved from ChirpStack.
+#[derive(Debug, Clone)]
+pub struct GatewayStatus {
+    pub gateway_eui: String,
+    pub online: bool,
+    /// RFC3339 UTC timestamp of the gateway's last contact, when known.
+    pub last_seen: Option<String>,
+}
+
+/// Extract the `last_seen_at` epoch seconds from a GetGatewayResponse.
+///
+/// `GetGatewayResponse.last_seen_at` is field 4, a google.protobuf.Timestamp
+/// (`int64 seconds = 1; int32 nanos = 2;`). `decode_message` captures the
+/// (length-delimited) Timestamp submessage; we then read its `seconds` varint.
+/// Returns None when the gateway has never been seen (the field is absent).
+fn last_seen_secs(resp: &[u8]) -> Option<u64> {
+    let last_seen_at = decode_message(resp).get(&4)?.clone();
+    decode_varint_field(&last_seen_at, 1)
+}
+
+/// Format epoch seconds as an RFC3339 UTC string (e.g. `2026-06-30T12:00:00+00:00`).
+fn epoch_to_rfc3339(secs: u64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339())
+}
+
+/// Decide online from a last-seen epoch and the current time. A gateway never
+/// seen is offline; a future timestamp (clock skew) is treated as just-seen.
+fn gateway_online(now_secs: u64, last_seen_secs: Option<u64>, window: u64) -> bool {
+    match last_seen_secs {
+        Some(s) => now_secs.saturating_sub(s) <= window,
+        None => false,
+    }
+}
+
+/// Query live online status for a set of gateways, logging in once.
+///
+/// `online` is derived from the gateway's `last_seen_at` (GetGatewayResponse
+/// field 4, a google.protobuf.Timestamp): a gateway is online when ChirpStack
+/// saw it within `GATEWAY_ONLINE_WINDOW_SECS`. A gateway never seen, or last
+/// seen older than the window, is offline. `last_seen` carries the RFC3339
+/// timestamp when known. On login failure every gateway is reported offline.
+/// Order is preserved.
+pub fn get_gateways_status(gateway_euis: &[String]) -> Vec<GatewayStatus> {
+    let token = match login() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[lorawan-provision] gateway status login failed: {}", e);
+            return gateway_euis
+                .iter()
+                .map(|eui| GatewayStatus {
+                    gateway_eui: eui.clone(),
+                    online: false,
+                    last_seen: None,
+                })
+                .collect();
+        }
+    };
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    gateway_euis
+        .iter()
+        .map(|eui| {
+            // GetGatewayResponse { Gateway gateway = 1; ... last_seen_at = 4; }
+            let last = match get_gateway(&token, eui) {
+                Ok(Some(resp)) => last_seen_secs(&resp),
+                _ => None,
+            };
+            GatewayStatus {
+                gateway_eui: eui.clone(),
+                online: gateway_online(now_secs, last, GATEWAY_ONLINE_WINDOW_SECS),
+                last_seen: last.and_then(epoch_to_rfc3339),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_request_carries_the_configured_credentials() {
+        let req = login_request("operator", "s3cret");
+        assert_eq!(
+            req,
+            [encode_string(1, "operator"), encode_string(2, "s3cret")].concat()
+        );
+        assert!(
+            !req.windows(5).any(|w| w == b"admin"),
+            "no hardcoded credential may survive in the request"
+        );
+    }
+
+    /// Why `validate()` has to run before `login()`: `encode_string` elides an
+    /// empty value, so a blank password does not send a blank password — it
+    /// sends a login request with no field 2 at all, which ChirpStack rejects
+    /// with an opaque error that gives an operator nothing to act on.
+    #[test]
+    fn empty_password_drops_the_field_entirely() {
+        assert_eq!(login_request("admin", ""), encode_string(1, "admin"));
+    }
+
+    #[test]
+    fn credentials_from_names_the_missing_section() {
+        let mut config = crate::libs::config::Config::default_config();
+        // `default_config()` leaves `lorawan: None`.
+        let err = credentials_from(config.clone()).expect_err("None must not validate");
+        assert!(err.contains("lorawan"), "got: {err}");
+
+        // Present but unprovisioned: the message must name the exact key.
+        config.lorawan = Some(crate::libs::config::LoRaWANConfig::default());
+        let err = credentials_from(config).expect_err("blank password must not validate");
+        assert!(err.contains("lorawan.chirpstack.password"), "got: {err}");
+    }
+
+    #[test]
+    fn credentials_from_accepts_a_provisioned_config() {
+        let mut config = crate::libs::config::Config::default_config();
+        config.lorawan = Some(crate::libs::config::LoRaWANConfig {
+            chirpstack: crate::libs::config::ChirpStackApiConfig {
+                username: "operator".to_string(),
+                password: "s3cret".to_string(),
+            },
+            ..Default::default()
+        });
+        let creds = credentials_from(config).expect("provisioned config must validate");
+        assert_eq!(creds.username, "operator");
+    }
+
+    #[test]
+    fn varint_field_reads_scalar_by_number() {
+        // Message with field 1 = 1234 and field 2 = 56 (both varints).
+        let mut msg = encode_uint32(1, 1234);
+        msg.extend(encode_uint32(2, 56));
+        assert_eq!(decode_varint_field(&msg, 1), Some(1234));
+        assert_eq!(decode_varint_field(&msg, 2), Some(56));
+        assert_eq!(decode_varint_field(&msg, 3), None);
+    }
+
+    #[test]
+    fn last_seen_secs_parses_timestamp_submessage() {
+        // GetGatewayResponse with last_seen_at (field 4) =
+        // Timestamp { seconds = 1_700_000_000 }.
+        let ts = encode_uint32(1, 1_700_000_000);
+        let resp = encode_submessage(4, &ts);
+        assert_eq!(last_seen_secs(&resp), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn last_seen_secs_absent_when_never_seen() {
+        // A response carrying some other field but no last_seen_at (field 4).
+        let resp = encode_string(2, "some-other-field");
+        assert_eq!(last_seen_secs(&resp), None);
+        assert_eq!(last_seen_secs(&[]), None);
+    }
+
+    #[test]
+    fn online_window_logic() {
+        // Seen 100s ago, window 300s → online.
+        assert!(gateway_online(1_000, Some(900), 300));
+        // Seen 400s ago, window 300s → offline (stale).
+        assert!(!gateway_online(1_000, Some(600), 300));
+        // Never seen → offline.
+        assert!(!gateway_online(1_000, None, 300));
+        // Future timestamp (clock skew) → treated as just-seen → online.
+        assert!(gateway_online(1_000, Some(1_200), 300));
+    }
+
+    #[test]
+    fn epoch_to_rfc3339_formats_utc() {
+        // 1_700_000_000 = 2023-11-14T22:13:20Z
+        let s = epoch_to_rfc3339(1_700_000_000).unwrap();
+        assert!(s.starts_with("2023-11-14T22:13:20"), "got {s}");
+        assert!(s.ends_with("+00:00"), "got {s}");
+    }
+
+    #[test]
+    fn application_id_from_config_reads_the_field() {
+        let config = serde_json::json!({"application_id": "abc-123", "tenant_id": "t1"});
+        assert_eq!(
+            application_id_from_config(&config),
+            Some("abc-123".to_string())
+        );
+    }
+
+    #[test]
+    fn application_id_from_config_missing_field_is_none() {
+        let config = serde_json::json!({"tenant_id": "t1"});
+        assert_eq!(application_id_from_config(&config), None);
+    }
+
+    #[test]
+    fn application_id_from_config_wrong_type_is_none() {
+        let config = serde_json::json!({"application_id": 123});
+        assert_eq!(application_id_from_config(&config), None);
+    }
+
+    /// `resolve_otaa_profile` is the whole point of carrying profile_id: it has
+    /// to keep every existing gateway working while making a region mismatch
+    /// impossible to register silently.
+    mod otaa_profile {
+        use super::super::resolve_otaa_profile;
+
+        fn cfg(json: &str) -> serde_json::Value {
+            serde_json::from_str(json).unwrap()
+        }
+
+        const PLAIN: &str = r#"{"device_profile_id_otaa":"uuid-eu868"}"#;
+        const MAPPED: &str = r#"{
+            "device_profile_id_otaa":"uuid-eu868",
+            "device_profile_ids_otaa":{"1":"uuid-eu868","2":"uuid-us915"}
+        }"#;
+
+        #[test]
+        fn no_profile_id_uses_the_single_configured_profile() {
+            // Manual entry, an older viewer, and the mobile app all land here.
+            assert_eq!(
+                resolve_otaa_profile(&cfg(PLAIN), None).unwrap(),
+                "uuid-eu868"
+            );
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), None).unwrap(),
+                "uuid-eu868"
+            );
+        }
+
+        #[test]
+        fn an_unmapped_gateway_ignores_the_profile_id() {
+            // Every unit in the field today has no map. Refusing there would
+            // break registration everywhere for no safety gain.
+            assert_eq!(
+                resolve_otaa_profile(&cfg(PLAIN), Some(7)).unwrap(),
+                "uuid-eu868"
+            );
+        }
+
+        #[test]
+        fn a_mapped_profile_id_selects_its_own_profile() {
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), Some(1)).unwrap(),
+                "uuid-eu868"
+            );
+            assert_eq!(
+                resolve_otaa_profile(&cfg(MAPPED), Some(2)).unwrap(),
+                "uuid-us915"
+            );
+        }
+
+        #[test]
+        fn a_profile_the_gateway_does_not_have_is_refused() {
+            // The failure this exists to prevent: a US915 node registering
+            // cleanly against an EU868 gateway and then never joining.
+            let err = resolve_otaa_profile(&cfg(MAPPED), Some(9)).unwrap_err();
+            assert!(err.contains("device profile 9"), "{err}");
+            assert!(err.contains("1, 2"), "must list what it does have: {err}");
+            assert!(
+                err.contains("never joins"),
+                "must say why it matters: {err}"
+            );
+        }
+
+        #[test]
+        fn an_unreadable_config_is_not_a_profile_refusal() {
+            // The path exists to catch a mismatch, not to newly reject adds on a
+            // gateway whose ChirpStack was never provisioned — provisioning
+            // itself reports that, with a better message.
+            assert!(super::super::check_otaa_profile(Some(3)).is_ok());
+            assert!(super::super::check_otaa_profile(None).is_ok());
+        }
+
+        #[test]
+        fn a_missing_profile_config_still_explains_itself() {
+            let err = resolve_otaa_profile(&cfg("{}"), None).unwrap_err();
+            assert!(err.contains("device_profile_id_otaa"), "{err}");
+            assert!(err.contains("lorawan-setup"), "{err}");
+        }
+    }
+}

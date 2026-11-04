@@ -1,0 +1,24 @@
+# The FIBER brand: the build fiber-agent packages for Raspberry Pi OS
+# (PROXIMOS_BRAND=fiber). HARDWARIO's logo, icon and palette, from the
+# provisioning app. Flat `key = "string"` only, every key required.
+# plan/portal/branding.md section 2.
+id = "fiber"
+product = "FIBER"
+hub = "FIBER Hub"
+node = "FIBER Node"
+beacon = "FIBER Beacon"
+monitor = "FIBER Monitor"
+# The app that provisions a FIBER Hub over BLE.
+mobile_app = "HARDWARIO Manager"
+hostname_prefix = "fiber-"
+ble_alias_prefix = "fiber-"
+cert_organisation = "FIBER"
+support_url = "https://www.hardwario.com"
+support_email = "ask@hardwario.com"
+theme = "fiber"
+# provisioning/logo.svg's viewBox, 274.79 x 60.
+logo_width = "275"
+logo_height = "60"
+# No FIBER manual yet: /docs shows no PDF link.
+docs_pdf_en = ""
+docs_pdf_cs = ""

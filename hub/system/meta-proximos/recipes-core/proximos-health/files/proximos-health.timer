@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the ProXimos Hub health gate
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

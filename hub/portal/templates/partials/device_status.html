@@ -1,0 +1,44 @@
+{#
+  Hub group header — v1's Sensors tab renders one of these above each
+  device's probe table (legacy-12-nodes.png): a hard-drive glyph, the
+  hostname, an online dot and the probe count, with the standby/version
+  badges this portal also has to show.
+
+  Context: `device` = {
+    hostname: string, online: bool, version: string|none,
+    last_seen: string|none, standby: { active: bool, reason: string|none },
+    sensors: [...]
+  } — the same shape dashboard.html's `device` has, `sensors` included: the
+  SSE path (`sse.rs`) re-renders this partial from the full
+  `render::device_status_ctx`, so the probe count is always current.
+
+  Assumes `device` is not none: dashboard.html only includes this partial
+  once a device exists; the none-state is the page's own "waiting for
+  device" panel, which has no hostname to key an SSE swap id on.
+
+  Outer element is the SSE swap target: id/sse-swap
+  "device-{hostname}-status", hx-swap="outerHTML".
+#}
+{% import "partials/icons.html" as ic %}
+<div id="device-{{ device.hostname }}-status" sse-swap="device-{{ device.hostname }}-status" hx-swap="outerHTML"
+	class="flex flex-wrap items-center gap-2 pt-2">
+	{{ ic.icon("hard-drive", "h-5 w-5 text-primary shrink-0") }}
+	<span class="text-lg font-semibold tracking-tight">{{ device.hostname }}</span>
+	<span class="w-2 h-2 rounded-full {% if device.online %}bg-success{% else %}bg-critical{% endif %}"
+		title="{% if device.online %}{{ "monitoring.shared.online"|t }}{% else %}{{ "monitoring.shared.offline"|t }}{% endif %}"></span>
+	<span class="text-sm text-muted-fg">({{ "monitoring.dashboard.probe_count"|t|replace("{n}", device.sensors|length) }})</span>
+
+	{% if device.standby.active %}
+	<span class="badge-status badge-status-warning" title="{{ device.standby.reason | default('', true) }}">{{ "monitoring.device_status.standby_badge"|t }}</span>
+	{% endif %}
+
+	<span class="badge-outline-v1">
+		{{ device.display_version | default(("monitoring.shared.version_unknown"|t), true) }}
+	</span>
+
+	{% if not device.online %}
+	<span class="text-xs text-muted-fg ml-auto">
+		{{ "monitoring.shared.last_seen"|t|replace("{value}", device.last_seen | default(("common.never"|t), true)) }}
+	</span>
+	{% endif %}
+</div>

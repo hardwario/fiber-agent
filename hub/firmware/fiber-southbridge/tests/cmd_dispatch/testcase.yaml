@@ -1,0 +1,8 @@
+tests:
+  firmware.southbridge.cmd_dispatch:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    tags:
+      - southbridge

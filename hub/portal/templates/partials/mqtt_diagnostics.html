@@ -1,0 +1,116 @@
+{#
+  MQTT ingest diagnostics — plan/portal/mqtt/design.md §7, requirement UI-MQ1.
+
+  Context: `mqtt` = the serialized `crate::mqtt::MqttDiagnostics`:
+    health                       "connected" | "reconnecting" | "degraded"
+    connected                    bool
+    last_disconnect_reason       string|none
+    last_decode_error            string|none  ("topic: error")
+    last_decode_error_age_seconds int|none
+    reconnect_attempts           int
+    disconnected_for_seconds     int|none
+    subscribed_topics            [string]
+    route_counts                 { "kind:topic": int }
+
+  An htmx fragment, not an SSE target: this is a page an operator opens to
+  answer a question, not a banner that must interrupt them — `partials/
+  mqtt_banner.html` is the one that interrupts. It polls itself every 10 s so
+  a reader watching a reconnect sees it resolve without reaching for F5.
+
+  THE VERDICT IS NOT COMPUTED HERE. `health` arrives decided, from
+  `mqtt::diagnostics()`, next to the keepalive constant the rule depends on.
+  A template deriving "degraded" from four fields would put a contract rule
+  (design.md §16 UI-MQ1) where no test looks.
+
+  The topic list is rendered but never pinned by value in a test or golden:
+  it changed shape when GitLab #73 landed (`proximos/+/nodes/+/+`), and it
+  may again.
+
+  Hosted by `pages/mqtt.html`, the third settings tab (the settings index
+  this was designed as a card for was retired on 2026-09-14).
+#}
+{% import "partials/ui.html" as ui %}
+<div id="mqtt-diagnostics"
+     hx-get="/settings/mqtt/diagnostics"
+     hx-trigger="every 10s"
+     hx-swap="outerHTML">
+	{% call ui.page_header("radio", "common.settings.mqtt.title"|t) %}
+		{% if mqtt.health == "connected" %}
+		<span class="badge badge-success badge-sm">{{ "common.settings.mqtt.state.connected"|t }}</span>
+		{% elif mqtt.health == "reconnecting" %}
+		<span class="badge badge-warning badge-sm">{{ "common.settings.mqtt.state.reconnecting"|t }}</span>
+		{% else %}
+		<span class="badge badge-error badge-sm">{{ "common.settings.mqtt.state.degraded"|t }}</span>
+		{% endif %}
+	{% endcall %}
+
+	<p class="text-sm text-muted-fg mt-2">{{ "common.settings.mqtt.explain"|t }}</p>
+
+	{#
+	  Why each non-green state is what it is. "Degraded" with no sentence under
+	  it is a colour, not information — UI-MQ1 asks for the last error text,
+	  because the operator's next action differs entirely between "the broker
+	  is down" and "one device is publishing something we cannot parse".
+	#}
+	{% if not mqtt.connected %}
+	<div role="alert" class="alert alert-warning mt-3">
+		<span>
+			{{ "common.settings.mqtt.disconnected"|t }}
+			{%- if mqtt.disconnected_for_seconds is not none %} ({{ mqtt.disconnected_for_seconds }}s){% endif %}
+			{%- if mqtt.last_disconnect_reason %} — {{ mqtt.last_disconnect_reason }}{% endif %}
+		</span>
+	</div>
+	{% endif %}
+
+	{% if mqtt.last_decode_error %}
+	<div role="alert" class="alert {% if mqtt.health == 'degraded' %}alert-error{% else %}alert-info{% endif %} mt-3">
+		<span>
+			{{ "common.settings.mqtt.last_decode_error"|t }}:
+			<span class="font-mono text-xs">{{ mqtt.last_decode_error }}</span>
+			{%- if mqtt.last_decode_error_age_seconds is not none %} ({{ mqtt.last_decode_error_age_seconds }}s){% endif %}
+		</span>
+	</div>
+	{% endif %}
+
+	<dl class="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-sm max-w-md mt-3">
+		<dt class="text-muted-fg">{{ "common.settings.mqtt.reconnect_attempts"|t }}</dt>
+		<dd class="font-mono tabular-nums">{{ mqtt.reconnect_attempts }}</dd>
+		<dt class="text-muted-fg">{{ "common.settings.mqtt.subscriptions"|t }}</dt>
+		<dd class="font-mono tabular-nums">{{ mqtt.subscribed_topics|length }}</dd>
+	</dl>
+
+	<details class="mt-3">
+		<summary class="text-sm cursor-pointer text-muted-fg">{{ "common.settings.mqtt.subscriptions"|t }}</summary>
+		<ul class="mt-2 font-mono text-xs space-y-0.5">
+			{% for topic in mqtt.subscribed_topics %}
+			<li>{{ topic }}</li>
+			{% else %}
+			<li class="text-muted-fg">{{ "common.settings.mqtt.no_subscriptions"|t }}</li>
+			{% endfor %}
+		</ul>
+	</details>
+
+	{#
+	  Three kinds of key: `routed:<route>` for a message that decoded and
+	  reached the store, `unhandled:<topic>` and `decode_error:<topic>` for
+	  the two ways one does not. The successes key on the *route*, not the
+	  topic, because a topic carries a hostname and often a `dev_eui` and the
+	  map is never pruned (see `route_name` in `mqtt/mod.rs`); the failures
+	  keep the full topic, because a failure is rare and the exact string is
+	  what an operator acts on. Empty means nothing has arrived at all, which
+	  is why it no longer reads as the good case.
+	#}
+	<details class="mt-2">
+		<summary class="text-sm cursor-pointer text-muted-fg">{{ "common.settings.mqtt.route_counts"|t }}</summary>
+		{% if mqtt.route_counts %}
+		<dl class="grid sm:grid-cols-2 gap-x-4 gap-y-1 text-xs mt-2">
+			{% for key, count in mqtt.route_counts|items|sort %}
+			<dt class="font-mono text-muted-fg break-all">{{ key }}</dt>
+			<dd class="font-mono tabular-nums">{{ count }}</dd>
+			{% endfor %}
+		</dl>
+		{% else %}
+		<p class="text-sm text-muted-fg mt-2">{{ "common.settings.mqtt.route_counts_empty"|t }}</p>
+		{% endif %}
+	</details>
+</div>

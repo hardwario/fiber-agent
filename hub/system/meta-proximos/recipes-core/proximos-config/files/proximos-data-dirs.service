@@ -1,0 +1,15 @@
+[Unit]
+Description=Create the ProXimos /data directory tree
+Documentation=man:tmpfiles.d(5) man:systemd-tmpfiles(8)
+RequiresMountsFor=/data
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemd-tmpfiles --create /usr/share/proximos/data-dirs.conf
+
+[Install]
+WantedBy=sysinit.target

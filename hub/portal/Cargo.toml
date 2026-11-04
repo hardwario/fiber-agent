@@ -1,0 +1,136 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+# Line tables only: keeps panic backtraces and clippy/test diagnostics useful
+# while dropping full debug info, which is what shrinks both compile time and
+# the cached target/debug tree — portal:lint and portal:test populate it on
+# every CI run.
+[profile.dev]
+debug = "line-tables-only"
+
+[package]
+name = "portal"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "portal"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1.0.104"
+argon2 = "0.5.3"
+# The join bundle's CA fingerprint, base64url without padding (src/cluster.rs,
+# plan/control/cluster.md §8). The version fiber-protocol already builds.
+base64 = "0.21"
+# "multipart": the calibration-certificate upload (src/routes/calibration_routes.rs,
+# plan/portal/calibration.cs.md §4) is the one route that takes a file.
+axum = { version = "0.8", features = ["multipart"] }
+# "form" (serde_html_form): bulk alarm-acknowledge posts a repeated
+# `ids[]=<id>` field per checked row — axum's own `Form` (serde_urlencoded)
+# can't deserialize a repeated key into a `Vec`, this extractor can.
+axum-extra = { version = "0.12.6", features = ["cookie", "form"] }
+cookie = "0.18"
+# The v2 radio northbound contract — `NodeReading`, the `proximos/{host}/{transport}/nodes/…`
+# topic builder/parser and the `Area` vocabulary — reused directly rather than mirrored into
+# fiber-protocol (plan.md WP-E: "Portal reuses `NodeReading` from control-radio directly").
+# A mirror would be a second copy of a published wire shape, free to drift silently. The
+# direction is one-way: control-radio's standalone guarantee forbids the reverse.
+control-radio = { path = "crates/control-radio" }
+fiber-protocol = { path = "crates/fiber-protocol" }
+futures-util = "0.3.34"
+# This machine's own hostname, to recognise the hub the portal runs on and
+# pair it without a typed code (src/http.rs::resolve_local_hostname). A
+# `gethostname(2)` wrapper — a syscall, so it works under the Landlock
+# ruleset, unlike reading /etc/hostname (which is outside it).
+gethostname = "1.1.0"
+# Email notifications (M6-N, src/notify/email.rs). rustls only — no
+# native-tls/openssl in the image. NOTE: lettre's idna pulls the icu stack;
+# idna_adapter is held at 1.2.0 in Cargo.lock (icu 1.5). That pin is now
+# historical — it was forced when we built with 1.87 (icu 2.3 needs Rust
+# 1.88); on the current 1.94 toolchain nothing requires it, but it stays put
+# until someone deliberately bumps the icu stack.
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls"] }
+# "json": the `tojson` filter — pages/notifications.html hands the saved
+# recipients list to its Alpine editor as a JSON literal.
+minijinja = { version = "2.24.0", features = ["loader", "json"] }
+parking_lot = "0.12"
+# The join bundle as an inline SVG QR code (src/cluster.rs, cluster.md §8). The version
+# control-core already locks; SVG only, so no `image` stack in this binary.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rand = "0.8"
+# SendGrid + webhook HTTP client (M6-N, src/notify/). 0.12 (not 0.13):
+# 0.13 renamed the TLS features and defaults to aws-lc-rs; 0.12's
+# rustls-tls rides ring, coexists with rumqttc's rustls 0.22, and keeps
+# the url 2.5.2 / time 0.3.44 lockfile pins untouched.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rumqttc = "0.24"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml = "0.9.34"
+sha2 = "0.11.0"
+thiserror = "2.0.20"
+# The pure alarm-engine reducers (M6-A) — wired into the ingest path here (M6-E).
+portal-domain = { version = "0.1.0", path = "crates/portal-domain" }
+# The build-time brand (plan/portal/branding.md): names, logo, favicon, theme and the
+# i18n/docs placeholders, chosen by PROXIMOS_BRAND. No dependencies of its own.
+proximos-brand = { path = "crates/proximos-brand" }
+# Pinned to match the transitive dep already in Cargo.lock (via cookie) so
+# adding it as a direct dep doesn't move the resolved version — used only
+# for RFC3339 parsing (export `from`/`to` query params) and formatting
+# (export CSV timestamp column, export filename date) in `src/db_read.rs`/
+# `src/routes/history_routes.rs` (M3-C).
+time = { version = "=0.3.44", features = ["parsing", "formatting"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tower-http = { version = "0.7.0", features = ["trace", "compression-gzip", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# Pairing request_id generation in src/relay.rs — fiber-protocol already
+# pulls this in transitively (for config_request's request_id), pinned here
+# too so it's not an implicit dependency on another crate's re-export.
+uuid = { version = "1", features = ["v4"] }
+portal-storage = { version = "0.1.0", path = "crates/portal-storage", features = ["serde"] }
+zeroize = "1.8"
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
+
+[dev-dependencies]
+# Only to hold an explicit `BEGIN EXCLUSIVE` in `persist.rs`'s regression test
+# for the 2026-08-24 defect — the one way to make an alarm write fail on a
+# locked database deterministically. Same version portal-storage builds.
+rusqlite = { version = "0.30", features = ["bundled-sqlcipher"] }
+
+tempfile = "3.27.0"
+# Lets relay.rs's timeout tests fast-forward virtual time
+# (`#[tokio::test(start_paused = true)]` + `tokio::time::advance`) instead of
+# actually sleeping for the 20s/30s relay timeouts.
+tokio = { version = "1", features = ["test-util"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+
+# Landlock is a Linux-only LSM; target-gated so the macOS dev loop still builds.
+# See src/sandbox.rs and plan/security/landlock.md.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+# `statvfs` for src/diskspace.rs -- the free-space preflight before a full
+# VACUUM. std has no free-space API. Already a dev-dependency below for the
+# confinement tests' raw fork/waitpid; this is the same crate, promoted.
+libc = "0.2"
+
+# `fork`/`waitpid`/`_exit` for the confinement tests. Landlock is irrevocable
+# and per-thread (landlock.md §4/§11), so the only way to assert what it blocks
+# is to apply it in a forked child and read its exit code — which needs the raw
+# syscalls, not `std::process`. Tests only, and only where they compile.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
+# Tests build unoptimised, and argon2 unoptimised is roughly 20x slower than
+# the release build — every test that logs in paid about a second for the
+# hash. Optimising just the hasher and its primitives keeps the rest of the
+# suite debuggable.
+[profile.test.package.argon2]
+opt-level = 3
+
+[profile.test.package.blake2]
+opt-level = 3

@@ -1,0 +1,29 @@
+{#
+  The count of open alarms, as a pill on the sidebar's Alarms entry
+  (enerooo-spark's sidebar badge). This partial is the pill ALONE — the
+  element that fetches it lives in layout/nav.html and stays put.
+
+  That split is the whole point. The first version was one element carrying
+  both `hx-get` and `hx-swap="outerHTML"`, so the response replaced the very
+  element holding the trigger: on the one page that also renders the count
+  server-side (`/alarms`, whose context happens to carry `active_count` and
+  which an include inherits) it looked right, and everywhere else the badge
+  was empty. Now the wrapper is permanent and only its contents swap.
+
+  Context: `active_count` (int). Zero renders NOTHING, not a "0" pill: a badge
+  is a thing demanding attention, and one saying nothing is wrong is noise on
+  every screen.
+
+  It counts `alarm_events` rows with `cleared_at IS NULL` — the same source
+  `/alarms` lists, deliberately NOT the live probe state the metric tiles
+  count. Those two disagree by design: a tile reads current state, the page
+  reads a log that only has a row if the portal was connected when the Hub
+  published the transition. Badging the nav with the tile's number would put
+  "3" beside a link to a page showing none, which is issue #46 again.
+#}
+{% set active_count = active_count if active_count is defined else 0 %}
+{%- if active_count and active_count > 0 -%}
+<span class="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-error text-error-content text-sm font-extrabold leading-none tabular-nums">
+	{%- if active_count > 99 %}99+{% else %}{{ active_count }}{% endif -%}
+</span>
+{%- endif -%}

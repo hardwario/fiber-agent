@@ -1,0 +1,100 @@
+{#
+  Signed-command progress alert (M4-T context contract).
+
+  Context: `cmd` = none OR {
+    request_id: string, command_type: string,
+    status: "sent"|"challenge"|"confirmed"|"success"|"saved"|"delivered"|"stored"|"error"|"timeout",
+    message: string|none, error_code: string|none, ts: string,
+    target: string|none  -- the device's display name, line 1 (GitLab #121)
+  }.
+
+  `cmd` is read defensively (defaults to none, nav.html's pattern) so any
+  page can render the shell without carrying an in-flight command in its
+  own contract — pages/hub_detail.html and pages/dashboard.html both do.
+
+  The outer <div> always renders regardless of `cmd` — it is the SSE swap
+  target (id/sse-swap "command-status", hx-swap="outerHTML") AND the
+  hx-target of every command form (device system commands in
+  pages/hub_detail.html, per-line threshold form in
+  partials/limits_editor.html), so it must stay present in the DOM even
+  when empty. Same always-present-shell reasoning as
+  partials/mqtt_banner.html. Exactly ONE instance per page — the id is
+  global, not per-command; a later command's events simply replace the
+  previous alert.
+
+  Wave-2 flow: the direct POST response renders this partial with
+  status "sent"; the signed-command handshake then pushes
+  challenge → confirmed → success/error/timeout as SSE "command-status"
+  events correlated by request_id (rendered small+mono so a user can quote
+  it against /audit).
+#}
+{% set cmd = cmd if cmd is defined else none %}
+<div id="command-status" sse-swap="command-status" hx-swap="outerHTML"{% if cmd is defined and cmd is not none %} data-status="{{ cmd.status }}"{% endif %}{% if oob is defined and oob %} hx-swap-oob="true"{% endif %}>
+	{% if cmd is not none %}
+	{#- A command whose ack only means "the Hub took it on" (a history
+	    download runs for minutes after it) must not read "Done": its
+	    `monitoring.command_accepted.<type>` text replaces the success label,
+	    drawn as information, and the jobs table carries the progress. -#}
+	{% set accepted_key = "monitoring.command_accepted." ~ cmd.command_type %}
+	{% set accepted = cmd.status == "success" and accepted_key is translated %}
+	{% set accepted_label = accepted_key|t if accepted else accepted_key %}
+	{% if accepted %}
+		{% set alert = "alert-info" %}
+	{% elif cmd.status == "success" %}
+		{% set alert = "alert-success" %}
+	{% elif cmd.status == "saved" or cmd.status == "delivered" %}
+		{#- Stored in the Portal at once; the device copy follows (decision #41). -#}
+		{% set alert = "alert-success" %}
+	{% elif cmd.status == "stored" %}
+		{#- Saved in the Portal, the device's copy not delivered (decision #41). -#}
+		{% set alert = "alert-warning" %}
+	{% elif cmd.status == "error" or cmd.status == "timeout" %}
+		{% set alert = "alert-error" %}
+	{% else %}
+		{% set alert = "alert-info" %}
+	{% endif %}
+	{% set status_label = accepted_label if accepted else ("monitoring.command_status." ~ cmd.status)|t %}
+	<div role="alert" class="alert {{ alert }} mb-4">
+		{% if cmd.status == "sent" %}
+		<span class="loading loading-spinner loading-sm shrink-0"></span>
+		{% elif (cmd.status == "success" and not accepted) or cmd.status == "saved" or cmd.status == "delivered" %}
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+		</svg>
+		{% elif cmd.status == "error" or cmd.status == "timeout" %}
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+		</svg>
+		{% else %}
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+		</svg>
+		{% endif %}
+		<div class="min-w-0">
+			{#- Line 1 is the device the command is about (GitLab #121): `target` is
+			    its name already resolved by the route or SSE layer (Portal name, then
+			    serial, then MAC / DevEUI; a Hub's name, then hostname). Line 2 is the
+			    command's name in words — an untranslated one falls back to its wire
+			    name rather than to the catalogue key — and the state. The device's
+			    message is English and technical, so it reads as a detail, not as the
+			    verdict. -#}
+			{% set type_key = "monitoring.command_type." ~ cmd.command_type %}
+			{% set type_label = type_key|t if type_key is translated else type_key %}
+			{% if cmd.target %}
+			<div class="font-semibold truncate" data-command-target>{{ cmd.target }}</div>
+			{% endif %}
+			<div class="{{ 'font-normal' if cmd.target else 'font-medium' }}">{{ cmd.command_type if type_label == type_key else type_label }} — {{ status_label }}</div>
+			{#- A classified failure (`CommandOutcome::error_code`) says what
+			    happened and what to do in the operator's words; the raw text
+			    stays below it as the detail. -#}
+			{% if cmd.error_code %}
+			<div class="text-sm">{{ ("monitoring.command_error." ~ cmd.error_code)|t }}</div>
+			{% endif %}
+			{% if cmd.message %}
+			<div class="text-sm opacity-80">{{ "monitoring.command_status.detail"|t }}: <span class="font-mono">{{ cmd.message }}</span></div>
+			{% endif %}
+			<div class="text-xs opacity-70 font-mono truncate">{{ cmd.ts }}{% if cmd.request_id %} · {{ cmd.request_id }}{% endif %}</div>
+		</div>
+	</div>
+	{% endif %}
+</div>

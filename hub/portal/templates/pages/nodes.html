@@ -1,0 +1,256 @@
+{#
+  Nodes (LoRaWAN STICKER) overview page (M5-T context contract, P2 v1-style
+  restyle: legacy's Sensors table (legacy-12/13-*.png) renders every kind of
+  probe in one grouped table with a left status strip — this page is the
+  Node slice of that table).
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "nodes",
+    hostname: string|none,              -- none until a Hub has reported in
+    nodes: [ partials/node_card.html's `n` shape, ... ],  -- may be empty
+    can_edit: bool,                     -- manager+; gates the Register dialog
+    ok: string|none, error: string|none -- flash from POST /nodes' redirect
+    registration_radio: { default: "lorawan"|"p2p",  -- the dialog's radio choice,
+                          lorawan: bool, p2p: bool } -- preselected from radio.mode;
+                                        -- false = switched off on this Hub
+    radio_mode: string|none, default_join_eui: string|none,
+    unpaired: routes::UnpairedBanner    -- partials/unpaired_banner.html
+                                        -- (#109): the Hubs no registration can be
+                                        -- signed for; an admin pairs from it
+    register_blocked: bool              -- no Hub can sign one: Register and the
+                                        -- dialog's submit are disabled
+  }
+
+  Whole live region carries `data-sse-refresh` (same as dashboard.html — the
+  SSE connection lives on layout/base.html's app shell, and the marker opts
+  into the M1-H broadcast-lag full-reload hint) so each Node row can be
+  pushed independently — every row is its own sse-swap target
+  "node-{hostname}-{node_key}" (see the partial's header).
+
+  B4 corrected this page's SSE contract, which said a Node appearing or
+  being removed "is not representable as a row swap" and asked for a
+  page-level `refresh`. Both ARE representable, and both are wired:
+
+    - `<tbody id="node-rows">` carries sse-swap "node-added-{hostname}"
+      with hx-swap="afterbegin", so a new registration PREPENDS its row.
+      Newest first is the list's default sort, so the top is where the row
+      belongs. The event fires only on a TRUE insert (see store.rs), not on
+      every telemetry upsert.
+    - "node-removed-{hostname}" carries a stub `<tr>` with
+      hx-swap-oob="delete", which htmx applies to the element of that id
+      wherever it sits — the out-of-band swap deletes a row without the
+      tbody swap having anywhere to put it.
+
+  The `htmx:afterSwap` guard below is the price of the first one: a browser
+  that reconnects its SSE stream can be handed a row it already shows, and
+  two elements with one id is a DOM the row swaps can no longer address.
+
+  Registration POSTs the whole form (not htmx) and redirects with ?ok/?error,
+  the shape pages/beacons.html has used since B0 — the response changes the
+  list itself, not one row of it. The dialog is manager-gated to match
+  `POST /nodes`.
+
+  ---- Toolbar (devices.node.md §2.2-§2.4, §2.8) ------------------------
+
+  The toolbar is partials/list_toolbar.html — one component shared with
+  /beacons, in the shape of enerooo-spark's smart list: a search box with a
+  Filters disclosure and a Columns dropdown beside it, then a panel whose
+  header always states the count and the active filters while its field grid
+  collapses. This template sets the component's parameters and owns the table.
+
+  All of it is client-side over the row's `data-*` attributes, driven by
+  /static/js/portal-list.js — see that file for why, and
+  partials/node_card.html's header for the attribute list.
+
+  The list is a TABLE and only a table (§2): `monitoring_view_mode`, which
+  the dashboard honours, does not apply here — a Node row carries more
+  columns than a card can hold, and the delta is recorded in §10.
+
+  Sticky (§2.8) leans on the app shell: `layout/base.html` scrolls in
+  `<main>`, not in the document, so the table head's `top-0` sticks right
+  under the topbar. The toolbar itself does NOT stick — it collapses instead,
+  which is the whole point of putting the filters behind a disclosure, and it
+  is why the head needs no measured offset against a bar of unknown height.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+
+{% block title %}{{ "common.nav.nodes"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set ok = ok if ok is defined else none %}
+{% set error = error if error is defined else none %}
+{% set can_edit = can_edit if can_edit is defined else false %}
+<div data-sse-refresh class="space-y-4">
+	{# The registration flow's outcome and, on a refusal the Hub explained
+	   itself, the verbatim message — see partials/command_status.html. #}
+	{% include "partials/command_status.html" %}
+
+	{% if ok %}
+	<div role="alert" class="alert alert-success"><span>{{ ok }}</span></div>
+	{% endif %}
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+
+	{% if hostname is none %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.nodes.no_device_body"|t }}</p>
+	</div>
+	{% else %}
+	{#- GitLab #109: registering is a signed command; said above the Register
+	    button rather than after the dialog's submit failed. -#}
+	{% include "partials/unpaired_banner.html" %}
+	{#- The toolbar is its own block above the table, not a strip inside the
+	    card: that is enerooo-spark's shape (search + two disclosures, then a
+	    collapsible panel), and it is what lets the table head stick at `top-0`
+	    with no measured offset against a bar of unknown height. -#}
+	<div data-list-key="nodes">
+		{% set search_placeholder = "monitoring.nodes.search_placeholder"|t %}
+		{% set search_title = "monitoring.nodes.search_title"|t %}
+		{% set gw_label = "monitoring.list.hub_button"|t %}
+		{% set entity_label = "common.nav.nodes"|t %}
+		{% set show_proto = true %}
+		{% set show_location = true %}
+		{% set show_gateway = true %}
+		{% set show_kind = false %}
+		{#- #64's "Mimo meze" tile links `?oor=alarming`, which spans Warning
+		    and Critical; portal-list.js only seeds a value the select
+		    carries, so without this option the tile would open an unfiltered
+		    list. -#}
+		{% set oor_alarming = true %}
+		{#- Every informational column is toggleable, with strong defaults —
+		    the same rule /alarms follows. The first five are the row as the 2026-10-14 amendment
+		    describes it and start ON; the rest are the diagnostic tail (§2.4),
+		    wanted occasionally and in the way the rest of the time, so they
+		    start OFF.
+
+		    Name and Detail are not on the list: one is the row's identity (and
+		    is sticky, so hiding it would leave an unidentifiable row scrolling
+		    sideways) and the other is its control, not information about it.
+
+		    Protocol is the one entry portal-list.js can withdraw: on a fleet
+		    where every Node is on the same transport the column says the same
+		    word on every row, so the entry is not rendered and does not count
+		    towards the "n / m" (§2.2.5). It starts OFF because the compact
+		    badge beside the name already carries it on a mixed fleet; asking
+		    for the column hides that badge, so Protocol is never in the row
+		    twice. Before this it was the ONLY column with no entry at all —
+		    it drew itself on a mixed list and could not be switched off. -#}
+		{% set columns = [
+			["loc", "monitoring.dashboard.location_column"|t, true],
+			["overview", "monitoring.list.overview_column"|t, true],
+			["values", "monitoring.shared.value_column"|t, true],
+			["bounds", "monitoring.dashboard.thresholds_column"|t, true],
+			["hub", "monitoring.list.column_hub_gateway"|t, true],
+			["seen", "monitoring.dashboard.last_activity_column"|t, false],
+			["rssi", "monitoring.list.column_rssi"|t, false],
+			["snr", "monitoring.list.column_snr"|t, false],
+			["batt", "monitoring.list.column_battery"|t, false],
+			["fw", "monitoring.list.column_fw"|t, false],
+			["proto", "monitoring.list.column_protocol"|t, false],
+		] %}
+		{% set list_key = "nodes" %}
+		{#- Manager+ only, and only once a Hub has reported: registering a Node
+		    on a portal that has never seen one has nowhere to send it. The
+		    gate is in the VALUE — a `set` inside an `{% if %}` does not
+		    escape the if-block, and the button would never render. -#}
+		{% set action_label = "monitoring.nodes.add_button"|t if (hostname is not none and can_edit) else "" %}
+		{% set action_href = "/nodes/add" %}
+		{#- Disabled, with the reason as its tooltip, while no Hub can sign a
+		    registration (#109); the banner above says the same in full. -#}
+		{% set action_disabled = "monitoring.device.not_paired_title"|t if register_blocked | default(false) else "" %}
+		{% include "partials/list_toolbar.html" %}
+
+		<div class="card-v1 mt-3">
+			{#- `overflow-y-clip` beside `overflow-x-auto`: a bare `overflow-x`
+			    computes the other axis to `auto` as well, which would make this
+			    element the scroll container and strand the sticky table head
+			    inside it. `clip` does not create one. -#}
+			<div class="relative w-full overflow-x-auto overflow-y-clip rounded-xl">
+				<table data-list-table class="w-full caption-bottom text-sm">
+					<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+						<tr>
+							{{ dr.head("monitoring.list.column_hub_gateway"|t) }}
+							{#- Not sortable: the Overview header already sorts by
+							    this same value. -#}
+							{{ ui.th("monitoring.dashboard.last_activity_column"|t, "hidden", "seen") }}
+							{{ ui.sort_th("monitoring.list.column_rssi"|t, "rssi", "hidden text-right", "rssi") }}
+							{{ ui.sort_th("monitoring.list.column_snr"|t, "snr", "hidden text-right", "snr") }}
+							{{ ui.sort_th("monitoring.list.column_battery"|t, "batt", "hidden text-right", "batt") }}
+							{{ ui.sort_th("monitoring.list.column_fw"|t, "fw", "hidden", "fw") }}
+							{{ ui.sort_th("monitoring.list.column_protocol"|t, "proto", "hidden", "proto") }}
+							{#- View: permanent, no `data-column` (partials/device_row.html). -#}
+							{{ ui.th("") }}
+						</tr>
+					</thead>
+					{#- One pair of events per Hub: the list spans every Hub
+					    (devices.hub.md §12 E), so a registration on any of
+					    them has to land in this tbody. A single-Hub portal
+					    renders exactly the one pair it always did. -#}
+					<tbody id="node-rows" sse-swap="{% for h in hostnames | default([]) %}{% if not loop.first %},{% endif %}node-added-{{ h }},node-removed-{{ h }}{% endfor %}" hx-swap="afterbegin">
+						{#- The empty state lives INSIDE the table rather than replacing
+						    it. `#node-rows` is the swap target a registration prepends
+						    into, so a page that swapped the table out for a card would
+						    have nowhere to put the first Node — the one moment the live
+						    update matters most. The guard script below drops this row as
+						    soon as a real one lands. -#}
+						{% if not nodes %}
+						<tr id="node-empty">
+							<td colspan="13" class="py-16 text-center">
+								<h2 class="text-2xl font-bold">{{ "monitoring.nodes.empty_heading"|t }}</h2>
+								<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.nodes.empty_body"|t|replace("{hostname}", hostname) }}</p>
+							</td>
+						</tr>
+						{% endif %}
+						{#- Distinct from the row above: "no Node matches this
+						    filter" and "no Node is registered" are different
+						    facts, and one message for both sent the operator
+						    looking for a registration bug that was a leftover
+						    filter. Carries no `data-kind`, so the filter pass
+						    skips it. -#}
+						<tr data-list-nomatch class="hidden">
+							<td colspan="13" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td>
+						</tr>
+						{% for n in nodes %}
+						{% include "partials/node_card.html" %}
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+	{% endif %}
+</div>
+
+
+{# One row, one id. An SSE reconnect can replay a "node-added" frame for a
+   row already on the page, and htmx's afterbegin swap would happily insert
+   a second element with the same id — after which every row swap addressing
+   that id becomes ambiguous and one of the two stops updating forever.
+   Cheaper to drop the duplicate here than to make the server remember what
+   each connection has already been sent. #}
+<script>
+	document.body.addEventListener("htmx:afterSwap", function (event) {
+		var rows = document.getElementById("node-rows");
+		if (!rows || !rows.contains(event.target) && event.target !== rows) return;
+		var seen = Object.create(null);
+		Array.prototype.slice.call(rows.querySelectorAll("tr[id]")).forEach(function (tr) {
+			if (seen[tr.id]) {
+				tr.remove();
+			} else {
+				seen[tr.id] = true;
+			}
+		});
+		// The "no Nodes yet" row is only true while it is the only row.
+		var empty = document.getElementById("node-empty");
+		if (empty && rows.querySelectorAll("tr").length > 1) empty.remove();
+	});
+</script>
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

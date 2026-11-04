@@ -1,0 +1,50 @@
+# Start chirpstack-concentratord when the RAK5146 concentrator appears.
+#
+# WHY UDEV AND NOT multi-user.target. A Hub with no RAK5146 fitted is a supported
+# configuration (plan/control/radio/plan.md, radio modes `off` and `p2p`), so the
+# concentrator daemon must not be something every boot tries and fails to start.
+# Keying it to the device makes "no card fitted" and "not asked for" the same
+# thing. The unit ships with no [Install] section and SYSTEMD_AUTO_ENABLE =
+# "disable" for the same reason; ENV{SYSTEMD_WANTS} does not require a unit to be
+# enabled.
+#
+# Amended 2026-09-26: on a Hub that has the card but runs `radio.mode: p2p` or
+# `off`, this rule still wants the unit, so the unit itself is gated on the mode
+# (ConditionPathExists on the rendered forwarder config) - the concentrator is
+# LoRaWAN only, P2P uses the northbridge alone.
+#
+# WHY THIS ALSO MATTERS ON A UNIT THAT DOES HAVE A CARD. The concentrator has been
+# observed appearing on a hotplug event 8309 s into a boot on fiber-4e970f4a, i.e.
+# not at boot at all - see recipes-kernel/proximos-dtbo/files/proximos.dtso
+# fragment@3 for that log. A boot-time-only start would have missed it and left
+# the LoRaWAN transport down on a unit whose card was in fact working.
+#
+# TAG+="systemd" is what makes dev-rak5146.device (the link below) exist as a
+# systemd unit, which the service's BindsTo= needs in order to stop cleanly when
+# the card is pulled.
+#
+# THE MATCH. 0483:5740 is the RAK5146-USB's onboard STMicro bridge - the IDs
+# lsusb shows for the card (system/README.md, the bring-up checks). ATTRS{} on a
+# tty device walks up to the USB parent, so this matches the concentrator's ACM
+# interface and not any other CDC-ACM device someone plugs into a bench Hub. It
+# is a generic STM32 VCP ID, so it is not proof of a RAK5146 on its own; the
+# daemon's own probe is what finally decides, and a wrong match costs one failed
+# start, not a wrong radio configuration. A narrower match (the card's product
+# string, or the fixed USB port of the mPCIe slot) needs `udevadm info -a` from a
+# Hub with the card fitted; nothing in this tree records either yet.
+#
+# THE NAME. Amended 2026-10-09 (GitLab #75): the daemon, the unit and
+# control-radio's diagnostics use /dev/rak5146, a link to whichever ttyACM<n> the
+# card enumerated as. ttyACM0 is only the first CDC-ACM device to enumerate. Any
+# other one that comes up first (a USB serial adapter on a bench Hub, a modem)
+# takes it, and a daemon pointed at ttyACM0 then opens the wrong port and
+# restart-loops while the card sits on ttyACM1.
+#
+# The link is set on every event but remove, not only on add. udev recomputes a
+# device's links on each event it processes, and a `change` that did not set it
+# again (`udevadm trigger` sends change by default) would delete /dev/rak5146
+# from under the running daemon.
+ACTION!="remove", SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", \
+    SYMLINK+="rak5146"
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}+="chirpstack-concentratord.service"

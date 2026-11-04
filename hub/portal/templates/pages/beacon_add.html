@@ -1,0 +1,173 @@
+{#
+  Add Beacon — devices.beacon.md §4's two-part page ("Dialog/stránka
+  /beacons/add má dvě části"), B6/WP6.1 + WP6.4.
+
+  A page and not a dialog, and not a dialog per candidate either: the scan
+  table below repaints live over SSE while the operator is typing in the
+  form above it, and a `<dialog>` per candidate (what /beacons carried
+  before B6) put one copy of the registration form in the DOM per beacon the
+  Hub could hear — a form that then went stale the moment the candidate did.
+
+  Context: {
+    current_user, nav_active = "beacons",
+    hostname: string|none,          -- the Hub the form registers on
+    hostnames: [string],            -- every Hub; >1 renders the Hub select
+    panels: [ {hostname, d: partials/discovered_table.html's `d`} ]  -- one per Hub;
+                                    in a cluster ONE, hostname "cluster" (decision #42)
+    cluster_note: string|none       -- set in a cluster: replaces the Hub select
+    can_edit: bool,                 -- manager+; a viewer may watch the scan
+    unpaired: routes::UnpairedBanner, -- partials/unpaired_banner.html (#109):
+                                    -- the Hubs no registration can be signed
+                                    -- for; an admin pairs from it
+    register_blocked: bool,         -- no Hub can sign one: the form is disabled
+    d: render::DiscoveredPanelCtx,  -- partials/discovered_table.html's `d`
+    error: string|none,             -- already translated, from ?error=
+    prefill_mac: string|none,       -- ?mac=, so a link can preselect one
+  }
+
+  SSE: `beacons-discovered-{hostname}` is the shell below, swapped
+  `innerHTML` from src/sse.rs's `BeaconBatch` arm on every `eye/sensors`
+  snapshot. The shell element itself is never replaced (devices.backend.md
+  §21.11).
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "monitoring.beacons.add_page_title"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set error = error if error is defined else none %}
+{% set prefill_mac = prefill_mac if prefill_mac is defined else none %}
+{# No `data-sse-refresh` here, deliberately: this page is the one place an
+   operator types into a form while the panel below it repaints. Both live
+   regions have their own SSE targets (`#command-status` and
+   `beacons-discovered-{hostname}`), so a page-level reload could only
+   destroy work — see src/sse.rs's `BeaconRemoved` arm. #}
+<div class="space-y-4">
+	{% include "partials/command_status.html" %}
+
+	{{ ui.back_link("/beacons", "monitoring.beacons.back_to_list"|t) }}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ error }}</span></div>
+	{% endif %}
+
+	{% if not panels %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.beacons.no_device_body"|t }}</p>
+	</div>
+	{% else %}
+
+	{# ---- Upper half: the registration form --------------------------- #}
+	{#- GitLab #109: registering is a signed command. Said before the operator
+	    types, not after a submit that failed; while no Hub can sign one the
+	    fields are a disabled fieldset (Cancel is a link and stays live). -#}
+	{% include "partials/unpaired_banner.html" %}
+	{% if can_edit %}
+	<div class="card-v1 p-4">
+		{% call ui.page_header("bluetooth", "monitoring.beacons.add_page_title"|t, "monitoring.beacons.add_page_intro"|t) %}{% endcall %}
+		<form id="beacon-add-form" method="post" action="/beacons/add">
+			<fieldset class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3"{% if register_blocked | default(false) %} disabled{% endif %}>
+			{#- Which Hub registers it (devices.hub.md §12 E). A cluster picks
+			    here — the scan rows' Add buttons preselect the Hub that heard
+			    the Beacon — and a single-Hub portal renders no field, the only
+			    Hub resolves on the server. -#}
+			{#- Decision #42: a cluster registers on its Server — there is no Hub to
+			    pick, and the cluster chooses the home Hub by signal. -#}
+			{% if cluster_note | default(none) %}
+			<p class="sm:col-span-2 text-sm text-muted-fg" data-cluster-register>{{ cluster_note }}</p>
+			{% elif hostnames | default([]) | length > 1 %}
+			<div class="sm:col-span-2">
+				<label class="text-sm font-medium" for="beacon-hub">{{ "monitoring.list.column_hub"|t }} *</label>
+				<select id="beacon-hub" name="hub" class="input-v1 select-v1 mt-1" required>
+					{% for h in hostnames %}
+					<option value="{{ h }}"{% if h == hostname %} selected{% endif %}>{{ h }}</option>
+					{% endfor %}
+				</select>
+			</div>
+			{% endif %}
+			<div>
+				<label class="text-sm font-medium" for="beacon-serial">{{ "monitoring.beacons.serial_label"|t }} *</label>
+				<input id="beacon-serial" type="text" name="serial" class="input-v1 mt-1 font-mono" required
+					placeholder="6845019001">
+				<p class="text-xs text-muted-fg mt-1">{{ "monitoring.beacons.serial_hint"|t }}</p>
+			</div>
+			<div>
+				<label class="text-sm font-medium" for="beacon-mac">{{ "monitoring.beacons.mac_label"|t }} *</label>
+				<input id="beacon-mac" type="text" name="mac" class="input-v1 mt-1 font-mono" required
+					value="{{ prefill_mac | default('', true) }}"
+					placeholder="AA:BB:CC:DD:EE:FF">
+			</div>
+			{#- The name goes on the wire (`add_eye_tag`), the description stays
+			    in `device_meta` — the same pair, in the same order, as the
+			    Node dialog on /nodes. The name is optional: blank registers
+			    the Beacon under the serial typed above rather than leaving it
+			    named by its MAC. -#}
+			<div>
+				<label class="text-sm font-medium" for="beacon-name">{{ "monitoring.shared.name_label"|t }}</label>
+				<input id="beacon-name" type="text" name="name" class="input-v1 mt-1" maxlength="120"
+					placeholder="{{ "monitoring.beacons.name_placeholder_example"|t }}">
+				<p class="text-xs text-muted-fg mt-1">{{ "monitoring.shared.name_hint_serial_fallback"|t }}</p>
+			</div>
+			<div>
+				<label class="text-sm font-medium" for="beacon-description">{{ "monitoring.meta.description_label"|t }}</label>
+				<input id="beacon-description" type="text" name="description" class="input-v1 mt-1" maxlength="240"
+					placeholder="{{ "monitoring.meta.description_placeholder"|t }}">
+			</div>
+			<div class="sm:col-span-2 flex justify-end gap-2">
+				<a class="btn-v1 btn-v1-outline" href="/beacons">{{ "common.actions.cancel"|t }}</a>
+				<button type="submit" class="btn-v1 btn-v1-primary">{{ "monitoring.beacons.register_button"|t }}</button>
+			</div>
+			</fieldset>
+		</form>
+	</div>
+	{% endif %}
+
+	{# ---- Lower half: the live scan, one panel per Hub ----------------
+	   Each panel is its own SSE shell (`beacons-discovered-{hostname}`),
+	   because that is how the agent publishes and how sse.rs names the
+	   event: per Hub, whole panel. A single-Hub portal renders one, as it
+	   always did; a cluster stacks them with the Hub named on each. -#}
+	{% for p in panels %}
+	<div class="card-v1 p-4">
+		{% if panels | length > 1 %}
+		<div class="text-xs font-semibold uppercase tracking-wide text-muted-fg mb-2">{{ p.hostname }}</div>
+		{% endif %}
+		<div id="beacons-discovered-{{ p.hostname }}"
+			sse-swap="beacons-discovered-{{ p.hostname }}" hx-swap="innerHTML">
+			{% with d = p.d, hostname = p.hostname %}
+			{% include "partials/discovered_table.html" %}
+			{% endwith %}
+		</div>
+	</div>
+	{% endfor %}
+
+	<script>
+		// "Add" prefills, it never registers (§4). Delegated, because the
+		// table under it is an SSE swap target: a listener bound per button
+		// would be lost the first time a snapshot arrived.
+		document.addEventListener('click', function (ev) {
+			var button = ev.target.closest('.beacon-prefill');
+			if (!button) return;
+			var mac = document.getElementById('beacon-mac');
+			var name = document.getElementById('beacon-name');
+			var serial = document.getElementById('beacon-serial');
+			var hub = document.getElementById('beacon-hub');
+			if (!mac) return;
+			mac.value = button.dataset.mac || '';
+			// The Hub that heard it registers it. Only a cluster has the select.
+			if (hub && button.dataset.hub) hub.value = button.dataset.hub;
+			if (name && !name.value) name.value = button.dataset.name || '';
+			// Focus what the operator still has to supply themselves. The
+			// advertisement carries no serial number (beacon-btsmp1.md §1),
+			// so it is read off the device's label — which is why the
+			// prefill stops at the MAC and the name.
+			(serial || mac).focus();
+			mac.scrollIntoView({ block: 'center', behavior: 'smooth' });
+		});
+	</script>
+	{% endif %}
+</div>
+{% endblock %}

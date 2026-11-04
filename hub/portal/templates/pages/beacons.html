@@ -1,0 +1,196 @@
+{#
+  Beacons (BLE EYE tags) page (M5-T context contract, P2 v1-style restyle:
+  legacy's single grouped Sensors table (legacy-12/13-*.png) has a
+  bluetooth-icon row per tag — this page is that slice, split into
+  registered (a table) and discovered candidates (unchanged, still a plain
+  table further down) per the existing M5-T contract).
+
+  Context: {
+    current_user,                       -- shape per layout/nav.html
+    nav_active = "beacons",
+    hostname: string|none,              -- none until a Hub has reported in
+    can_edit: bool,                     -- gates Add and thresholds
+    ok: string|none, error: string|none -- flash from the add/remove redirects
+    beacons: [ {                        -- every beacon the Hub knows; this
+                                        -- page renders the REGISTERED half
+                                        -- and drops candidates (see below)
+      mac: string,                      -- UPPERCASE colon-separated
+      name: string|none, location: string|none,
+      connected: bool,
+      discovered: bool,                 -- true = unregistered candidate seen by
+                                        -- auto-discover (v1's discovered flag:
+                                        -- the HANDLER maps null → false, i.e.
+                                        -- "registered", per ws.md; the template
+                                        -- requires a real bool)
+      temperature: float|none, humidity: int|none,
+      battery_mv: int|none, low_battery: bool|none,
+      rssi: int|none, last_seen: string|none,
+      alarm_state: "Normal"|"Warning"|"Critical"|"Disconnected"
+        |"Reconnecting"|"NeverConnected"
+    }, ... ]
+    -- B5 adds fault/description/battery/signal/created_at/hubs/fields/meta
+       to the same shape; see partials/beacon_card.html's header. The
+       registered row links its name cell to /beacons/{mac}.
+  }
+  plus optionally `cmd` (defaults to none inside partials/command_status.html)
+  and, per registered beacon, the optional `thresholds` key — see
+  partials/beacon_card.html's header.
+
+  Live region carries `data-sse-refresh` (dashboard.html's pattern — the SSE
+  connection itself lives on layout/base.html's app shell). Each REGISTERED beacon row is its own
+  sse-swap target "beacon-{hostname}-{mac|replace(':','-')}" — the MAC
+  colon→dash DOM-id mangling rule is documented in
+  partials/beacon_card.html and is binding for the SSE emitter. A beacon
+  appearing or vanishing, or an Add/Remove moving it between the two pages,
+  is a list-membership change, so the handler sends the "refresh" hint (full
+  reload) for those, mirroring v1's ble_sensor_removed / discovery frames.
+  The discovered panel is a swap target of its own, but it lives on
+  /beacons/add — see pages/beacon_add.html.
+
+  Add flow (B6): the discovered candidates and the registration form both
+  live on `GET /beacons/add` (pages/beacon_add.html) — this page only links
+  to it. Before B6 the candidates were a second table down here with one
+  `<dialog>` per candidate, which put a copy of the whole registration form
+  in the DOM for every beacon the Hub could hear, each going stale the
+  moment its candidate did. Registration is still a PLAIN full-page
+  POST /beacons/add; errors come back as the add page re-rendered with the
+  OPTIONAL `error` key (defaulted below, users.html's pattern).
+
+  Thresholds live on the row partial and need the #command-status shell —
+  included below. (B5 removed the Detect action with the rest of the
+  EN12830 concept — devices.beacon.md §1.)
+
+  NO remove button on a row. Removal is a detail-page action behind a typed
+  confirmation (pages/beacon_detail.html), the same rule pages/nodes.html
+  follows; `?ok=removed` lands back here as the success flash.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+
+{% block title %}{{ "common.nav.beacons"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% set ok = ok if ok is defined else none %}
+{% set error = error if error is defined else none %}
+<div data-sse-refresh class="space-y-4">
+	{% include "partials/command_status.html" %}
+	{#- GitLab #109: one banner, one pairing form, on every page with signed actions. -#}
+	{% include "partials/unpaired_banner.html" %}
+
+	{% if ok %}
+	<div role="alert" class="alert alert-success">
+		<span>{{ ok }}</span>
+	</div>
+	{% endif %}
+
+	{% if error %}
+	<div role="alert" class="alert alert-error">
+		<span>{{ error }}</span>
+	</div>
+	{% endif %}
+
+	{% if hostname is none %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.beacons.no_device_body"|t }}</p>
+	</div>
+	{% else %}
+	{% set registered = beacons | rejectattr("discovered") | list %}
+
+	{#- Same toolbar as /nodes, same component, same script. Three differences
+	    the spec calls out (devices.beacon.md §2.2): the fulltext looks for a
+	    MAC instead of a DevEUI, the checklist filters by HUB rather than by
+	    gateway (a broadcast is heard by whichever Hub is in range, so multi-hub
+	    is the normal case here, not a future one), and there is no Protocol
+	    field because every Beacon is BLE. -#}
+	<div data-list-key="beacons">
+		{% set search_placeholder = "monitoring.beacons.search_placeholder"|t %}
+		{% set search_title = "monitoring.beacons.search_title"|t %}
+		{% set gw_label = "monitoring.list.hub_button"|t %}
+		{% set entity_label = "common.nav.beacons"|t %}
+		{% set show_proto = false %}
+		{% set show_location = true %}
+		{% set show_gateway = true %}
+		{% set show_kind = false %}
+		{#- Same reason as /nodes: #64's "Mimo meze" tile links
+		    `?oor=alarming`, and portal-list.js only seeds an option the
+		    select carries. -#}
+		{% set oor_alarming = true %}
+		{#- Same rule as /nodes: every informational column is toggleable, the
+		    row as §2.3 describes it starts ON, the diagnostic tail starts OFF.
+		    Name and the actions cell are not on the list. -#}
+		{% set columns = [
+			["loc", "monitoring.dashboard.location_column"|t, true],
+			["overview", "monitoring.list.overview_column"|t, true],
+			["values", "monitoring.shared.value_column"|t, true],
+			["bounds", "monitoring.dashboard.thresholds_column"|t, true],
+			["hub", "monitoring.list.column_hub_gateway"|t, true],
+			["seen", "monitoring.dashboard.last_activity_column"|t, false],
+			["rssi", "monitoring.list.column_rssi"|t, false],
+			["snr", "monitoring.list.column_snr"|t, false],
+			["batt", "monitoring.list.column_battery"|t, false],
+			["fw", "monitoring.list.column_fw"|t, false],
+			["proto", "monitoring.list.column_protocol"|t, false],
+		] %}
+		{% set list_key = "beacons" %}
+		{#- A link, not a dialog: registration and the passive scan share a
+		    page of their own (§4), which is too much to put in a modal. The
+		    gate is in the VALUE — a `set` inside an `{% if %}` does not
+		    escape the if-block. -#}
+		{% set action_label = "monitoring.beacons.add_link"|t if can_edit else "" %}
+		{% set action_href = "/beacons/add" %}
+		{% include "partials/list_toolbar.html" %}
+
+		<div class="card-v1 mt-3">
+			<div class="relative w-full overflow-x-auto overflow-y-clip rounded-xl">
+				<table data-list-table class="w-full caption-bottom text-sm">
+					<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+						<tr>
+							{{ dr.head("monitoring.list.column_hub_gateway"|t) }}
+							{#- Not sortable: the Overview header already sorts by
+							    this same value. -#}
+							{{ ui.th("monitoring.dashboard.last_activity_column"|t, "hidden", "seen") }}
+							{{ ui.sort_th("monitoring.list.column_rssi"|t, "rssi", "hidden text-right", "rssi") }}
+							{{ ui.sort_th("monitoring.list.column_snr"|t, "snr", "hidden text-right", "snr") }}
+							{{ ui.sort_th("monitoring.list.column_battery"|t, "batt", "hidden text-right", "batt") }}
+							{{ ui.sort_th("monitoring.list.column_fw"|t, "fw", "hidden", "fw") }}
+							{{ ui.sort_th("monitoring.list.column_protocol"|t, "proto", "hidden", "proto") }}
+							{#- View: permanent, no `data-column` (partials/device_row.html). -#}
+							{{ ui.th("") }}
+						</tr>
+					</thead>
+					<tbody id="beacon-rows">
+						{#- The empty state lives INSIDE the table, like /nodes:
+						    the toolbar above carries the "Add Beacon" link the
+						    empty-state text points at, so a card that replaced
+						    the whole block would send the operator to a link
+						    that is not on the page. -#}
+						{% if not registered %}
+						<tr id="beacon-empty">
+							<td colspan="13" class="py-16 text-center">
+								<h2 class="text-2xl font-bold">{{ "monitoring.beacons.empty_heading"|t }}</h2>
+								<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.beacons.empty_body"|t|replace("{hostname}", hostname) }}</p>
+							</td>
+						</tr>
+						{% endif %}
+						{#- "No Beacon matches this filter" is not "no Beacon is
+						    registered" — that one is the row above. Carries no
+						    `data-kind`, so the filter pass skips it. -#}
+						<tr data-list-nomatch class="hidden">
+							<td colspan="13" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td>
+						</tr>
+						{% for b in registered %}
+						{% include "partials/beacon_card.html" %}
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+	{% endif %}
+</div>
+
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{% endblock %}

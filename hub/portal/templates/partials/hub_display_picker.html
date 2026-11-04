@@ -1,0 +1,95 @@
+{#
+  Sensor picker for the Hub's LCD — the Unit tab's WP-B section
+  (plan/portal/display-config.md §5, DC-3/DC-5).
+
+  Context: {
+    hostname: string,
+    pairing: { paired: bool },
+    can_manage: bool,                 -- only set on the fragment route
+    max_selected: int,                -- 8
+    sensor_catalog: [                 -- crate::display_catalog::catalog
+      { id: string,                   -- opaque, echoed back verbatim
+        source: "ds18b20"|"sticker"|"ble",
+        name: string,
+        field: string, field_label: string,   -- one entry per quantity (2026-10-30, #180)
+        selected: bool }, ...
+    ] | none
+  }
+
+  The outer div is the swap target: it refetches itself from
+  GET /hubs/{hub}/display/picker on the `device-{hostname}-status` nudge,
+  which is what ChangeEvent::Config debounces into (src/sse.rs) — so the
+  device's own `config/state` echo re-ticks the boxes, not the browser.
+
+  The ids are opaque on purpose: the frontend never sees a DisplayLine, and
+  the addressing behind an id (line / dev_eui / mac) stays backend-private
+  (§5 seam contract). Unchecking everything submits no `sensors` field at
+  all, which the handler reads as `[]` — the built-in layout.
+
+  The counter and the block on a 9th box are convenience; the handler
+  rejects an over-8 post on its own (DC-3).
+
+  Amended 2026-10-15 (ui_components.md §3): the shared edit set, rendered
+  inside the Unit tab's "Display" card (hub_unit_settings.html, `dc.after`).
+  A sortable table (ui.sort_th) that scrolls after ten rows; grey read-only
+  checkboxes until "Set sensors" (manager+, paired), then Cancel / Save in
+  the same spot. At `max_selected` the unticked boxes lock and a hint says
+  why. Save posts the whole selection to /display/sensors (`displaySet`,
+  static/js/portal-editset.js).
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% set cat = sensor_catalog | default([], true) %}
+{% set can_set = (can_manage is not defined or can_manage) and pairing.paired %}
+{% set gl = {
+	"ds18b20": "monitoring.hubs.picker_group_probes"|t,
+	"sticker": "monitoring.hubs.picker_group_nodes"|t,
+	"ble": "monitoring.hubs.picker_group_beacons"|t,
+} %}
+<div id="hub-display-picker" class="dp" hx-get="/hubs/{{ hostname }}/display/picker"
+	hx-trigger="sse:device-{{ hostname }}-status" hx-swap="outerHTML"
+	x-data='displaySet({
+		action: {{ ("/hubs/" ~ hostname ~ "/display/sensors") | tojson }},
+		max: {{ max_selected | tojson }},
+		rows: {{ cat | map(attribute="id") | list | tojson }},
+		on: { {% for e in cat %}{{ e.id | tojson }}: {{ e.selected | tojson }}{% if not loop.last %}, {% endif %}{% endfor %} }
+	})'>
+	<div class="es-head es-head-plain">
+		<span class="flex items-center gap-2 text-sm font-semibold">
+			{{ "monitoring.hubs.picker_heading"|t }}
+			<span class="font-mono text-muted-fg" data-picker-count x-text="count + ' / ' + max">{{ cat | selectattr("selected") | list | length }} / {{ max_selected }}</span>
+		</span>
+		{{ ui.edit_set("monitoring.hubs.picker_set_button"|t, can_edit=can_set) }}
+	</div>
+	<p class="text-sm text-muted-fg">{{ "monitoring.hubs.picker_hint"|t }} {{ "monitoring.hubs.picker_empty_note"|t }}</p>
+	<p class="text-sm text-warning mt-1" x-show="editing && count >= max" x-cloak data-picker-max>{{ "monitoring.hubs.picker_max_reached"|t|replace("{n}", max_selected|string) }}</p>
+	<div class="ch-scroll mt-2">
+		<table class="ch-table" data-edit-set-table>
+			<thead>
+				<tr>
+					<th class="ch-sel" aria-hidden="true"></th>
+					{{ ui.sort_th("monitoring.hubs.picker_col_sensor"|t, "name") }}
+					{{ ui.sort_th("monitoring.hubs.picker_col_quantity"|t, "quantity") }}
+					{{ ui.sort_th("monitoring.hubs.picker_col_source"|t, "source") }}
+				</tr>
+			</thead>
+			<tbody>
+				{% for e in cat %}
+				<tr data-row-id="{{ e.id }}" data-seq="{{ loop.revindex }}" data-sort-name="{{ e.name }}" data-sort-quantity="{{ e.field_label|field_label(e.field) }}" data-sort-source="{{ gl[e.source] }}"
+					:class='rowClass({{ e.id | tojson }})'>
+					<td class="ch-sel">
+						<input type="checkbox" name="sensors" value="{{ e.id }}" class="checkbox-v1 es-check" disabled
+							:disabled='!editing || locked({{ e.id | tojson }})' x-model='draft[{{ e.id | tojson }}]'
+							aria-label="{{ "monitoring.channels.select"|t }}: {{ e.name }} · {{ e.field_label|field_label(e.field) }}"{% if e.selected %} checked{% endif %}>
+					</td>
+					<td>{{ e.name }}</td>
+					<td>{{ e.field_label|field_label(e.field) }}</td>
+					<td class="text-muted-fg">{{ gl[e.source] }}</td>
+				</tr>
+				{% else %}
+				<tr><td class="ch-sel"></td><td colspan="3" class="text-muted-fg">{{ "monitoring.hubs.picker_empty"|t }}</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</div>

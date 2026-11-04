@@ -1,0 +1,166 @@
+{#
+  The device lists' ONE row component (devices.node.md, amendment 2026-10-14 "unified device table"):
+  the cell macros /nodes, /beacons and /hubs all build their rows from, so the
+  three tables cannot drift apart again. The `<tr>` itself stays in each
+  row partial (partials/node_card.html, partials/beacon_card.html,
+  partials/hub_row.html), because the SSE id, the `data-*` filter attributes
+  and the sort keys are per-kind facts.
+
+  Column order, the same on every list:
+
+    Item | Location | Overview | Values | Limits | Hub/Gateway (Cluster) |
+    <hidden diagnostic columns…> | View
+
+  Item and View carry no `data-column`, so the picker cannot hide them: one
+  is the row's identity, the other its control.
+
+  Two verdicts are computed here rather than in each partial:
+
+    tone(value, fault, has_data)  the left stripe — critical for a critical
+        value, an alarm or ANY fault; warning; base-300 with no data yet;
+        success otherwise.
+    link(connected, alarm_state, ever_seen)  the dot before the name —
+        ok | late | offline | never. `connected` is the portal's one liveness
+        verdict (B2's detector, the echo as fallback); `late` is the Hub's
+        echoed `Reconnecting` on a device the portal still counts as
+        connected — the portal holds no per-row "silent past 2× interval"
+        figure, and Reconnecting is the Hub's own word for exactly that.
+
+  Values and Limits draw one fixed-height (h-5) line per value, so each gauge
+  sits level with the value it is about.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% macro tone(value, fault, has_data) -%}
+{%- if value == "critical" or fault %}critical{% elif value == "warning" %}warning{% elif not has_data %}base-300{% else %}success{% endif -%}
+{%- endmacro %}
+
+{% macro link(connected, alarm_state, ever_seen) -%}
+{%- if not ever_seen and not connected %}never{% elif not connected %}offline{% elif alarm_state == "Reconnecting" %}late{% else %}ok{% endif -%}
+{%- endmacro %}
+
+{#- The value class of a field list, normal|warning|critical — the worst one.
+    Case-insensitive: Node fields carry the firmware casing, Beacon fields the
+    normalised one. -#}
+{% macro worst(fields) -%}
+{%- set ns = namespace(v="normal") -%}
+{%- for f in fields -%}
+{%- set st = f.alarm_state | upper -%}
+{%- if st == "CRITICAL" %}{% set ns.v = "critical" %}{% elif st == "WARNING" and ns.v != "critical" %}{% set ns.v = "warning" %}{% endif -%}
+{%- endfor -%}
+{{ ns.v }}
+{%- endmacro %}
+
+{#- The common head cells, Item to Hub. The page appends its optional heads
+    and the empty head of the View cell. -#}
+{% macro head(hub_label) -%}
+{{ ui.sort_th("monitoring.list.item_column"|t, "name", "sticky left-0 z-30") }}
+{{ ui.sort_th("monitoring.dashboard.location_column"|t, "loc", "", "loc") }}
+{{ ui.sort_th("monitoring.list.overview_column"|t, "seen", "", "overview") }}
+{{ ui.th("monitoring.shared.value_column"|t, "", "values") }}
+{{ ui.th("monitoring.dashboard.thresholds_column"|t, "", "bounds") }}
+{{ ui.sort_th(hub_label, "hub", "", "hub") }}
+{%- endmacro %}
+
+{#- Item: stripe, link dot, name + calibration icon, the identity line under
+    it. `name_extra` is markup after the name (a badge); the call body is
+    no captions: a row's state is written in Overview. The
+    calibration icon is drawn only for a device that has a certificate. -#}
+{% macro item_cell(tone, link, name, href, calibration=none, sub="", name_extra="") -%}
+{%- set dot = "success" if link == "ok" else ("warning" if link == "late" else ("critical" if link == "offline" else "base-300")) -%}
+<td class="relative sticky left-0 z-10 bg-base-100">
+	<span class="absolute inset-y-0 left-0 w-[3px] bg-{{ tone }}" aria-hidden="true"></span>
+	<div class="flex items-center gap-2 min-w-0">
+		{#- An empty `link` draws no dot: an alarm row has no link state. -#}
+		{%- if link %}
+		<span class="inline-flex shrink-0" data-link="{{ link }}" title="{{ ("monitoring.list.link_" ~ link)|t }}" aria-label="{{ ("monitoring.list.link_" ~ link)|t }}">{{ ui.status_dot(link == "ok", tone=dot) }}</span>
+		{%- endif %}
+		<div class="min-w-0">
+			<div class="flex items-center gap-1.5 min-w-0">
+				{#- No href: a row that selects rather than opens (History). -#}
+				{%- if href %}<a href="{{ href }}" class="block text-sm truncate hover:underline">{{ name }}</a>
+				{%- else %}<span class="block text-sm truncate">{{ name }}</span>{% endif %}
+				{%- if calibration and calibration != "none" %}{{ ui.calibration_icon(calibration) }}{% endif %}
+				{{ name_extra }}
+			</div>
+			<div class="text-xs font-mono text-muted-fg truncate">{{ sub }}</div>
+		</div>
+	</div>
+</td>
+{%- endmacro %}
+
+{% macro location_cell(location, sub="") -%}
+<td data-column="loc"><span class="block text-sm text-muted-fg truncate">{{ location | default("—", true) }}</span>
+	{%- if sub %}<span class="block text-xs font-mono text-muted-fg truncate">{{ sub }}</span>{% endif %}</td>
+{%- endmacro %}
+
+{#- Overview: last seen on line 1; signal bars, battery, `extra` and the
+    fault triangle on line 2; the call body, if any, under them. `signal` none draws no bars (a Hub has none).
+    `battery_tone` ("critical"|"warning") colours the battery, the Hub's low level (#181). -#}
+{% macro overview_cell(last_seen, signal=none, battery="", fault_title="", extra="", battery_tone="", fault_tone="warning") -%}
+<td data-column="overview">
+	<div class="h-5 flex items-center text-sm text-muted-fg tabular-nums whitespace-nowrap"{% if last_seen %} title="{{ last_seen }}"{% endif %}>{{ last_seen | short_dt | default(("monitoring.card.never_seen"|t), true) }}</div>
+	<div class="h-5 flex items-center gap-2 text-xs text-muted-fg tabular-nums whitespace-nowrap">
+		{%- if signal %}{{ ui.signal_bars(signal) }}{% endif %}
+		{%- if battery %}<span class="inline-flex items-center gap-1{% if battery_tone %} text-{{ battery_tone }} font-medium{% endif %}">{{ ic.icon("battery-charging", "h-3.5 w-3.5") }}{{ battery }}</span>{% endif %}
+		{{ extra }}
+		{%- if fault_title %}<span class="inline-flex items-center text-{{ fault_tone }} shrink-0" title="{{ fault_title }}">{{ ic.icon("alert-triangle", "h-4 w-4") }}</span>{% endif %}
+	</div>
+	{#- A call body is the row's state in words (waiting, detaching, a
+	    registration problem): it belongs here, not under the name. -#}
+	{%- if caller is defined %}<div class="flex flex-col items-start gap-0.5 text-xs text-muted-fg">{{ caller() }}</div>{% endif %}
+</td>
+{%- endmacro %}
+
+{#- Values: one h-5 line per field (the caller passes at most two), the label
+    in the tooltip. `fields` = [{name, label, unit, value, alarm_state}];
+    `empty` is what an empty list says. -#}
+{% macro values_cell(fields, empty="—") -%}
+<td data-column="values">
+	{%- for f in fields %}
+	{%- set st = f.alarm_state | upper %}
+	<div class="h-5 flex items-center font-mono text-sm tabular-nums whitespace-nowrap {% if st == "CRITICAL" %}text-critical{% elif st == "WARNING" %}text-warning{% endif %}" title="{{ f.label | field_label(f.name) }}">{% if f.value is none %}—{% else %}{% if f.unit == "%" and f.value == f.value | round(0) %}{{ f.value | int }}{% else %}{{ f.value | round(1) }}{% endif %}&nbsp;{{ f.unit }}{% endif %}</div>
+	{%- else %}
+	<div class="h-5 flex items-center font-mono text-sm text-muted-fg">{{ empty }}</div>
+	{%- endfor %}
+</td>
+{%- endmacro %}
+
+{#- Limits: one gauge per value line, no numbers. The band comes from
+    `thr[f.name]`, else from the field's own `thresholds`. -#}
+{% macro limits_cell(fields, thr=none) -%}
+<td data-column="bounds">
+	{%- for f in fields %}
+	{%- set t = thr[f.name] if (thr and f.name in thr) else (f.thresholds if f.thresholds is defined else none) %}
+	<div class="h-5 flex items-center">{{ ui.threshold_gauge(f.value, t, field=f.name, labels=false) }}</div>
+	{%- endfor %}
+</td>
+{%- endmacro %}
+
+{% macro hub_cell(text) -%}
+<td data-column="hub"><span class="block font-mono text-xs truncate">{{ text | default("—", true) }}</span></td>
+{%- endmacro %}
+
+{#- A hidden-by-default diagnostic cell: `col` pairs it with its head and the
+    picker entry. -#}
+{% macro opt_cell(col, text, class="") -%}
+<td data-column="{{ col }}" class="hidden {{ class }}"><span class="font-mono text-xs tabular-nums whitespace-nowrap">{{ text | default("—", true) }}</span></td>
+{%- endmacro %}
+
+{#- The permanent trailing cell: the View button, after any `extra` control. -#}
+{% macro view_cell(href, extra="") -%}
+<td class="px-4 text-right whitespace-nowrap">
+	<div class="flex flex-nowrap justify-end gap-1">
+		{{ extra }}
+		<a href="{{ href }}" class="btn-v1 btn-v1-outline btn-v1-sm" title="{{ "monitoring.list.view_button"|t }}" aria-label="{{ "monitoring.list.view_button"|t }}">{{ ic.icon("eye", "h-4 w-4") }}</a>
+	</div>
+</td>
+{%- endmacro %}
+
+{#- One radio part line of the Hub row: a dot (green `ok` true, red false,
+    grey none) and the label; `title` an optional tooltip, `part` a
+    stable handle (`data-part`) for tests and styling. -#}
+{% macro part_line(label, ok, title="", part="") -%}
+<div class="h-5 flex items-center gap-1.5 text-xs whitespace-nowrap" data-part="{{ part }}" data-ok="{{ "1" if ok is true else ("0" if ok is false else "") }}"{% if title %} title="{{ title }}"{% endif %}>{{ ui.status_dot(ok, tone=("success" if ok is true else ("critical" if ok is false else "base-300"))) }}<span>{{ label }}</span></div>
+{%- endmacro %}

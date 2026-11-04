@@ -1,0 +1,25 @@
+# Static IDs for every account a recipe in the image creates through
+# useradd.bbclass (USERADDEXTENSION = "useradd-staticids", conf/distro/proximos.conf).
+#
+# /data outlives the rootfs and its files keep numeric owners, so an account that
+# lands on another number in the next image loses its own /data tree - which is
+# what dynamic allocation does to every account after one that is added or
+# removed (issue #92). These are the numbers main images allocated dynamically up
+# to 2026-09, so units already in the field keep theirs.
+#
+# Never renumber a line. A new account takes a number no line uses yet; a removed
+# account keeps its line, so its old number is never handed to another account.
+# Only name, uid and gid are pinned: the empty fields keep whatever the recipe
+# passes to useradd. The group of the same name is in proximos-group.
+chirpstack:x:989:986:::
+proximos:x:990:987:::
+avahi:x:991:988:::
+fiber-portal:x:992:989:::
+systemd-timesync:x:993:990:::
+systemd-resolve:x:994:991:::
+mosquitto:x:995:995:::
+redis:x:996:996:::
+www:x:997:997:::
+sshd:x:998:998:::
+messagebus:x:999:999:::
+provisioning:x:985:985:::

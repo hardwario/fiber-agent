@@ -1,0 +1,20 @@
+[package]
+name = "portal-storage"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+serde = ["dep:serde"]
+
+[dependencies]
+refinery = { version = "=0.8.16", features = ["rusqlite"] }
+rusqlite = { version = "0.30", features = ["bundled-sqlcipher"] }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+uuid = { version = "1.24.1", features = ["v4"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.30", features = ["bundled-sqlcipher"] }
+tempfile = "3.27.0"

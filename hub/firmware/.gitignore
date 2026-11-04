@@ -1,0 +1,15 @@
+# west workspace members (created by `west init -l ... && west update` in repo root)
+/zephyr/
+/modules/
+/.west/
+
+# build outputs
+build*/
+twister-out*/
+
+__pycache__/
+
+# Northbridge firmware package (system/scripts/nb-package.sh)
+/nb-package/
+# Southbridge firmware package (system/scripts/sb-package.sh)
+/sb-package/

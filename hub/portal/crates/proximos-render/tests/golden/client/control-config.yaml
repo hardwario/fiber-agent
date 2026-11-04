@@ -1,0 +1,66 @@
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Per-device overrides go in /data/proximos/config/proximos.config.yaml,
+# merged over /usr/share/proximos/templates/defaults.yaml — which is also
+# where every key below is documented.
+radio:
+  region: eu868
+  mode: lorawan
+  join_eui: '5876070000000000'
+  application:
+    name: ProXimos Sensors
+    description: ProXimos Node sensors
+  device_profiles:
+    otaa:
+      default:
+        name: ProXimos Node (OTAA)
+        description: ''
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: default
+        flush_queue_on_activate: true
+        uplink_interval: 3600
+        device_status_req_interval: 1
+        decoder: node
+    abp:
+      default:
+        name: ProXimos Node (ABP)
+        description: ''
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: default
+        flush_queue_on_activate: true
+        uplink_interval: 3600
+        device_status_req_interval: 1
+        abp_rx1_delay: 1
+        abp_rx1_dr_offset: 0
+        abp_rx2_dr: 0
+        abp_rx2_freq: 869525000
+        decoder: node
+    p2p:
+      default:
+        name: ProXimos Node (P2P)
+        description: ''
+        decoder: node
+  p2p_radio:
+    frequency_hz: 869525000
+    spreading_factor: 7
+    bandwidth_khz: 125
+    coding_rate: 4/5
+    preamble: 8
+  gateway:
+    name: ProXimos Gateway
+    description: ''
+  chirpstack: {}
+mqtt:
+  # One root for both halves — see the note at the top of this template.
+  topic_prefix: "proximos"
+  # Client role: the Server's broker, from /data/proximos/cluster/.
+  broker:
+    host: "proximos-1a2b3c4d.local"
+    port: 8883
+    username: "peer-proximos-5e6f7a8b"
+    password_file: "/data/proximos/cluster/peer_password"
+  tls:
+    enabled: true
+    ca_cert_path: "/data/proximos/cluster/ca.crt"

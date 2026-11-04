@@ -1,0 +1,6 @@
+# Build context for packaging/demo/Dockerfile*. target/ alone is gigabytes;
+# nothing else here is needed to build the release binary or the mock image.
+target/
+dev-data/
+tools/
+.sccache/

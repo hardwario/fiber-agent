@@ -1,0 +1,396 @@
+# =============================================================================
+# The shipped defaults every rendered config starts from.
+#
+# Installed read-only on the rootfs at /usr/share/proximos/templates/defaults.yaml
+# (portal/packaging/fiber-portal.bb, WP-G). `proximosctl render` reads it, deep-merges
+# the per-device overlay on /data over it, and renders the templates beside this file
+# from the result — plan/system/design.md §7's "immutable templates on the rootfs +
+# state and secrets on /data", with this file being the "immutable" half's data.
+#
+# THE MERGE, precisely (proximos-render::config):
+#
+#   1. this file
+#   2. /data/proximos/config/proximos.config.yaml   — the device overlay, whole document
+#   3. /data/portal/config.yaml                     — legacy, portal keys only, merged
+#                                                     into the `portal:` section below
+#
+# `radio.mode` alone has two more layers, the hardware default under all three and
+# fiber.service's own config over them: see the `radio:` section below.
+#
+# Later wins. Mappings merge key by key, recursively. Scalars and SEQUENCES replace
+# wholesale — an overlay listing one redis server replaces the list here, it does not
+# append to it. That asymmetry is deliberate: an appending list merge has no way to
+# express "remove", so every list would be write-only.
+#
+# It is a TYPED merge, not the shell shim's concatenation: the result is deserialized
+# into `deny_unknown_fields` structs before anything is written, so a misspelled key in
+# an overlay is a render failure naming the key, not a setting that silently does
+# nothing. proximos-render.sh's own header called this out as the limitation a real
+# renderer would fix; this is that fix.
+#
+# NOT IN HERE, ON PURPOSE: secrets. `portal.db_key` and ChirpStack's `[api] secret` are
+# read from files on /data (0600) and injected at render time. Setting `db_key` in an
+# overlay is a hard error, not an override — /data/portal/db.key is the single authority
+# for it, and a key pasted into a config file is a key in a backup, a support bundle and
+# a journal line. system/design.md §7: "Secrets are read by the renderer from files —
+# never passed as argv".
+# =============================================================================
+
+# --- portal ------------------------------------------------------------------
+#
+# Rendered to /run/proximos/portal/config.yaml, which is what portal/src/config.rs
+# reads (its RUNTIME_CONFIG_PATH). Key-for-key what proximos-render.sh emitted, in the
+# same order, so the rename is provably a no-op on a device — tests/shim_parity.rs
+# holds that shim's exact output as a fixture and diffs against it.
+#
+# On a client-role Hub (/data/proximos/cluster/role == "client") this whole section is
+# not rendered at all and any previously rendered file is removed: the portal surface's
+# existence is a renderer decision, per decision #5 and system/design.md §7.
+portal:
+  # 8088, not 8080. ChirpStack's API is on 127.0.0.1:8080 and both run on a server-role
+  # Hub, so the portal is the side that moved (monolith.md §9, open question 3, settled
+  # 2026-08-21). Loopback only: nginx terminates TLS in front of it.
+  bind_addr: "127.0.0.1:8088"
+
+  # Today's mosquitto: loopback, plain TCP, anonymous. The credential fields below stay
+  # absent until that broker grows a password file — filling them in first would simply
+  # stop the portal connecting.
+  mqtt_host: "localhost"
+  mqtt_port: 1883
+  topic_prefix: "proximos"
+
+  # The broker client id. 3.1.1 treats a second connect under the same id as a takeover,
+  # so the portal and the agent's radio tasks each need their own — this one is the
+  # portal's, and it is transitional: the monolith merge collapses both into
+  # `proximos-control`. plan/portal/mqtt/design.md §6.2.
+  mqtt_client_id: "proximos-portal"
+
+  # /data/portal, the directory the SQLCipher database and the exports live in. This is
+  # the ON-DEVICE path and stays literal even when the renderer is driven with injected
+  # roots in a test: the roots decide where this process reads and writes, not what the
+  # rendered file names for a service that is not under test.
+  data_dir: "/data/portal"
+
+  # Absolute, matching what fiber-portal.bb's do_install:append actually installs
+  # (${S}/templates and ${S}/static, separately, into /usr/share/fiber-portal/). The
+  # bare "templates"/"static" defaults in config.rs would resolve through the unit's
+  # WorkingDirectory=, which is a dependency on a setting nobody would think to check.
+  templates_dir: "/usr/share/fiber-portal/templates"
+  static_dir: "/usr/share/fiber-portal/static"
+
+  # Production is HTTPS-only through nginx. Only the dev loop turns this off, and the
+  # dev loop does not run this renderer.
+  cookie_secure: true
+
+  # When a scheduled full VACUUM may START (it always runs to completion — SQLite cannot
+  # be paused, and killing a rewrite wastes the work rather than saving anything). UTC,
+  # and the key says so: neither binary carries a timezone database, and reading the
+  # agent's system.timezone_offset_hours here would make the same YAML mean two different
+  # times in the two halves.
+  #
+  # A window only says WHEN a rewrite may run; whether it should is decided by the
+  # freelist thresholds in portal/src/retention.rs, which are deliberately code
+  # constants — nobody should tune a freelist fraction per deployment.
+  #
+  # Removing this block entirely disables scheduled maintenance; the /settings button
+  # still works. See plan/portal/sqlite-vacuum.md §5.
+  maintenance_window:
+    start_utc: "02:30"
+    duration_minutes: 90
+
+  # The default bands every temperature and humidity sensor gets when the portal first
+  # registers it: a Node's board and 1-Wire probes, a Beacon (plan/portal/threshold_defaults.md).
+  # Each is written once, as a threshold that is SWITCHED OFF: nothing is evaluated and
+  # nothing is sent to a Node or the Hub until an operator switches it on. A later change
+  # here reaches only sensors registered after it. Keyed by quantity, which the portal reads
+  # off a field's unit (°C, %), so a new probe field needs no new key. A bound left out, or
+  # set to null in an overlay, is not written.
+  #
+  # The same numbers are the Hub's `common_alarms` for its wired lines
+  # (control-core/fiber.sensors.config.yaml); a test fails when the two files differ.
+  # A humidity of 0 % cannot be undercut, so its critical low never fires; it is kept
+  # because the threshold form shows four bounds.
+  # `hysteresis` (decision #41): how far back inside a bound a value has to come before its
+  # alarm steps down, in the field's unit; the default of every row that has none of its own.
+  thresholds:
+    defaults:
+      temperature: {critical_low: -10, warning_low: 0, warning_high: 40, critical_high: 50, hysteresis: 0.5}
+      humidity: {critical_low: 0, warning_low: 10, warning_high: 80, critical_high: 90, hysteresis: 3}
+
+  # Optional; emitted only when set. mqtt_username / mqtt_password /
+  # experimental_features_enabled are the three keys portal/src/config.rs accepts that
+  # this file does not set, and an overlay may.
+
+  # DEVICE TUNING (plan/portal/devices.backend.md §3, WP0.3) — whole sections in
+  # the same "emitted only when set" category, shown here commented out because that is
+  # the only way to document a default without changing what an unconfigured device
+  # renders: this file is the input to a document that tests/shim_parity.rs diffs
+  # body-for-byte against the retired shell shim's output, so anything uncommented here
+  # would add a line the shim never wrote. The values below ARE the shipping defaults —
+  # they live in portal/src/config.rs, and uncommenting a key here (or setting it in an
+  # overlay) is how a site overrides one.
+  #
+  # nodes:
+  #   # How many missed report intervals make a Node offline. 4 is deliberately
+  #   # forgiving: a single dropped LoRaWAN uplink is routine, not an incident, and an
+  #   # alarm that cries wolf on ordinary radio loss gets muted — after which it warns
+  #   # about nothing at all. 0 turns fleet-wide detection off; one device is silenced
+  #   # with its own `offline_k_override` on the detail page instead.
+  #   offline_detector: 4
+  #   # The most automatic history requests (downlinks) the portal sends to one Hub in
+  #   # any 10 minutes. Every downlink shares the gateway's duty cycle; the per-Node
+  #   # spacing alone would let fifty Nodes returning together ask at once. Manual
+  #   # requests count toward it but are never held back. 0 = no automatic requests.
+  #   history_auto_requests_per_10min: 6
+  #
+  # beacons:
+  #   # The offline detector's expected Beacon interval, in minutes. Beacon history is
+  #   # the Hub's storage window (eye.aggregation_interval_s on the Hub, 600 s by
+  #   # default), one row per window; this key should match it and throttles nothing.
+  #   store_interval: 15
+  #
+  #   # 1, not the Node's 4, and the asymmetry is the point: a Beacon is heard many
+  #   # times inside one interval, so a whole interval of total silence is already
+  #   # unambiguous, where one missed Node uplink is not.
+  #   offline_detector: 1
+  #
+  # # The single derived link-quality indicator (plan/portal/devices.node.md §2.5),
+  # # whose thresholds were put in YAML by explicit decision on 2026-08-31: they are
+  # # tuned against real deployments, and tuning must not need a release.
+  # #
+  # # The ladder is NOT uniform, and that is from the specification: `excellent` and
+  # # `good` require BOTH floors, `weak` requires EITHER. Clearing neither `weak` floor
+  # # is critical; a link reporting no RSSI or no SNR at all is *unknown*, which is not
+  # # a rung and is not configurable here.
+  # signal_quality:
+  #   excellent: { rssi: -80, snr: 7 }
+  #   good: { rssi: -95, snr: 0 }
+  #   weak: { rssi: -110, snr: -7 }
+  #
+  # # Calibration reminders for Nodes and Beacons (plan/portal/calibration.cs.md §3 as
+  # # amended 2026-10-13), the same "emitted only when set" category. Both count whole
+  # # days before the expiry date of the device's current calibration certificate — the
+  # # first day it is no longer valid. From `warning_days` before it the device carries a
+  # # warning-level calibration alarm (and one e-mail); from `second_warning_days` before
+  # # it the alarm stays a warning and a second e-mail goes out; on the expiry date itself
+  # # the alarm turns critical (and one more e-mail). `second_warning_days` must be smaller
+  # # than `warning_days`, both at least 1; the portal refuses to start on anything else.
+  # # A device with no certificate uploaded has no calibration alarm at all — calibration
+  # # is not mandatory — and the alarm is not counted among Faults.
+  # calibration:
+  #   warning_days: 30
+  #   second_warning_days: 7
+
+# --- radio -------------------------------------------------------------------
+#
+# Rendered to /run/proximos/control/config.yaml as the whole `radio:` section, and read
+# from there by control-radio (dispatch::load_config, DEFAULT_CONFIG_PATH). The schema
+# is plan/control/radio/plan.md §4 / crates/control-radio/src/config.rs; every struct
+# there is deny_unknown_fields, so anything added below that control-radio does not know
+# about is a startup failure of `proximosctl control.radio`, not a no-op.
+#
+# NOTHING RENDERED THIS FILE BEFORE WP-C. It is the hardware prerequisite for the whole
+# LoRaWAN chain: radio-setup.service and proximos-control.service both read it.
+radio:
+  # v2 physically ships and supports only EU868. `region` is also what the renderer
+  # writes into chirpstack.toml's [network] enabled_regions, which region_<region>.toml
+  # it emits, and the topic_prefix on both sides of the gateway backend — one value, four
+  # places, which is the whole reason it is config and not four constants.
+  region: eu868
+
+  # THE SERVICE GATE, `mode`: "off" | "lorawan" | "p2p" | "dual". NOT SET HERE, ON PURPOSE.
+  #
+  # `lorawan` and `dual` are the only values for which the renderer emits
+  # /run/proximos/chirpstack/* and /run/proximos/chirpstack-mqtt-forwarder/*; under
+  # `off` and `p2p` those files are absent and, if a previous render left them behind,
+  # actively removed. chirpstack.service, chirpstack-bootstrap.service and
+  # chirpstack-mqtt-forwarder.service all carry ConditionPathExists= on them, so absence
+  # is how a Hub says "not asked for" instead of "broken".
+  #
+  # Where the mode comes from (plan/control/radio/node_registry.md §11, §12), later wins:
+  #
+  #   1. the hardware: `lorawan` when the RAK5146 card is detected (/dev/rak5146 with USB
+  #      IDs 0483:5740, as control-radio's setmode::probe_hardware sees it), `p2p` without
+  #      it. `proximosctl render` probes and hands the answer to the renderer;
+  #   2. `radio.mode` in the device overlay, when it names one;
+  #   3. `radio.mode` in fiber.service's own config (/data/fiber/config/fiber.config.yaml):
+  #      the choice made at provisioning (BLE FB1B) or by the signed `radio-set-mode`.
+  #
+  # It used to say `mode: lorawan` here, for phase 1's one product with the concentrator
+  # on every Hub. A Hub without the card then rendered a LoRaWAN chain that could not run;
+  # the hardware default replaces that. A card that did not enumerate at boot reads as
+  # `p2p` until a mode is chosen, and the provisioning choice is what fixes that.
+
+  # Default JoinEUI for `node-add --otaa`, overridable per node with --join-eui. OTAA
+  # only — ABP has no join procedure. This is HARDWARIO's, and it is the same value the
+  # integration stack's radio.yaml carries.
+  join_eui: "5876070000000000"
+
+  application:
+    name: "ProXimos Sensors"
+    description: "ProXimos Node sensors"
+
+  # Each arm is a NAMED MAP, not a single object: `node-add --profile <name>` selects
+  # which entry applies to the device being enrolled, and each named otaa/abp entry
+  # converges to its own ChirpStack DeviceProfile. `default` is the conventional name for
+  # a fleet that defines only one.
+  #
+  # payload_codec_runtime is deliberately absent and unspellable — `create` always sends
+  # NONE (decision #8: no codecs on the server, decoding is ours). The schema has no
+  # field for it, so an overlay cannot introduce one.
+  device_profiles:
+    otaa:
+      default:
+        name: "ProXimos Node (OTAA)"
+        description: ""
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: "default"
+        flush_queue_on_activate: true
+        # ChirpStack's inactivity threshold, NOT the device's send rate — that is the
+        # separate application.interval_report on the Node itself (900 s / 15 min).
+        uplink_interval: 3600
+        device_status_req_interval: 1
+        # A named key in control-radio's decoder registry (decode::registry), not a file
+        # path and not a plugin.
+        decoder: "node"
+
+    abp:
+      default:
+        name: "ProXimos Node (ABP)"
+        description: ""
+        mac_version: LORAWAN_1_0_4
+        reg_params_revision: RP002_1_0_4
+        adr_algorithm_id: "default"
+        flush_queue_on_activate: true
+        uplink_interval: 3600
+        device_status_req_interval: 1
+        # RX1/RX2 timing mirroring what the Node firmware sets explicitly
+        # (node-firmware-v1.4.0.md §1: RX1 1 s, RX2 2 s). DR offset and RX2 DR/freq are
+        # untouched EU868 band defaults.
+        abp_rx1_delay: 1
+        abp_rx1_dr_offset: 0
+        abp_rx2_dr: 0
+        abp_rx2_freq: 869525000
+        decoder: "node"
+
+    # Not a ChirpStack object — consumed by the P2P central service, never by `create`'s
+    # converge. Additional named p2p profiles may only vary `decoder`; the radio
+    # parameters are Hub-wide (p2p_radio below) because the northbridge has exactly one
+    # physical channel.
+    p2p:
+      default:
+        name: "ProXimos Node (P2P)"
+        description: ""
+        decoder: "node"
+
+  # Present in the defaults so that flipping `mode` to p2p or dual in an overlay is a
+  # one-line change and not a schema exercise — control-radio's validate() rejects a p2p
+  # mode with no p2p_radio. The Node firmware carries these values FIXED: changing any of
+  # them without a coordinated firmware release severs the link. The spreading factor is
+  # the one exception: SF7 is the network default on the Hub and the Node alike (decision
+  # #22, p2p_link_check.md §3.1); a Node can be moved, and `radio-set` moves the Hub.
+  # 869.525 MHz is sub-band h1.6 (869.400-869.650 MHz, 10 % duty), where uplink, ACK and
+  # downlink share one channel (#470 TOWER §3.3).
+  p2p_radio:
+    frequency_hz: 869525000
+    spreading_factor: 7
+    bandwidth_khz: 125
+    coding_rate: "4/5"
+    preamble: 8
+
+  gateway:
+    name: "ProXimos Gateway"
+    description: ""
+
+  # Reserved for genuinely ChirpStack-implementation-specific settings, and EMPTY.
+  # control-radio's validate() rejects a non-empty map here — accepting keys would create
+  # a second, undocumented configuration surface next to `render.chirpstack` below.
+  chirpstack: {}
+
+# --- render ------------------------------------------------------------------
+#
+# Renderer-only knobs: the parts of chirpstack.toml and chirpstack-mqtt-forwarder.toml
+# that are worth naming without being device-model concepts. Deliberately NOT under
+# `radio:` — that section is LNS-agnostic by design (plan.md §4) and is also handed
+# verbatim to control-radio, which would reject these keys.
+render:
+  chirpstack:
+    log_level: "info"
+
+    # ⚠ THE ENTIRE EXPOSURE STORY OF THIS DAEMON IS THIS ONE LINE. ⚠
+    #
+    # ChirpStack's compiled-in default is 0.0.0.0:8080 — verified by reading the config
+    # template out of the 4.19.1 binary itself, not from the docs. That is v1 → v2 defect
+    # ledger #29 (system/design.md §12, "gateway-bridge always on 0.0.0.0:1700") in its
+    # other spelling, and it is why this key is set explicitly rather than left out: an
+    # omitted key here does not mean "the safe thing", it means the network-facing thing.
+    #
+    # proximos-firewall closes 8080 as well, so this is defence in depth and not the only
+    # control — but the firewall is a second package's opinion and this is the daemon's
+    # own. Both stay.
+    api_bind: "127.0.0.1:8080"
+
+    # `sqlite://` + an absolute path, hence three slashes (upstream's own "Format
+    # example: sqlite:///<DATABASE>"). No ?mode=rwc: 4.19.1 creates the file on first
+    # start, and in practice chirpstack-bootstrap.sh's `create-api-key` gets there first
+    # — that step runs storage::setup() and applies the whole schema history.
+    #
+    # /data, not /var/lib: this is the device state that must survive a RAUC slot switch,
+    # and /data/chirpstack is created 0700 chirpstack:chirpstack by migration
+    # 005-chirpstack-seed.sh (NOT by a tmpfiles fragment — that would race the nofail
+    # data.mount).
+    sqlite_path: "sqlite:///data/chirpstack/chirpstack.sqlite"
+
+    # Cache only, loopback only. Every session, metric, device queue item and event
+    # stream ChirpStack owns lives here, which is why chirpstack.service Requires= redis
+    # rather than Wants= it.
+    redis_servers:
+      - "redis://127.0.0.1:6379"
+
+    # The LoRaWAN NetID. 000000 is the experimental/private NetID; a Hub is a private
+    # network with no peering, so nothing here is allocated to us and nothing needs to
+    # be. Same value the integration stack runs with.
+    net_id: "000000"
+
+    # The loopback broker, same one the portal and the forwarder use.
+    mqtt_server: "tcp://127.0.0.1:1883"
+
+    # JSON, not protobuf, and this is a decision with evidence rather than a default.
+    #
+    # `json = true` makes ChirpStack publish its northbound events on
+    # application/+/device/+/event/+ as JSON. `json = false` publishes the protobuf
+    # encoding of the same chirpstack_api types. The consumer is WP-D's
+    # control-radio/src/lorawan/event.rs.
+    #
+    # Evidence, checked at implementation time rather than assumed: chirpstack_api 4.19.0
+    # — the exact version control-radio already depends on — declares a `json` feature
+    # (`json = ["pbjson", "pbjson-types", "serde"]`) and lists it in `default`. The
+    # workspace lockfile carries pbjson 0.9.0 and pbjson-types 0.9.0 accordingly, and
+    # control-radio takes chirpstack_api with default features. So the serde impls for
+    # `integration::UplinkEvent` are already compiled into the binary today and WP-D can
+    # do `serde_json::from_slice::<UplinkEvent>(payload)` with no Cargo change at all.
+    #
+    # Protobuf would be smaller on a wire that is a loopback socket, and would cost a
+    # `prost::Message::decode` instead — no worse, technically. JSON wins on the thing
+    # that actually matters on this device: an operator with `mosquitto_sub` can read an
+    # uplink, which is the first debugging step for every field report about a Node that
+    # "stopped reporting".
+    mqtt_json: true
+
+  forwarder:
+    log_level: "info"
+    # The unit sends stdout to the journal already; syslog would double-log.
+    log_to_syslog: false
+
+    # Must match chirpstack-concentratord.toml's [concentratord.api] event_bind /
+    # command_bind EXACTLY. A mismatch here is the worst kind of misconfiguration this
+    # pair has: the forwarder starts, stays running, reports nothing wrong, and no uplink
+    # ever reaches MQTT.
+    #
+    # /run rather than upstream's /tmp default because both units set PrivateTmp=true,
+    # which would give each end its own /tmp; /run is shared.
+    concentratord_event_url: "ipc:///run/chirpstack-concentratord/event"
+    concentratord_command_url: "ipc:///run/chirpstack-concentratord/command"
+
+    mqtt_server: "tcp://127.0.0.1:1883"

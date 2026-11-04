@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// JLinkExe script: program STM32C031 NBOOT_SEL=0 so the BOOT0 pin
+// controls boot mode (required for `wlprog` and any UART bootloader
+// entry from the CM4).
+//
+// ⚠ HISTORICAL NOTE — On the fiber A02ECC90 board (2026-05) the chip
+// already shipped with NBOOT_SEL=0 (OPTR = 0xEEFFFEAA, bit 24 = 0).
+// Don't blindly run this without first reading OPTR and computing the
+// right value: `new = current & ~0x01000000`. The hard-coded write
+// below assumes factory default OPTR = 0xDFFFE1AA — if your chip is
+// in any other state, ABORT after the first `mem32` line, edit the
+// `w4 0x40022020 …` value below, then re-run.
+//
+//     JLinkExe -CommanderScript set_nboot_sel.jlink
+//
+// Expected (factory-default case):
+//   1) first  `mem32 0x40022020 1` → 0xDFFFE1AA   (factory default)
+//   2) last   `mem32 0x40022020 1` → 0xDEFFE1AA   (NBOOT_SEL cleared)
+
+si SWD
+speed 4000
+device STM32C031C6
+connect
+halt
+
+// --- read current FLASH_OPTR ------------------------------------------
+mem32 0x40022020 1
+
+// --- unlock FLASH_CR.LOCK ---------------------------------------------
+w4 0x40022008 0x45670123
+w4 0x40022008 0xCDEF89AB
+
+// --- unlock FLASH_CR.OPTLOCK ------------------------------------------
+w4 0x4002200C 0x08192A3B
+w4 0x4002200C 0x4C5D6E7F
+
+// --- write new FLASH_OPTR with NBOOT_SEL (bit 24) cleared -------------
+// 0xDFFFE1AA → 0xDEFFE1AA
+w4 0x40022020 0xDEFFE1AA
+
+// --- FLASH_CR.OPTSTRT (bit 17) = 1 → start option-byte programming ---
+w4 0x40022014 0x00020000
+
+sleep 50
+
+// --- FLASH_CR.OBL_LAUNCH (bit 27) = 1 → reload option bytes (resets) -
+w4 0x40022014 0x08000000
+
+sleep 100
+
+// --- reconnect after the implicit reset and verify --------------------
+connect
+halt
+mem32 0x40022020 1
+
+exit

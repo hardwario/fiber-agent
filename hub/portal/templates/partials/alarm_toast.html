@@ -1,0 +1,73 @@
+{#
+  One alarm-activation pop-up (M6 follow-up).
+
+  Context: `a` = render.rs `AlarmCtx` — the same row shape
+  partials/alarm_table.html renders, so cause/value/severity read exactly
+  like the table: cause is `ui.alarm_type_label` (type + severity, e.g.
+  "HIGH warning" / "Wi-Fi outage"), the sensor line is
+  `sensor_name`/`sensor_id` + location (for a radio field alarm
+  `sensor_name` IS the field label — "Temperature", "Humidity" — per
+  alarm_engine's `on_field_states`), and the value line reuses
+  alarms.detail's `value_with_threshold`/`value_only` strings.
+
+  Pushed as SSE event `alarm-toast` (sse.rs `handle_alarm_nudge`) into
+  partials/alarm_toasts.html's `#alarm-toasts` shell, whose script owns the
+  whole lifecycle: `data-alarm-id` is its store key, the 20 s expiry and the
+  cross-navigation replay live there, and stacks above two toasts collapse
+  to newest + "+ N more" (see that partial's header). This fragment carries
+  no self-remove timer of its own — the ✕ just removes the node (the shell
+  turns that into a store removal) and the bell mutes pop-ups for an hour
+  via the shell's `window.proximosAlarmToasts`. Colors follow the table's
+  severity convention: critical → alert-error, warning → alert-warning.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{# `escalated` (default false): this pop-up reports a warning→critical
+   escalation of an already-open alarm rather than a fresh activation —
+   same row shape, suffixed label (sse.rs `handle_alarm_nudge`). #}
+{% set escalated = escalated if escalated is defined else false %}
+<div role="alert" data-alarm-id="{{ a.id }}"
+	class="alert {% if a.severity == 'critical' %}alert-error{% else %}alert-warning{% endif %} relative shadow-card-hover grid-cols-[auto_minmax(0,1fr)_auto] items-start text-left w-80 pointer-events-auto">
+	{#- The whole pop-up opens the alarm, so there is no "View" link to aim
+	    at — the thing you already read IS the target. A stretched overlay
+	    rather than wrapping everything in an `<a>`: the two buttons would be
+	    nested inside it, which is invalid and swallows their clicks. They lift
+	    above it on `z-10` instead. -#}
+	<a href="/alarms/{{ a.id }}" class="absolute inset-0 rounded-[inherit]"
+		aria-label="{{ "alarms.table.view_button"|t }}"></a>
+	{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0 mt-0.5") }}
+	{#- The text column never runs under the buttons: its track has a zero
+	    minimum, the column clips, and the header wraps between words.
+	    `justify-self-stretch` pins the box to its track: daisyUI's alert sets
+	    `justify-items: start`, which sizes the box to its content and let a
+	    long header ("VYSOKÁ HODNOTA · ESKALOVÁNO") overflow the track. -#}
+	<div class="min-w-0 overflow-hidden justify-self-stretch">
+		<div class="font-semibold uppercase text-[11px] tracking-wide break-words">{{ ui.alarm_type_label(a.alarm_type) }}{% if escalated %} · {{ "alarms.toast.escalated"|t }}{% endif %}</div>
+		<div class="text-sm truncate">
+			{{ ui.alarm_name(a) }}{% if a.device_name and a.field %} · {{ ("common.field." ~ a.field)|t }}{% endif %}{% if a.sensor_location %} · {{ a.sensor_location }}{% endif %}
+		</div>
+		{% if a.value is not none %}
+		{# Same -0.0 normalization as partials/alarm_table.html's value column. #}
+		{% set u = (" " ~ a.unit) if a.unit else "" %}
+		{% set value_str = (a.value | round(1) | replace("-0.0", "0.0")) ~ u %}
+		<div class="text-sm tabular-nums">
+			{% if a.threshold is not none %}
+			{{ ("alarms.detail.value_with_threshold"|t)|replace("{value}", value_str)|replace("{threshold}", (a.threshold | round(1) | replace("-0.0", "0.0")) ~ u) }}
+			{% else %}
+			{{ ("alarms.detail.value_only"|t)|replace("{value}", value_str) }}
+			{% endif %}
+		</div>
+		{% endif %}
+	</div>
+	{#- Square hit areas, not daisyUI's `btn-xs` pill: the icons are square and
+	    a wider-than-tall hover fill around them reads as a text button that
+	    lost its label. `relative z-10` keeps them above the overlay above. -#}
+	<div class="relative z-10 flex items-center gap-1 shrink-0">
+		<button type="button" class="inline-flex items-center justify-center h-7 w-7 rounded-lg text-white/80 hover:text-white hover:bg-white/20 transition-colors"
+			onclick="window.proximosAlarmToasts && window.proximosAlarmToasts.mute()"
+			aria-label="{{ "alarms.toast.mute"|t }}" title="{{ "alarms.toast.mute"|t }}">{{ ic.icon("bell-off", "h-4 w-4") }}</button>
+		<button type="button" class="inline-flex items-center justify-center h-7 w-7 rounded-lg text-white/80 hover:text-white hover:bg-white/20 transition-colors"
+			onclick="this.closest('[role=alert]').remove()"
+			aria-label="{{ "alarms.toast.dismiss"|t }}" title="{{ "alarms.toast.dismiss"|t }}">{{ ic.icon("x", "h-4 w-4") }}</button>
+	</div>
+</div>

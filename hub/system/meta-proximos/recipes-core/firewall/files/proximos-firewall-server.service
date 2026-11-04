@@ -1,0 +1,45 @@
+[Unit]
+Description=ProXimos Hub packet filter: open the Server's MQTT TLS port (8883)
+Documentation=man:nft(8)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/cluster.md
+
+# 8883 is open only on a Server Hub (plan/control/cluster.md §2, §5). The role
+# is the renderer's decision (decision #11): proximos-render writes the 8883
+# listener's config on a Server and removes it on a Client. Gating on that one
+# file means the open port and the listening socket can never disagree - no
+# listener, no port; and a failed render, which writes no listener, leaves the
+# port closed.
+#
+# Why a second unit rather than ordering proximos-firewall.service after the
+# renderer: the base rule set is loaded Before=network-pre.target with
+# DefaultDependencies=no, so it is in place before any interface comes up. The
+# renderer needs /data, the data migrations and sysusers, i.e. a normal boot;
+# waiting for it would leave the Hub unfiltered on the network meanwhile.
+# Here the base set stays early and default-deny, and this unit only adds an
+# element to its @server_tcp set once the role is known.
+ConditionPathExists=/run/proximos/mosquitto/8883.conf
+Wants=proximos-render.service
+After=proximos-render.service
+
+# The set lives in firewall.nft's table: nothing to add to before it is
+# loaded. PartOf= takes this down with a stop or restart of the base unit, and
+# ReloadPropagatedFrom= re-adds 8883 after its reload, which runs `flush
+# ruleset` and so empties the set.
+Requires=proximos-firewall.service
+After=proximos-firewall.service
+PartOf=proximos-firewall.service
+ReloadPropagatedFrom=proximos-firewall.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/share/proximos/firewall-server.nft
+ExecReload=/usr/sbin/nft -f /usr/share/proximos/firewall-server.nft
+# Stopping closes the port again, without touching the rest of the rule set.
+ExecStop=-/usr/sbin/nft delete element inet proximos server_tcp { 8883 }
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+{#
+  One wired line of the Hub's Sensors tab — plan/portal/devices.hub.md §3.2,
+  amendment 2026-10-14: the shared device row (partials/device_row.html),
+  the same cells as /nodes:
+
+    Item (name / Line N · temperature) | Location | Overview | Values |
+    Limits | View
+
+  A click on the row opens the probe's own page,
+  /hubs/{hub}/sensors/line-{n}, where the name, location and limits are
+  edited; the list edits nothing.
+
+  Context: `s` = render::SensorCardCtx (hostname, line, name, location,
+  connected, avg_c, dominant_alarm_state, updated_at, thresholds|none,
+  calibration|none).
+
+  The row refetches itself from GET /hubs/{hub}/sensors/{line}/row on the
+  `sensor-{hostname}-{line}` nudge (§6): the device echoes every change in
+  `config/state`, and that echo is the one truth the row shows.
+
+  Line numbers are 1-based in the UI and the page URL, 0..7 on the wire and
+  in the POST routes.
+#}
+{% import "partials/device_row.html" as dr %}
+{% set state = s.dominant_alarm_state %}
+{% set display_name = s.name | default(("monitoring.shared.line_fallback"|t|replace("{n}", s.line + 1)), true) %}
+{% set href %}/hubs/{{ s.hostname }}/sensors/line-{{ s.line + 1 }}{% endset %}
+{% set oor = state | lower if state in ["Warning", "Critical"] else "normal" %}
+{% set has_data = s.avg_c is not none %}
+{% set tone = dr.tone(oor, not s.connected and has_data, has_data) | trim %}
+{% set link = dr.link(s.connected, state, s.updated_at is not none) | trim %}
+{% set fields = [{"name": "temperature", "label": "monitoring.probe_detail.field_temperature"|t, "unit": "°C",
+	"value": s.avg_c, "alarm_state": state, "thresholds": s.thresholds}] %}
+<tr id="hub-sensor-{{ s.hostname }}-{{ s.line }}"
+	hx-get="/hubs/{{ s.hostname }}/sensors/{{ s.line }}/row" hx-trigger="sse:sensor-{{ s.hostname }}-{{ s.line }}" hx-swap="outerHTML"
+	data-kind="probe" data-field="temperature" data-status="{{ state }}" data-oor="{{ oor }}"
+	data-connected="{% if s.connected %}1{% else %}0{% endif %}"
+	{% if not s.connected and has_data %}data-fault="disconnected"{% endif %}
+	data-location="{{ s.location | default('', true) }}"
+	data-search="{{ (display_name ~ ' ' ~ (s.location | default('', true)) ~ ' ' ~ (s.line + 1))|lower }}"
+	data-sort-name="{{ display_name|lower }}"
+	data-sort-loc="{{ (s.location | default('', true))|lower }}"
+	data-sort-seen="{{ s.updated_at | default('', true) }}"
+	data-row-href="{{ href }}"
+	class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+	{{ dr.item_cell(tone, link, display_name, href, s.calibration, "monitoring.hub_sensor.line_sub"|t|replace("{n}", s.line + 1)) }}
+	{{ dr.location_cell(s.location) }}
+	{{ dr.overview_cell(s.updated_at, none, "", ("monitoring.alarm_state." ~ state)|t if not s.connected and has_data else "") }}
+	{{ dr.values_cell(fields) }}
+	{{ dr.limits_cell(fields) }}
+	{{ dr.view_cell(href) }}
+</tr>

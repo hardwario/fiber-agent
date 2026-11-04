@@ -1,0 +1,94 @@
+[Unit]
+Description=ChirpStack credential bootstrap (admin API key, admin password)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/control/radio/lorawan.md
+Documentation=https://www.chirpstack.io/docs/chirpstack/use/cli-commands.html
+
+# lorawan.md §4's Option B, offline: mint the admin-scoped API key and replace
+# the factory `admin`/`admin` password *before* the API server first listens, so
+# that credential never exists on a listening socket. Both steps are CLI
+# subcommands against the same rendered config chirpstack.service uses; neither
+# needs the server running, because `create-api-key` runs ChirpStack's own
+# storage::setup() first.
+#
+# SKIP-IF-PRESENT, and this is the resolution of lorawan.md §4's open idempotency
+# question. `create-api-key` carries no name-uniqueness contract - verified live
+# against 4.19.1 on 2026-08-27: a second run mints a second `control-radio-admin`
+# row and prints a second token - and this unit runs Before=chirpstack.service, so
+# it cannot ask a live API which rows already exist. The presence of the token
+# file is the only check available here, and it matches the rule §4 step 4 states
+# for the other two tokens.
+#
+# Rotation is therefore explicit and documented: delete the token file and reboot
+# (or `systemctl start chirpstack-bootstrap`). Pruning the stale rows by name is
+# control-radio's job on the `create` path, where the API is up.
+ConditionPathExists=!/data/proximos/radio/lorawan/chirpstack-api-token-admin
+
+# The same gate as chirpstack.service: no rendered config means no LoRaWAN mode
+# was asked for, so there is nothing to bootstrap. Two ConditionPathExists= lines
+# are ANDed.
+ConditionPathExists=/run/proximos/chirpstack/chirpstack.toml
+
+# redis is a hard requirement even though nothing is listening yet: storage::setup()
+# sets up a Redis client before it writes the key ("Setting up Redis client",
+# verified live - the correction recorded in lorawan.md §2), so a bootstrap that
+# ran before redis would fail rather than merely be untidy.
+#
+# proximos-render.service produces the config both steps read, and it in turn
+# Requires= proximos-data-migrate.service - which is where migration
+# 005-chirpstack-seed.sh generated /data/chirpstack/api-secret (rendered into that
+# config) and /data/chirpstack/admin-password (applied by step 2 below). The
+# After= on the migration unit names that edge directly rather than relying on
+# the transitive one.
+Requires=proximos-render.service redis.service
+After=proximos-data-migrate.service proximos-render.service redis.service data.mount
+Before=chirpstack.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# ROOT, unlike chirpstack.service, because this one run writes files with two
+# different owners: the API token goes to /data/proximos/radio/lorawan/ as
+# 0600 proximos:proximos (control-radio reads it, and it is never chirpstack's to
+# read), while the SQLite database storage::setup() creates belongs to
+# chirpstack:chirpstack. No single service account can produce both, and running
+# as either one and chowning across would need the capability anyway.
+ExecStart=/usr/bin/chirpstack-bootstrap.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chirpstack-bootstrap
+
+# First boot applies ChirpStack's entire schema history to a virgin SQLite file
+# on an SD card. Measured at well under a second on a workstation; the ceiling is
+# here so a wedged first boot fails visibly instead of hanging the units behind
+# it forever.
+TimeoutStartSec=300s
+
+# Hardening - MDR 2017/745 Annex I 17.4. Narrower than chirpstack.service on
+# purpose, since this is root: ProtectSystem=strict makes the whole hierarchy
+# read-only and the two paths below are the only writable ones in the entire
+# namespace.
+#
+# The `-` prefix on the token directory means "ignore it if it is missing", and
+# it is load-bearing: that tree belongs to the radio component's own migration
+# (010-radio-init.sh), not to this package, and without the prefix a Hub whose
+# migrations have not created it yet would fail here with a systemd namespace
+# error that names neither the directory nor the migration. With it, the script
+# fails with a message that names both.
+#
+# No CapabilityBoundingSet=: chown to two different accounts is the job.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data/chirpstack -/data/proximos/radio/lorawan
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+# Needed even though chirpstack.service is ordered After= this unit - ordering
+# does not pull anything in, and a unit with no [Install] section cannot be
+# enabled at all (the recipe ships both units SYSTEMD_AUTO_ENABLE = "enable").
+# The conditions above are what keep it a no-op on the boots where it has nothing
+# to do.
+WantedBy=multi-user.target

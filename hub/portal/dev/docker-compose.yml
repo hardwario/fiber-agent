@@ -1,0 +1,94 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  # Where the portal's alarm e-mails and webhooks go in the dev loop, so the
+  # whole notification chain can be exercised without a real mailbox or
+  # endpoint (dev/README.md, "Notifications"). SMTP: localhost:1025, no TLS,
+  # no login; inbox at http://localhost:8025. Webhook: http://localhost:8099/alarms,
+  # received requests at http://localhost:8099/.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    profiles: ["mock", "multi"]
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  webhook-echo:
+    image: python:3.12-slim
+    profiles: ["mock", "multi"]
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./webhook_echo.py:/webhook_echo.py:ro
+    command: ["python", "-u", "/webhook_echo.py", "8099"]
+
+  # Simulated devices. One container is one Hub; `--hub` picks which profile
+  # (dev/mock/mock_publisher.py, PROFILES). See dev/mock/README.md.
+  #
+  #   --profile mock   the server Hub alone, which is the everyday dev loop
+  #   --profile multi  the whole demo cluster: server + two client Hubs
+  mock:
+    image: python:3.12-slim
+    profiles: ["mock", "multi"]
+    depends_on:
+      - mosquitto
+    volumes:
+      - ./mock:/mock:ro
+      # The one fixture, three implementations (plan/portal/mqtt/design.md §10).
+      # The mock reads `catalogue.json` and `envelope_v2.json` by relative path
+      # instead of keeping its own copy of the verb table, so the container has
+      # to be able to see them. The path mirrors the checkout's, which is what
+      # lets `python mock_publisher.py` work identically inside and outside.
+      - ../crates/fiber-protocol/vectors:/crates/fiber-protocol/vectors:ro
+    working_dir: /mock
+    command: >
+      sh -c "pip install --no-cache-dir 'paho-mqtt>=2.0' cryptography -q &&
+             python mock_publisher.py --host mosquitto --port 1883 --hub server"
+
+  mock-cold-store:
+    image: python:3.12-slim
+    profiles: ["multi"]
+    depends_on:
+      - mosquitto
+    volumes:
+      - ./mock:/mock:ro
+      - ../crates/fiber-protocol/vectors:/crates/fiber-protocol/vectors:ro
+    working_dir: /mock
+    command: >
+      sh -c "pip install --no-cache-dir 'paho-mqtt>=2.0' cryptography -q &&
+             python mock_publisher.py --host mosquitto --port 1883 --hub cold-store"
+
+  mock-truck:
+    image: python:3.12-slim
+    profiles: ["multi"]
+    depends_on:
+      - mosquitto
+    volumes:
+      - ./mock:/mock:ro
+      - ../crates/fiber-protocol/vectors:/crates/fiber-protocol/vectors:ro
+    working_dir: /mock
+    command: >
+      sh -c "pip install --no-cache-dir 'paho-mqtt>=2.0' cryptography -q &&
+             python mock_publisher.py --host mosquitto --port 1883 --hub truck"
+
+  # The Client Hub of milestone C5 (dev/mock/README.md, "The joiner"). Its own
+  # profile, started by hand after Add hub has registered it: a Client is not
+  # on the Server's broker before it joins, and its first status is what turns
+  # the registry row complete.
+  mock-joiner:
+    image: python:3.12-slim
+    profiles: ["joiner"]
+    depends_on:
+      - mosquitto
+    volumes:
+      - ./mock:/mock:ro
+      - ../crates/fiber-protocol/vectors:/crates/fiber-protocol/vectors:ro
+    working_dir: /mock
+    command: >
+      sh -c "pip install --no-cache-dir 'paho-mqtt>=2.0' cryptography -q &&
+             python mock_publisher.py --host mosquitto --port 1883 --hub joiner"

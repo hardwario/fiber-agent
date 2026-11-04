@@ -1,0 +1,165 @@
+/*
+ * Copyright (c) 2026
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board definition for a bare STM32WL5MOCH6TR module.
+ * USART1 (PA9/PA10) connects to RPi CM4 ttyAMA3 and is dedicated
+ * exclusively to the P2P binary protocol (see p2p-uart alias below) -
+ * no console/shell on it. Debug console/shell run over SEGGER RTT
+ * instead (CONFIG_USE_SEGGER_RTT / CONFIG_SHELL_BACKEND_RTT in
+ * app/prj.conf), which needs no devicetree chosen node.
+ * Sub-GHz radio in low-power output configuration (RFO_LP).
+ */
+
+/dts-v1/;
+#include <st/wl/stm32wl55Xc.dtsi>
+#include "stm32wl5moc-pinctrl.dtsi"
+
+/ {
+	model = "STM32WL5MOC Module";
+	compatible = "st,stm32wl5moc";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		/* The app is linked into slot0, behind nbboot (CONFIG_USE_DT_CODE_PARTITION). */
+		zephyr,code-partition = &slot0_partition;
+	};
+
+	aliases {
+		lora0 = &lora;
+		watchdog0 = &iwdg;
+		p2p-uart = &usart1;
+	};
+};
+
+&clk_lsi {
+	status = "okay";
+};
+
+stm32_lp_tick_source: &lptim1 {
+	clocks = <&rcc STM32_CLOCK(APB1, 31)>,
+		 <&rcc STM32_SRC_LSI LPTIM1_SEL(1)>;
+	status = "okay";
+};
+
+&clk_hsi {
+	status = "okay";
+};
+
+&clk_lse {
+	clock-frequency = <32768>;
+	/* Strongest LSE drive (LSEDRV = 3): the module's crystal needs it (#153). */
+	driving-capability = <3>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <1>;
+	mul-n = <6>;
+	div-r = <2>;
+	div-q = <2>;
+	clocks = <&clk_hsi>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(48)>;
+	cpu1-prescaler = <1>;
+	cpu2-prescaler = <1>;
+	ahb3-prescaler = <1>;
+	apb1-prescaler = <1>;
+	apb2-prescaler = <1>;
+};
+
+/* P2P binary protocol UART → RPi CM4 ttyAMA3 (p2p-uart alias above) */
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+/* Sub-GHz radio — LoRa, low-power output only */
+&subghzspi {
+	status = "okay";
+
+	lora: radio@0 {
+		status = "okay";
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V7>;
+		tcxo-power-startup-delay-ms = <5>;
+		/*
+		 * RF switch controlled by board.c (3-GPIO).
+		 * Truth table from ST's HAL for the STM32WL5Mxx module
+		 * (stm32wlxx_hal.c, HAL_RADIO_SetSwitchConfig):
+		 *   OFF:   PC3=0, PC4=0, PC5=0
+		 *   RX:    PC3=1, PC4=1, PC5=1
+		 *   TX LP: PC3=1, PC4=1, PC5=0  (RFO_LP, selected below)
+		 *   TX HP: PC3=1, PC4=0, PC5=1  (RFO_HP, unused)
+		 */
+		power-amplifier-output = "rfo-lp";
+		rfo-lp-max-power = <15>;
+	};
+};
+
+&rng {
+	status = "okay";
+};
+
+&aes {
+	status = "okay";
+};
+
+&iwdg {
+	status = "okay";
+};
+
+&rtc {
+	clocks = <&rcc STM32_CLOCK(APB1, 10)>,
+		 <&rcc STM32_SRC_LSE RTC_SEL(1)>;
+	status = "okay";
+};
+
+/*
+ * The last 16 B of SRAM are not Zephyr's: 0x2000FFF0 holds the boot request word nbboot reads
+ * after a reset (proximos-v2 plan/control/radio/northbridge_update.md §10).
+ */
+&sram0 {
+	reg = <0x20000000 (DT_SIZE_K(64) - 16)>;
+};
+
+/*
+ * Flash layout of the update through the Hub (northbridge_update.md §3.1, §10), 2 KB pages:
+ * nbboot in page 0, never rewritten in the field; the app in slot0 (pages 1..118); the
+ * app_valid record in page 119, written last by the flasher; storage, never erased by it.
+ * nbboot/src/nb_app_valid.h holds the same addresses for the stub.
+ */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		boot_stub_partition: partition@0 {
+			label = "nbboot";
+			reg = <0x00000000 0x800>;
+			read-only;
+		};
+
+		slot0_partition: partition@800 {
+			label = "image-0";
+			reg = <0x00000800 0x3b000>;
+		};
+
+		app_valid_partition: partition@3b800 {
+			label = "app-valid";
+			reg = <0x0003b800 0x800>;
+		};
+
+		storage_partition: partition@3c000 {
+			label = "storage";
+			reg = <0x0003c000 DT_SIZE_K(16)>;
+		};
+	};
+};

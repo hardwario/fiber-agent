@@ -1,0 +1,368 @@
+{#
+  Documentation page — v1's `/docs` (`viewer/frontend/app/docs/page.tsx`)
+  as one server-rendered template.
+
+  Context: {
+    current_user, nav_active = "docs",
+    sections: [ { id, title, blocks: [ { type, data } ] } ]  -- docs/<lang>.json,
+    pdf_href: string, or none when the brand ships no PDF (brand.toml docs_pdf_*)
+  }.
+
+  The block vocabulary is v1's (`routes::docs_routes`), so the content file
+  ports between the two, plus one block v1 never had: `qaRows`, the
+  question-and-answer list of the Troubleshooting section. Every block type
+  gets one branch in `render_block` below; an unknown type renders nothing.
+
+  The table of contents is a sticky column on xl and up and a plain list at
+  the top of the page below that — v1's off-canvas drawer needs JS and the
+  anchors work without it.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "common.nav.docs"|t }} - {{ brand.product }}{% endblock %}
+
+{#- Section icons, v1's SECTION_ICONS. -#}
+{% set SECTION_ICONS = {
+	"overview": "book-open",
+	"quickstart": "timer",
+	"hardware": "cpu",
+	"startup": "zap",
+	"server": "server",
+	"client": "monitor",
+	"pairing": "key",
+	"hubs": "router",
+	"stickers": "radio",
+	"beacons": "bluetooth",
+	"gateway": "network",
+	"monitoring": "thermometer",
+	"limits": "sliders-horizontal",
+	"alarms": "bell",
+	"notifications": "mail",
+	"history": "chart-line",
+	"users": "users",
+	"settings": "settings",
+	"troubleshooting": "circle-alert"
+} %}
+
+{#- Card icons, v1's ICON_MAP: its lucide-react names mapped onto the names
+    `partials/icons.html` carries. -#}
+{% set CARD_ICONS = {
+	"Cpu": "cpu",
+	"Radio": "radio",
+	"Wifi": "wifi",
+	"Server": "server",
+	"MonitorSmartphone": "monitor",
+	"BookOpen": "book-open",
+	"Zap": "zap",
+	"Settings": "settings",
+	"ThermometerSnowflake": "thermometer",
+	"Key": "key",
+	"Info": "info",
+	"AlertTriangle": "alert-triangle",
+	"CheckCircle2": "circle-check"
+} %}
+
+{% set STATUS_DOT = {
+	"success": "bg-success",
+	"warning": "bg-warning",
+	"error": "bg-error",
+	"neutral": "bg-base-300"
+} %}
+
+{% set ROLE_PILL = {
+	"primary": "bg-primary text-primary-content",
+	"info": "bg-info text-info-content",
+	"muted": "bg-base-200 text-muted-fg"
+} %}
+
+{#- The three glyphs printed on the Hub's front panel. v1 draws them as round
+    peach buttons inside the prose; same idea, without the icon component. -#}
+{% macro glyph(g) -%}
+<span class="inline-flex items-center justify-center h-5 w-5 mx-0.5 align-text-bottom rounded-full bg-primary text-primary-content text-[10px] leading-none shadow-sm ring-1 ring-primary/25">{{ g }}</span>
+{%- endmacro %}
+
+{#- Replaces those glyphs inside a run of text (v1's `renderStepText`). The
+    text is escaped first, so only the markup added here is live. -#}
+{% macro glyphs(text) -%}
+{{ text|escape|replace("▲", glyph("▲"))|replace("▼", glyph("▼"))|replace("■", glyph("■"))|replace("□", glyph("■"))|safe }}
+{%- endmacro %}
+
+{% macro step_list(steps) -%}
+{% if steps %}
+<ol class="space-y-2.5 mt-3">
+	{% for step in steps %}
+	<li class="flex gap-3">
+		<span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-xs font-bold mt-0.5">{{ loop.index }}</span>
+		<span class="text-sm text-muted-fg leading-relaxed">{{ glyphs(step) }}</span>
+	</li>
+	{% endfor %}
+</ol>
+{% endif %}
+{%- endmacro %}
+
+{% macro step_card(sc) -%}
+<div class="card-v1 p-5">
+	{% if sc.title %}<h3 class="font-semibold text-base">{{ sc.title }}</h3>{% endif %}
+	{% if sc.intro %}<p class="text-sm text-muted-fg mt-1">{{ glyphs(sc.intro) }}</p>{% endif %}
+	{{ step_list(sc.steps) }}
+</div>
+{%- endmacro %}
+
+{% macro render_block(b) -%}
+{% set d = b.data %}
+
+{% if b.type == "text" %}
+<p class="text-sm text-muted-fg leading-relaxed max-w-3xl">{{ d.text }}</p>
+
+{% elif b.type == "code" %}
+<div>
+	<code class="block bg-base-200 px-5 py-4 rounded-xl text-sm font-mono">{{ d.code }}</code>
+	{% if d.note %}<p class="text-xs text-muted-fg mt-2">{{ d.note }}</p>{% endif %}
+</div>
+
+{% elif b.type == "image" %}
+{#- Highlight boxes are fractional (0..1) coordinates over the image, drawn
+    as absolutely positioned overlays — v1's ImageBox. `front` is an optional
+    transparent PNG of the same size laid over the boxes (e.g. the cables cut
+    out of the photo), so a box can pass behind something in the picture. A box with
+    `badge: "left"` puts its number beside it, centred on its height, rather than
+    on its corner: for a box around one line of display text, which the corner
+    badge would cover, and for a box around one key, where the corner badge
+    lands on the key above. The printed First Steps booklet places them the
+    same way. -#}
+{#- The legend sits over the picture's corner from sm up, as in v1. Below that the
+    picture is a phone's width, the legend would take half of it and cover the very
+    keys the frames point at, so it moves under the picture instead. -#}
+{% set labelled = d.boxes | selectattr("label") | list %}
+<figure class="space-y-2">
+	<div class="relative w-full" style="max-width: {% if d.half %}21rem{% else %}42rem{% endif %}">
+		<img src="{{ d.src }}" alt="{{ d.alt }}" class="block w-full h-auto {% if not d.cutout %}rounded-xl border border-base-300 bg-base-100{% endif %}">
+		{% for box in d.boxes %}
+		<div class="absolute" style="left: {{ box.x * 100 }}%; top: {{ box.y * 100 }}%; width: {{ box.w * 100 }}%; height: {{ box.h * 100 }}%">
+			<div class="absolute inset-0 rounded-md border-2 border-primary ring-2 ring-primary/25"></div>
+			<span class="absolute {% if box.badge != "left" %}-top-3 -left-2 {% endif %}flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-content text-xs font-bold shadow"{% if box.badge == "left" %} style="top: 50%; left: -1.75rem; transform: translateY(-50%)"{% endif %}>{{ box.num | default(loop.index) }}</span>
+		</div>
+		{% endfor %}
+		{% if d.front %}<img src="{{ d.front }}" alt="" aria-hidden="true" class="absolute inset-0 w-full h-full pointer-events-none {% if not d.cutout %}rounded-xl border border-transparent{% endif %}">{% endif %}
+		{% if labelled %}
+		{#- The corner legend shows from sm up. Its display toggle sits on this wrapper and
+		    its column layout on the element inside, so neither class overrides the other. -#}
+		<div class="absolute top-2 right-2 max-w-[45%] hidden sm:block rounded-lg border border-base-300 bg-base-100/90 px-2.5 py-2 shadow-sm backdrop-blur-sm">
+		<div class="flex flex-col gap-1">
+			{% for box in d.boxes %}{% if box.label %}
+			<div class="flex items-center gap-1.5">
+				<span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-content text-[10px] font-bold">{{ box.num | default(loop.index) }}</span>
+				<span class="text-[11px] leading-snug">{{ glyphs(box.label) }}</span>
+			</div>
+			{% endif %}{% endfor %}
+		</div>
+		</div>
+		{% endif %}
+	</div>
+	{% if labelled %}
+	<div class="sm:hidden flex flex-col gap-1">
+		{% for box in d.boxes %}{% if box.label %}
+		<div class="flex items-center gap-2">
+			<span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-content text-[10px] font-bold">{{ box.num | default(loop.index) }}</span>
+			<span class="text-sm">{{ glyphs(box.label) }}</span>
+		</div>
+		{% endif %}{% endfor %}
+	</div>
+	{% endif %}
+	{% if d.caption %}<figcaption class="text-xs text-muted-fg">{{ glyphs(d.caption) }}</figcaption>{% endif %}
+</figure>
+
+{% elif b.type == "featureCards" %}
+<div class="grid sm:grid-cols-3 gap-4">
+	{% for f in d %}
+	<div class="card-v1 p-5 flex flex-col gap-2">
+		<div class="flex items-center gap-2">
+			{{ ic.icon(CARD_ICONS[f.icon] | default("cpu"), "h-5 w-5 text-primary") }}
+			<span class="font-semibold text-base">{{ f.title }}</span>
+		</div>
+		<p class="text-sm text-muted-fg">{{ f.desc }}</p>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "modeCards" %}
+<div class="grid sm:grid-cols-2 gap-4">
+	{% for m in d %}
+	<div class="card-v1 p-5">
+		<h3 class="font-semibold mb-2 flex items-center gap-2 text-base">
+			{{ ic.icon(CARD_ICONS[m.icon] | default("server"), "h-5 w-5 text-primary") }}{{ m.title }}
+		</h3>
+		<p class="text-sm font-medium mb-1">{{ m.intro }}</p>
+		<p class="text-sm text-muted-fg">{{ m.text }}</p>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "stepCard" %}
+{{ step_card(d) }}
+
+{% elif b.type == "twoColStepCards" %}
+<div class="grid sm:grid-cols-2 gap-4">
+	{{ step_card(d.left) }}
+	{{ step_card(d.right) }}
+</div>
+
+{% elif b.type == "fieldCard" %}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold text-base">{{ d.title }}</h3>
+	{% if d.intro %}<p class="text-sm text-muted-fg mt-1">{{ d.intro }}</p>{% endif %}
+	{#- Three columns do not fit a phone: below sm each field is one block. -#}
+	<div class="sm:hidden mt-3">
+		{% for f in d.fields %}
+		<div class="py-2.5 border-b border-base-300 last:border-0 text-sm">
+			<p class="font-mono font-medium text-primary">{{ f.name }}</p>
+			{% if f.example %}<p class="font-mono text-xs text-muted-fg mt-0.5">{{ "common.docs.example"|t }}: {{ f.example }}</p>{% endif %}
+			<p class="text-muted-fg mt-1">{{ f.desc }}</p>
+		</div>
+		{% endfor %}
+	</div>
+	<div class="hidden sm:block overflow-x-auto mt-3">
+		<table class="w-full text-sm">
+			<thead>
+				<tr class="border-b border-base-300">
+					<th class="text-left py-2 pr-4 text-[11px] font-medium uppercase tracking-wide text-muted-fg">{{ "common.docs.field"|t }}</th>
+					<th class="text-left py-2 pr-4 text-[11px] font-medium uppercase tracking-wide text-muted-fg">{{ "common.docs.example"|t }}</th>
+					<th class="text-left py-2 text-[11px] font-medium uppercase tracking-wide text-muted-fg">{{ "common.docs.description"|t }}</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for f in d.fields %}
+				<tr class="border-b border-base-300 last:border-0">
+					<td class="py-2.5 pr-4 font-mono text-sm font-medium text-primary">{{ f.name }}</td>
+					<td class="py-2.5 pr-4 font-mono text-sm text-muted-fg">{{ f.example }}</td>
+					<td class="py-2.5 text-sm text-muted-fg">{{ f.desc }}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</div>
+
+{% elif b.type == "infoBox" %}
+<div class="flex gap-3 rounded-xl border p-4 text-sm {% if d.kind == "info" %}border-info/30 bg-info/10 text-info{% else %}border-warning/30 bg-warning/10 text-warning{% endif %}">
+	{% if d.kind == "info" %}{{ ic.icon("info", "h-5 w-5 shrink-0 mt-0.5") }}{% else %}{{ ic.icon("alert-triangle", "h-5 w-5 shrink-0 mt-0.5") }}{% endif %}
+	<span>{{ glyphs(d.text) }}</span>
+</div>
+
+{% elif b.type == "statusCards" %}
+<div class="grid sm:grid-cols-3 gap-3">
+	{% for s in d %}
+	<div class="card-v1 p-5 flex items-start gap-3">
+		<span class="h-3.5 w-3.5 rounded-full mt-1 shrink-0 {{ STATUS_DOT[s.color] | default("bg-base-300") }}"></span>
+		<div>
+			<p class="font-semibold text-base">{{ s.label }}</p>
+			<p class="text-sm text-muted-fg">{{ s.desc }}</p>
+		</div>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "tabRows" %}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold mb-3 text-base">{{ d.title }}</h3>
+	{% for r in d.rows %}
+	<div class="flex flex-col items-start sm:flex-row gap-1 sm:gap-3 py-2.5 border-b border-base-300 last:border-0 text-sm">
+		<code class="shrink-0 mt-0.5 rounded bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">{{ r.tab }}</code>
+		<span class="text-muted-fg">{{ r.desc }}</span>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "roleRows" %}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold mb-3 text-base">{{ d.title }}</h3>
+	{% for r in d.rows %}
+	<div class="flex flex-col items-start sm:flex-row sm:items-center gap-1 sm:gap-3 py-2.5 border-b border-base-300 last:border-0 text-sm">
+		<span class="rounded px-2.5 py-0.5 text-xs font-semibold {{ ROLE_PILL[r.color] | default("bg-base-200 text-muted-fg") }}">{{ r.role }}</span>
+		<span class="text-muted-fg">{{ r.desc }}</span>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "btnRows" %}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold mb-3 text-base">{{ d.title }}</h3>
+	{% for r in d.rows %}
+	<div class="flex flex-col items-start sm:flex-row sm:items-center gap-1 sm:gap-3 py-2.5 border-b border-base-300 last:border-0 text-sm">
+		<span class="flex items-center gap-2 sm:w-32 shrink-0">
+			{{ glyphs(r.btn) }}
+		</span>
+		<span class="text-muted-fg">{{ glyphs(r.action) }}</span>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "qaRows" %}
+{#- Troubleshooting: a symptom in the customer's words, then what to do. -#}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold text-base">{{ d.title }}</h3>
+	{% for r in d.rows %}
+	<div class="py-3 border-b border-base-300 last:border-0 text-sm">
+		<p class="font-medium">{{ glyphs(r.q) }}</p>
+		<p class="text-muted-fg mt-1 leading-relaxed">{{ glyphs(r.a) }}</p>
+	</div>
+	{% endfor %}
+</div>
+
+{% elif b.type == "tagList" %}
+<div class="card-v1 p-5">
+	<h3 class="font-semibold mb-3 text-base">{{ d.title }}</h3>
+	<div class="flex flex-wrap gap-2">
+		{% for tag in d.tags %}
+		<span class="rounded-full bg-primary/10 px-3 py-1 text-sm font-medium text-primary">{{ tag }}</span>
+		{% endfor %}
+	</div>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="flex gap-8 items-start">
+	<div class="flex-1 min-w-0 space-y-12">
+		{#- Below xl the sticky column is gone, so the contents go here. -#}
+		<nav class="xl:hidden card-v1 p-4">
+			<p class="text-[11px] font-semibold uppercase tracking-wider text-muted-fg mb-2">{{ "common.docs.contents"|t }}</p>
+			<div class="flex flex-wrap gap-x-4 gap-y-1.5">
+				{% for section in sections %}
+				<a href="#{{ section.id }}" class="text-sm text-muted-fg hover:text-base-content">{{ section.title }}</a>
+				{% endfor %}
+			</div>
+		</nav>
+
+		{% for section in sections %}
+		<section id="{{ section.id }}" class="space-y-5 scroll-mt-20">
+			{% if section.id == "overview" %}
+			{% call ui.page_header(SECTION_ICONS[section.id] | default("book-open"), section.title) %}
+				{% if pdf_href %}<a href="{{ pdf_href }}" download class="btn btn-primary btn-sm gap-2" title="{{ "common.docs.download_pdf"|t }}" aria-label="{{ "common.docs.download_pdf"|t }}">
+					{{ ic.icon("download", "h-4 w-4") }}<span class="hidden sm:inline">{{ "common.docs.download_pdf"|t }}</span>
+				</a>{% endif %}
+			{% endcall %}
+			{% else %}
+			{{ ui.page_header(SECTION_ICONS[section.id] | default("book-open"), section.title) }}
+			{% endif %}
+			{% for b in section.blocks %}
+			{{ render_block(b) }}
+			{% endfor %}
+		</section>
+		{% endfor %}
+	</div>
+
+	<aside class="hidden xl:block w-56 shrink-0 sticky top-4">
+		<p class="text-[11px] font-semibold uppercase tracking-wider text-muted-fg px-3 pb-2">{{ "common.docs.contents"|t }}</p>
+		<nav class="space-y-0.5">
+			{% for section in sections %}
+			<a href="#{{ section.id }}" class="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-muted-fg hover:bg-base-content/5 hover:text-base-content">
+				{{ ic.icon(SECTION_ICONS[section.id] | default("book-open"), "h-3.5 w-3.5 shrink-0") }}{{ section.title }}
+			</a>
+			{% endfor %}
+		</nav>
+	</aside>
+</div>
+{% endblock %}

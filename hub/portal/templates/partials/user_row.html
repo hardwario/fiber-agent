@@ -1,0 +1,61 @@
+{#
+  One user row of pages/users.html's table.
+
+  Context: { u, current_user } — `u` = {
+    id, username: string, full_name: string|none, job_title: string|none,
+    user_role: "viewer"|"manager"|"admin", is_superuser: bool,
+    enabled: bool, created_at: string, last_login: string|none
+  }.
+
+  The data attributes are what /static/js/portal-list.js filters and sorts
+  over, same contract as partials/node_card.html: `data-kind` marks the row
+  as one the pass owns, `data-search` is the haystack, `data-role` and
+  `data-status` answer the two filter fields (a generic equality field each,
+  matched by name — see the script's `extras`; a superuser files under
+  `admin`, the population the Admins tile counts), and every `data-sort-*` is a
+  sortable column's value.
+
+  The whole row opens the user (pages/user_detail.html); the name is also a
+  real link, so the row is reachable by keyboard and the middle-click /
+  open-in-new-tab a table of links is expected to support keeps working.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% set display_name = u.full_name | default(u.username, true) %}
+{% set role_label = ("common.role.superuser"|t) if u.is_superuser else ("common.role." ~ u.user_role)|t %}
+<tr data-kind="user"
+	data-role="{{ "admin" if u.is_superuser else u.user_role }}"
+	data-status="{% if u.enabled %}enabled{% else %}disabled{% endif %}"
+	data-search="{{ (display_name ~ ' ' ~ u.username ~ ' ' ~ (u.job_title | default('', true)))|lower }}"
+	data-sort-name="{{ display_name|lower }}"
+	data-sort-role="{{ role_label|lower }}"
+	data-sort-job="{{ (u.job_title | default('', true))|lower }}"
+	data-sort-created="{{ u.created_at }}"
+	data-sort-seen="{{ u.last_login | default('', true) }}"
+	onclick="if (!event.target.closest('a')) location.href = '/settings/users/{{ u.id }}'"
+	data-row-href="/settings/users/{{ u.id }}"
+	class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle {% if not u.enabled %}opacity-50{% endif %}">
+
+	<td>
+		<div class="flex items-center gap-2.5 min-w-0">
+			<span class="flex items-center justify-center h-8 w-8 shrink-0 rounded-full bg-primary/10 text-primary text-xs font-semibold">{{ display_name[:1]|upper }}</span>
+			<div class="min-w-0">
+				<a href="/settings/users/{{ u.id }}" class="block text-sm truncate hover:underline">{{ display_name }}</a>
+				<div class="text-xs text-muted-fg truncate">@{{ u.username }}</div>
+			</div>
+		</div>
+	</td>
+
+	<td data-column="role">{{ ui.role_pill(role_label) }}</td>
+
+	<td data-column="status">
+		<span class="badge-status {% if u.enabled %}badge-status-normal{% else %}badge-status-offline{% endif %}">
+			{% if u.enabled %}{{ "auth.users.status_enabled"|t }}{% else %}{{ "auth.users.status_disabled"|t }}{% endif %}
+		</span>
+	</td>
+
+	<td data-column="job" class="hidden"><span class="block text-sm text-muted-fg truncate">{{ u.job_title | default("—", true) }}</span></td>
+	<td data-column="created"><span class="block text-sm text-muted-fg tabular-nums whitespace-nowrap" title="{{ u.created_at | short_dt("full") }}">{{ u.created_at | short_dt("compact") }}</span></td>
+	<td data-column="seen"><span class="block text-sm text-muted-fg tabular-nums whitespace-nowrap"{% if u.last_login %} title="{{ u.last_login | short_dt("full") }}"{% endif %}>{{ u.last_login | short_dt("compact") | default(("common.never"|t), true) }}</span></td>
+
+</tr>

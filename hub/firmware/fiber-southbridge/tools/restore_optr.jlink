@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// JLinkExe script: restore FLASH_OPTR to the value observed BEFORE
+// set_nboot_sel.jlink ran (0xEEFFFEAA on this board). NBOOT_SEL was
+// already 0 in that original state — the earlier script's hard-coded
+// write to 0xDEFFE1AA accidentally flipped a handful of other bits
+// (BOR thresholds bit 9..12, bit 28 NRST_MODE, bit 29 RAM_PARITY_CHECK).
+//
+// Run once to undo those side effects:
+//     JLinkExe -CommanderScript restore_optr.jlink
+//
+// Expected:
+//   1) first  mem32 → 0xDEFFE1AA   (current, post set_nboot_sel)
+//   2) last   mem32 → 0xEEFFFEAA   (restored)
+
+si SWD
+speed 4000
+device STM32C031C6
+connect
+halt
+
+// --- read current FLASH_OPTR ------------------------------------------
+mem32 0x40022020 1
+
+// --- unlock FLASH_CR.LOCK ---------------------------------------------
+w4 0x40022008 0x45670123
+w4 0x40022008 0xCDEF89AB
+
+// --- unlock FLASH_CR.OPTLOCK ------------------------------------------
+w4 0x4002200C 0x08192A3B
+w4 0x4002200C 0x4C5D6E7F
+
+// --- restore original OPTR --------------------------------------------
+w4 0x40022020 0xEEFFFEAA
+
+// --- FLASH_CR.OPTSTRT (bit 17) = 1 → start option-byte programming ---
+w4 0x40022014 0x00020000
+
+sleep 50
+
+// --- FLASH_CR.OBL_LAUNCH (bit 27) = 1 → reload option bytes (resets) -
+w4 0x40022014 0x08000000
+
+sleep 100
+
+// --- verify -----------------------------------------------------------
+connect
+halt
+mem32 0x40022020 1
+
+exit

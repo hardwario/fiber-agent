@@ -1,0 +1,26 @@
+{#
+  The one answer of POST …/cluster/clients/{client}/reveal that carries the
+  secret (devices.hub.md §4 step 4, §8.4). It replaces #join-bundle-secret in
+  hub_join_bundle.html. The fetch that rendered it took the bundle out of the
+  Server's memory and wrote the `hub_peer_secret_revealed` audit row, so this
+  page is the only copy left. The response is `Cache-Control: no-store`.
+
+  Context: {
+    bundle: string,                     -- {"v":1,"h":…,"p":…,"f":…}
+    qr_svg: string|none                 -- the bundle as inline SVG
+  }
+#}
+<div class="grid gap-2 justify-items-center">
+	{% if qr_svg %}
+	<div class="w-60 max-w-full rounded-lg bg-white p-2" role="img" aria-label="{{ 'monitoring.hubs.bundle_qr_label'|t }}">{{ qr_svg|safe }}</div>
+	{% endif %}
+	<label class="grid gap-1 text-sm w-full">
+		<span class="text-muted-fg">{{ "monitoring.hubs.bundle_text_label"|t }}</span>
+		<textarea readonly rows="3" class="input-v1 font-mono text-xs w-full h-auto py-2"
+			onfocus="this.select()">{{ bundle }}</textarea>
+	</label>
+	<p class="text-xs text-muted-fg w-full">{{ "monitoring.hubs.bundle_revealed_note"|t }}</p>
+	<div class="flex justify-end w-full">
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" onclick="var d = this.closest('dialog'); if (d) d.close(); else location.href = '/hubs';">{{ "monitoring.hubs.bundle_done"|t }}</button>
+	</div>
+</div>

@@ -1,0 +1,181 @@
+{#
+  Trends page, `/trends` (formerly History; monitoring.md, dodatky
+  2026-10-14 and 2026-10-15): the controls and the chart, then the sensor
+  table in selection mode (partials/history_picker.html, the shared toolbar,
+  rows and selection component). Charts only: the alarm history is on /audit.
+
+  Context: {
+    current_user, nav_active = "history",
+    has_device: bool,        -- false = no Hub has reported yet
+    hostname: string|none,   -- the scoped Hub (`?hub=` or the only one);
+                                none with several Hubs and no ?hub=
+    rows[], fields[], many_hubs
+                             -- see partials/history_picker.html
+    groups[]                 -- label, count, selected, href, tokens: the
+                                quick select in the picker card
+    selected[], selected_tokens, selected_count, max_sensors,
+    series_colors {token: colour}, select_base (this URL with an empty `s`),
+    ranges[], aggs[], selected_range, selected_agg,
+    custom_from, custom_to, chart_config, clear_href
+  }
+
+  The sensor table is outside `#history-main` and drives `?s=` from the
+  client (the script at the bottom); everything below still holds for the
+  controls, the group links and the chart.
+
+  **All page state lives in the query string** (`?s=line:0,node:aabb:
+  temperature&range=24h&agg=auto`). Every control — each picker row, each
+  range/aggregation pill, "Clear selection" — is a plain `<a>` to another
+  `/trends?…`, so the page is bookmarkable, shareable, survives reload,
+  and the back button walks the selection history. `hx-boost` on the
+  wrapper then turns those navigations into a swap of `#history-main`
+  alone: no full reload, no flash, and htmx pushes the same URL the link
+  already carried. With JS off the links still work as ordinary
+  navigation.
+
+  `hx-select="#history-main"` matters: the server answers a boosted link
+  with the whole page, and htmx picks this one subtree out of it. That is
+  why there is no partial-only route — the page render *is* the fragment
+  render, so there is exactly one code path to keep correct.
+
+  The chart's JSON config sits in a `<script type="application/json">`
+  inside `#history-main`, so a swap replaces it along with everything else;
+  static/js/portal-charts.js re-initialises on htmx's `load` event.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "monitoring.history.heading"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+{% if not has_device %}
+<div class="card-v1 py-16 text-center">
+	<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+	<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.history.no_device_body"|t }}</p>
+</div>
+{% else %}
+<div class="space-y-4">
+<div id="history-main" hx-boost="true" hx-target="#history-main" hx-select="#history-main" hx-swap="outerHTML"
+	data-selection="{{ selected_tokens }}" data-series='{{ series_colors | tojson }}'>
+	{#- Controls, then the chart. The sensor
+	    table follows outside this region (see below). -#}
+	<div class="card-v1 overflow-hidden">
+		{% include "partials/history_controls.html" %}
+		<div class="flex">
+			{% include "partials/history_chart.html" %}
+		</div>
+	</div>
+</div>
+
+{% include "partials/history_picker.html" %}
+</div>
+
+<script>
+// The sensor table (portal-select.js) drives `?s=`: a change becomes the
+// History URL and a swap of #history-main, pushed to the address bar, so
+// reload, back and bookmarks keep working. Already-selected tokens keep
+// their order (it fixes the colours); new ones are appended.
+(function () {
+	var table = document.getElementById('history-sensors');
+	if (!table) return;
+	function main() { return document.getElementById('history-main'); }
+	function current() {
+		var raw = (main() && main().dataset.selection) || '';
+		return raw ? raw.split(',') : [];
+	}
+	function paintSwatches() {
+		var colors = {};
+		try { colors = JSON.parse(main().dataset.series || '{}'); } catch (err) { colors = {}; }
+		table.querySelectorAll('tr[data-select-id]').forEach(function (tr) {
+			var dot = tr.querySelector('[data-swatch]');
+			if (!dot) return;
+			var c = colors[tr.dataset.selectId];
+			dot.classList.toggle('hidden', !c);
+			dot.style.backgroundColor = c || '';
+		});
+	}
+	table.addEventListener('select-change', function (ev) {
+		var ids = ev.detail.ids;
+		var cur = current();
+		var next = cur.filter(function (t) { return ids.indexOf(t) !== -1; });
+		ids.forEach(function (t) { if (next.indexOf(t) === -1) next.push(t); });
+		if (next.join(',') === cur.join(',')) return;
+		// The current address, not the one rendered with the table: a range
+		// pill or the Events toggle has changed it since.
+		var url = new URL(window.location.href);
+		url.searchParams.set('s', next.join(','));
+		var href = url.pathname + '?' + url.searchParams.toString().replace(/%2C/g, ',').replace(/%3A/g, ':');
+		htmx.ajax('GET', href, { target: '#history-main', select: '#history-main', swap: 'outerHTML' }).then(function () {
+			history.pushState({}, '', href);
+		});
+	});
+	// No layout shift while the region is swapped and the chart redraws:
+	// the old height is held as a floor until the new chart has had a
+	// moment to paint, then released so the page can settle to its size.
+	var holdTimer = null;
+	document.body.addEventListener('htmx:beforeSwap', function (ev) {
+		var m = main();
+		if (!m || ev.detail.target !== m) return;
+		window.__historyHold = m.offsetHeight;
+	});
+	function holdHeight() {
+		var m = main();
+		if (!m || !window.__historyHold) return;
+		m.style.minHeight = window.__historyHold + 'px';
+		clearTimeout(holdTimer);
+		holdTimer = setTimeout(function () {
+			var cur = main();
+			if (cur) cur.style.minHeight = '';
+			window.__historyHold = 0;
+		}, 600);
+	}
+	// After any swap of the region (a range pill, a group, our own change):
+	// mirror the server's selection
+	// into the table — a group link changes it from outside.
+	document.body.addEventListener('htmx:afterSwap', holdHeight);
+	// Monitoring groups (select in the picker toolbar): choosing one sets the
+	// table to its channels, "—" clears the selection.
+	function sameSet(a, b) { return a.slice().sort().join(',') === b.slice().sort().join(','); }
+	function markGroups() {
+		var sel = table.querySelector('[data-group-select]');
+		if (!sel) return;
+		var cur = current(), v = '';
+		Array.prototype.forEach.call(sel.options, function (o) {
+			if (o.value && cur.length > 0 && sameSet(o.value.split(','), cur)) v = o.value;
+		});
+		sel.value = v;
+		if (window.proximosSingleSelect) window.proximosSingleSelect.sync(sel);
+	}
+	table.addEventListener('change', function (ev) {
+		var sel = ev.target instanceof Element && ev.target.closest('[data-group-select]');
+		if (!sel) return;
+		ev.stopPropagation();
+		var api = window.proximosSelect && window.proximosSelect(table);
+		if (api) api.set(sel.value ? sel.value.split(',') : []);
+	});
+	document.body.addEventListener('htmx:afterSettle', function () {
+		var api = window.proximosSelect && window.proximosSelect(table);
+		if (api && !sameSet(api.ids(), current())) api.set(current());
+		paintSwatches();
+		markGroups();
+	});
+	markGroups();
+	// htmx restores Back from its own snapshot, which carries none of the
+	// table's live state; a reload rebuilds the page from the URL.
+	document.body.addEventListener('htmx:historyRestore', function () { location.reload(); });
+	window.addEventListener('popstate', function () { location.reload(); });
+})();
+</script>
+{# Chart-only deps: not in layout/base.html, no other page needs echarts. #}
+{# Order matters — both are `defer`, so they still run in document order  #}
+{# before DOMContentLoaded, but echarts.min.js must define `window.echarts` #}
+{# before portal-charts.js reads it.                                       #}
+<script src="/static/js/echarts.min.js?v={{ asset_v }}" defer></script>
+<script src="/static/js/portal-charts.js?v={{ asset_v }}" defer></script>
+<script src="/static/js/portal-list.js?v={{ asset_v }}" defer></script>
+{# The custom-range dialog's two-month calendar (partials/history_controls.html). #}
+{# A web component, so it upgrades itself after every htmx swap — no re-init.     #}
+<script src="/static/js/cally.js?v={{ asset_v }}" type="module"></script>
+{% endif %}
+{% endblock %}

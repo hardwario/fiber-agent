@@ -1,0 +1,57 @@
+{#
+  History card, chart column: the per-sensor summary strip and the chart
+  itself (plus its two empty states). The picker rail sits beside it, the
+  alarm table below both — see pages/history.html.
+
+  Context: selected[] (only to tell an empty selection from a real one) and
+  chart_config — the JSON blob static/js/portal-charts.js reads.
+
+  There is no current-value strip. It sat here until 2026-09-14 showing each
+  selected sensor's live reading, gauge and state — which is what Monitoring
+  is for; on a page about the past it answered a question nobody had brought
+  here, and it cost the chart seven rem of height. The colour-to-sensor
+  mapping it also carried survives in the picker rail, which dots every row
+  in the series colour.
+
+  Two of the three empty states are here: nothing selected, and nothing in
+  the window. The second is toggled by the chart JS (only it knows whether
+  the fetch came back empty), which is why it renders with `display:none`
+  rather than conditionally.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+<div class="flex-1 min-w-0 p-4">
+	{% if not selected %}
+	<div class="h-[32rem] flex flex-col items-center justify-center">
+		{{ ic.icon("bar-chart-3", "h-10 w-10 text-muted-fg/25 mb-3") }}
+		<p class="text-sm text-muted-fg">{{ "monitoring.history.select_from_panel"|t }}</p>
+	</div>
+	{#- Same net height as the brush row below a chart, so 0 -> 1 channel
+	    does not move the page. -#}
+	<div class="h-4 -mt-3" aria-hidden="true"></div>
+	{% else %}
+	<div id="history-chart-empty" style="display:none" class="h-[32rem] flex-col items-center justify-center">
+		{{ ic.icon("bar-chart-3", "h-10 w-10 text-muted-fg/25 mb-3") }}
+		<p class="text-sm text-muted-fg">{{ "monitoring.chart.no_data"|t }}</p>
+		<p class="text-xs text-muted-fg/60 mt-1">{{ "monitoring.chart.no_data_hint"|t }}</p>
+	</div>
+	<div class="chart-island" id="history-chart"
+		data-chart-config="history-chart-config" data-chart-empty="history-chart-empty"
+		data-chart-agg-group="history-agg-group" data-chart-brush="history-chart-brush"
+		data-label-critical-low="{{ "monitoring.threshold.critical_low"|t }}"
+		data-label-warning-low="{{ "monitoring.threshold.warning_low"|t }}"
+		data-label-warning-high="{{ "monitoring.threshold.warning_high"|t }}"
+		data-label-critical-high="{{ "monitoring.threshold.critical_high"|t }}"
+		data-label-ev-alarm="{{ "auth.audit.kind.alarm"|t }}"
+		data-label-ev-warning="{{ "auth.audit.kind.warning"|t }}"
+		data-label-ev-log="{{ "auth.audit.kind.log"|t }}"
+		{% if ev_on %}data-chart-events="1"{% endif %}
+		style="height:32rem"></div>
+	{# The dataZoom slider only shows its bounds while it is being
+	   dragged; v1 keeps them under the bar at all times, so the chart JS
+	   writes them into these two spans instead. Fixed height: it is empty
+	   while a swapped-in chart loads, and must not collapse then. #}
+	<div id="history-chart-brush" class="flex justify-between h-4 text-[10px] text-muted-fg px-1 -mt-3"></div>
+	<script type="application/json" id="history-chart-config">{{ chart_config|safe }}</script>
+	{% endif %}
+</div>

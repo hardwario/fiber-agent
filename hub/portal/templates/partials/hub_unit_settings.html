@@ -1,0 +1,57 @@
+{#
+  Display, buzzer and unit label — the Unit tab's WP-A card set
+  (plan/portal/display-config.md §4, placed on the `unit` tab by
+  plan/portal/devices.hub.md §3.3).
+
+  Context: {
+    hostname: string,
+    pairing: { paired: bool },
+    display_config: {                 -- render::display_config_ctx
+      buzzer_volume, screen_brightness, led_brightness,
+      screen_timeout_secs, device_label                -- each int|string|none
+    } | none
+  }
+
+  One control, one form, one command: each posts its single `value` field to
+  POST /hubs/{hub}/display/{setting} and targets #command-status, so a
+  refused value comes back as a message beside the others rather than
+  reloading the tab. The ranges below are UX only — the handler revalidates
+  every one of them, because the agent casts the u8s without clamping
+  (display-config.md §3).
+
+  Amended 2026-10-15 (plan/portal/ui_components.md §6): the set is the shared
+  "Device configuration" card (partials/device_config.html, `multi`): one
+  pencil, label | mono value rows with an "i" help each, and on save every
+  changed value goes to its own route above, one after another.
+
+  The whole set is read-only while the Hub is unpaired: no signed
+  command can reach it, and a control that silently fails is worse than one
+  that says why. Nothing here renders for a viewer — hub_detail.html gates
+  the include on `can_manage` (§7).
+#}
+{% set dc_ = display_config %}
+{% set paired = pairing.paired %}
+{% set base = "/hubs/" ~ hostname ~ "/display/" %}
+{% set picker %}{% include "partials/hub_display_picker.html" %}{% endset %}
+{% set dc = {
+	"kind": "hub-display",
+	"heading": "monitoring.hubs.display_heading",
+	"icon": "monitor",
+	"multi": true,
+	"action": none,
+	"after": picker,
+	"items": [
+		{"name": "buzzer_volume", "post": "value", "action": base ~ "buzzer-volume", "label": "monitoring.hubs.buzzer_volume_label",
+		 "help": "monitoring.hubs.buzzer_volume_hint", "value": ((dc_.buzzer_volume|string) if dc_ and dc_.buzzer_volume is not none else ""), "unit": "%", "editable": paired},
+		{"name": "screen_brightness", "post": "value", "action": base ~ "screen-brightness", "label": "monitoring.hubs.screen_brightness_label",
+		 "help": "monitoring.hubs.screen_brightness_hint", "value": ((dc_.screen_brightness|string) if dc_ and dc_.screen_brightness is not none else ""), "unit": "%", "editable": paired},
+		{"name": "led_brightness", "post": "value", "action": base ~ "led-brightness", "label": "monitoring.hubs.led_brightness_label",
+		 "help": "monitoring.hubs.led_brightness_hint", "value": ((dc_.led_brightness|string) if dc_ and dc_.led_brightness is not none else ""), "unit": "%", "editable": paired},
+		{"name": "screen_timeout", "post": "value", "action": base ~ "screen-timeout", "label": "monitoring.hubs.screen_timeout_label",
+		 "help": "monitoring.hubs.screen_timeout_hint", "value": ((dc_.screen_timeout_secs|string) if dc_ and dc_.screen_timeout_secs is not none else ""), "unit": "s", "editable": paired},
+		{"name": "device_label", "post": "value", "action": base ~ "device-label", "label": "monitoring.hubs.device_label_label",
+		 "help": "monitoring.hubs.device_label_hint", "value": (dc_.device_label if dc_ and dc_.device_label else ""), "unit": "",
+		 "text": true, "maxlength": 64, "required": true, "editable": paired},
+	],
+} %}
+{% with can_edit = can_manage %}{% include "partials/device_config.html" %}{% endwith %}

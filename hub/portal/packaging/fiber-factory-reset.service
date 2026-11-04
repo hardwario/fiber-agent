@@ -1,0 +1,43 @@
+[Unit]
+Description=ProXimos factory-reset executor (phase 2)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/portal/crates/control-core/src/bin/fiber_factory_reset.rs
+# No existing template anywhere (v1 has no factory-reset mechanism at all) —
+# this unit encodes the four requirements the binary's own doc comment states
+# it needs from "the unit file (meta-fiber, a later task)":
+#   1. After/Requires the /data mount, or the reset cannot happen at all.
+#   2. Runs before the services that own /data, so nothing holds files open
+#      in the tree being erased (see fiber.service's After= line).
+#   3. No sandboxing: this process needs the whole of /data writable.
+#   4. Nothing else may Requires= this unit — it exits 1 on a refused
+#      guardrail, and that must stay a visible journal failure, not one that
+#      drags fiber.service down with it (hence fiber.service uses After=,
+#      never Requires=, on this unit).
+#   5. Runs before proximos-data-dirs.service too, and not just fiber.service.
+#      Both this unit and proximos-data-dirs.service are WantedBy=sysinit.target
+#      with no ordering against each other by default, so without this line
+#      they race: if data-dirs (and, transitively, proximos-tls-cert.service,
+#      which orders itself After= data-dirs) wins, the reset's rm -rf then
+#      deletes the /data/tls CA and keypair nginx already started that boot
+#      expecting to keep — nginx never notices, systemd-tmpfiles and the cert script
+#      already reported success and won't run again until the next reboot, and
+#      443 comes up with a cert path that no longer resolves.
+# It always runs and is always a no-op on an ordinary boot: the binary reads
+# the ledger itself and exits 0 when nothing is armed — no ConditionPathExists
+# gate here would add anything but a second place to keep in sync with
+# libs::factory_reset::LEDGER_PATH.
+DefaultDependencies=no
+After=data.mount
+Requires=data.mount
+Before=fiber.service proximos-data-dirs.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/bin/fiber-factory-reset
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fiber-factory-reset
+
+[Install]
+WantedBy=sysinit.target

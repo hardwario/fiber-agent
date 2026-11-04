@@ -1,0 +1,53 @@
+[package]
+name = "proximos-render"
+version = "0.1.0"
+edition = "2021"
+# Matched to control-radio's floor rather than the workspace's, because the two are built
+# together by the same `proximos-control` package and a lower floor here would be a
+# fiction: nothing ever compiles this crate on an older toolchain than that one.
+rust-version = "1.88"
+
+# `proximos_render`, spelled the same way `control-radio`/`control_radio` is
+# (portal/monolith.md §11.7): directory and package hyphenated, lib target underscored.
+[lib]
+name = "proximos_render"
+path = "src/lib.rs"
+
+# DELIBERATELY NARROW. This crate is executed by proximos-render.service as root, before
+# every consumer on the device, and it holds the db_key and the ChirpStack api-secret in
+# memory while it runs. Every dependency here is already in the workspace lockfile — none
+# of them is added by this crate — so `proximosctl render` costs the image nothing it was
+# not already carrying:
+#
+#   minijinja  — the template engine plan/system/design.md §7 names; already a direct
+#                dependency of the portal crate at exactly this version.
+#   serde_yaml — the device config's parser, same version control-radio and the portal use.
+#   getrandom  — db.key entropy. Already locked at 0.4.3 via control-radio and
+#                chirpstack_api, so reading /dev/urandom by hand to "avoid a dependency"
+#                would add code without removing one.
+#   libc       — getpwnam/getgrnam only. std has chown(2) (std::os::unix::fs::chown) but
+#                no name→id lookup, and the group of every file this crate writes is a
+#                cross-file contract with a systemd unit's User=, i.e. a name.
+[dependencies]
+getrandom = "0.4.3"
+libc = "0.2"
+# `json` for the `tojson` filter, and for one narrow reason: minijinja renders a bare
+# boolean the way Jinja2 does, as `True`/`False`. YAML and TOML both want `true`/`false`,
+# and `cookie_secure: True` is not a parse error in either — serde_yaml reads `True` as a
+# boolean and TOML rejects it, so the failure modes are "silently fine" and "the daemon
+# will not start". `| tojson` emits the literal each format actually specifies. The
+# feature adds no crate to the lockfile; serde_json is already there.
+minijinja = { version = "2.24.0", features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9.34"
+thiserror = "2.0.20"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+# Tests only, and never in the shipped binary: this crate emits TOML by templating text,
+# because a serializer cannot carry the comments that are half the point of the rendered
+# files. That leaves "is the output still valid TOML" as something to assert rather than
+# something the type system gives us — and the failure mode it guards is a network server
+# that refuses to start. Already at 0.8.23 in the workspace lockfile, so this adds nothing
+# to the dependency graph.
+toml = "0.8"

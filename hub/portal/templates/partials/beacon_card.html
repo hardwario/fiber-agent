@@ -1,0 +1,161 @@
+{#
+  One registered Beacon (BLE EYE tag) table row (M5-T context contract, P2
+  v1-style restyle: was a card, now a `<tr>` in pages/beacons.html's
+  `ui.table_card` table, matching legacy's single grouped Sensors table —
+  see that page's header comment).
+
+  Context: {
+    hostname: string,   -- the Hub the Beacon reports through; keys the SSE id
+    b: {
+      mac: string,      -- UPPERCASE colon-separated (ws.md casing rule)
+      name: string|none, location: string|none,
+      connected: bool,  -- ONE liveness verdict, same rule as the Node row
+                        -- (render::node_connected): B2's detector, the Hub's
+                        -- alarm_state only as the fallback where it holds none
+      discovered: bool,                 -- always false here: this partial is
+                                        -- for REGISTERED beacons only;
+                                        -- candidates render as plain rows in
+                                        -- pages/beacons.html
+      temperature: float|none,          -- °C
+      humidity: int|none,               -- %
+      battery_mv: int|none, low_battery: bool|none,
+      rssi: int|none,
+      last_seen: string|none,           -- RFC3339 (render.rs converts the
+                                        -- wire's unix seconds); rendered
+                                        -- through the `short_dt` filter
+      alarm_state: "Normal"|"Warning"|"Critical"|"Disconnected"
+        |"Reconnecting"|"NeverConnected",
+      provisioning_state: "waiting"|"running"|"failed"|"read_only"|none,
+                                        -- B6: render.rs's mapping of the wire's
+                                        -- provisioning string; none = nothing to
+                                        -- show (provisioned, or unknown)
+      waiting_for_first_message: bool,  -- §2.5, registered but never heard
+      serial: string|none,              -- device_meta (V14), typed by the operator
+      provisioning: string|none,        -- raw ingest value (mqtt.md
+                                        -- eye/sensors.provisioning); shown
+                                        -- as its own per-row pill (UI-9,
+                                        -- UI-15), never rolled up
+
+      -- B5 (devices.backend.md §8 WP5.2, §20):
+      fault: "offline"|"low_battery"|none,
+                                        -- operational axis, independent of
+                                        -- alarm_state (the value axis);
+                                        -- key monitoring.beacons.fault_{fault}
+      description: string|none,         -- device_meta; in data-search
+      battery: string|none,             -- pre-formatted "x.yy V"
+      signal: "excellent"|"good"|"weak"|"critical"|"unknown",
+                                        -- derived from RSSI alone (no SNR
+                                        -- on a BLE advertisement)
+      created_at: string|none,          -- device_meta; the list's default sort
+      hubs: [ {hostname, rssi, last_seen, best}, ... ],
+      fields: [ {name, label, unit, value, alarm_state}, ... ]
+                                        -- always temperature + humidity
+      calibration: "valid"|"warning"|"second_warning"|"expired"|none (grey),
+                                        -- the certificate's state when it
+                                        -- needs attention; a calendar icon
+                                        -- beside the name (calibration.cs.md)
+    }
+  }
+  `hubs`, `fields`, `meta` and `created_at` are carried for
+  pages/beacon_detail.html, which shares this context; this row reads only
+  `fault`, `description`, `battery` and `signal` of the B5 additions.
+  Optional key (read defensively, absent behaves like none):
+    b.thresholds: { "temperature"|"humidity": limits_editor's stored `t`
+    shape | none } — prefills the threshold dialogs AND, unlike
+    partials/node_card.html's Node row, feeds real `ui.threshold_gauge`
+    bands here (both fields are independently thresholdable).
+
+  DOM id mangling rule (BINDING for the SSE emitter): MAC colons are
+  replaced with dashes — id/sse-swap = "beacon-{hostname}-{mac|replace(':','-')}"
+  (e.g. AA:BB:CC:DD:EE:FF → beacon-hub01-AA-BB-CC-DD-EE-FF). Colons are
+  legal in HTML ids but break CSS selectors (htmx hx-target, sse-swap
+  matching, getElementById is fine but querySelector('#…:…') is not), so
+  the server MUST apply the same replace when naming the SSE event. URLs
+  keep the RAW colon MAC ("/beacons/AA:BB:CC:DD:EE:FF") — colons
+  are valid in a path segment; only DOM ids are mangled.
+
+  Outer element is the SSE swap target: hx-swap="outerHTML", server
+  re-renders this whole partial per Beacon update (v1's ble_sensor_update /
+  each element of ble_sensors_batch). Tint/badge mapping copied from
+  the old partials/sensor_card.html (now partials/hub_sensor_row.html).
+
+  Cells come from partials/device_row.html, the unified device table
+  (devices.node.md, amendment 2026-10-14 "unified device table"): Item | Location | Overview |
+  Values | Limits | Hub | <hidden…> | View. Limits are edited on the
+  Beacon's own page and on /limits; the list carries no threshold accordion.
+
+  The name cell links to /beacons/{mac} (B5's detail page); the MAC keeps
+  its RAW colons in the URL, only DOM ids are mangled.
+
+  REMOVAL IS NOT HERE, and that is the rule for every device list: a
+  destructive action lives on the device's own page (pages/beacon_detail.html,
+  pages/node_detail.html), behind a typed confirmation. This row is
+  re-rendered by SSE every few seconds and reorders under the cursor, so a
+  one-click delete here is a misclick waiting for a moment of inattention.
+#}
+{% import "partials/device_row.html" as dr %}
+{% set mac_id = b.mac | replace(":", "-") %}
+{#- GitLab #120: a switched-off sensor has no line here, neither its value
+    nor its gauge. -#}
+{% set shown = (b.fields | default([]) | selectattr("enabled") | list)[:2] %}
+{#- The toolbar's half of the contract (devices.beacon.md §2.2, inheriting
+    devices.node.md's attribute list). `data-gw` carries the HUBS that heard
+    this broadcast — the Beacon's version of the Node's gateway checklist,
+    same attribute name on purpose: /static/js/portal-list.js drives both. -#}
+{% set oor = dr.worst(b.fields | default([])) | trim %}
+{% set value_class = "critical" if (oor == "critical" or b.alarm_state == "Critical") else ("warning" if (oor == "warning" or b.alarm_state == "Warning") else "normal") %}
+{% set ever = b.last_seen is not none %}
+{% set link = dr.link(b.connected, b.alarm_state, ever) | trim %}
+{% set tone = dr.tone(value_class, b.fault, ever) | trim %}
+{% set ns = namespace(gw="") %}
+{% for h in b.hubs %}{% if h.hostname %}{% set ns.gw = ns.gw ~ (h.hostname|lower) ~ " " %}{% endif %}{% endfor %}
+{% set hub_ids = ns.gw | trim %}
+{#- The Hub this Beacon is REGISTERED on. Stamped on the context by a list
+    that spans several Hubs (devices.hub.md §12 E); everywhere else the
+    page-level or SSE-supplied `hostname` is the answer. -#}
+{% set row_host = b.hostname | default(hostname, true) %}
+{% set href = "/beacons/" ~ b.mac ~ "/overview" %}
+<tr id="beacon-{{ row_host }}-{{ mac_id }}" sse-swap="beacon-{{ row_host }}-{{ mac_id }}" hx-swap="outerHTML"
+	data-kind="beacon" data-status="{{ b.alarm_state }}" data-oor="{{ oor }}"
+	data-connected="{% if b.connected %}1{% else %}0{% endif %}"
+	{% if b.fault %}data-fault="{{ b.fault }}"{% endif %}
+	data-location="{{ b.location | default('', true) }}"
+	data-gw="{{ hub_ids }}"
+	data-search="{{ ((b.name | default('', true)) ~ ' ' ~ b.mac ~ ' ' ~ (b.serial | default('', true)) ~ ' ' ~ (b.location | default('', true)) ~ ' ' ~ (b.description | default('', true)))|lower }}"
+	data-sort-name="{{ (b.name | default(b.mac, true))|lower }}"
+	data-sort-loc="{{ (b.location | default('', true))|lower }}"
+	data-sort-seen="{{ b.last_seen | default('', true) }}"
+	data-sort-rssi="{% if b.rssi is not none %}{{ b.rssi }}{% endif %}"
+	data-sort-batt="{% if b.battery_mv is not none %}{{ b.battery_mv }}{% endif %}"
+	data-sort-hub="{{ (b.home_hub | default('', true))|lower }}"
+	data-row-href="{{ href }}"
+	class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+	{#- MAC under the name (§3.1); the operator's serial, where typed, is in
+	    the search haystack and on the detail page. -#}
+		{{ dr.item_cell(tone, link, b.name | default(b.mac, true), href, b.calibration, b.mac) }}
+	{{ dr.location_cell(b.location) }}
+	{% set low %}{% if b.low_battery %}<span class="text-warning font-medium">{{ "monitoring.beacon_card.low_battery_label"|t }}</span>{% endif %}{% endset %}
+	{% call dr.overview_cell(b.last_seen, b.signal, b.battery, ("monitoring.beacons.fault_" ~ b.fault)|t if b.fault else "", low) %}
+		{#- §2.5/§3.5 lifecycle under the identity: the auto-provisioning
+		    state (B6; `provisioned` is the absence of a label) or
+		    "registered — waiting for the first message". -#}
+		{% if b.provisioning_state %}
+		<div class="text-xs {% if b.provisioning_state in ['failed', 'differs'] %}text-warning{% else %}text-muted-fg{% endif %} truncate">{{ ("monitoring.beacon.prov_" ~ b.provisioning_state)|t }}</div>
+		{% elif b.waiting_for_first_message %}
+		<div class="text-xs text-muted-fg truncate">{{ "monitoring.beacon.waiting_first_message"|t }}</div>
+		{% endif %}
+	{% endcall %}
+	{{ dr.values_cell(shown, ("monitoring.threshold_table.off_label"|t) if b.fields else "—") }}
+	{{ dr.limits_cell(shown, b.thresholds if b.thresholds is defined else none) }}
+	{#- Decision #42: the Hub that dials it (cluster) or registered it (single Hub). -#}
+	{{ dr.hub_cell(b.home_hub) }}
+	{#- Optional columns (§2.4), the Node list's set; SNR and FW are "—" on a
+	    BLE advertisement, kept so both lists share one picker. -#}
+	{{ dr.opt_cell("seen", b.last_seen | short_dt) }}
+	{{ dr.opt_cell("rssi", (b.rssi ~ " dBm") if b.rssi is not none else "", "text-right") }}
+	{{ dr.opt_cell("snr", "", "text-right") }}
+	{{ dr.opt_cell("batt", b.battery, "text-right") }}
+	{{ dr.opt_cell("fw", b.fw_version if b.fw_version is defined else "") }}
+	{{ dr.opt_cell("proto", "monitoring.transport.ble"|t) }}
+	{{ dr.view_cell(href) }}
+</tr>

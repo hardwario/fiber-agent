@@ -1,0 +1,19 @@
+# Static GIDs for every group a recipe in the image creates through
+# useradd.bbclass - the companion of proximos-passwd, same rules: the numbers are
+# the ones main images allocated up to 2026-09 (issue #92), a line is never
+# renumbered, and a removed group keeps its line.
+chirpstack:x:986:
+proximos:x:987:
+avahi:x:988:
+fiber-portal:x:989:
+systemd-timesync:x:990:
+systemd-resolve:x:991:
+empower:x:992:
+systemd-journal:x:993:
+render:x:994:
+mosquitto:x:995:
+redis:x:996:
+www:x:997:
+sshd:x:998:
+messagebus:x:999:
+provisioning:x:985:

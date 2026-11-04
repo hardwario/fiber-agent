@@ -1,0 +1,122 @@
+{#
+  The ONE metadata component (plan/portal/metadata.cs.md) for Hub, Node,
+  Beacon and wired probe: identification, name, description, location.
+
+  Context (an include; the caller sets these):
+    mc_action        POST target (each kind's own metadata route)
+    mc_htmx          bool; true = hx-post into #command-status (the probe,
+                     whose name and location are signed Hub commands), false
+                     = plain POST + redirect (the rest, SQLite only)
+    mc_ids           [[label, value]] — read-only identity lines with a copy
+                     button
+    mc_create_id     {name, label, value, placeholder} | none — "create" mode
+                     (Add pages): the identity is the editable input instead
+    mc_name          current name | none
+    mc_name_editable bool — false where no write path exists (every kind has
+                     one today; Node and Beacon names are Portal-side)
+    mc_description   current description | none
+    mc_location      current location | none
+    mc_location_editable  bool (as mc_name_editable)
+    locations        [string] — the derived suggestion list
+                     (routes::location_suggestions): every location some
+                     entity carries now, nothing stored
+    can_edit         bool — manager+; everyone else gets the read-only view
+    mc_embedded      bool, optional — "embedded" mode (the sensor group form,
+                     monitoring.md dodatek 2026-10-15): only the name /
+                     description / location fields, no card, heading, own
+                     <form> or Save button, so they post with the CALLER's
+                     form. Implies editable; mc_ids are not drawn.
+    mc_name_required bool, optional — the name input gets `required`
+    ok / error       flash from the redirect, optional
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% set mc_htmx = mc_htmx if mc_htmx is defined else false %}
+{% set mc_create_id = mc_create_id if mc_create_id is defined else none %}
+{% set mc_ids = mc_ids if mc_ids is defined else [] %}
+{% set mc_name_editable = mc_name_editable if mc_name_editable is defined else true %}
+{% set mc_location_editable = mc_location_editable if mc_location_editable is defined else true %}
+{% set locations = locations if locations is defined else [] %}
+{% set mc_embedded = mc_embedded if mc_embedded is defined else false %}
+{% set mc_name_required = mc_name_required if mc_name_required is defined else false %}
+{% set editable = mc_embedded or (can_edit is defined and can_edit) %}
+{% if mc_embedded %}
+<div class="flex flex-col gap-4" data-meta-card x-data='{ d: {{ (mc_description | default("", true)) | tojson }} }'>
+{% else %}
+<div class="card-v1 p-4" data-meta-card>
+{% endif %}
+	{% if not mc_embedded %}<h2 class="text-base font-semibold mb-3">{{ "monitoring.meta.heading"|t }}</h2>{% endif %}
+	{% if ok is defined and ok %}<div role="alert" class="alert alert-success mb-3"><span>{{ ok }}</span></div>{% endif %}
+	{% if error is defined and error %}<div role="alert" class="alert alert-error mb-3"><span>{{ error }}</span></div>{% endif %}
+
+	{% if not mc_embedded %}
+	{#- 1. Identification -#}
+	<div class="flex flex-col gap-1.5 mb-4 max-w-2xl">
+		{% for label, value in mc_ids %}
+		<div class="flex items-center gap-2 text-sm">
+			<span class="text-muted-fg w-32 shrink-0">{{ label }}</span>
+			<span class="font-mono truncate">{{ value | default("—", true) }}</span>
+			{% if value %}
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon" data-copy="{{ value }}"
+				title="{{ "monitoring.meta.copy"|t }}" aria-label="{{ "monitoring.meta.copy"|t }}"
+				onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy)">{{ ic.icon("copy", "h-4 w-4") }}</button>
+			{% endif %}
+		</div>
+		{% endfor %}
+	</div>
+
+	{% endif %}
+	{% if editable %}
+	{% if not mc_embedded %}
+	<form class="flex flex-col gap-4 max-w-2xl"
+		{% if mc_htmx %}hx-post="{{ mc_action }}" hx-target="#command-status" hx-swap="outerHTML"{% else %}method="post" action="{{ mc_action }}"{% endif %}
+		x-data='{ d: {{ (mc_description | default("", true)) | tojson }} }'>
+	{% endif %}
+		{% if mc_create_id %}
+		<label class="flex flex-col gap-1">
+			<span class="text-sm">{{ mc_create_id.label }}</span>
+			<input type="text" name="{{ mc_create_id.name }}" required class="input-v1 font-mono"
+				value="{{ mc_create_id.value | default('', true) }}" placeholder="{{ mc_create_id.placeholder | default('', true) }}">
+		</label>
+		{% endif %}
+		{#- 2. Name -#}
+		<label class="flex flex-col gap-1">
+			<span class="text-sm">{{ "monitoring.shared.name_label"|t }}</span>
+			{% if mc_name_editable %}
+			<input type="text" name="name" maxlength="64" class="input-v1"{% if mc_name_required %} required{% endif %} value="{{ mc_name | default('', true) }}">
+			{% else %}
+			<span class="text-sm">{{ mc_name | default("—", true) }}</span>
+			<span class="text-xs text-muted-fg">{{ "monitoring.meta.set_on_hub"|t }}</span>
+			{% endif %}
+		</label>
+		{#- 3. Description, 255 characters, counted live and checked again on the server -#}
+		<label class="flex flex-col gap-1">
+			<span class="flex justify-between text-sm">{{ "monitoring.meta.description_label"|t }}
+				<span class="text-xs text-muted-fg tabular-nums" x-text="d.length + ' / 255'">{{ (mc_description | default('', true)) | length }} / 255</span></span>
+			<textarea name="description" maxlength="255" rows="{{ 2 if mc_embedded else 3 }}" class="input-v1 h-auto py-2"{% if mc_embedded %} style="resize: vertical; max-height: 10rem; overflow-y: auto"{% endif %} x-model="d"
+				placeholder="{{ "monitoring.meta.description_placeholder"|t }}">{{ mc_description | default('', true) }}</textarea>
+		</label>
+		{#- 4. Location: free text with the derived suggestions (ui.combobox) -#}
+		<div class="flex flex-col gap-1">
+			<label for="meta-location" class="text-sm">{{ "monitoring.dashboard.location_column"|t }}</label>
+			{% if mc_location_editable %}
+			{{ ui.combobox("location", mc_location, locations, id="meta-location") }}
+			{% else %}
+			<span class="text-sm">{{ mc_location | default("—", true) }}</span>
+			<span class="text-xs text-muted-fg">{{ "monitoring.meta.set_on_hub"|t }}</span>
+			{% endif %}
+		</div>
+		{% if not mc_create_id and not mc_embedded %}
+		<div><button type="submit" class="btn-v1 btn-v1-primary">{{ "common.actions.save"|t }}</button></div>
+		{% endif %}
+	{% if not mc_embedded %}
+	</form>
+	{% endif %}
+	{% else %}
+	<div class="flex flex-col gap-1.5 text-sm max-w-2xl">
+		<div class="flex gap-2"><span class="text-muted-fg w-32 shrink-0">{{ "monitoring.shared.name_label"|t }}</span><span>{{ mc_name | default("—", true) }}</span></div>
+		<div class="flex gap-2"><span class="text-muted-fg w-32 shrink-0">{{ "monitoring.meta.description_label"|t }}</span><span class="whitespace-pre-line">{{ mc_description | default("—", true) }}</span></div>
+		<div class="flex gap-2"><span class="text-muted-fg w-32 shrink-0">{{ "monitoring.dashboard.location_column"|t }}</span><span>{{ mc_location | default("—", true) }}</span></div>
+	</div>
+	{% endif %}
+</div>

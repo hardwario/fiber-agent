@@ -1,0 +1,68 @@
+{#
+  The System tab's firmware card, one shape for the Southbridge and the
+  Northbridge (ui_components.md §13, amended 2026-10-15): same header
+  button, collapsed summary "running · state", and the same label | mono
+  value rows in the same order — running version, bundled version, state,
+  attempts, last error, last update — then the Hub's note and the progress
+  of an update this card follows. hub_sb_firmware.html and
+  hub_nb_firmware.html keep their own swap targets and build `fw`:
+
+  fw = { kind: "sb"|"nb", card_id, icon, heading, desc,
+         running, bundled, state_label|none, state_badge, state_key,
+         attempts|none, last_error|none, last_update|none, note|none,
+         not_reported: bool,
+         button: bool (admin), why: i18n key|none (disabled reason), dialog,
+         progress: { outcome, detail } | none, progress_keys: i18n prefix }
+#}
+{% macro fw_card(fw) -%}
+{% import "partials/ui.html" as ui %}
+{% set head_end %}
+	{% if fw.button %}
+	<span class="shrink-0"{% if fw.why %} title="{{ fw.why|t }}"{% endif %}>
+	<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm" data-{{ fw.kind }}-update-button
+		{%- if fw.why %} disabled data-disabled-reason="{{ fw.why }}"{% else %} data-update-enabled{% endif %}
+		onclick="var d = document.getElementById('{{ fw.dialog }}'); if (d) { d.hidden = !d.hidden; if (!d.hidden) d.scrollIntoView({block: 'nearest'}); } else { location.reload(); }">
+		{{ "monitoring.hubs.fw_update_button"|t }}
+	</button>
+	</span>
+	{% endif %}
+{% endset %}
+{% call ui.collapsible_card(fw.card_id, fw.icon, fw.heading, head_end=head_end,
+	summary=(fw.running or "—") ~ ((" · " ~ fw.state_label) if fw.state_label else "")) %}
+<p class="text-sm text-muted-fg">{{ fw.desc }}</p>
+<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 items-center">
+	<dt class="text-muted-fg">{{ "monitoring.hubs.fw_running"|t }}</dt>
+	<dd class="font-mono text-xs break-words" data-{{ fw.kind }}-running>{{ fw.running or "—" }}</dd>
+	<dt class="text-muted-fg">{{ "monitoring.hubs.fw_bundled"|t }}</dt>
+	<dd class="font-mono text-xs break-words" data-{{ fw.kind }}-bundled>{{ fw.bundled or "—" }}</dd>
+	<dt class="text-muted-fg">{{ "monitoring.hubs.sb_fw_state"|t }}</dt>
+	<dd data-{{ fw.kind }}-update="{{ fw.state_key }}">
+		{%- if fw.state_label %}<span class="badge-status badge-status-{{ fw.state_badge }}">{{ fw.state_label }}</span>{% else %}—{% endif -%}
+	</dd>
+	<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_fw_attempts"|t }}</dt>
+	<dd class="font-mono text-xs tabular-nums">{{ fw.attempts if fw.attempts is not none else "—" }}</dd>
+	<dt class="text-muted-fg">{{ "monitoring.hubs.sb_fw_last_error"|t }}</dt>
+	<dd class="font-mono text-xs break-words{% if fw.last_error %} text-warning{% endif %}" data-{{ fw.kind }}-last-error>{{ fw.last_error or "—" }}</dd>
+	<dt class="text-muted-fg">{{ "monitoring.hubs.fw_last_update"|t }}</dt>
+	<dd class="font-mono text-xs break-words" data-{{ fw.kind }}-last-update>{{ fw.last_update or "—" }}</dd>
+</dl>
+{% if fw.note %}<p class="text-xs text-muted-fg" data-{{ fw.kind }}-update-note>{{ fw.note }}</p>{% endif %}
+{% if fw.not_reported %}<p class="text-xs text-muted-fg">{{ "monitoring.hubs.fw_not_reported"|t }}</p>{% endif %}
+{% if fw.progress %}
+{% set p = fw.progress %}
+{% set k = fw.progress_keys %}
+{% if p.outcome == "running" %}
+<div class="flex items-center gap-2 text-sm" data-{{ fw.kind }}-progress="running">
+	<span class="loading loading-spinner loading-xs"></span>
+	<span>{{ (k ~ "progress")|t }}</span>
+</div>
+{% elif p.outcome == "ok" %}
+<div class="text-sm text-success" data-{{ fw.kind }}-progress="ok">{{ (k ~ "done_ok")|t|replace("{version}", p.detail or "—") }}</div>
+{% elif p.outcome == "failed" %}
+<div class="text-sm text-error" data-{{ fw.kind }}-progress="failed">{{ (k ~ "done_failed")|t|replace("{error}", p.detail or "—") }}</div>
+{% else %}
+<div class="text-sm text-warning" data-{{ fw.kind }}-progress="unconfirmed">{{ (k ~ "done_unconfirmed")|t|replace("{version}", p.detail or "—") }}</div>
+{% endif %}
+{% endif %}
+{% endcall %}
+{%- endmacro %}

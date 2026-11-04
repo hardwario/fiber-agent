@@ -1,0 +1,42 @@
+{#
+  Add Node — the registration page (devices.node.md, dodatek 2026-10-14
+  "Přidání jako stránka"): the same shape as /beacons/add, a back link and
+  one card holding partials/node_add_form.html. It used to be a dialog on
+  /nodes; all three device lists now add on a page of their own.
+
+  Context: pages/nodes.html's registration keys (hostname, can_edit,
+  unpaired, register_blocked, registration_radio, radio_mode,
+  default_join_eui). The route sends a viewer back to /nodes; `POST /nodes`
+  stays the gate (RequireManager) and redirects to /nodes with ?ok/?error.
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ "monitoring.nodes.register_heading"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{% include "partials/command_status.html" %}
+
+	{{ ui.back_link("/nodes", "monitoring.nodes.back_to_list"|t) }}
+
+	{% if hostname is none %}
+	<div class="card-v1 py-16 text-center">
+		<h2 class="text-2xl font-bold">{{ "monitoring.shared.waiting_for_device"|t }}</h2>
+		<p class="py-4 px-6 text-muted-fg max-w-2xl mx-auto">{{ "monitoring.nodes.no_device_body"|t }}</p>
+	</div>
+	{% else %}
+	{#- GitLab #109: said before the operator types; the submit is disabled
+	    while the Server cannot sign a registration, with the reason. -#}
+	{% include "partials/unpaired_banner.html" %}
+	{% if register_blocked | default(false) %}
+	<div role="alert" class="alert alert-warning"><span>{{ "monitoring.device.not_paired_title"|t }}</span></div>
+	{% endif %}
+	<div class="card-v1 p-4">
+		{% call ui.page_header("radio", "monitoring.nodes.register_heading"|t) %}{% endcall %}
+		<div class="max-w-2xl">{% include "partials/node_add_form.html" %}</div>
+	</div>
+	{% endif %}
+</div>
+{% endblock %}

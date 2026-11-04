@@ -1,0 +1,9 @@
+/*
+ * Copyright (c) 2026
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pin control for STM32WL5MOC board.
+ * USART1 PA9/PA10 pins are defined in the upstream SoC pinctrl.
+ */
+
+#include <st/wl/stm32wl55jcix-pinctrl.dtsi>

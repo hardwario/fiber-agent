@@ -2,9 +2,10 @@ load test_helper
 
 # A local stand-in registry (python http.server over a copy of the fixture) and
 # a throwaway shared clone of proximos-v2 carrying a v9.9.9 tag.
-V2_SRC="${V2_SRC:-$HOME/Projects/fiber/v2/proximos-v2}"
+V2_SRC="${PROXIMOS_V2:-/nonexistent}"
 
 setup() {
+  [ -d "$V2_SRC/portal/packaging" ] || skip "needs PROXIMOS_V2, a proximos-v2 clone"
   REGISTRY="$BATS_TEST_TMPDIR/registry"
   cp -r "$REPO_ROOT/tests/fixtures/registry" "$REGISTRY"
   python3 -u -m http.server --bind 127.0.0.1 0 --directory "$REGISTRY" \

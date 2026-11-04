@@ -1,0 +1,81 @@
+{#
+  One alarm as a table row — the row of /alarms (partials/alarm_table.html)
+  and of the History page's in-window alarms (partials/history_alarms.html),
+  so the two cannot drift apart. Cells come from partials/device_row.html.
+
+  alarm_row(a, can_act=false, swatch=none)
+    a        the AlarmCtx row shape (partials/alarm_table.html's header)
+    can_act  draws the bulk-acknowledge checkbox in the trailing cell
+    swatch   a series colour ("#3b82f6"): a dot after the name, on History
+             where each alarm belongs to a charted series
+
+  The head is the caller's: /alarms sorts in SQL and links its headings,
+  History does not. Both carry the same columns in the same order
+  (Item, Location, Type, State, Activated, Value, End, Length, actions).
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as row %}
+
+{% macro alarm_row(a, can_act=false, swatch=none) -%}
+{%- set swatch_html %}{% if swatch %}<span class="h-2.5 w-2.5 rounded-full shrink-0" style="background-color:{{ swatch }}" aria-hidden="true"></span>{% endif %}{% endset %}
+			{#- The stripe: the worst level reached while the alarm is open,
+			    green once it has ended. -#}
+			{% set tone = "success" if a.cleared_at is not none else ("critical" if a.max_severity == "critical" else "warning") %}
+			{% set state_cls = "badge-outline-critical" if a.max_severity == "critical" else "badge-outline-warning" %}
+			{#- The whole row (click or Enter) and the View button open the
+			    alarm itself: its detail links on to the device. -#}
+			{% set href = "/alarms/" ~ a.id %}
+			{#- Line 2 of Item: the quantity, or for a liveness row the kind. -#}
+			{% if a.field %}{% set sub = ("common.field." ~ a.field)|t %}
+			{% elif a.alarm_type == "OFFLINE" %}{% set sub = ("alarms.table.kind_beacon" if a.sensor_id[:4] == "eye:" else "alarms.table.kind_node")|t %}
+			{% else %}{% set sub = "" %}{% endif %}
+			{#- The peak, named by direction as the detail names it (#111), is
+			    the Type badge's tooltip rather than a second line. -#}
+			{% if a.peak is not none %}{% set peak = ("alarms.table.peak_low" if a.alarm_type == "LOW" else "alarms.table.peak_high")|t ~ " " ~ (a.peak | round(1) | replace("-0.0", "0.0")) ~ (" " ~ a.unit if a.unit else "") %}{% else %}{% set peak = "" %}{% endif %}
+			<tr data-row-href="{{ href }}"{% if can_act %} data-select-id="{{ a.id }}"{% if a.acknowledged_at %} data-select-locked{% endif %}{% endif %}
+				class="cursor-pointer data-[selected]:bg-primary/5 border-b border-base-300 last:border-0 hover:bg-muted/50 text-sm [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle"
+				data-search="{{ (ui.alarm_name(a) ~ ' ' ~ a.sensor_name | default(a.sensor_id, true) ~ ' ' ~ ui.alarm_type_label(a.alarm_type) ~ ' ' ~ (a.sensor_name | default('', true) | field_label) ~ ' ' ~ (a.sensor_location | default('', true)) ~ ' ' ~ a.hostname)|lower }}">
+				{%- if can_act %}
+				<td class="w-10" data-select-col>
+					{%- if not a.acknowledged_at %}
+					<input type="checkbox" class="alarm-row-checkbox checkbox-v1" data-select-box name="ids[]" value="{{ a.id }}"
+						form="alarm-bulk-ack-form" aria-label="{{ "alarms.bulk.select_row"|t }}">
+					{%- endif %}
+				</td>
+				{%- endif %}
+				{{ row.item_cell(tone, "", ui.alarm_name(a), href, sub=sub, name_extra=swatch_html) }}
+				{{ row.location_cell(a.sensor_location, a.hostname) }}
+				<td data-column="type">
+					<span class="badge-status {% if a.max_severity == 'critical' %}badge-status-critical{% else %}badge-status-warning{% endif %} uppercase text-[11px] tracking-wide whitespace-nowrap"{% if peak %} title="{{ peak }}"{% endif %}>
+						{#- The worst level reached (decisions.md #24), in words too, not
+						    only in the badge's colour. -#}
+						{{ ("alarms.severity." ~ ("critical" if a.max_severity == "critical" else "warning"))|t }} · {{ ui.alarm_type_label(a.alarm_type) }}
+					</span>
+				</td>
+				<td data-column="state" class="whitespace-nowrap">
+					{#- An ended alarm says so in words, with its acknowledgement
+					    in the tooltip: colour alone told "over" from "still wrong"
+					    (UX-049). It can still be acknowledged (#28d). -#}
+					{% if a.cleared_at is not none %}
+					<span class="badge-outline-v1" title="{{ ("alarms.table.ended_acked" if a.acknowledged_at else "alarms.table.ended_unacked")|t }}{% if a.end_reason %} · {{ ("alarms.end_reason." ~ a.end_reason)|t }}{% endif %}">{{ "alarms.lifecycle.cleared"|t }}</span>
+					{% elif a.acknowledged_at %}
+					<span class="badge-outline-v1 badge-outline-success">{{ "alarms.lifecycle.acknowledged"|t }}</span>
+					{% else %}
+					<span class="badge-outline-v1 {{ state_cls }}">{{ "alarms.table.pending_badge"|t }}</span>
+					{% endif %}
+				</td>
+				<td data-column="start" class="text-muted-fg whitespace-nowrap tabular-nums">{{ a.triggered_at_raw | short_dt }}</td>
+				<td data-column="value" class="hidden tabular-nums whitespace-nowrap">
+					{# round(1) can produce -0.0 for values that round to zero from below; normalize it so it doesn't read as a negative temperature. #}
+					{% if a.value is not none %}{{ a.value | round(1) | replace("-0.0", "0.0") }}{% if a.unit %}&nbsp;{{ a.unit }}{% endif %}{% else %}–{% endif %}
+				</td>
+				<td data-column="end" class="hidden text-muted-fg whitespace-nowrap tabular-nums">
+					{% if a.cleared_at_raw %}{{ a.cleared_at_raw | short_dt }}{% elif a.hub_unknown %}<span class="badge-outline-v1" title="{{ "alarms.lifecycle.state_unknown_hint"|t }}">{{ "alarms.lifecycle.state_unknown"|t }}</span>{% else %}<span class="badge-outline-v1 badge-outline-warning">{{ "alarms.lifecycle.active"|t }}</span>{% endif %}
+				</td>
+				<td data-column="length" class="hidden text-muted-fg whitespace-nowrap tabular-nums">
+					{% if a.duration %}{{ a.duration }}{% else %}--{% endif %}
+				</td>
+				{{ row.view_cell(href) }}
+			</tr>
+{%- endmacro %}

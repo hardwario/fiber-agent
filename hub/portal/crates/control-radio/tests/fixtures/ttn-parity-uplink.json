@@ -1,0 +1,1744 @@
+[
+ {
+  "f_port": 3,
+  "hex": "0108a487ccd50610041a0b200928ca59500138034802200128013002",
+  "expected": {
+   "data": {
+    "base_time": 1790116772,
+    "total": 4,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "humidity",
+      "rule": 3,
+      "event": "activate",
+      "type": "high",
+      "value": 2866.5,
+      "time": 1790116781
+     }
+    ],
+    "page_index": 1,
+    "page_count": 2,
+    "pages": "2/2"
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108a801100018fa24206c4002900100980104a00100a80104",
+  "expected": {
+   "data": {
+    "voltage": 3.36,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "temperature": 23.65,
+    "humidity": 54,
+    "orientation": 2,
+    "hall_left_count": 0,
+    "hall_left_is_active": true,
+    "hall_right_count": 0,
+    "hall_right_is_active": true
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108641007",
+  "expected": {
+   "data": {
+    "voltage": 2,
+    "boot": true,
+    "alarm_status": 3,
+    "alarm_status_flags": [
+     "alarm_any",
+     "alarm_threshold"
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108641000",
+  "expected": {
+   "data": {
+    "voltage": 2,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": []
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108641000900100980100",
+  "expected": {
+   "data": {
+    "voltage": 2,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "hall_left_count": 0,
+    "hall_left_is_active": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01d00103",
+  "expected": {
+   "data": {
+    "accel_motion_count": 3
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0128974f30943238fa01",
+  "expected": {
+   "data": {
+    "pressure": 1013.5,
+    "altitude": 321,
+    "illuminance": 500
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010d0803100358236205fa24d80102da010a0801100258016202cc21",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 3,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": 23.65,
+       "humidity": 54,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": 1,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     },
+     {
+      "slot": 1,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": 21.5
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da01160801100358ff03620dcc21b4019a21367c004ccd0e6b",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": 21.5,
+       "humidity": 45,
+       "temperature-aux": 21.25,
+       "illuminance": 27,
+       "magnetic-field": 0.062,
+       "tilt": 0,
+       "accel-x": 0.38,
+       "accel-y": -9.35,
+       "accel-z": -0.54
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010408011003da010408021002",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     },
+     {
+      "slot": 2,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": null
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010c080410025881046203b3100e",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 4,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": -10.5,
+       "ch9": 7
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010408031003e00101e80103",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 3,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ],
+    "page_index": 1,
+    "page_count": 3,
+    "pages": "2/3"
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010a0801100258016202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": 12.5
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010a0801100358016202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": 12.5,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da0109080110035802620132",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": 12.5,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010a0801100358046202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": 12.5,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010908011003580862011a",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": 13,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010b0801100358106203a8c301",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": 12.5,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da0109080110035820620102",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": 1,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010a0801100358406202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": 12.5,
+       "accel-y": null,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010b080110035880016202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": 12.5,
+       "accel-z": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010b080110035880026202c413",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "temperature-aux": null,
+       "illuminance": null,
+       "magnetic-field": null,
+       "tilt": null,
+       "accel-x": null,
+       "accel-y": null,
+       "accel-z": 12.5
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "020864",
+  "expected": {
+   "data": {
+    "voltage": 2
+   },
+   "warnings": [
+    "unknown payload version 0x2"
+   ],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610021a09200a28c829380748021a08200f280248035005",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 2,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 7,
+      "event": "activate",
+      "type": "high",
+      "value": 26.6,
+      "time": 1780000010
+     },
+     {
+      "slot": "mb",
+      "channel": "hall-left-state",
+      "rule": 0,
+      "event": "activate",
+      "type": "trigger",
+      "value": 1,
+      "time": 1780000015
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610021a0d08012003280438ff01480558031a0f080110012003280438ff0148055803",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 2,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s1",
+      "channel": null,
+      "sensor_type": "machine-probe",
+      "rule": null,
+      "event": "activate",
+      "type": "sensor_mismatch",
+      "value": 2,
+      "time": 1780000003,
+      "detected_type": "dallas"
+     },
+     {
+      "slot": "s1",
+      "channel": null,
+      "sensor_type": "machine-probe",
+      "rule": null,
+      "event": "deactivate",
+      "type": "sensor_mismatch",
+      "value": 2,
+      "time": 1780000003,
+      "detected_type": "dallas"
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "01087810011a09200a28c829380748022000",
+  "expected": {
+   "data": {
+    "base_time": 120,
+    "total": 1,
+    "time_synced": false,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 7,
+      "event": "activate",
+      "type": "high",
+      "value": 26.6,
+      "time": null
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610051a0d0802100128b401480150015803",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 5,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s2",
+      "channel": "humidity",
+      "sensor_type": "machine-probe",
+      "rule": 0,
+      "event": "deactivate",
+      "type": "low",
+      "value": 45,
+      "time": 1780000000
+     }
+    ],
+    "truncated": true
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a0d0803200528a313380248015802",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s3",
+      "channel": "temperature",
+      "sensor_type": "dallas",
+      "rule": 2,
+      "event": "activate",
+      "type": "low",
+      "value": -12.34,
+      "time": 1780000005
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "0108b3b68ad10610011a06280248035011",
+  "expected": {
+   "data": {
+    "base_time": 1780652851,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "accel-motion",
+      "rule": 0,
+      "event": "activate",
+      "type": "trigger",
+      "value": 1,
+      "time": 1780652851
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a0a28cc2138fe0148015014",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "battery-voltage",
+      "rule": null,
+      "event": "activate",
+      "type": "low",
+      "value": 2.15,
+      "time": 1780000000
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a09080138ff0148045802",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s1",
+      "channel": "temperature",
+      "part": "ds18b20",
+      "sensor_type": "dallas",
+      "rule": null,
+      "event": "activate",
+      "type": "no_data",
+      "value": null,
+      "time": 1780000000
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610021a0b080238ff014804500558031a0e0802200a38ff01480450ff015803",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 2,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s2",
+      "channel": "tilt",
+      "part": "lis2dh12",
+      "sensor_type": "machine-probe",
+      "rule": null,
+      "event": "activate",
+      "type": "no_data",
+      "value": null,
+      "time": 1780000000
+     },
+     {
+      "slot": "s2",
+      "channel": "device",
+      "sensor_type": "machine-probe",
+      "rule": null,
+      "event": "activate",
+      "type": "no_data",
+      "value": null,
+      "time": 1780000010
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a09200a28c82938074802",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 7,
+      "event": "activate",
+      "type": "high",
+      "value": 26.6,
+      "time": 1780000010
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "020880cae2d00610011a09200a28c82938074802",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 7,
+      "event": "activate",
+      "type": "high",
+      "value": 26.6,
+      "time": 1780000010
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [
+    "unknown payload version 0x2"
+   ],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0118ffffffff0f20ffffffff0f",
+  "expected": {
+   "data": {
+    "temperature": null,
+    "humidity": null
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a0538ff014804",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": null,
+      "event": "activate",
+      "type": "no_data",
+      "value": null,
+      "time": 1780000000
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "011a7f",
+  "expected": {
+   "data": {
+    "base_time": 0,
+    "total": 0,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 0,
+      "event": "activate",
+      "type": "none",
+      "value": null,
+      "time": 0
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da010b0803100218fa24206c2801da01070801100118cc21",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 3,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": null
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     },
+     {
+      "slot": 1,
+      "type": 1,
+      "type_name": "unknown",
+      "values": {
+       "temperature": null,
+       "humidity": null,
+       "pressure": null,
+       "illuminance": null,
+       "temperature-baro": null,
+       "hall-left-state": null,
+       "hall-left-count": null,
+       "hall-right-state": null,
+       "hall-right-count": null,
+       "input-a-state": null,
+       "input-a-count": null,
+       "input-a-voltage": null,
+       "input-b-state": null,
+       "input-b-count": null,
+       "input-b-voltage": null,
+       "pir-motion": null,
+       "pir-count": null,
+       "accel-motion": null,
+       "accel-count": null,
+       "accel-orientation": null,
+       "battery-voltage": null,
+       "altitude": null
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "pressure": "hPa",
+       "illuminance": "lx",
+       "temperature-baro": "degC",
+       "hall-left-state": "bool",
+       "hall-left-count": "pulses",
+       "hall-right-state": "bool",
+       "hall-right-count": "pulses",
+       "input-a-state": "bool",
+       "input-a-count": "pulses",
+       "input-a-voltage": "V",
+       "input-b-state": "bool",
+       "input-b-count": "pulses",
+       "input-b-voltage": "V",
+       "pir-motion": "bool",
+       "pir-count": "events",
+       "accel-motion": "bool",
+       "accel-count": "events",
+       "accel-orientation": "enum",
+       "battery-voltage": "V",
+       "altitude": "m"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da01120801100218cc21301b387c404c48cd0e506b",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 2,
+      "type_name": "dallas",
+      "values": {
+       "temperature": null
+      },
+      "units": {
+       "temperature": "degC"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610021a09200a28c829380748021a0a0805200f280230064803",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 2,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 7,
+      "event": "activate",
+      "type": "high",
+      "value": 26.6,
+      "time": 1780000010
+     },
+     {
+      "slot": "slot5",
+      "channel": "ch0",
+      "rule": 0,
+      "event": "activate",
+      "type": "trigger",
+      "value": 1,
+      "time": 1780000015
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610051a0b0802100128a84630014801",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 5,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s2",
+      "channel": "ch0",
+      "rule": 0,
+      "event": "deactivate",
+      "type": "low",
+      "value": 4500,
+      "time": 1780000000
+     }
+    ],
+    "truncated": true
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a090803200528a3134801",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s3",
+      "channel": "ch0",
+      "rule": 0,
+      "event": "activate",
+      "type": "low",
+      "value": -1234,
+      "time": 1780000005
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "0108b3b68ad10610011a08080a280230064803",
+  "expected": {
+   "data": {
+    "base_time": 1780652851,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "slot10",
+      "channel": "ch0",
+      "rule": 0,
+      "event": "activate",
+      "type": "trigger",
+      "value": 1,
+      "time": 1780652851
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a0c080b28ae03300838fe014801",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "slot11",
+      "channel": "ch0",
+      "rule": null,
+      "event": "activate",
+      "type": "low",
+      "value": 215,
+      "time": 1780000000
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880cae2d00610011a07080138ff014804",
+  "expected": {
+   "data": {
+    "base_time": 1780000000,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "s1",
+      "channel": "ch0",
+      "rule": null,
+      "event": "activate",
+      "type": "no_data",
+      "value": null,
+      "time": 1780000000
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108ab01100018a4272063382e4002900100980100a00100a80100b00109b80100c00100c80104d00100",
+  "expected": {
+   "data": {
+    "voltage": 3.42,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "temperature": 25.14,
+    "humidity": 49.5,
+    "illuminance": 92,
+    "orientation": 2,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "input_a_count": 9,
+    "input_a_is_active": false,
+    "input_b_count": 0,
+    "input_b_is_active": true,
+    "accel_motion_count": 0
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108ab011000188a252060382c4002900100980100a00100a80100b00109b80100c00100c80104d00100",
+  "expected": {
+   "data": {
+    "voltage": 3.42,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "temperature": 23.73,
+    "humidity": 48,
+    "illuminance": 88,
+    "orientation": 2,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "input_a_count": 9,
+    "input_a_is_active": false,
+    "input_b_count": 0,
+    "input_b_is_active": true,
+    "accel_motion_count": 0
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "0108cbdeacd40610011a0928e64a3001380148022001",
+  "expected": {
+   "data": {
+    "base_time": 1787506507,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 1,
+      "event": "activate",
+      "type": "high",
+      "value": 47.87,
+      "time": 1787506507
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "0108f4deacd40610011a0528c82248022001",
+  "expected": {
+   "data": {
+    "base_time": 1787506548,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 0,
+      "event": "activate",
+      "type": "high",
+      "value": 22.12,
+      "time": 1787506548
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "0108f4deacd40610011a0928bc4a3001380148022001",
+  "expected": {
+   "data": {
+    "base_time": 1787506548,
+    "total": 1,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "temperature",
+      "rule": 1,
+      "event": "activate",
+      "type": "high",
+      "value": 47.66,
+      "time": 1787506548
+     }
+    ],
+    "truncated": false
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108ab01100018d822205f38294002900100980100a00100a80100b0010ab80104c00100c80104d00100",
+  "expected": {
+   "data": {
+    "voltage": 3.42,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "temperature": 22.2,
+    "humidity": 47.5,
+    "illuminance": 82,
+    "orientation": 2,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "input_a_count": 10,
+    "input_a_is_active": true,
+    "input_b_count": 0,
+    "input_b_is_active": true,
+    "accel_motion_count": 0
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108ab011000189423205f382a4002900100980100a00100a80100b0010ab80104c00100c80104d00100",
+  "expected": {
+   "data": {
+    "voltage": 3.42,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "temperature": 22.5,
+    "humidity": 47.5,
+    "illuminance": 84,
+    "orientation": 2,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "input_a_count": 10,
+    "input_a_is_active": true,
+    "input_b_count": 0,
+    "input_b_is_active": true,
+    "accel_motion_count": 0
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 3,
+  "hex": "010880f7c4d50610051a0b200128b4013802480250011a0f0801200228b71738044801500458031a0d08022003280638ff01480558021a0c200438fe014801501428a82d2001",
+  "expected": {
+   "data": {
+    "base_time": 1790000000,
+    "total": 5,
+    "time_synced": true,
+    "alarms": [
+     {
+      "slot": "mb",
+      "channel": "humidity",
+      "rule": 2,
+      "event": "activate",
+      "type": "high",
+      "value": 45,
+      "time": 1790000001
+     },
+     {
+      "slot": "s1",
+      "channel": "magnetic-field",
+      "sensor_type": "machine-probe",
+      "rule": 4,
+      "event": "activate",
+      "type": "low",
+      "value": -1.5,
+      "time": 1790000002
+     },
+     {
+      "slot": "s2",
+      "channel": null,
+      "sensor_type": "dallas",
+      "rule": null,
+      "event": "activate",
+      "type": "sensor_mismatch",
+      "value": 3,
+      "time": 1790000003,
+      "detected_type": "machine-probe"
+     },
+     {
+      "slot": "mb",
+      "channel": "battery-voltage",
+      "rule": null,
+      "event": "activate",
+      "type": "low",
+      "value": 2.9,
+      "time": 1790000004
+     }
+    ],
+    "truncated": true
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01089e01102718fc26205628ffffffff0f30ffffffff0f4800900100980100a00100a80100d00100e80102",
+  "expected": {
+   "data": {
+    "voltage": 3.16,
+    "boot": true,
+    "alarm_status": 19,
+    "alarm_status_flags": [
+     "alarm_any",
+     "alarm_threshold",
+     "alarm_no_data"
+    ],
+    "temperature": 24.94,
+    "humidity": 43,
+    "pressure": null,
+    "altitude": null,
+    "motion_count": 0,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "accel_motion_count": 0,
+    "page_count": 2,
+    "page_index": 0,
+    "pages": "1/2"
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01da01160801100358fb03620da226a2019c047e005c9a0cfe08e00101e80102",
+  "expected": {
+   "data": {
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": 24.49,
+       "humidity": 40.5,
+       "temperature-aux": null,
+       "illuminance": 270,
+       "magnetic-field": 0.063,
+       "tilt": 0,
+       "accel-x": 0.46,
+       "accel-y": 7.81,
+       "accel-z": 5.75
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ],
+    "page_index": 1,
+    "page_count": 2,
+    "pages": "2/2"
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01089e011026189827205528ffffffff0f30ffffffff0f4800900100980100a00100a80100d00100da01170801100358fb03620eb026a2019c04dc04004caa0c9c09",
+  "expected": {
+   "data": {
+    "voltage": 3.16,
+    "boot": false,
+    "alarm_status": 19,
+    "alarm_status_flags": [
+     "alarm_any",
+     "alarm_threshold",
+     "alarm_no_data"
+    ],
+    "temperature": 25.08,
+    "humidity": 42.5,
+    "pressure": null,
+    "altitude": null,
+    "motion_count": 0,
+    "hall_left_count": 0,
+    "hall_left_is_active": false,
+    "hall_right_count": 0,
+    "hall_right_is_active": false,
+    "accel_motion_count": 0,
+    "w1_sensors": [
+     {
+      "slot": 1,
+      "type": 3,
+      "type_name": "machine-probe",
+      "values": {
+       "temperature": 24.56,
+       "humidity": 40.5,
+       "temperature-aux": null,
+       "illuminance": 270,
+       "magnetic-field": 0.302,
+       "tilt": 0,
+       "accel-x": 0.38,
+       "accel-y": 7.89,
+       "accel-z": 5.9
+      },
+      "units": {
+       "temperature": "degC",
+       "humidity": "%RH",
+       "temperature-aux": "degC",
+       "illuminance": "lx",
+       "magnetic-field": "mT",
+       "tilt": "bool",
+       "accel-x": "m/s2",
+       "accel-y": "m/s2",
+       "accel-z": "m/s2"
+      }
+     }
+    ]
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "01f001e419f80100",
+  "expected": {
+   "data": {
+    "input_a_voltage": 3.3,
+    "input_b_voltage": 0
+   },
+   "warnings": [],
+   "errors": []
+  }
+ },
+ {
+  "f_port": 2,
+  "hex": "0108a8011000f0019c0ff801e807",
+  "expected": {
+   "data": {
+    "voltage": 3.36,
+    "boot": false,
+    "alarm_status": 0,
+    "alarm_status_flags": [],
+    "input_a_voltage": 1.948,
+    "input_b_voltage": 1
+   },
+   "warnings": [],
+   "errors": []
+  }
+ }
+]

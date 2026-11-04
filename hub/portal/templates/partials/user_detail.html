@@ -1,0 +1,205 @@
+{#
+  One user's card — the body of pages/user_detail.html, and the htmx swap
+  target every action on that page re-renders (`id="user-detail"`,
+  hx-swap="outerHTML"; routes/user_routes.rs answers with this partial).
+
+  Context: { u, current_user, error: string|none, ok: string|none } — `u`
+  shape per routes/user_routes.rs's `UserRowCtx`; `ok` is the slug of an
+  action that succeeded without changing the card (`auth.users.ok_*`).
+
+  The full name is an inline edit block (ui_components.md §1);
+  "Upravit" edits the role (plan/portal/user_admin.md);
+  the role select is left out, with the reason instead, where the server
+  would refuse the change.
+
+  Edit/enable/disable/reset-password land back here so the page shows the result
+  where the operator clicked. Delete has nothing to come back to, so its
+  handler answers with `HX-Redirect` to the list, which flashes the name.
+
+  Deactivate and delete confirm in a daisyUI dialog (the portal's pattern,
+  cf. the Node removal dialog) rather than the browser's `confirm()`; no
+  typed confirmation, both are reversible or scoped to one account.
+
+  `error` is an `auth.errors.*` slug: a rejected action answers 200 with the
+  card re-rendered and the reason on top, because htmx skips the swap on a
+  non-2xx and the failure would be invisible.
+
+  Self-guard (`u.username == current_user.username`) hides disable/delete,
+  mirroring the server-side guard in `AuthService`.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+{% set error = error if error is defined else none %}
+{% set ok = ok if ok is defined else none %}
+{% set is_self = current_user and u.username == current_user.username %}
+{% set display_name = u.full_name | default(u.username, true) %}
+{#- Superusers and admins can only be deleted by a superuser — mirrors
+    AuthService::delete_user's DeleteSuperuser/DeleteAdmin guards. -#}
+{% set can_delete = current_user and (current_user.is_superuser or (not u.is_superuser and u.user_role != "admin")) %}
+{#- The edit dialog mirrors AuthService::update_user's guards
+    (plan/portal/user_admin.md §3). Only a superuser edits a superuser's
+    name, and nothing else of a superuser is editable, so the button goes. -#}
+{% set can_edit = current_user and (current_user.is_superuser or not u.is_superuser) %}
+{#- Why the role is read-only (`auth.users.role_locked_*`), none when it isn't. -#}
+{% set role_lock = "self" if is_self else ("superuser" if u.is_superuser else ("admin" if u.user_role == "admin" and not current_user.is_superuser else none)) %}
+<div id="user-detail" class="max-w-3xl space-y-4">
+	{% if error %}
+	<div role="alert" class="alert alert-error"><span>{{ ("auth.errors." ~ error)|t }}</span></div>
+	{% elif ok %}
+	<div role="status" class="alert alert-success"><span>{{ ("auth.users.ok_" ~ ok)|t|replace("{name}", u.username) }}</span></div>
+	{% endif %}
+
+	<div class="card-v1 overflow-hidden">
+		{#- The identity band: avatar, name, state. Tinted, so the card reads as
+		    a person's page and the facts below sit on plain paper. -#}
+		<div class="flex items-start justify-between gap-3 p-5 bg-base-200 border-b border-base-300">
+			<div class="flex items-center gap-4 min-w-0">
+				<span class="flex items-center justify-center h-14 w-14 shrink-0 rounded-full bg-primary/10 text-primary text-xl font-semibold">{{ display_name[:1]|upper }}</span>
+				<div class="min-w-0">
+					<h2 class="text-xl font-semibold truncate">{{ display_name }}</h2>
+					<p class="text-sm text-muted-fg font-mono truncate">@{{ u.username }}</p>
+				</div>
+			</div>
+			<span class="badge-status shrink-0 {% if u.enabled %}badge-status-normal{% else %}badge-status-offline{% endif %}">
+				{% if u.enabled %}{{ "auth.users.status_enabled"|t }}{% else %}{{ "auth.users.status_disabled"|t }}{% endif %}
+			</span>
+		</div>
+
+		<div class="p-5 space-y-5">
+			{#- The role is what the page is READ for, so it gets its own block
+			    above the grid rather than a row inside it, where its two-line
+			    description pushed every date out of alignment. -#}
+			<div class="space-y-1.5">
+				<p class="text-xs font-medium uppercase tracking-wide text-muted-fg">{{ "auth.fields.role"|t }}</p>
+				{{ ui.role_pill(("common.role.superuser"|t) if u.is_superuser else ("common.role." ~ u.user_role)|t) }}
+				{# Superusers hold the admin permission set regardless of role
+				   (CurrentUser::is_admin), so they get the admin summary. #}
+				<p class="text-sm text-muted-fg">{{ ("auth.users.role_desc_admin"|t) if u.is_superuser else ("auth.users.role_desc_" ~ u.user_role)|t }}</p>
+			</div>
+
+			{#- The full name as an inline edit block (ui_components.md §1); the
+			    role stays in the dialog. the role dialog shares its ok line. -#}
+			{% set head %}<h3 class="text-xs font-medium uppercase tracking-wide text-muted-fg">{{ "auth.users.profile_heading"|t }}</h3>{% endset %}
+			{% call ui.edit_block("user-profile-" ~ u.id, "/settings/users/" ~ u.id ~ "/edit", htmx=true, can_edit=can_edit,
+				head=head, hx_target="#user-detail", class="pt-4 border-t border-base-300 space-y-1") %}
+				{{ ui.text_field("full_name", "auth.fields.full_name"|t, u.full_name, maxlength=100, id="user-full-name-" ~ u.id, editable=can_edit) }}
+			{% endcall %}
+
+			<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-base-300">
+				<div>
+					<dt class="text-xs font-medium uppercase tracking-wide text-muted-fg">{{ "auth.users.table.created"|t }}</dt>
+					<dd class="mt-1 text-sm tabular-nums">{{ u.created_at | short_dt("full") }}</dd>
+				</div>
+				<div>
+					<dt class="text-xs font-medium uppercase tracking-wide text-muted-fg">{{ "auth.users.table.last_login"|t }}</dt>
+					<dd class="mt-1 text-sm tabular-nums">{{ u.last_login | short_dt("full") | default(("common.never"|t), true) }}</dd>
+				</div>
+			</dl>
+		</div>
+
+		{#- A superuser's or an admin's password and enabled state are managed by a
+		    superuser only — AuthService's ManageSuperuserOrAdmin guard (LE-6). The
+		    edit dialog has its own rules (`can_edit`, `role_lock`, user_admin.md). -#}
+		{% set may_manage = current_user.is_superuser or (not u.is_superuser and u.user_role != "admin") %}
+		<div class="flex flex-wrap items-center gap-2 px-5 py-3 bg-base-200 border-t border-base-300">
+			{% if can_edit %}
+			<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+				onclick="document.getElementById('user-edit-{{ u.id }}').showModal()">{{ "auth.users.edit_button"|t }}</button>
+			{% endif %}
+			{% if may_manage %}
+			<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+				onclick="document.getElementById('reset-pw-{{ u.id }}').showModal()">
+				{{ ic.icon("key", "h-4 w-4") }}{{ "auth.users.reset_password_button"|t }}
+			</button>
+			{% endif %}
+			{% if not is_self and may_manage %}
+				{% if u.enabled %}
+				<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+					onclick="var p = document.getElementById('user-disable-{{ u.id }}'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">{{ "auth.users.disable_button"|t }}</button>
+				{% else %}
+				<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm"
+					hx-post="/settings/users/{{ u.id }}/enable" hx-target="#user-detail" hx-swap="outerHTML">{{ "auth.users.enable_button"|t }}</button>
+				{% endif %}
+				{% if can_delete %}
+				<button type="button" class="btn-v1 btn-v1-destructive btn-v1-sm ml-auto"
+					onclick="var p = document.getElementById('user-delete-{{ u.id }}'); p.hidden = !p.hidden; if (!p.hidden) p.scrollIntoView({block: 'nearest'})">
+					{{ ic.icon("x", "h-4 w-4") }}{{ "auth.users.delete_button"|t }}
+				</button>
+				{% endif %}
+			{% endif %}
+		</div>
+	</div>
+
+	{% if can_edit %}
+	<dialog id="user-edit-{{ u.id }}" class="modal">
+		<div class="modal-box card-v1">
+			<h3 class="font-bold text-lg">{{ "auth.users.edit_dialog_title"|t|replace('{name}', u.username) }}</h3>
+			<form hx-post="/settings/users/{{ u.id }}/edit" hx-target="#user-detail" hx-swap="outerHTML"
+				hx-on::after-request="this.closest('[data-confirm-panel]').hidden = true"
+				class="flex flex-col gap-3 mt-3">
+				<div>
+					<label class="text-sm font-medium">{{ "auth.fields.role"|t }}</label>
+					{% if role_lock %}
+					<p class="text-sm text-muted-fg mt-1">{{ ("auth.users.role_locked_" ~ role_lock)|t }}</p>
+					{% else %}
+					<select name="user_role" class="input-v1 select-v1 mt-1"
+						onchange="document.getElementById('user-edit-role-desc-{{ u.id }}').textContent = this.selectedOptions[0].dataset.desc">
+						{% for role in ["viewer", "manager", "admin"] %}
+						<option value="{{ role }}" data-desc="{{ ("auth.users.role_desc_" ~ role)|t }}"{% if role == u.user_role %} selected{% endif %}>{{ ("auth.users.role_option_" ~ role)|t }}</option>
+						{% endfor %}
+					</select>
+					<p id="user-edit-role-desc-{{ u.id }}" class="text-xs text-muted-fg mt-1">{{ ("auth.users.role_desc_" ~ u.user_role)|t }}</p>
+					{% endif %}
+				</div>
+				<div class="flex justify-end gap-2 mt-2">
+					<button type="button" class="btn-v1 btn-v1-outline" onclick="document.getElementById('user-edit-{{ u.id }}').close()">{{ "common.actions.cancel"|t }}</button>
+					<button type="submit" class="btn-v1 btn-v1-primary">{{ "common.actions.save"|t }}</button>
+				</div>
+			</form>
+		</div>
+		<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+	</dialog>
+	{% endif %}
+
+	{% if may_manage %}
+	<dialog id="reset-pw-{{ u.id }}" class="modal">
+		<div class="modal-box card-v1">
+			<h3 class="font-bold text-lg">{{ "auth.users.reset_password_dialog_title"|t|replace('{name}', u.username) }}</h3>
+			<form hx-post="/settings/users/{{ u.id }}/reset-password" hx-target="#user-detail" hx-swap="outerHTML"
+				hx-on::after-request="this.closest('[data-confirm-panel]').hidden = true"
+				class="flex flex-col gap-3 mt-3">
+				<div>
+					<label class="text-sm font-medium">{{ "auth.fields.new_password"|t }}</label>
+					<input type="password" name="password" class="input-v1 mt-1" autocomplete="new-password" required>
+				</div>
+				<div class="flex justify-end gap-2 mt-2">
+					<button type="button" class="btn-v1 btn-v1-outline" onclick="document.getElementById('reset-pw-{{ u.id }}').close()">{{ "common.actions.cancel"|t }}</button>
+					<button type="submit" class="btn-v1 btn-v1-primary">{{ "auth.users.reset_password_button"|t }}</button>
+				</div>
+			</form>
+		</div>
+		<form method="dialog" class="modal-backdrop"><button>{{ "common.actions.close"|t }}</button></form>
+	</dialog>
+	{% endif %}
+
+	{% if not is_self %}
+	{% for action, body_key, btn_cls, show in [
+		("disable", "auth.users.disable_confirm", "btn-v1-primary", u.enabled and may_manage),
+		("delete", "auth.users.delete_confirm", "btn-v1-destructive", can_delete),
+	] %}
+	{% if show %}
+	<div id="user-{{ action }}-{{ u.id }}" hidden data-confirm-panel class="mt-3 rounded-lg border border-base-300 bg-base-200/40 p-4">
+			<h3 class="font-bold text-lg">{{ ("auth.users." ~ action ~ "_button")|t }}</h3>
+			<p class="text-sm mt-2">{{ body_key|t|replace('{name}', u.username) }}</p>
+			<form hx-post="/settings/users/{{ u.id }}/{{ action }}" hx-target="#user-detail" hx-swap="outerHTML"
+				hx-on::after-request="this.closest('[data-confirm-panel]').hidden = true;"
+				class="flex justify-end gap-2 mt-4">
+				<button type="button" class="btn-v1 btn-v1-outline"
+					onclick="this.closest('[data-confirm-panel]').hidden = true;">{{ "common.actions.cancel"|t }}</button>
+				<button type="submit" class="btn-v1 {{ btn_cls }}">{{ ("auth.users." ~ action ~ "_button")|t }}</button>
+			</form>
+</div>
+	{% endif %}
+	{% endfor %}
+	{% endif %}
+</div>

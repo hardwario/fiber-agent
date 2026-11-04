@@ -1,0 +1,345 @@
+{#
+  "Radio & gateways" card of the Hub Overview tab — plan/portal/devices.hub.md §3.1.
+
+  Context: { radio: render::RadioCardCtx }
+    { hostname, radio_control_off: bool, client: bool,
+      radio: { gateway_present, concentratord_running, chirpstack_running,
+               gateway_eui, sensor_count } | none,
+      gateways: { api_status: "ok"|"auth_failed"|"unreachable",
+                  received_at (RFC 3339|none),
+                  rows: [{ gateway_eui, name, local, online, last_seen,
+                           rssi, snr }] } | none,
+      northbridge: { state, state_key | none, badge, fw_version,
+                     proto_version (none for 0), git_sha, build_flags[], uptime,
+                     reset_cause[], reset_warning, boot_at, radio_state,
+                     radio_state_key | none, freq_hz, sf, tx_power_dbm,
+                     gateway: { net_id, peers, peers_max, queue_used,
+                                queue_max } | none,
+                     counters[(name, n)], err_flags[],
+                     last_error: { at, message, code } | none,
+                     update: { state, verdict, badge, bundled, running,
+                               attempts, last_error, note } | none,
+                     received_at } | none,
+      lorawan: { state, badge, rows: [{ key, badge, status, details[] }],
+                 gateway_eui, last_stats, stats[(name, n)],
+                 last_error | none, received_at } | none,
+      nb_update_allowed: bool,
+      nb_progress: { outcome: "running"|"ok"|"failed"|"unconfirmed",
+                     detail | none, poll: bool, query } | none }
+    `oob` (optional): render as an out-of-band swap (the update's own answer).
+
+  „Aktualizovat firmware NB“ (northbridge_update.md §3.4, amended 2026-10-09;
+  devices.hub.md, dodatek 2026-10-09): admin only, shown on the firmware line
+  when the image bundles firmware (`update` present), it is not `flashing`
+  and no update is being followed. It opens `#nb-update-dialog`, which lives
+  in pages/hub_detail.html outside this swap target (an open dialog would
+  close on every refetch). While `nb_progress` follows an update the card
+  polls itself every 3 s with the update's phase in its query, until the
+  retained document gives the outcome.
+
+  `lorawan_disabled` (the `radio/lorawan` document says `disabled`, i.e.
+  radio.mode p2p/off) replaces the chips, the API banner and the gateway
+  table with one neutral line: nothing there is a fault by design (PN-2).
+
+  Radio diagnostics (plan/control/radio/northbridge_diagnostics.md §4, §4a):
+  the `lorawan` document, when the Hub publishes one, replaces the v1
+  `system/info.lorawan` chips with a row per component. The `northbridge`
+  row is hidden when P2P is off (`disabled` never reaches the template).
+
+  The outer div is the swap target: it refetches itself from
+  GET /hubs/{hub}/radio-card on the `radio-{hostname}` (system/info.lorawan
+  changed) and `radio-gateways` (cluster report changed) nudges (§6).
+
+  Two rules from the spec, both about not lying:
+  - `api_status` other than `ok` is a banner over the table, never a table of
+    offline gateways (UI-2, §2.4): the rows keep their last known state.
+  - `gateway_present == false` is "gateway: waiting / no radio", a degraded
+    green fact about the unit (UI-4), not a failure of concentratord or
+    chirpstack, so the service chips are not drawn for it.
+  - A cluster Client (`client`) runs no ChirpStack (control/cluster.md §2:
+    its forwarder feeds the Server's), so neither the chirpstack chip nor
+    the chirpstack row is drawn for it; a red one would read as a fault.
+  Drift (UI-5) has no MQTT source yet (§12 A2) and is not rendered.
+
+  Amended 2026-10-15 (ui_components.md §8): two ui.collapsible_card cards,
+  "Radio" (the component rows and the Northbridge, as label | mono-value
+  lists like the Node Diagnostics Radio card) and "Gateways" (the
+  ui.diag_heard_by table look, ui.sort_th headers sorted client-side by
+  portal-editset.js `[data-sort-table]`). Both collapsed on load; their
+  open state survives the refetch (keyed by card id). The swap target is
+  the wrapper around both.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% set r = radio %}
+
+{# The last error of a radio document: historical as often as current, so amber. #}
+{% macro diag_error(e) -%}
+	<div class="mt-2 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 text-warning") }}
+		<span>
+			{{- "monitoring.hubs.radio_last_error"|t }}: {{ e.message -}}
+			{%- if e.code is not none %} (#{{ e.code }}){% endif -%}
+			{%- if e.at %} · <span class="tabular-nums" title="{{ e.at }}">{{ e.at | short_dt }}</span>{% endif -%}
+		</span>
+	</div>
+{%- endmacro %}
+
+{# Counters behind a disclosure: `(name, value)` pairs. #}
+{% macro counters(pairs) -%}
+	<details class="mt-1 text-xs">
+		<summary class="cursor-pointer text-muted-fg">{{ "monitoring.hubs.radio_counters"|t }}</summary>
+		<div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 tabular-nums">
+			{% for c in pairs %}<span><span class="text-muted-fg">{{ c[0] }}</span> {{ c[1] }}</span>{% endfor %}
+		</div>
+	</details>
+{%- endmacro %}
+
+{# One service chip: running / down / not reported. #}
+{% macro service_chip(label, running) -%}
+	{%- if running is none -%}
+	<span class="badge-status badge-status-neutral">{{ label }} · —</span>
+	{%- elif running -%}
+	<span class="badge-status badge-status-normal">{{ label }} ✓</span>
+	{%- else -%}
+	<span class="badge-status badge-status-critical">{{ label }} ✕</span>
+	{%- endif -%}
+{%- endmacro %}
+
+{%- set rid = "hub-radio-" ~ r.hostname -%}
+{#- A Server runs the whole LoRaWAN chain; a Client only its card, feeding the Server. -#}
+{%- set lw_label = ("monitoring.hubs.radio_lorawan_card" if r.client else "monitoring.hubs.radio_lorawan_server")|t -%}
+{%- set gid = "hub-gateways-" ~ r.hostname -%}
+{#- Collapsed-header summary: only the radios that run (P2P, LoRaWAN), each with its state;
+    "off" when the mode runs neither. -#}
+{%- set sm = namespace(parts=[]) -%}
+{%- if r.northbridge -%}{%- set sm.parts = sm.parts + [("monitoring.transport.p2p"|t) ~ " " ~ (r.northbridge.state_key|t if r.northbridge.state_key else r.northbridge.state)] -%}{%- endif -%}
+{%- if r.lorawan -%}{%- set sm.parts = sm.parts + [("monitoring.transport.lorawan"|t) ~ " " ~ (("monitoring.hubs.radio_state." ~ r.lorawan.state)|t)] -%}
+{%- elif not r.lorawan_disabled and r.radio -%}{%- set sm.parts = sm.parts + ["monitoring.transport.lorawan"|t] -%}{%- endif -%}
+{%- if not sm.parts -%}{%- set sm.parts = [("monitoring.hubs.radio_mode_off"|t) if r.lorawan_disabled else ("monitoring.hubs.radio_not_reported"|t)] -%}{%- endif -%}
+<div id="hub-radio-card" class="flex flex-col gap-4" data-hub-radio
+	hx-get="/hubs/{{ r.hostname }}/radio-card"
+	hx-trigger="sse:radio-{{ r.hostname }}, sse:radio-gateways"
+	hx-swap="outerHTML"{% if oob is defined and oob %} hx-swap-oob="true"{% endif %}>
+	{% set head_end %}
+	<span class="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+		{#- Active radios only, each in its state colour. -#}
+		{% if r.northbridge %}
+			<span class="badge-status badge-status-{{ r.northbridge.badge }}" data-head-p2p>{{ "monitoring.transport.p2p"|t }}</span>
+		{% endif %}
+		{% if r.lorawan %}
+			<span class="badge-status badge-status-{{ r.lorawan.badge }}" data-head-lorawan>{{ "monitoring.transport.lorawan"|t }}</span>
+		{% elif r.radio and not r.lorawan_disabled %}
+			{% if r.radio.gateway_present is false %}
+			<span class="badge-status badge-status-neutral">{{ "monitoring.hubs.radio_no_gateway"|t }}</span>
+			{% else %}
+			{%- set up = r.radio.concentratord_running and (r.client or r.radio.chirpstack_running) -%}
+			<span class="badge-status badge-status-{{ "neutral" if r.radio.concentratord_running is none else ("normal" if up else "critical") }}" data-head-lorawan>{{ "monitoring.transport.lorawan"|t }}</span>
+			{% endif %}
+		{% endif %}
+	</span>
+	{% endset %}
+	{% call ui.collapsible_card(rid, "antenna", "monitoring.diag.radio_heading"|t, head_end=head_end, summary=sm.parts | join(" · ")) %}
+	{#- The chips are the Hub's own report; this is the portal's side of the
+	    same radio. Both are true at once, so the banner sits beside the chips
+	    rather than replacing them. -#}
+	{% if r.radio_control_off %}
+	<div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+		{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+		<span>{{ "monitoring.hubs.radio_control_off"|t }}</span>
+	</div>
+	{% endif %}
+
+	{% if not r.lorawan and not r.lorawan_disabled and not r.radio and not r.northbridge %}
+	<p class="text-sm text-muted-fg">{{ "monitoring.hubs.radio_not_reported"|t }}</p>
+	{% endif %}
+
+	{% if r.lorawan_disabled %}
+	<span class="sr-only" data-lorawan="off" data-lorawan-off-line>{{ "monitoring.hubs.radio_lorawan_off"|t }}</span>
+	{% elif r.radio and not r.lorawan %}
+	{#- The v1 `system/info.lorawan` facts, for a Hub without the `radio/lorawan`
+	    document (the header chips say the same in short). -#}
+	{% set v = r.radio %}
+	<div class="flex flex-col gap-1.5" data-radio-v1>
+		<span class="text-xs uppercase tracking-wide text-muted-fg">{{ lw_label }}</span>
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 items-center">
+			<dt class="text-muted-fg">{{ "monitoring.hubs.column_gateway_eui"|t }}</dt>
+			<dd class="font-mono text-xs">{{ v.gateway_eui or "—" }}</dd>
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_row.card"|t }}</dt>
+			<dd>{% if v.gateway_present is false %}<span class="badge-status badge-status-neutral">{{ "monitoring.hubs.radio_no_gateway"|t }}</span>{% elif v.gateway_present %}<span class="badge-status badge-status-normal">present</span>{% else %}—{% endif %}</dd>
+			{% if v.gateway_present is not false %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_row.concentratord"|t }}</dt>
+			<dd>{{ service_chip("concentratord", v.concentratord_running) }}</dd>
+			{% if not r.client %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_row.chirpstack"|t }}</dt>
+			<dd>{{ service_chip("chirpstack", v.chirpstack_running) }}</dd>
+			{% endif %}
+			{% endif %}
+		</dl>
+	</div>
+	{% endif %}
+
+	{% if r.lorawan %}
+	{% set l = r.lorawan %}
+	<div class="flex flex-col gap-1.5">
+		<div class="flex flex-wrap items-center gap-2">
+			<span class="text-xs uppercase tracking-wide text-muted-fg">{{ lw_label }}</span>
+			<span class="badge-status badge-status-{{ l.badge }}">{{ ("monitoring.hubs.radio_state." ~ l.state)|t }}</span>
+		</div>
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 items-center">
+			{% if l.gateway_eui %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.column_gateway_eui"|t }}</dt>
+			<dd class="font-mono text-xs">{{ l.gateway_eui }}</dd>
+			{% endif %}
+			{% for row in l.rows if not (r.client and row.key == "chirpstack") %}
+			<dt class="text-muted-fg">{{ ("monitoring.hubs.radio_row." ~ row.key)|t }}</dt>
+			<dd class="flex flex-wrap items-center gap-2 min-w-0">
+				<span class="badge-status badge-status-{{ row.badge }}">{{ row.status }}</span>
+				{% for d in row.details %}<span class="font-mono text-xs text-muted-fg">{{ d }}</span>{% endfor %}
+				{% if row.key == "concentratord" and l.last_stats %}
+				<span class="font-mono text-xs text-muted-fg tabular-nums" title="{{ l.last_stats }}">{{ "monitoring.hubs.radio_stats_at"|t }} {{ l.last_stats | short_dt }}</span>
+				{% endif %}
+			</dd>
+			{% endfor %}
+		</dl>
+		{% if l.stats %}{{ counters(l.stats) }}{% endif %}
+		{% if l.last_error %}{{ diag_error(l.last_error) }}{% endif %}
+	</div>
+	{% endif %}
+
+	{% if r.northbridge %}
+	{% set nb = r.northbridge %}
+	<div class="flex flex-col gap-1.5{% if r.lorawan %} border-t border-base-300 pt-3{% endif %}">
+		<div class="flex flex-wrap items-center gap-2">
+			<span class="text-xs uppercase tracking-wide text-muted-fg">{{ "monitoring.hubs.radio_nb_heading"|t }}</span>
+			<span class="badge-status badge-status-{{ nb.badge }}">{{ nb.state_key|t if nb.state_key else nb.state }}</span>
+		</div>
+		<dl class="text-sm grid grid-cols-[auto_1fr] gap-x-6 gap-y-1">
+			{% if nb.fw_version %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_fw"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums" data-nb-fw>FW {{ nb.fw_version }}
+				{%- if nb.proto_version is not none %} (proto {{ nb.proto_version }}){% endif -%}
+				{%- if nb.git_sha %} · <span class="text-muted-fg" title="git">{{ nb.git_sha }}</span>{% endif -%}
+			</dd>
+			{% endif %}
+			{% if nb.build_flags %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_build_flags"|t }}</dt>
+			<dd class="font-mono text-xs" data-nb-build-flags>[{{ nb.build_flags | join(", ") }}]</dd>
+			{% endif %}
+			{% if nb.uptime %}
+			<dt class="text-muted-fg">{{ "monitoring.device.uptime_label"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">{{ nb.uptime }}</dd>
+			{% endif %}
+			{% if nb.freq_hz is not none or nb.radio_state %}
+			<dt class="text-muted-fg">{{ "monitoring.diag.frequency"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums">
+				{%- if nb.radio_state %}{{ nb.radio_state_key|t if nb.radio_state_key else nb.radio_state }}{% if nb.freq_hz is not none %} · {% endif %}{% endif -%}
+				{%- if nb.freq_hz is not none %}{{ (nb.freq_hz / 1000000) | round(3) }} MHz · SF{{ nb.sf }}
+				{%- if nb.tx_power_dbm is not none %} · {{ nb.tx_power_dbm }} dBm{% endif %}{% endif -%}
+			</dd>
+			{% endif %}
+			{% if nb.gateway %}
+			{% set g = nb.gateway %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_nb_peers"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums" data-nb-gateway>
+				{%- if g.net_id is not none %}{{ "monitoring.hubs.radio_nb_net"|t }} {{ g.net_id }} · {% endif -%}
+				{{ "monitoring.hubs.radio_nb_peers"|t }} {{ g.peers if g.peers is not none else "—" }}{% if g.peers_max %}/{{ g.peers_max }}{% endif -%}
+				{%- if g.queue_used is not none %} · {{ "monitoring.hubs.radio_nb_queue"|t }} {{ g.queue_used }}{% if g.queue_max %}/{{ g.queue_max }}{% endif %}{% endif -%}
+			</dd>
+			{% endif %}
+			{% if nb.reset_cause %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_last_reset"|t }}</dt>
+			<dd class="font-mono text-xs tabular-nums{% if nb.reset_warning %} text-warning{% endif %}">
+				{{- nb.reset_cause | join(", ") -}}
+				{%- if nb.boot_at %} · <span title="{{ nb.boot_at }}">{{ nb.boot_at | short_dt }}</span>{% endif -%}
+			</dd>
+			{% endif %}
+			{% if nb.err_flags %}
+			<dt class="text-muted-fg">{{ "monitoring.hubs.radio_err_flags"|t }}</dt>
+			<dd class="font-mono text-xs text-warning">{{ nb.err_flags | join(", ") }}</dd>
+			{% endif %}
+		</dl>
+		{% if nb.counters %}{{ counters(nb.counters) }}{% endif %}
+		{% if nb.last_error %}{{ diag_error(nb.last_error) }}{% endif %}
+	</div>
+	{% endif %}
+	{% endcall %}
+
+	{#- PN-2: no ChirpStack in p2p/off, so no API banner and no gateway table; a Client runs
+	    none at all, its gateway is listed on the Server's card. -#}
+	{% if not r.lorawan_disabled and not r.client %}
+	{%- set rows = r.gateways.rows if r.gateways else [] -%}
+	{%- set gsum = "monitoring.diag.gateways_count"|t|replace("{n}", rows|length|string) ~ " · " ~ "monitoring.hubs.gateways_online"|t|replace("{n}", (rows|selectattr("online")|list|length)|string) -%}
+	{% call ui.collapsible_card(gid, "router", "monitoring.hubs.gateways_heading"|t, summary=(gsum if r.gateways else "monitoring.hubs.radio_unavailable"|t)) %}
+	{% if r.gateways %}
+		{% if r.gateways.api_status != "ok" %}
+		<div class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm" data-radio-banner>
+			{{ ic.icon("alert-triangle", "h-4 w-4 shrink-0 mt-0.5 text-warning") }}
+			<span>
+				{%- if r.gateways.api_status == "auth_failed" -%}
+					{{ "monitoring.hubs.radio_api_auth_failed"|t }}
+				{%- else -%}
+					{{ "monitoring.hubs.radio_api_unreachable"|t }}
+				{%- endif -%}
+			</span>
+		</div>
+		{% endif %}
+
+		{% if rows %}
+		<div class="overflow-x-auto">
+			<table class="w-full text-sm" data-sort-table>
+				<thead class="[&_tr]:border-b [&_tr]:border-base-300 [&_th]:h-auto [&_th]:py-1.5 [&_th]:px-0 [&_th]:pr-4 [&_th]:text-xs">
+					<tr>
+						{{ ui.sort_th("monitoring.hubs.radio_col_gateway"|t, "gw", "w-full") }}
+						{{ ui.sort_th("monitoring.hubs.radio_col_status"|t, "online", "whitespace-nowrap") }}
+						{{ ui.sort_th("RSSI", "rssi", "text-right whitespace-nowrap") }}
+						{{ ui.sort_th("SNR", "snr", "text-right whitespace-nowrap") }}
+						{{ ui.sort_th("monitoring.diag.last_column"|t, "seen", "text-right whitespace-nowrap !pr-0") }}
+					</tr>
+				</thead>
+				<tbody>
+					{% for g in rows %}
+					<tr data-row-id="{{ g.gateway_eui }}" data-seq="{{ rows|length - loop.index }}"
+						data-sort-gw="{{ g.gateway_eui }}" data-sort-online="{{ 1 if g.online else 0 }}"
+						data-sort-rssi="{{ g.rssi if g.rssi is not none else '' }}" data-sort-snr="{{ g.snr if g.snr is not none else '' }}"
+						data-sort-seen="{{ g.last_seen or '' }}"
+						class="border-b border-base-300 last:border-0 [&>td]:py-1.5 [&>td]:pr-4{% if g.local %} font-medium{% endif %}{% if not g.online %} text-muted-fg{% endif %}">
+						<td class="font-mono text-xs">
+							<span class="inline-flex items-center gap-1.5">
+								{%- if g.local %}<span title="{{ "monitoring.hubs.radio_local"|t }}" class="text-primary">{{ ic.icon("home", "h-4 w-4") }}</span><span class="badge-outline-v1">{{ "monitoring.hubs.radio_local"|t }}</span>{% endif -%}
+								{%- if g.client %}<a href="/hubs/{{ g.client }}/system" class="badge-outline-v1 hover:underline" title="{{ "monitoring.hubs.radio_client_gateway"|t }}">{{ g.client }}</a>{% endif -%}
+								{{ g.gateway_eui }}
+							</span>
+							{% if g.name and g.name != g.gateway_eui and not g.local and not g.client %}<div class="text-muted-fg font-sans">{{ g.name }}</div>{% endif %}
+						</td>
+						<td class="whitespace-nowrap">
+							<span class="flex items-center gap-2">
+								{{ ui.status_dot(g.online) }}
+								{{ ("monitoring.shared.online" if g.online else "monitoring.shared.offline")|t }}
+							</span>
+						</td>
+						<td class="text-right tabular-nums whitespace-nowrap">{% if g.rssi is not none %}{{ g.rssi }} dBm{% else %}—{% endif %}</td>
+						<td class="text-right tabular-nums whitespace-nowrap">{% if g.snr is not none %}{{ g.snr }} dB{% else %}—{% endif %}</td>
+						<td class="text-right tabular-nums whitespace-nowrap text-muted-fg !pr-0" {% if g.last_seen %}title="{{ g.last_seen }}"{% endif %}>
+							{{ g.last_seen | short_dt | default("—", true) }}
+						</td>
+					</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+		{% else %}
+		<p class="text-sm text-muted-fg">{{ "monitoring.hubs.radio_no_rows"|t }}</p>
+		{% endif %}
+
+		{% if r.gateways.received_at %}
+		<p class="text-xs text-muted-fg" title="{{ r.gateways.received_at }}">
+			{{ "monitoring.hubs.radio_report_at"|t }} {{ r.gateways.received_at | short_dt }}
+		</p>
+		{% endif %}
+	{% else %}
+		<p class="text-sm text-muted-fg">{{ "monitoring.hubs.radio_unavailable"|t }}</p>
+	{% endif %}
+	{% endcall %}
+	{% endif %}
+</div>

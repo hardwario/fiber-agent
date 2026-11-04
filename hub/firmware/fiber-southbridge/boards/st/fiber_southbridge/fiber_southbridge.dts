@@ -1,0 +1,151 @@
+/*
+ * Copyright (c) 2026 Hardwario
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board: Fiber Southbridge — STM32C031C6T6 controller for the fiber south
+ * unit. USART1 (PA9/PA10) is the only host link, wired to RPi CM4 ttyAMA3.
+ * Eight P-outputs, sixteen line-status LEDs (8 green + 8 red), two power
+ * LEDs, ADC VIN/VBAT monitoring. System clock is HSI/4 = 12 MHz to match
+ * the legacy CubeIDE firmware timing.
+ */
+
+/dts-v1/;
+#include <st/c0/stm32c031X6.dtsi>
+#include <st/c0/stm32c031c(4-6)tx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/ {
+	model = "Fiber Southbridge";
+	compatible = "hardwario,fiber-southbridge";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+
+	/*
+	 * Application-controlled P outputs (P0..P7) — active-high.
+	 * Exposed by node label so the application can collect them via a
+	 * compile-time table (gpio_table.c).
+	 */
+	p_outputs: p_outputs {
+		compatible = "gpio-leds";
+		p0: p0 { gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>; label = "P0"; };
+		p1: p1 { gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>; label = "P1"; };
+		p2: p2 { gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>; label = "P2"; };
+		p3: p3 { gpios = <&gpiob 6 GPIO_ACTIVE_HIGH>; label = "P3"; };
+		p4: p4 { gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>; label = "P4"; };
+		p5: p5 { gpios = <&gpiob 4 GPIO_ACTIVE_HIGH>; label = "P5"; };
+		p6: p6 { gpios = <&gpiob 3 GPIO_ACTIVE_HIGH>; label = "P6"; };
+		p7: p7 { gpios = <&gpiod 3 GPIO_ACTIVE_HIGH>; label = "P7"; };
+	};
+
+	/* Line status LEDs — active-low (open-drain to common rail). */
+	leds_green: leds_green {
+		compatible = "gpio-leds";
+		led0g: led0g { gpios = <&gpioa  2 GPIO_ACTIVE_LOW>; label = "LED0G"; };
+		led1g: led1g { gpios = <&gpioa  4 GPIO_ACTIVE_LOW>; label = "LED1G"; };
+		led2g: led2g { gpios = <&gpioa  6 GPIO_ACTIVE_LOW>; label = "LED2G"; };
+		led3g: led3g { gpios = <&gpiob  0 GPIO_ACTIVE_LOW>; label = "LED3G"; };
+		led4g: led4g { gpios = <&gpiob  2 GPIO_ACTIVE_LOW>; label = "LED4G"; };
+		led5g: led5g { gpios = <&gpiob 11 GPIO_ACTIVE_LOW>; label = "LED5G"; };
+		led6g: led6g { gpios = <&gpiob 13 GPIO_ACTIVE_LOW>; label = "LED6G"; };
+		led7g: led7g { gpios = <&gpiob 15 GPIO_ACTIVE_LOW>; label = "LED7G"; };
+	};
+
+	leds_red: leds_red {
+		compatible = "gpio-leds";
+		led0r: led0r { gpios = <&gpioa  3 GPIO_ACTIVE_LOW>; label = "LED0R"; };
+		led1r: led1r { gpios = <&gpioa  5 GPIO_ACTIVE_LOW>; label = "LED1R"; };
+		led2r: led2r { gpios = <&gpioa  7 GPIO_ACTIVE_LOW>; label = "LED2R"; };
+		led3r: led3r { gpios = <&gpiob  1 GPIO_ACTIVE_LOW>; label = "LED3R"; };
+		led4r: led4r { gpios = <&gpiob 10 GPIO_ACTIVE_LOW>; label = "LED4R"; };
+		led5r: led5r { gpios = <&gpiob 12 GPIO_ACTIVE_LOW>; label = "LED5R"; };
+		led6r: led6r { gpios = <&gpiob 14 GPIO_ACTIVE_LOW>; label = "LED6R"; };
+		led7r: led7r { gpios = <&gpioa  8 GPIO_ACTIVE_LOW>; label = "LED7R"; };
+	};
+
+	pwr_leds: pwr_leds {
+		compatible = "gpio-leds";
+		pwrledg: pwrledg { gpios = <&gpioa 0 GPIO_ACTIVE_LOW>; label = "PWRLEDG"; };
+		pwrledy: pwrledy { gpios = <&gpioa 1 GPIO_ACTIVE_LOW>; label = "PWRLEDY"; };
+	};
+
+	/*
+	 * ADC reference for application — two channels read sequentially.
+	 * Indices map to: io-channels = vbat (idx 0), vin (idx 1).
+	 */
+	zephyr,user {
+		io-channels = <&adc1 11>, <&adc1 12>;
+		io-channel-names = "vbat", "vin";
+	};
+
+	aliases {
+		host-uart = &usart1;
+	};
+};
+
+/*
+ * System clock: HSI 48 MHz / 4 = 12 MHz on SYSCLK, AHB/APB unscaled.
+ * Matches the legacy HAL configuration so UART/timer timings stay identical.
+ */
+&clk_hsi {
+	hsi-div = <4>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&clk_hsi>;
+	clock-frequency = <DT_FREQ_M(12)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <1>;
+};
+
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	/*
+	 * Enable the 8-byte RX FIFO. Without it, the RDR is 1-byte deep and
+	 * any IRQ latency > ~87µs at 115200 baud causes overrun and silent
+	 * byte loss. The legacy CubeIDE firmware explicitly *disabled* FIFO
+	 * (HAL_UARTEx_DisableFifoMode) — it could get away with that because
+	 * its mainloop did nothing but UART. The Zephyr port has a composer
+	 * thread + soft timer + shell thread fighting for ticks, so the FIFO
+	 * is mandatory to absorb that latency.
+	 */
+	fifo-enable;
+	status = "okay";
+};
+
+&adc1 {
+	pinctrl-0 = <&adc1_in11_pa11 &adc1_in12_pa12>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@b {
+		reg = <11>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		/* 161 = 160.5 ADC cycles. Must match one of the values in
+ * stm32c0.dtsi's sampling-times = <2 4 8 13 20 40 80 161>;
+ * any other value yields -EINVAL from adc_channel_setup_dt. */
+zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 161)>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@c {
+		reg = <12>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		/* 161 = 160.5 ADC cycles. Must match one of the values in
+ * stm32c0.dtsi's sampling-times = <2 4 8 13 20 40 80 161>;
+ * any other value yields -EINVAL from adc_channel_setup_dt. */
+zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 161)>;
+		zephyr,resolution = <12>;
+	};
+};

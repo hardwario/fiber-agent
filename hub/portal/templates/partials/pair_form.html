@@ -1,0 +1,32 @@
+{#
+  The pairing form, one copy for every place a Hub is paired from (GitLab #109,
+  devices.hub.md §3, dodatek 2026-10-13): the System tab's pairing card and the
+  unpaired-Hub banner on every page whose actions need a signature.
+
+  pair_form(hostname, local, return_to="")
+    hostname   -- the Hub to pair
+    local      -- this portal runs on that Hub: no code to read off its own
+                  LCD, so no field. The pairing window on the display still has
+                  to be open (control-core pairing: `local` removes the typing,
+                  not the physical window).
+    return_to  -- the page to land on after a successful pairing; empty goes
+                  back to the System tab. A failure always goes there, where
+                  the refusal is explained.
+
+  Full-page POST /hubs/{hub}/pair, admin (the route gates it again).
+#}
+{% macro pair_form(hostname, local, return_to="") -%}
+<form method="post" action="/hubs/{{ hostname }}/pair" class="flex flex-wrap items-center gap-2 shrink-0"
+	data-pair-form="{{ hostname }}">
+	{% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
+	{% if not local %}
+	<input type="text" name="pairing_code" class="input-v1 input-v1-sm font-mono tracking-widest uppercase w-40"
+		required minlength="6" maxlength="6" pattern="[A-Za-z0-9]{6}"
+		oninput="this.value = this.value.toUpperCase()"
+		autocomplete="off" autocapitalize="characters" spellcheck="false"
+		placeholder="{{ "monitoring.device.pairing_code_label"|t }}"
+		title="{{ "monitoring.device.exactly_6_chars_title"|t }}">
+	{% endif %}
+	<button type="submit" class="btn-v1 btn-v1-primary btn-v1-sm">{{ "monitoring.device.pair_button"|t }}</button>
+</form>
+{%- endmacro %}

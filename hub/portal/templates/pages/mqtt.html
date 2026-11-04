@@ -1,0 +1,28 @@
+{#
+  Settings › MQTT ingest — plan/portal/mqtt/design.md §7, requirement UI-MQ1.
+
+  The panel was designed as a card on the settings index. That index was
+  retired on 2026-09-14 (no page whose only content is links to the pages
+  beside it), so the panel is the third section of the area instead: manager
+  and above, like the fragment it hosts, and like notifications.
+
+  Context: {
+    current_user, nav_active = "settings", settings_tab = "mqtt",
+    show_notifications / show_mqtt / show_maintenance: bool  -- the tabs
+    mqtt: {...}   -- crate::mqtt::MqttDiagnostics; shape documented in
+                     partials/mqtt_diagnostics.html, which polls itself
+  }
+#}
+{% extends "layout/base.html" %}
+
+{% block title %}{{ "common.settings.mqtt.title"|t }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	{% include "partials/settings_tabs.html" %}
+
+	<div class="card-v1 p-4">
+		{% include "partials/mqtt_diagnostics.html" %}
+	</div>
+</div>
+{% endblock %}

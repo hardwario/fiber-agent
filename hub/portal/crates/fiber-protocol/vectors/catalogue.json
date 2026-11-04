@@ -1,0 +1,391 @@
+{
+  "_note": "The portal's rows. The device's table is a superset: get_status, get_info, set_screen, flush_storage and beacon-detect have device arms but no portal publisher, so they carry no row here (design.md §4.2's device-only entries).",
+  "_source": "plan/portal/mqtt/design.md §4.2, §10 — regenerate with `cargo run -p fiber-protocol --example gen_vectors`",
+  "commands": [
+    {
+      "command_type": "get_sensor_config",
+      "level": "read",
+      "permission": "get_sensor_config",
+      "single_shot": true
+    },
+    {
+      "command_type": "get_interval",
+      "level": "read",
+      "permission": "get_interval",
+      "single_shot": true
+    },
+    {
+      "command_type": "get_sticker_config",
+      "level": "read",
+      "permission": "get_status",
+      "single_shot": true
+    },
+    {
+      "command_type": "get_sticker_info",
+      "level": "read",
+      "permission": "get_status",
+      "single_shot": true
+    },
+    {
+      "command_type": "get_sticker_full_config",
+      "level": "read",
+      "permission": "get_status",
+      "single_shot": true
+    },
+    {
+      "command_type": "get_sticker_history",
+      "level": "read",
+      "permission": "get_status",
+      "single_shot": true
+    },
+    {
+      "command_type": "beacon-history",
+      "level": "read",
+      "permission": "beacon.manage",
+      "single_shot": true
+    },
+    {
+      "command_type": "silence_buzzer",
+      "level": "operate",
+      "permission": "silence_buzzer",
+      "single_shot": true
+    },
+    {
+      "command_type": "sticker_force_send",
+      "level": "operate",
+      "permission": "get_status",
+      "single_shot": true
+    },
+    {
+      "command_type": "sticker_clock_sync",
+      "level": "operate",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": true
+    },
+    {
+      "command_type": "set_screen_brightness",
+      "level": "operate",
+      "permission": "set_screen_brightness",
+      "single_shot": true
+    },
+    {
+      "command_type": "set_led_brightness",
+      "level": "operate",
+      "permission": "set_led_brightness",
+      "single_shot": true
+    },
+    {
+      "command_type": "set_screen_timeout",
+      "level": "operate",
+      "permission": "set_screen_brightness",
+      "single_shot": true
+    },
+    {
+      "command_type": "set_threshold",
+      "level": "manage",
+      "permission": "set_threshold",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_sensor_name",
+      "level": "manage",
+      "permission": "set_sensor_name",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_sensor_location",
+      "level": "manage",
+      "permission": "set_sensor_location",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_alarm_pattern",
+      "level": "manage",
+      "permission": "set_alarm_pattern",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_interval",
+      "level": "manage",
+      "permission": "set_interval",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_sample_interval",
+      "level": "manage",
+      "permission": "set_interval",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_system_info_interval",
+      "level": "manage",
+      "permission": "set_system_info_interval",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_device_label",
+      "level": "manage",
+      "permission": "set_device_label",
+      "single_shot": false
+    },
+    {
+      "command_type": "setup-complete",
+      "level": "manage",
+      "permission": "setup.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_buzzer_volume",
+      "level": "manage",
+      "permission": "set_buzzer_volume",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_display_lines",
+      "level": "manage",
+      "permission": "set_display_lines",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_lorawan_sensor_config",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "add_lorawan_sticker",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "node-add",
+      "level": "manage",
+      "permission": "node.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_sticker_config",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "send_sticker_raw",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "sticker_reset_counters",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "add_external_gateway",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "remove_external_gateway",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_lorawan_field_threshold",
+      "level": "manage",
+      "permission": "set_threshold",
+      "single_shot": false
+    },
+    {
+      "command_type": "delete_lorawan_field_threshold",
+      "level": "manage",
+      "permission": "set_threshold",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_eye_field_threshold",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "delete_eye_field_threshold",
+      "level": "manage",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-add",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-monitoring",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-recording",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-provision",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-send",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "known-beacons",
+      "level": "manage",
+      "permission": "beacon.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "set_network_config",
+      "level": "admin",
+      "permission": "set_network_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "add_signer",
+      "level": "admin",
+      "permission": "add_signer",
+      "single_shot": false
+    },
+    {
+      "command_type": "remove_signer",
+      "level": "admin",
+      "permission": "remove_signer",
+      "single_shot": false
+    },
+    {
+      "command_type": "update_signer",
+      "level": "admin",
+      "permission": "update_signer",
+      "single_shot": false
+    },
+    {
+      "command_type": "reset_export_cursor",
+      "level": "admin",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "export-destination-set",
+      "level": "admin",
+      "permission": "export.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "radio-set-mode",
+      "level": "admin",
+      "permission": "radio.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "northbridge-update",
+      "level": "admin",
+      "permission": "radio.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "southbridge-update",
+      "level": "admin",
+      "permission": "radio.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "node-move",
+      "level": "admin",
+      "permission": "node.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "cluster-client-add",
+      "level": "admin",
+      "permission": "cluster.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "cluster-client-remove",
+      "level": "admin",
+      "permission": "cluster.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "cluster-client-gateway",
+      "level": "admin",
+      "permission": "cluster.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "factory_reset",
+      "level": "destructive",
+      "permission": "factory_reset",
+      "single_shot": false
+    },
+    {
+      "command_type": "power_off",
+      "level": "destructive",
+      "permission": "power_off_device",
+      "single_shot": false
+    },
+    {
+      "command_type": "restart_application",
+      "level": "destructive",
+      "permission": "restart_application",
+      "single_shot": false
+    },
+    {
+      "command_type": "remove_lorawan_sticker",
+      "level": "destructive",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "node-remove",
+      "level": "destructive",
+      "permission": "node.manage",
+      "single_shot": false
+    },
+    {
+      "command_type": "sticker_reboot",
+      "level": "destructive",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "sticker_device_reset",
+      "level": "destructive",
+      "permission": "set_lorawan_sensor_config",
+      "single_shot": false
+    },
+    {
+      "command_type": "beacon-remove",
+      "level": "destructive",
+      "permission": "beacon.manage",
+      "single_shot": false
+    }
+  ],
+  "level_permissions": {
+    "admin": "level:admin",
+    "destructive": "level:destructive",
+    "manage": "level:manage",
+    "operate": "level:operate",
+    "read": "level:read"
+  }
+}

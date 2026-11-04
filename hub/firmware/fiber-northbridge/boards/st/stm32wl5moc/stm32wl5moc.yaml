@@ -1,0 +1,15 @@
+identifier: stm32wl5moc
+name: STM32WL5MOC Module
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 63
+flash: 236
+supported:
+  - gpio
+  - watchdog
+  - lora
+  - rtc
+vendor: st

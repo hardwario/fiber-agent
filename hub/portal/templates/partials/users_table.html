@@ -1,0 +1,44 @@
+{#
+  The users table — the card under pages/users.html's toolbar.
+
+  Context: { users: [ partials/user_row.html's `u` shape, ... ],
+             current_user }.
+
+  The toolbar lives OUTSIDE this fragment (pages/users.html), unlike the
+  count it used to carry: the count is portal-list.js's now, and the script
+  re-runs its pass on `htmx:afterSettle`, so a swapped-in table comes back
+  filtered, sorted and with the right columns showing without this partial
+  knowing anything about it.
+#}
+{% import "partials/ui.html" as ui %}
+<div id="users-table" class="card-v1 mt-3">
+	<div class="relative w-full overflow-x-auto overflow-y-clip rounded-xl">
+		<table data-list-table class="w-full caption-bottom text-sm">
+			<thead class="sticky top-0 z-20 [&_tr]:border-b [&_tr]:border-base-300 [&_th]:bg-base-100">
+				<tr>
+					{{ ui.sort_th("auth.users.table.user"|t, "name") }}
+					{{ ui.sort_th("auth.fields.role"|t, "role", "", "role") }}
+					{{ ui.th("auth.users.table.status"|t, "", "status") }}
+					{{ ui.sort_th("auth.fields.job_title"|t, "job", "hidden", "job") }}
+					{{ ui.sort_th("auth.users.table.created"|t, "created", "", "created") }}
+					{{ ui.sort_th("auth.users.table.last_login"|t, "seen", "", "seen") }}
+				</tr>
+			</thead>
+			<tbody>
+				{#- "No user matches the filter" is not "there are no users":
+				    the second one is the row below, rendered by the for/else.
+				    Carries no `data-kind`, so the filter pass skips it. -#}
+				<tr data-list-nomatch class="hidden">
+					<td colspan="6" class="py-10 text-center text-muted-fg">{{ "common.list.no_match"|t }}</td>
+				</tr>
+				{% for u in users %}
+				{% include "partials/user_row.html" %}
+				{% else %}
+				<tr>
+					<td colspan="6" class="py-10 text-center text-muted-fg">{{ "auth.users.empty"|t }}</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</div>

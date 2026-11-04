@@ -1,0 +1,102 @@
+{#
+  The Service functions card shell (plan/portal/ui_components.md §7,
+  2026-10-15): shared by partials/node_service_card.html, the Beacon's
+  Configuration tab and the Hub's Unit tab.
+
+  Usage:
+    {% import "partials/service_card.html" as svc %}
+    {% call svc.card(card_id) %} … rows … {% endcall %}
+    {% call svc.row(id, title, help, button, tone="", immediate=none) %}
+      … the inline panel under the row (none for an immediate action) …
+    {% endcall %}
+
+  Locked on load: every row's button is disabled until "Unlock" (header
+  right). The card locks itself again after 5 minutes and when the page is
+  left. Only one inline panel is open at a time (`panel`). An immediate row
+  (`immediate` = a form's id) submits that form instead of opening a
+  panel. The routes' own gates stay the enforcement; the lock is a guard
+  against a stray click.
+#}
+{% import "partials/icons.html" as ic %}
+{% import "partials/ui.html" as ui %}
+
+{#- `heading` / `icon` (2026-10-15): the Hub System tab names its card
+    "System management"; the default is "Service functions". -#}
+{% macro card(card_id, heading=none, icon="wrench") -%}
+<section id="{{ card_id }}" class="card-v1 di" data-service-card>
+<div x-data="serviceCard()" :class="open && 'di-open'" @pagehide.window="lock()">
+	<div class="relative">
+	<button type="button" class="di-head ev-head" @click="open = !open" :aria-expanded="open.toString()" aria-controls="{{ card_id }}-body">
+		{{ ic.icon("chevron-right", "di-chev h-4 w-4 shrink-0") }}
+		{{ ui.card_icon(icon) }}
+		<span class="text-base font-semibold whitespace-nowrap">{{ heading or "monitoring.service.card_heading"|t }}</span>
+	</button>
+	<span class="ev-csv">
+		<button type="button" class="btn-v1 btn-v1-primary btn-v1-sm gap-1" x-show="!unlocked" @click="unlock()">
+			{{ ic.icon("lock-open", "h-4 w-4") }}{{ "monitoring.service.unlock"|t }}</button>
+		<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1" x-show="unlocked" x-cloak @click="lock()">
+			{{ ic.icon("lock", "h-4 w-4") }}{{ "monitoring.service.lock"|t }}</button>
+	</span>
+	</div>
+	<div class="di-body" id="{{ card_id }}-body" x-show="open" x-cloak>
+		<p class="svc-banner" :class="unlocked ? 'svc-banner-open' : ''">
+			<span x-show="!unlocked">{{ ic.icon("lock", "h-4 w-4 shrink-0") }}{{ "monitoring.service.locked_banner"|t }}</span>
+			<span x-show="unlocked" x-cloak>{{ ic.icon("lock-open", "h-4 w-4 shrink-0") }}{{ "monitoring.service.unlocked_banner"|t }}</span>
+		</p>
+		<div class="svc-rows">
+		{{ caller() }}
+		</div>
+	</div>
+</div>
+</section>
+<script>
+	window.serviceCard = window.serviceCard || function () {
+		var LOCK_MS = 5 * 60 * 1000;
+		return {
+			open: false, unlocked: false, panel: null, timer: null,
+			unlock: function () {
+				var self = this;
+				self.unlocked = true;
+				clearTimeout(self.timer);
+				self.timer = setTimeout(function () { self.lock(); }, LOCK_MS);
+			},
+			lock: function () { this.unlocked = false; this.panel = null; clearTimeout(this.timer); },
+			toggle: function (id) { if (this.unlocked) this.panel = this.panel === id ? null : id; },
+			// After a write the card closes its panel; the answer shows in #command-status.
+			done: function (ev) {
+				var ok = ev.detail.successful && ev.detail.xhr.responseText.indexOf('data-status="error"') < 0;
+				if (ok) this.panel = null;
+			}
+		};
+	};
+</script>
+{%- endmacro %}
+
+{% macro row(id, title, help, button, tone="", immediate=none, disabled_note=none) -%}
+<div class="svc-row" :class="panel === '{{ id }}' && 'svc-row-open'" data-svc-row="{{ id }}">
+	<div class="min-w-0">
+		<div class="text-sm font-medium">{{ title }}</div>
+		<div class="text-xs text-muted-fg">{{ disabled_note if disabled_note else help }}</div>
+	</div>
+	{% if disabled_note %}
+	<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm" disabled>{{ button }}</button>
+	{% elif immediate %}
+	<button type="submit" form="{{ immediate }}" class="btn-v1 btn-v1-outline btn-v1-sm {{ tone }}" :disabled="!unlocked">{{ button }}</button>
+	{% else %}
+	<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm {{ tone }}" :disabled="!unlocked"
+		@click="toggle('{{ id }}')" :aria-expanded="(panel === '{{ id }}').toString()">{{ button }}</button>
+	{% endif %}
+</div>
+{%- set body = caller() %}
+{% if body | trim %}
+<div class="svc-panel" x-show="panel === '{{ id }}'" x-cloak>{{ body }}</div>
+{% endif %}
+{%- endmacro %}
+
+{#- The Cancel + action pair at the foot of an inline panel. -#}
+{% macro actions(label, tone="btn-v1-primary") -%}
+<div class="te-actions">
+	<button type="button" class="btn-v1 btn-v1-ghost btn-v1-sm" @click="panel = null">{{ "common.actions.cancel"|t }}</button>
+	<button type="submit" class="btn-v1 {{ tone }} btn-v1-sm" :disabled="!unlocked">{{ label }}</button>
+</div>
+{%- endmacro %}

@@ -1,0 +1,32 @@
+{% extends "layout/base.html" %}
+
+{% block title %}Dashboard - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="hero bg-base-200 rounded-box mb-6">
+	<div class="hero-content text-center py-12">
+		<div class="max-w-md">
+			<h1 class="text-4xl font-bold text-primary">{{ brand.product }} portal v2</h1>
+			<p class="py-4">M0 skeleton — templates, static assets and the Tailwind+DaisyUI pipeline are wired up.</p>
+		</div>
+	</div>
+</div>
+
+<div class="card bg-base-100 border border-base-300 max-w-md mb-6">
+	<div class="card-body">
+		<h2 class="card-title">Example card</h2>
+		<p>DaisyUI component classes, rendered through the custom "{{ brand.theme }}" theme.</p>
+		<div class="card-actions justify-end">
+			<button class="btn btn-primary">Action</button>
+		</div>
+	</div>
+</div>
+
+<div class="card bg-base-100 border border-base-300 max-w-md">
+	<div class="card-body">
+		<h2 class="card-title">htmx wiring check</h2>
+		<button class="btn btn-outline" hx-get="/health" hx-target="#health-out">Check /health</button>
+		<pre id="health-out" class="bg-base-200 rounded-box p-3 mt-2 text-sm min-h-10"></pre>
+	</div>
+</div>
+{% endblock %}

@@ -1,0 +1,1 @@
+SUBSYSTEM=="rtc", KERNEL=="rtc0", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}+="rtc-sync.service"

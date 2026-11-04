@@ -1,0 +1,62 @@
+[Unit]
+Description=Apply the portal's first-run transport choice (radio.mode)
+Documentation=https://gitlab.hardwario.com/proximos/proximos-v2 https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/decisions.md https://gitlab.hardwario.com/proximos/proximos-v2/-/blob/main/plan/system/design.md
+# Decision #37, started by proximos-first-run.path. `proximosctl first-run-apply` writes
+# the requested radio.mode into /data/proximos/config/proximos.config.yaml, but only while
+# that file sets none. After first run the transport changes only by factory reset. It
+# then removes the request.
+#
+# A mode change takes effect by REBOOT, not by re-rendering and restarting units here:
+# the next boot runs the ordinary chain (migrate -> render -> the ChirpStack units'
+# ConditionPathExists= -> radio-setup -> proximos-control) against the new mode. The
+# reboot happens only when first-run-apply exits 3, meaning the running services were
+# rendered with another mode.
+#
+# Before=proximos-render.service covers the boot case. A request left behind by a power
+# cut is applied before anything renders, so there is nothing rendered to disagree with,
+# first-run-apply exits 0, and no second reboot follows. That same ordering is why
+# calling systemctl here cannot deadlock: nothing waits on this unit except the
+# renderer, and `systemctl reboot` queues the job and returns. The renderer itself never
+# calls systemctl (proximos-render's module docs).
+#
+# /data/proximos/config comes from migration 040-config-init.sh.
+After=proximos-data-migrate.service data.mount
+RequiresMountsFor=/data
+Before=proximos-render.service
+ConditionPathExists=/data/portal/requested-radio-mode
+
+[Service]
+Type=oneshot
+# A oneshot has no start timeout by default, and proximos-render (so the portal, so the
+# whole Hub) waits for this one. first-run-apply refuses a FIFO or other odd request
+# without blocking; this bounds whatever else could hang it.
+TimeoutStartSec=30s
+# Exit 3 is the reboot, and nothing else is. The sleep lets the portal's "restarting"
+# page reach the browser before the network goes down. `--no-block` is written out for
+# the reader; `systemctl reboot` does not wait for the job either way. A test in
+# proximosctl (tests/first_run_cli.rs) holds the 3 here to FIRST_RUN_REBOOT_EXIT.
+ExecStart=/bin/sh -c '/usr/bin/proximosctl first-run-apply; rc=$?; if [ "$rc" -eq 3 ]; then sleep 3; exec /bin/systemctl --no-block reboot; fi; exit "$rc"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proximos-first-run
+
+# Root because both trees it writes belong to someone else: the overlay directory is
+# root:root 0750 (040), and the request sits in the portal's /data/portal. The sandbox
+# admits exactly those two. '-' on both: a Hub missing either directory gets a clear
+# error from first-run-apply in the journal, not a 226/NAMESPACE with no line of its own.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# AF_UNIX only, for systemctl talking to PID 1.
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ReadWritePaths=-/data/proximos/config -/data/portal

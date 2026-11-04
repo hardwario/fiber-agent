@@ -1,0 +1,8 @@
+#!/usr/sbin/nft -f
+# A Server Hub's extra open port: TCP 8883, mosquitto's TLS listener for
+# Client Hubs (plan/control/cluster.md §2, §5). Loaded by
+# proximos-firewall-server.service on top of firewall.nft, whose
+# `set server_tcp` and `tcp dport @server_tcp accept` it relies on; it adds an
+# element and changes no rule, so the base rule set's order and policy stay
+# exactly as firewall.nft states them.
+add element inet proximos server_tcp { 8883 }

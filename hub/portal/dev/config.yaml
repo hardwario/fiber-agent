@@ -1,0 +1,49 @@
+# Dev-loop config for `cargo run` — see portal/dev/README.md.
+# Field names match src/config.rs::RawConfig.
+bind_addr: "127.0.0.1:8088"
+mqtt_host: "localhost"
+mqtt_port: 1883
+topic_prefix: "proximos"
+mqtt_client_id: "proximos-portal"
+data_dir: "./dev-data"
+templates_dir: "templates"
+static_dir: "static"
+cookie_secure: false
+
+# The mock device's hostname (mock_publisher.py's HOSTNAME). Makes the portal
+# treat that device as "the hub I run on" and pair it without a code, the way
+# it will on real hardware where both really are the same machine. Comment it
+# out to get the remote flow back: the code input reappears and pairing needs
+# the mock's --pairing-code.
+local_hostname: "fiber-mock-001"
+
+# Device tuning (plan/portal/devices.backend.md §3, WP0.3). Present here — where
+# packaging/templates/defaults.yaml keeps them commented out — so the dev loop
+# actually parses these sections rather than only ever exercising the code
+# defaults. The values ARE the defaults; change one to try a different setting.
+nodes:
+  # Missed report intervals before a Node counts as offline. 0 = detection off.
+  offline_detector: 4
+  # Most automatic history requests to one Hub per 10 minutes. 0 = none.
+  history_auto_requests_per_10min: 6
+
+beacons:
+  # Minutes between persisted samples (the beacon advertises ~every 10 s).
+  store_interval: 15
+  # Store intervals of silence before a Beacon counts as offline. 0 = off.
+  offline_detector: 1
+
+# Floors for the derived link-quality indicator. `excellent`/`good` need BOTH,
+# `weak` needs EITHER; below that is critical, and missing data is unknown.
+signal_quality:
+  excellent: {rssi: -80, snr: 7}
+  good: {rssi: -95, snr: 0}
+  weak: {rssi: -110, snr: -7}
+
+# Calibration reminders (plan/portal/calibration.cs.md §3, amended
+# 2026-10-13): days before a certificate's expiry date when the device gets
+# the first and the second warning; the expiry date itself is the critical
+# alarm. second_warning_days < warning_days, both >= 1.
+calibration:
+  warning_days: 30
+  second_warning_days: 7

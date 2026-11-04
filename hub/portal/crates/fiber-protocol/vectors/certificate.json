@@ -1,0 +1,19 @@
+{
+  "_source": "plan/portal/mqtt/design.md §3.4, §10 — the eight-field canonical form is unchanged in v2; this file exists so the review can see that it did not move",
+  "ca_public_key_ed25519": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+  "canonical": "{\"expires_at\":\"2027-01-01T00:00:00Z\",\"full_name\":\"Admin User\",\"issued_at\":\"2026-01-01T00:00:00Z\",\"issuer\":\"device_ca\",\"permissions\":[\"get_status\",\"set_threshold\"],\"public_key_ed25519\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"role\":\"admin\",\"signer_id\":\"admin@fiber.local\"}",
+  "certificate_signature": "+PoYNOX+wj8LQGzvDapJUJj/onSbuiW64aYKuqAvUhFWbVr/xFzSIoA99gHIaMQ5cQKudKr21f1uGKditlEyBQ==",
+  "payload": {
+    "expires_at": "2027-01-01T00:00:00Z",
+    "full_name": "Admin User",
+    "issued_at": "2026-01-01T00:00:00Z",
+    "issuer": "device_ca",
+    "permissions": [
+      "get_status",
+      "set_threshold"
+    ],
+    "public_key_ed25519": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "admin",
+    "signer_id": "admin@fiber.local"
+  }
+}

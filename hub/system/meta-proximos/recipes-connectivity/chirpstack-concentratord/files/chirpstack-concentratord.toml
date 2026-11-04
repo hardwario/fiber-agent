@@ -1,0 +1,93 @@
+# ChirpStack Concentratord configuration for the RAK5146 (SX1302, USB variant).
+#
+# Ported from v1 (meta-fiber/recipes-connectivity/chirpstack-concentratord/files/)
+# with the radio parameters unchanged - those are a proven EU868 plan and this is
+# not the place to redesign them - and with the two device-facing values made
+# explicit rather than left to upstream defaults. See plan/control/radio/
+# lorawan.md for the transport this feeds.
+
+[concentratord]
+  log_level="INFO"
+  log_to_syslog=false
+  stats_interval="30s"
+  disable_crc_filter=false
+
+  # These two paths are a contract with chirpstack-mqtt-forwarder.toml
+  # ([backend.concentratord] event_url/command_url) - change both together or the
+  # forwarder silently receives no uplinks and logs nothing about it.
+  #
+  # /run, not /tmp: both units set PrivateTmp=true, which gives each its own /tmp
+  # namespace and would leave the two ends of this IPC link looking at different
+  # sockets. /run/chirpstack-concentratord is created by the unit's
+  # RuntimeDirectory= at 0750 root:root, which also stops any local user reaching
+  # or squatting the concentrator's command socket the way a world-writable /tmp
+  # allowed. Upstream's own default is ipc:///tmp/concentratord_{event,command},
+  # so this is a deliberate divergence, not an inherited value.
+  [concentratord.api]
+    event_bind="ipc:///run/chirpstack-concentratord/event"
+    command_bind="ipc:///run/chirpstack-concentratord/command"
+
+[gateway]
+  antenna_gain=0
+  lorawan_public=true
+  region="EU868"
+
+  # model + model_flags together select the vendor profile that decides how the
+  # SX1302 is reached and reset. "USB" is what makes this a CDC-ACM device rather
+  # than an SPI one, and it is the half that has been mis-documented repeatedly
+  # elsewhere in this layer - see recipes-kernel/proximos-dtbo/files/proximos.dtso
+  # fragment@3 and recipes-kernel/linux/files/rak5146.cfg.
+  model="rak_5146"
+  model_flags=["USB"]
+
+  # Explicit, where v1 relied on the vendor profile's default. Two reasons: it
+  # names in configuration the device node the whole LoRaWAN path hangs off, so a
+  # missing concentrator is diagnosable by reading one file instead of guessing at
+  # a default; and it is the value the unit's ConditionPathExists= and the udev
+  # rule that starts it both key on, so all three now agree in writing. The value
+  # is the same one the rak_5146+USB profile would have chosen, so this changes no
+  # behaviour - upstream's own config template prints
+  # `# com_dev_path="/dev/spidev0.0"` for the SPI case and the daemon's error path
+  # reads "Unable to read /dev/ttyACMx" for this one.
+  #
+  # Amended 2026-10-09 (GitLab #75): the udev link to the card, not ttyACM0.
+  # ttyACM0 is whichever CDC-ACM device enumerated first, and any other one
+  # plugged into the Hub can take it. 99-chirpstack-concentratord.rules sets the
+  # link on the card's own USB IDs.
+  com_dev_path="/dev/rak5146"
+
+  time_fallback_enabled=true
+
+  # Left empty on purpose: the daemon reads the concentrator's own hardware EUI
+  # and uses it as the gateway ID. Pinning a value here would give every Hub in
+  # the fleet the same gateway identity. §6 of plan/control/radio/lorawan.md is
+  # about discovering this value from the running system rather than assigning it.
+  gateway_id=""
+
+  [gateway.concentrator]
+    multi_sf_channels=[
+      868100000,
+      868300000,
+      868500000,
+      867100000,
+      867300000,
+      867500000,
+      867700000,
+      867900000,
+    ]
+    [gateway.concentrator.lora_std]
+      frequency=868300000
+      bandwidth=250000
+      spreading_factor=7
+    [gateway.concentrator.fsk]
+      frequency=868800000
+      bandwidth=125000
+      datarate=50000
+
+  # Zeroes, not a real position. The Hub has no GNSS receiver and the RAK5146's
+  # GNSS pins are not wired, so any non-zero value here would be a fabricated
+  # location travelling with every uplink's gateway metadata.
+  [gateway.location]
+    latitude=0.0
+    longitude=0.0
+    altitude=0

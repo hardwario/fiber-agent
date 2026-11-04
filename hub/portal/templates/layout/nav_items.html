@@ -1,0 +1,66 @@
+{#
+  The navigation, as data — the single source shared by `layout/nav.html`
+  (sidebar + bottom tab bar) and `layout/topbar.html` (page icon and title).
+  It carries no markup and reads nothing from the request context, so both
+  consumers pull it in with `{% import %}`:
+
+      {% import "layout/nav_items.html" as navdef %}   -> navdef.nav_items
+
+  Each entry is `(id, href, icon, gate, group)`:
+    id    the `common.nav.<id>` catalogue key, and the value pages set as
+          `nav_active`
+    href  the route; `http.rs`'s `every_nav_link_resolves` test parses these
+          straight out of this file, so keep the tuple literal shape
+    icon   a `partials/icons.html` name
+    gate   none = everyone signed in, "manager" = manager/admin/superuser,
+          "admin" = admin/superuser, "experimental" = only when
+          `PortalConfig::experimental_features_enabled` is set (non-core,
+          post-phase-1 entries — plan/portal/design.md §2). The mutation
+          routes gate server-side independently — this only controls what is
+          SHOWN.
+    group the sidebar section it sits in: `none` for the operational block at
+          the top, `"devices"` for the hardware (Hub, Nodes, Beacons),
+          `"admin"` for the administrative one below it. The heading
+          is drawn by `layout/nav.html` when the group CHANGES between two
+          rendered entries, so a group whose every entry is gated away for
+          this role leaves no orphan heading behind.
+
+  Order follows what you WATCH, then the DEVICES, then what you ADMINISTER.
+  The watch block runs live-to-retrospective (Monitoring, Alarms, History);
+  the devices block goes top-down through the hardware (Hubs, Nodes,
+  Beacons); the admin block starts with people and ends at the log.
+
+  The Hubs entry is labelled Hubs rather than Device because Nodes and
+  Beacons are devices too, and the product calls this one the Hub. It points
+  at the list (`/hubs`); a single Hub is `/hubs/{hub}/overview`
+  (plan/portal/devices.hub.md §3).
+
+  `settings` is ONE door into an area of two sections — Notifications and
+  Maintenance — which are its tabs (partials/settings_tabs.html), not nav
+  entries of their own. `/settings` is a redirect to whichever the visitor's
+  role opens first, so the entry never leads nowhere.
+
+  Users is NOT one of them, deliberately. It is a list of entities with a
+  toolbar, filters and detail pages — `/nodes` for people — not a
+  configuration form, and adding a technician or resetting a password is a
+  more frequent errand than setting up SMTP once. enerooo-spark draws the
+  same line: Users sits under its Administration heading, beside the system
+  settings rather than inside them.
+
+  Nothing but tuples inside the list literal below. A `{# … #}` comment in
+  there is not a comment: it is part of the expression, the whole table fails
+  to parse, and since every page renders nav.html every page then 500s.
+#}
+{% set nav_items = [
+	("dashboard", "/", "thermometer", none, none),
+	("alarms", "/alarms", "bell", none, none),
+	("history", "/trends", "chart-line", none, none),
+	("limits", "/limits", "sliders-horizontal", none, none),
+	("hubs", "/hubs", "router", none, "devices"),
+	("nodes", "/nodes", "radio", none, "devices"),
+	("beacons", "/beacons", "tag", none, "devices"),
+	("users", "/settings/users", "users", "admin", "admin"),
+	("settings", "/settings", "settings", "manager", "admin"),
+	("audit", "/audit", "scroll-text", "manager", "admin"),
+	("docs", "/docs", "book-open", none, "admin"),
+] %}

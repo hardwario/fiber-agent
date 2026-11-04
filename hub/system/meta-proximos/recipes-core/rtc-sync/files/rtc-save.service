@@ -1,0 +1,8 @@
+[Unit]
+Description=Save the system clock to the PCF85063 RTC
+Documentation=man:hwclock(8)
+ConditionPathExists=/dev/rtc0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/hwclock --systohc --utc --noadjfile

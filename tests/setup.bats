@@ -1,6 +1,6 @@
 load test_helper
 
-V2_SRC="${V2_SRC:-$HOME/Projects/fiber/v2/proximos-v2}"
+V2_SRC="${V2_SRC:-$REPO_ROOT/hub}"
 
 setup_file() {
   export FIBER_UPSTREAM_DIR="$BATS_FILE_TMPDIR/upstream"

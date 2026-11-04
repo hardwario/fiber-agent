@@ -1,0 +1,98 @@
+{#
+  One Hub row of pages/hubs.html, built from partials/device_row.html's cells
+  like the Node and Beacon rows (devices.hub.md, amendment 2026-10-14):
+
+    Item | Type | Location | Overview | Values | Radio |
+    Last activity, Gateway EUI, Version (hidden) | View
+
+  Item: the Hub's name + the worst calibration state of its own probes, the
+  hostname under it. Overview: last seen, then the battery % (#181) and the IP address. Values: the
+  highest, then the lowest current probe reading (`h.fields`). Radio: one
+  line per radio part the mode uses, each with a green/red/grey dot.
+  Context: `h` (render::HubRowCtx), `add_hub` (pages/hubs.html).
+  Location: the operator's own, device_meta.location (metadata.cs.md).
+#}
+{% import "partials/device_row.html" as dr %}
+{% import "partials/icons.html" as ic %}
+{% set ever = h.last_seen is not none or h.online %}
+{% set link = dr.link(h.online, "", ever) | trim %}
+{#- `h.fault` is the operational axis, offline included; a Client that has
+    never connected is waiting, not failed, so it stays grey. -#}
+{% set tone = dr.tone(h.value_class, h.fault and ever, ever) | trim %}
+{% set href = "/hubs/" ~ h.hostname ~ "/overview" %}
+{#- #181: live like the Hub's own page; the row is re-fetched from the list on its status or
+    radio events, at most every 5 s. -#}
+<tr id="hub-{{ h.hostname }}" sse-swap="hub-{{ h.hostname }}" hx-swap="outerHTML"
+	hx-get="/hubs" hx-select="#hub-{{ h.hostname }}"
+	hx-trigger="sse:device-{{ h.hostname }}-status throttle:5s, sse:radio-{{ h.hostname }} throttle:5s"
+	data-kind="hub" data-oor="{{ h.value_class }}"
+	data-connected="{% if h.online %}1{% else %}0{% endif %}"
+	{#- The operational axis, for #64's Poruchy tile (`?fault=any`). -#}
+	{% if h.fault %}data-fault="1"{% endif %}
+	data-location="{{ h.location | default('', true) }}"
+	data-search="{{ ((h.name | default('', true)) ~ ' ' ~ h.hostname ~ ' ' ~ (h.serial | default('', true)) ~ ' ' ~ (h.location | default('', true)) ~ ' ' ~ (h.description | default('', true)))|lower }}"
+	data-sort-name="{{ (h.name | default(h.hostname, true))|lower }}"
+	data-sort-seen="{{ h.last_seen | default('', true) }}"
+	data-sort-type="{{ h.kind | default('', true) }}"
+	data-sort-fw="{{ (h.display_version | default('', true))|lower }}"
+	data-row-href="{{ href }}"
+	class="cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+		{{ dr.item_cell(tone, link, h.name | default(h.hostname, true), href, h.calibration, h.hostname) }}
+	<td data-column="type">{% if h.kind %}<span class="badge-outline-v1 shrink-0">{{ ("monitoring.hubs.kind_" ~ h.kind)|t }}</span>{% else %}<span class="text-muted-fg">—</span>{% endif %}</td>
+	{{ dr.location_cell(h.location) }}
+	{% set fault_title %}{% if h.fault %}{% for k in h.fault_keys %}{{ k|t }}{% if not loop.last %} · {% endif %}{% else %}{{ "monitoring.hubs.fault_offline"|t }}{% endfor %}{% endif %}{% endset %}
+	{% set ip %}<span class="font-mono">{{ h.ip | default("—", true) }}</span>{% endset %}
+	{% call dr.overview_cell(h.last_seen, none, h.battery | default("", true), fault_title | trim, ip, h.battery_tone, "critical" if h.fault_critical else "warning") %}
+		{#- UX-035: online and green is not "commandable"; say so
+		    where the Hub is picked, with the way to fix it. -#}
+		{% if h.unpaired %}
+		<a href="/hubs/{{ h.hostname }}/system" class="badge-status badge-status-warning"
+			title="{{ "monitoring.device.not_paired_title"|t }}">{{ "monitoring.device.not_paired_badge"|t }}</a>
+		{% endif %}
+		{#- C5, §2.5: the registry's word on a Client. -#}
+		{% if h.cluster %}
+		{% if h.cluster.removal_error %}
+		<span class="badge-status badge-status-warning" title="{{ h.cluster.removal_error }}">{{ "monitoring.hubs.removal_incomplete"|t }}</span>
+		{% elif h.cluster.state == "failed" %}
+		<span class="badge-status badge-status-warning" title="{{ h.cluster.registration_error | default('', true) }}">{{ "monitoring.hubs.registration_incomplete"|t }}</span>
+		{% elif h.cluster.never_connected %}
+		<div class="text-xs italic text-muted-fg">{{ "monitoring.hubs.registered_waiting"|t }}</div>
+		{% endif %}
+		{% endif %}
+		{#- cluster.md amendment 2026-10-13: the Server drops this
+		    Client's gateway; never silent. -#}
+		{% if h.cluster and h.cluster.gateway_gap %}
+		<span class="badge-status badge-status-warning" data-gateway-gap="{{ h.cluster.gateway_gap.kind }}"
+			title="{{ ("monitoring.hubs.client_gateway_mismatch"|t|replace("{reported}", h.cluster.gateway_gap.reported_eui)|replace("{registered}", h.cluster.gateway_gap.registered_eui)) if h.cluster.gateway_gap.kind == "mismatch" else ("monitoring.hubs.client_gateway_unregistered"|t) }}">{{ "monitoring.hubs.gateway_gap_badge"|t }}</span>
+		{% endif %}
+	{% endcall %}
+	{{ dr.values_cell(h.fields) }}
+	{#- Radio: ChirpStack (not on a Client, whose forwarder feeds the
+	    Server's), the LoRaWAN card, the Northbridge — each only where the
+	    radio mode uses it. Green running, red not, grey unknown. -#}
+	<td data-column="radio">
+		{%- set lw = not h.lorawan_disabled and h.radio is not none %}
+		{%- if lw and h.kind != "client" %}{{ dr.part_line("LoRaWAN: ChirpStack", h.radio.chirpstack_running, "", "chirpstack") }}{% endif %}
+		{%- if lw %}{{ dr.part_line("LoRaWAN: " ~ ("monitoring.hubs.radio_card"|t), h.radio.concentratord_running if h.radio.gateway_present is not false else false, ("monitoring.hubs.radio_no_gateway"|t) if h.radio.gateway_present is false else "", "card") }}{% endif %}
+		{%- if h.northbridge %}{{ dr.part_line("LoRa P2P: Northbridge", true if h.northbridge.badge == "normal" else (false if h.northbridge.badge == "critical" else none), h.northbridge.state_key|t if h.northbridge.state_key else h.northbridge.state, "northbridge") }}{% endif %}
+		{%- if h.lorawan_disabled %}<span class="sr-only" data-lorawan="off">{{ "monitoring.hubs.radio_lorawan_off"|t }}</span>{% endif %}
+		{%- if not lw and not h.northbridge %}<span class="text-sm text-muted-fg">—</span>{% endif %}
+		{%- if h.radio_control_off %}
+		<span class="badge-status badge-status-warning" title="{{ 'monitoring.hubs.radio_control_off'|t }}">{{ "monitoring.hubs.radio_control_off_short"|t }}</span>
+		{%- endif %}
+	</td>
+	{{ dr.opt_cell("seen", h.last_seen | short_dt) }}
+	{{ dr.opt_cell("eui", h.gateway_eui) }}
+	{{ dr.opt_cell("fw", h.display_version) }}
+	{#- Retry (§2.5, §4 step 3), admin: it opens the Add-hub dialog, where
+	    the new password is shown once. -#}
+	{% set retry %}{% if add_hub and h.cluster and h.cluster.state == "failed" and not add_hub.unavailable %}
+<button type="button" class="btn-v1 btn-v1-outline btn-v1-sm gap-1.5"
+	hx-get="/hubs/{{ add_hub.server }}/cluster/clients/{{ h.hostname }}/retry"
+	hx-target="#add-hub-body" hx-swap="innerHTML"
+	hx-on::before-request="document.getElementById('add-hub-dialog').showModal()">
+	{{ ic.icon("refresh-cw", "h-4 w-4") }}<span class="hidden sm:inline">{{ "monitoring.hubs.retry_button"|t }}</span>
+</button>
+{% endif %}{% endset %}
+	{{ dr.view_cell(href, retry) }}
+</tr>

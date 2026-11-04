@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# build-firmware.sh PROXIMOS_V2_CHECKOUT [OUT_DIR]
+# build-firmware.sh [SOURCE] [OUT_DIR]
+#   SOURCE: a git checkout holding firmware/ and system/scripts/, either at its
+#   root (proximos-v2) or under hub/ (this repository; the default).
 #   Build the Northbridge (with nbboot) and Southbridge firmware exactly as
 #   proximos-v2's CI jobs firmware:north-build and firmware:south-build do, in
 #   CI's container, from a throwaway clone of the checkout's HEAD. Writes
@@ -11,8 +13,8 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/fiber/common.sh
 source "${REPO_ROOT}/lib/fiber/common.sh"
 
-[ $# -ge 1 ] || { echo "usage: $0 PROXIMOS_V2_CHECKOUT [OUT_DIR]" >&2; exit 2; }
-SRC="$(cd "$1" && pwd)"
+SRC="$(cd "${1:-$REPO_ROOT}" && pwd)"
+if [ -d "$SRC/hub/firmware" ]; then SUB=hub; elif [ -d "$SRC/firmware" ]; then SUB=.; else fiber_die "$SRC has no firmware/ or hub/firmware/"; fi
 OUT="${2:-${REPO_ROOT}/build/firmware}"
 IMAGE="${ZEPHYR_CI_IMAGE:-zephyrprojectrtos/ci:v0.29.0}"
 WORK="${REPO_ROOT}/build/fw-work"
@@ -23,7 +25,7 @@ cat > "$WORK/build-fw.sh" <<'INNER'
 #!/bin/bash
 set -euo pipefail
 git config --global --add safe.directory '*'
-cd /w/firmware
+cd /w/SUBDIR/firmware
 west init -l fiber-northbridge
 west update --narrow -o=--depth=1
 west build -b stm32wl5moc -d build-north -p always fiber-northbridge/app
@@ -33,6 +35,7 @@ west update --narrow -o=--depth=1
 west build -b fiber_southbridge -d build-south -p always fiber-southbridge/app
 ../system/scripts/sb-package.sh build-south sb-package
 INNER
+sed -i "s|SUBDIR|${SUB}|" "$WORK/build-fw.sh"
 chmod +x "$WORK/build-fw.sh"
 
 fiber_log "building firmware of $(git -C "$SRC" rev-parse --short HEAD) in ${IMAGE}"
@@ -41,7 +44,7 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
     -v "$WORK:/w" -w /w "$IMAGE" ./build-fw.sh
 
 rm -rf "$OUT"; mkdir -p "$OUT"
-cp -r "$WORK/firmware/nb-package" "$WORK/firmware/sb-package" "$OUT/"
+cp -r "$WORK/${SUB}/firmware/nb-package" "$WORK/${SUB}/firmware/sb-package" "$OUT/"
 rm -rf "$WORK"
 fiber_log "firmware ready in ${OUT}"
 cat "$OUT/nb-package/northbridge.json"; echo

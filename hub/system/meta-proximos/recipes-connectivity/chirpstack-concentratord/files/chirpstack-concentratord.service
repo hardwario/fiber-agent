@@ -1,0 +1,109 @@
+[Unit]
+Description=ChirpStack Concentratord (RAK5146 SX1302)
+Documentation=https://www.chirpstack.io/
+Documentation=file:///etc/chirpstack-concentratord/chirpstack-concentratord.toml
+
+# DEVICE-DRIVEN, NOT BOOT-DRIVEN, and there is no [Install] section on purpose.
+# Nothing wants this unit at boot; 99-chirpstack-concentratord.rules starts it
+# from udev when the concentrator enumerates (ENV{SYSTEMD_WANTS}), which covers a
+# card fitted at boot and a card that appears later equally. The recipe therefore
+# ships it SYSTEMD_AUTO_ENABLE = "disable".
+#
+# WHY, and it is not just tidiness: a Hub with no RAK5146 fitted is a supported
+# configuration (plan/control/radio/plan.md - the `off` and `p2p` radio modes need
+# no concentrator at all). Wanted by multi-user.target, this unit would fail on
+# every such device, restart on a 10 s timer forever, and put a permanently failed
+# unit in front of whoever next reads `systemctl --failed` on a perfectly healthy
+# Hub. Device-driven start makes "no card" indistinguishable from "not asked for",
+# which is exactly what it is.
+#
+# BindsTo, not Requires: when the concentrator is unplugged the device unit goes
+# away and this service should stop with it rather than restart into a card that
+# is not there. The udev rule's TAG+="systemd" is what makes dev-rak5146.device
+# exist as a unit for this to bind to.
+#
+# /dev/rak5146, not /dev/ttyACM0 (amended 2026-10-09, GitLab #75): the rule's
+# link to whichever ttyACM<n> the card enumerated as. systemd names a link's
+# device unit after its path, and "rak5146" needs no escaping.
+BindsTo=dev-rak5146.device
+After=dev-rak5146.device
+
+# Belt to the BindsTo brace, and the reason it is worth having both: udev can be
+# triggered again for a device that has since gone, and a `systemctl start` by
+# hand does not consult udev at all. Either would otherwise put the daemon into a
+# restart loop against a missing node. A link left dangling is a missing node
+# too: the condition follows it.
+ConditionPathExists=/dev/rak5146
+
+# LORAWAN ONLY. The concentrator is LoRaWAN's radio; LoRa P2P runs over the
+# northbridge alone (/dev/ttyAMA3, proximos-control's P2P central - Hynek
+# 2026-09-26, plan/system/design.md §8.1 amendment). "No card" and "not asked
+# for" above are the same only on a Hub without a RAK5146: on one that has the
+# card and is configured `radio.mode: p2p` (or `off`), udev still wants this unit,
+# and it used to run - holding the card for nothing. The gate is the one
+# chirpstack.service and the forwarder already use: the renderer writes the
+# forwarder's config only when the mode wants the LoRaWAN server
+# (proximos-render `wants_lorawan_server`: `lorawan`, `dual`), so this condition
+# is `radio.mode` without a second copy of the rule. Ordered after the renderer
+# so the condition is judged against this boot's config, not an empty /run.
+ConditionPathExists=/run/proximos/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml
+Requires=proximos-render.service
+After=proximos-render.service
+
+# THE CARD'S OWN LEDs ARE THIS UNIT'S FIELD-VISIBLE STATUS, NOT A POWER
+# INDICATOR. The RAK5146's three LEDs (TX red / config green / RX blue) sit on
+# SX1302 GPIOs that nothing drives until this daemon's lgw_start() configures
+# them, so a dark card on a powered Hub means "this unit has not (successfully)
+# started" - and the blue LED toggling once per received uplink is the
+# one-glance proof that it has. Verified on fiber-c23e465c 2026-08-27; the full
+# record lives with issue #39's in recipes-kernel/proximos-dtbo/files/
+# proximos.dtso fragment@3.
+
+# The forwarder is the only consumer of the two IPC sockets below, so it follows
+# this unit rather than the boot sequence. Wants=, not Requires=: on an image
+# built without chirpstack-mqtt-forwarder this resolves to nothing and the
+# concentrator still comes up, which is the right outcome for a bench unit
+# reading uplinks straight off the sockets.
+Wants=chirpstack-mqtt-forwarder.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/chirpstack-concentratord-sx1302 -c /etc/chirpstack-concentratord/chirpstack-concentratord.toml
+Restart=on-failure
+RestartSec=10
+
+# Owns /run/chirpstack-concentratord, where the ZeroMQ event/command sockets live
+# (see the .toml). RuntimeDirectoryPreserve=restart keeps the directory across a
+# restart of this unit so the forwarder's two connections are not invalidated by
+# the daemon bouncing.
+RuntimeDirectory=chirpstack-concentratord
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+
+# Hardening - MDR 2017/745 Annex I 17.4.
+#
+# NO PrivateDevices= here, unlike the forwarder, and for a more specific reason
+# than v1 recorded. v1's comment said the daemon "needs the real /dev/bus/usb and
+# /sys" because the RAK is the USB variant; that is not how this variant is
+# reached. It is a CDC-ACM device and the daemon opens the tty node named by
+# `com_dev_path` - /dev/rak5146 - which PrivateDevices=true would hide, since that
+# option replaces /dev with a minimal set of pseudo-devices and adds nothing back.
+# The daemon's vendor profiles can also reach /dev/gpiochip0 and /dev/i2c-1
+# (sx1302_power_en_chip, i2c_dev_path); the rak_5146+USB profile is not believed
+# to use them, but "not believed to" is not a basis for taking /dev away.
+# Tightening this to DevicePolicy=closed plus an explicit DeviceAllow list is the
+# right end state and wants one bench session to confirm the device set first.
+#
+# ProtectSystem=strict leaves /dev, /proc and /sys intact, so it is safe alongside
+# the above; it is /usr and /etc it makes read-only, and this daemon writes to
+# neither.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true

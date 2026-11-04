@@ -1,0 +1,36 @@
+{#
+  New group / edit group as a page (monitoring.md, dodatek 2026-10-14), the
+  shape of /beacons/add: a back link and one card holding
+  partials/group_form.html. Manager+; the route sends anyone else to `/`.
+  Context: { title, action, picker, g }
+#}
+{% extends "layout/base.html" %}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+
+{% block title %}{{ title }} - {{ brand.product }}{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+	<div class="flex items-center justify-between gap-2 flex-wrap">
+		{{ ui.back_link("/", "monitoring.groups.back_to_monitoring"|t) }}
+		{% if g %}
+		{#- Top right, as on the Node and Beacon detail. It submits the group
+		    form (form attribute) to the delete action. The message names no
+		    group: interpolating a user-supplied name into a JS string is an
+		    escaping problem this does not need. -#}
+		<button type="submit" form="group-form" class="btn-v1 btn-v1-ghost btn-v1-sm text-critical gap-1"
+			formaction="/monitoring/groups/{{ g.id }}/delete" formnovalidate
+>
+			{{ ic.icon("trash-2", "h-4 w-4") }}{{ "monitoring.groups.delete_button"|t }}
+		</button>
+		{% endif %}
+	</div>
+	{% call ui.page_header("monitor", title, (g.location if g and g.location else "")) %}{% endcall %}
+	{#- Two full-width cards, metadata then channels, and Save/Cancel under
+	    them, the shape of /nodes/add without the outer panel. -#}
+	{% with form_id = "group-form" %}
+	{% include "partials/group_form.html" %}
+	{% endwith %}
+</div>
+{% endblock %}

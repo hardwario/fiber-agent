@@ -1,0 +1,19 @@
+# enable uart driver
+CONFIG_SERIAL=y
+
+# enable GPIO
+CONFIG_GPIO=y
+
+# console
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
+
+# Enable MPU
+CONFIG_ARM_MPU=y
+
+# Enable HW stack protection
+CONFIG_HW_STACK_PROTECTION=y
+
+# Link the app into zephyr,code-partition (slot0 at 0x0800_0800, behind nbboot); Zephyr points
+# VTOR at its own vector table on start.
+CONFIG_USE_DT_CODE_PARTITION=y

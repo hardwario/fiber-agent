@@ -1,0 +1,77 @@
+{#-
+  /run/proximos/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml.
+
+  REPLACES the static /etc/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml that
+  chirpstack-mqtt-forwarder_4.6.1.bb ships today. Content-equivalent to it, key for key,
+  with one thing no longer hardcoded: topic_prefix now comes from radio.region, so it
+  cannot drift from the region_<region>.toml the same render just wrote for ChirpStack.
+
+  EMITTED ONLY WHEN radio.mode ∈ {lorawan, dual}, and removed when the mode changes away
+  — same gate, same reasoning, as chirpstack.toml. Unlike chirpstack.toml it is also
+  emitted on a client-role Hub, retargeted at the Server (`mqtt.remote`); the connection
+  values are JSON-quoted, which is a valid TOML basic string for every one of them. On a device with no concentrator the
+  unit is udev-started anyway and simply never runs, but a config that says "forward
+  LoRaWAN" on a Hub configured for P2P is a claim the renderer should not be making.
+
+  The comments below are the shipped file's own, carried over rather than re-written:
+  each of them records something that was learned the expensive way and none of them is
+  this change's to re-litigate.
+-#}
+# Rendered by `proximosctl render` (crates/proximos-render). Regenerated on
+# every boot; edits made directly to this file are lost on the next render.
+# Per-device overrides go in /data/proximos/config/proximos.config.yaml,
+# merged over /usr/share/proximos/templates/defaults.yaml.
+#
+# ChirpStack MQTT Forwarder configuration.
+# Bridges the concentratord IPC sockets to the loopback Mosquitto broker.
+
+[logging]
+  level="{{ forwarder.log_level }}"
+  log_to_syslog={{ forwarder.log_to_syslog | tojson }}
+
+[backend]
+  enabled="concentratord"
+
+  # Must match chirpstack-concentratord.toml's [concentratord.api]
+  # event_bind/command_bind exactly. A mismatch here is the worst kind of
+  # misconfiguration this pair has: the forwarder starts, stays running, reports
+  # nothing wrong, and no uplink ever reaches MQTT.
+  #
+  # /run rather than upstream's /tmp default because both units set
+  # PrivateTmp=true, which would give each end its own /tmp; /run is shared. The
+  # concentratord unit's RuntimeDirectory= creates the directory 0750 root:root.
+  [backend.concentratord]
+    event_url="{{ forwarder.concentratord_event_url }}"
+    command_url="{{ forwarder.concentratord_command_url }}"
+
+[mqtt]
+  # Matches the concentratord region (EU868). A ChirpStack server reading these
+  # events must be configured with the same prefix or it subscribes to topics
+  # nothing publishes to — which is why this is no longer a literal: it and
+  # region_{{ topic_prefix }}.toml's [regions.gateway.backend.mqtt] topic_prefix are the
+  # same radio.region, rendered twice in one pass.
+  topic_prefix="{{ topic_prefix }}"
+
+{% if mqtt.remote %}
+  # Client role (plan/control/cluster.md §4.3): this Hub runs no ChirpStack, so
+  # the concentrator's traffic goes to the Server's broker - its TLS listener,
+  # under this Hub's own peer account, trusting only the Server's CA. Values
+  # from /data/proximos/cluster/; tls_cert/tls_key stay empty because a Client
+  # holds no key of its own (no mTLS, cluster.md §6). The password is inline:
+  # this forwarder has no password-file option, and this file is 0640 root:root
+  # for a unit that runs as root, so nothing else on the Hub can read it.
+{% else %}
+  # Loopback only, plain TCP, anonymous - which is the whole of this listener's
+  # security model and is deliberate: recipes-connectivity/mosquitto's 1883
+  # listener is 127.0.0.1-only with no password file, and proximos-firewall
+  # closes 1883 to the network. (A Server's 8883 listener, for Client Hubs, is
+  # TLS with per-account passwords and is not this forwarder's.) The credential
+  # and TLS fields below stay empty; filling them in would simply stop the
+  # forwarder connecting.
+{% endif %}
+  server={{ mqtt.server | tojson }}
+  username={{ mqtt.username | tojson }}
+  password={{ mqtt.password | tojson }}
+  ca_cert={{ mqtt.ca_cert | tojson }}
+  tls_cert=""
+  tls_key=""

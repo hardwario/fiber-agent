@@ -1,0 +1,201 @@
+{#
+  One Node (STICKER) table row, on either carrier — the `<tr>` of pages/nodes.html's
+  table. File name kept despite no longer being a card: `sse.rs` addresses
+  this partial by path and derives its SSE event name from the same id.
+
+  Column set is the unified device table (devices.node.md, amendment
+  2026-10-14), drawn by the cell macros of partials/device_row.html:
+
+    Item | Location | Overview | Values | Limits | Hub/Gateway | <hidden…> | View
+
+  The trailing View cell is PERMANENT — it carries no `data-column`, so the
+  picker cannot hide it. Limits are edited on the Node's own page and on
+  /limits; the list no longer carries a threshold accordion.
+
+  "Overview" is deliberately one cell carrying four different facts (last
+  seen, link quality, battery, fault): the row has to stay readable at a
+  glance with a hundred siblings, and four narrow columns of mostly-absent
+  values read worse than one dense cell. Each of them is *also* available as
+  its own sortable dynamic column (§2.4), which is what the duplication buys.
+
+  Context: {
+    hostname: string,   -- the Hub the Node reports through; keys the SSE id
+    n: {
+      node_key: string,                 -- lowercase 16-hex dev_eui, on both carriers (#73)
+      transport: "lorawan"|"p2p",       -- M8: the carrier badge and column, via i18n
+      name: string|none, serial_number: string|none, location: string|none,
+      description: string|none,        -- device_meta free text (B1); not
+                                       -- rendered, but part of data-search
+      last_seen: string|none,           -- RFC3339 verbatim from the payload;
+                                        -- rendered through the `short_dt`
+                                        -- filter (P2: the raw ISO string is
+                                        -- what overflowed this column)
+      alarm_state: "Normal"|"Warning"|"Critical"|"Disconnected"
+        |"Reconnecting"|"NeverConnected",
+      rssi: int|none, snr: float|none,  -- best-gateway values
+      battery: float|none,              -- registry `voltage` field, volts
+      battery_label: string|none,       -- the same, pre-formatted "x.yy V"
+      signal: "excellent"|"good"|"weak"|"critical"|"unknown",
+                                        -- RSSI+SNR together (§2.5)
+      fw_version: string|none,          -- from the retained DeviceInfo
+      gateways: [ {gateway_id, rssi, snr}, ... ],  -- heard-by list (§2.4), the gw filter
+      home_gateway: string|none,        -- the Gateway column (devices.node.md §5, 2026-10-13)
+      connected: bool,                  -- ONE liveness verdict: B2's detector,
+                                        -- falling back to alarm_state only for
+                                        -- a Node it holds no verdict on
+                                        -- (render::node_connected, §19 F2/F3).
+                                        -- It can therefore disagree with
+                                        -- alarm_state, which is the point.
+      fault: "offline"|"history_unavailable"|"missing_measurement"|none,
+                                        -- the OPERATIONAL axis, independent of
+                                        -- alarm_state (the value axis) — drawn
+                                        -- as an alert-triangle in Overview,
+                                        -- tooltip from the dynamic key
+                                        -- monitoring.nodes.fault_{fault}
+      calibration: "valid"|"warning"|"second_warning"|"expired"|none,
+                                        -- the certificate's state when it
+                                        -- needs attention; drawn as a
+                                        -- calendar icon beside the name
+                                        -- (calibration.cs.md §6 OQ 3)
+      pending_count: int,               -- B4: keys in this Node's unsent
+                                        -- configuration draft; 0 = none.
+      waiting_for_join: bool,           -- B4: registered and never heard from
+                                        -- (devices.node.md §5). A LIFECYCLE
+                                        -- state, not a fault — it renders as
+                                        -- a caption, never as the triangle
+      fields: [ { name, label, value, unit,
+                  alarm_state: "NORMAL"|"WARNING"|"CRITICAL" }, ... ]
+        -- Registry order (temperature first). The row renders the first
+           two; the rest are on the Node's page.
+        -- NOTE the per-field alarm_state uses the FIRMWARE casing (ws.md's
+           field_alarm_states map), unlike the row-level AlarmState.
+    }
+  }
+
+  Outer element is the SSE swap target: id/sse-swap "node-{hostname}-{node_key}",
+  hx-swap="outerHTML" — the server re-renders this whole partial as the SSE
+  event payload, one event per Node update. node_key is bare lowercase hex for
+  a LoRaWAN Node, so the id needs no character mangling — contrast
+  partials/beacon_card.html's MAC ":" → "-" rule.
+
+  ---- What the data attributes are for ---------------------------------
+
+  The whole toolbar (§2.2) filters and sorts client-side over these, because
+  the alternative is a server round trip per keystroke. They are emitted
+  unconditionally, including on an SSE re-render, which is the only reason
+  the toolbar survives a row repainting itself: pages/nodes.html re-applies
+  the filter on `htmx:afterSettle` and the fresh row already carries
+  everything that pass needs.
+
+    data-status   the row-level AlarmState (value axis, mixed case)
+    data-oor      normal|warning|critical — the WORST per-field value class,
+                  which is what the "Mimo meze" filter means by "this Node is
+                  out of range" (§2.2 point 4: at least one quantity is).
+                  Distinct from data-status, which folds the connection
+                  states into the same attribute and so cannot answer it.
+    data-connected 1|0 — the operational axis, never merged with the above
+    data-fault    the fault kind, or absent
+    data-search   the fulltext haystack: name, DevEUI, serial, location,
+                  description (§2.2 point 1), lowercased
+    data-location the exact location string, for the Location select
+    data-proto    lorawan|p2p
+    data-gw       space-delimited gateway ids this Node was heard by (§2.4)
+    data-link     (on the Item cell's dot) ok|late|offline|never
+    data-sort-*   one per sortable column; text keys lowercased, numeric keys
+                  raw, missing values empty so the script can sink them
+#}
+{% import "partials/device_row.html" as dr %}
+{% set display_name = n.name | default(n.node_key, true) %}
+{#- The value class of the row: the worst state any one quantity is in.
+    "Mimo meze" is a statement about measurements, so it is computed from the
+    per-field states and not from n.alarm_state, which also carries
+    Disconnected/NeverConnected — connection facts that must not answer a
+    value question (§1.1). -#}
+{% set oor = dr.worst(n.fields) | trim %}
+{#- The stripe also honours the row-level alarm (amendment 2026-10-14): an alarm the Hub
+    echoes is red or amber even when no field carries the state. -#}
+{% set value_class = "critical" if (oor == "critical" or n.alarm_state == "Critical") else ("warning" if (oor == "warning" or n.alarm_state == "Warning") else "normal") %}
+{% set ever = n.last_seen is not none or n.fields | length > 0 %}
+{% set link = dr.link(n.connected, n.alarm_state, ever) | trim %}
+{% set tone = dr.tone(value_class, n.fault, ever) | trim %}
+{#- A loop-local list would not survive the loop (Jinja scoping), so the
+    gateway ids are accumulated into one space-delimited string on the
+    namespace; the filter script splits it back. -#}
+{% set ns = namespace(gw="") %}
+{% for g in n.gateways %}{% if g.gateway_id %}{% set ns.gw = ns.gw ~ (g.gateway_id|lower) ~ " " %}{% endif %}{% endfor %}
+{% set gw_ids = ns.gw | trim %}
+{#- The Hub that owns this row. Stamped on the context by a list that
+    spans several Hubs (devices.hub.md §12 E); everywhere else the
+    page-level or SSE-supplied `hostname` is the answer. -#}
+{% set row_host = n.hostname | default(hostname, true) %}
+{% set href = "/nodes/" ~ n.node_key ~ "/overview" %}
+<tr id="node-{{ row_host }}-{{ n.node_key }}" sse-swap="node-{{ row_host }}-{{ n.node_key }}" hx-swap="outerHTML"
+	data-kind="node" data-status="{{ n.alarm_state }}" data-oor="{{ oor }}"
+	data-connected="{% if n.connected %}1{% else %}0{% endif %}"
+	{% if n.fault %}data-fault="{{ n.fault }}"{% endif %}
+	data-location="{{ n.location | default('', true) }}"
+	data-proto="{{ n.transport }}"
+	data-gw="{{ gw_ids }}"
+	data-search="{{ (display_name ~ ' ' ~ n.node_key ~ ' ' ~ (n.serial_number | node_serial) ~ ' ' ~ (n.location | default('', true)) ~ ' ' ~ (n.description | default('', true)))|lower }}"
+	data-sort-name="{{ display_name|lower }}"
+	data-sort-loc="{{ (n.location | default('', true))|lower }}"
+	data-sort-seen="{{ n.last_seen | default('', true) }}"
+	data-sort-rssi="{% if n.rssi is not none %}{{ n.rssi }}{% endif %}"
+	data-sort-snr="{% if n.snr is not none %}{{ n.snr }}{% endif %}"
+	data-sort-batt="{% if n.battery is not none %}{{ n.battery }}{% endif %}"
+	data-sort-fw="{{ (n.fw_version | default('', true))|lower }}"
+	data-sort-hub="{{ (n.home_gateway | default('', true))|lower }}"
+	data-sort-proto="{{ n.transport }}"
+	data-row-href="{{ href }}"
+	class="node-row cursor-pointer border-b border-base-300 last:border-0 hover:bg-muted/50 [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+
+	{#- Protocol is HW-bound, so a homogeneous list would carry the same badge
+	    on every row and say nothing (§2.2.5). `.proto-col` is the badge's
+	    handle: portal-list.js shows it on a mixed fleet and hides it again
+	    once the Protocol COLUMN is on, so Protocol is never in the row twice. -#}
+	{% set proto_badge %}<span class="proto-col hidden badge-outline-v1 shrink-0">{{ ("monitoring.transport." ~ n.transport)|t }}</span>{% endset %}
+		{{ dr.item_cell(tone, link, display_name, href, n.calibration, n.node_key, proto_badge) }}
+
+	{{ dr.location_cell(n.location) }}
+
+	{% call dr.overview_cell(n.last_seen, n.signal, n.battery_label, ("monitoring.nodes.fault_" ~ n.fault)|t if n.fault else "") %}
+		{#- B4: the lifecycle caption and the shared-draft badge — sentences
+		    about this Node no other column can say. -#}
+		{% if n.waiting_for_join %}
+		<div class="text-xs text-muted-fg truncate">{{ "monitoring.nodes.registered_waiting"|t }}</div>
+		{% endif %}
+		{#- §6: a P2P removal the central still owes a Detach. -#}
+		{% if n.session_state == "detach_pending" %}
+		<span class="badge-status badge-status-warning">{{ "monitoring.nodes.detaching"|t }}</span>
+		{% elif n.session_state == "stale" %}
+		<span class="badge-status badge-status-neutral">{{ "monitoring.nodes.stale_never_confirmed"|t }}</span>
+		{% endif %}
+		{% if n.pending_count %}
+		<span class="badge-outline-v1">{{ n.pending_count }} {{ "monitoring.pending.badge"|t }}</span>
+		{% endif %}
+	{% endcall %}
+
+	{#- The first two quantities in registry order (temperature, then
+	    humidity on a STICKER); the rest are on the Node's page. -#}
+	{% set shown = n.fields[:2] %}
+	{{ dr.values_cell(shown) }}
+	{{ dr.limits_cell(shown, n.thresholds) }}
+
+	{#- The Node's home gateway (devices.node.md §5, dodatek 2026-10-13):
+	    P2P the session's home, LoRaWAN the best gateway of the last uplink,
+	    named by its Hub where known. `data-gw` still spans every gateway
+	    that heard the last uplink. -#}
+	{{ dr.hub_cell(n.home_gateway) }}
+
+	{#- Optional columns (§2.4), rendered always and shown on demand: the
+	    choice is a per-user client-side preference, and an SSE row swap must
+	    arrive with the same cell count as its table. -#}
+	{{ dr.opt_cell("seen", n.last_seen | short_dt) }}
+	{{ dr.opt_cell("rssi", (n.rssi ~ " dBm") if n.rssi is not none else "", "text-right") }}
+	{{ dr.opt_cell("snr", (n.snr ~ " dB") if n.snr is not none else "", "text-right") }}
+	{{ dr.opt_cell("batt", n.battery_label, "text-right") }}
+	{{ dr.opt_cell("fw", n.fw_version) }}
+	{{ dr.opt_cell("proto", ("monitoring.transport." ~ n.transport)|t) }}
+
+	{{ dr.view_cell(href) }}
+</tr>

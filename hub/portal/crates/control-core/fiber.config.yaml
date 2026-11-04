@@ -1,0 +1,298 @@
+power:
+  update_interval_ms: 60000
+  battery:
+    min_voltage_mv: 3100
+    max_voltage_mv: 3400
+    low_threshold_percent: 20
+    critical_threshold_percent: 10
+  ac_power:
+    # DC-present hysteresis. One signal drives the LED, the LCD, MQTT, fiberctl,
+    # the POWER_DISCONNECT alarm and the standby resume, so they cannot disagree.
+    #
+    # Not 12000: the southbridge reports VIN through two integer truncations, so a
+    # perfect 12.000 V input reports 11998 mV and 12000 is not even reachable.
+    # VIN is either the ~12 V rail or near zero on battery, so 11000/10000
+    # separates the two states with room to spare.
+    dc_connect_mv: 11000
+    dc_disconnect_mv: 10000
+    # Superseded by the two above; kept so older configs keep parsing.
+    detection_threshold_mv: 12000
+    battery_mode_threshold_mv: 11000
+  led_blink:
+    toggle_count: 10
+  standby:
+    # Deep standby is what a Viewer power-off puts the device into. The agent
+    # stays alive reading VIN so that reconnecting PoE brings it back — nothing
+    # on this board can wake a halted CM4.
+    #
+    # Polled far more often than update_interval_ms above. This interval is both
+    # the wake latency and the window in which a PoE interruption can be sampled
+    # directly — at 5000 a quick unplug/replug fell between two polls and the
+    # device never woke. Costs almost nothing: the SoC is awake regardless and
+    # each read is one UART round trip.
+    poll_interval_ms: 1000
+    resume_on_dc: true
+    # Consecutive above-threshold reads before resuming, so a cable being
+    # wiggled cannot thrash the device in and out of standby.
+    confirm_polls: 2
+    # Empty string leaves the governor alone.
+    cpu_governor: powersave
+  buzzer:
+    enabled: true
+    battery_mode_beep_interval_ms: 10000
+    vin_disconnect_duration_ms: 2000
+    critical_beep_on_ms: 200
+    critical_beep_off_ms: 200
+sensors:
+  num_lines: 8
+  # plan/control/storage_intervals.md: every sample goes out live on MQTT
+  # (sensors/summary); one min/avg/max row per line per storage window goes
+  # to the database and to sensors/aggregated. Alarm changes are stored at once.
+  sample_interval_s: 2
+  aggregation_interval_s: 600
+  failure_threshold: 3
+  warmup_threshold: 3
+serial:
+  port: /dev/ttyAMA4
+  baud_rate: 115200
+accelerometer:
+  enabled: true
+  i2c_path: /dev/i2c-10
+  update_interval_ms: 100
+  motion_threshold_g: 0.3
+  debounce_samples: 5
+  logging_enabled: true
+storage:
+  db_path: /data/fiber/fiber_medical.db
+  # max_size_mb takes precedence over max_size_gb when set. The cap counts live
+  # pages, not the file. It is an upper bound only: /data on a CM4 Hub is about
+  # 2.9 GB and shared with portal.db, the journal and ChirpStack, so what keeps
+  # it from filling is the free-space floor in storage/retention.rs
+  # (DISK_FREE_FLOOR, #124), which deletes the oldest data whatever the cap.
+  max_size_gb: 3
+  max_size_mb: 2500
+  # When a deferred full VACUUM may START. It always runs to completion once
+  # begun — SQLite cannot be paused, and killing a rewrite rolls the whole thing
+  # back rather than saving any of the work.
+  #
+  # UTC, and the key says so: this binary carries no timezone database, and
+  # system.timezone_offset_hours below is a display affordance, not a scheduling
+  # authority — reading it here would make the same YAML mean two different
+  # times in the agent and the portal. Kept shape-identical to the portal's
+  # maintenance_window for the same reason (plan/portal/sqlite-vacuum.md §6).
+  #
+  # Remove this block to disable scheduled maintenance: a rewrite then happens
+  # only when utilisation crosses the emergency threshold (95% of the cap
+  # above), which ignores the window by design.
+  maintenance_window:
+    start_utc: "02:30"
+    duration_minutes: 90
+system:
+  debug_mode: false
+  app_name: FIBER Application
+  app_version: 0.1.0
+  timezone_offset_hours: 0
+  device_label: HUB
+  led_brightness: 25
+  screen_brightness: 50
+  # Backlight off after this many seconds of no button activity (an active alarm
+  # keeps it lit). 0 = never.
+  screen_timeout_secs: 3600
+# Did an operator ever finish setting this Hub up, and as what?
+#
+# Written by the phone app when its wizard finishes (BLE FB17) and read back by
+# FB16, so a second phone — or a reinstall — can tell a configured Hub from one
+# straight out of the box instead of walking the whole wizard again. The portal
+# reads this same key; it deliberately keeps no copy of its own, because a
+# client-role Hub shuts its portal down and v1's viewer-database `app_mode`
+# therefore went silent on exactly the Hubs the app needs to ask about.
+#
+# `provisioned` means "an operator completed setup once", NOT "this Hub is
+# healthy" and not "named and networked" — the latter would flip back to false
+# every time a Hub moves between networks. A factory reset clears it by taking
+# the whole file, which is what stops a refurbished Hub claiming to be set up.
+#
+# The section is deny_unknown_fields: a mistyped key here is named at start-up
+# rather than leaving the Hub quietly reporting the wrong setup state.
+setup:
+  provisioned: false
+  # role: server        # "server" | "client", set with provisioned; absent until then
+
+# Physical display (ST7920 LCD) overview screen.
+#
+# Without `custom_lines` the overview shows the built-in layout: the 8 DS18B20
+# probes then any LoRaWAN stickers, active ones first. Set `custom_lines` to
+# compose the screen from individually chosen values instead — 4 rows per page,
+# max 16 lines. Normally written from the FIBER Viewer, not by hand.
+#
+# display:
+#   custom_lines:
+#     # source: sticker  -> addressed by dev_eui (16 hex chars)
+#     #   field: any LoRaWAN registry field (temperature, humidity, voltage,
+#     #          w1_{1..4}_* (1-Wire slots, firmware v2.0.0+; older:
+#     #          ext_temperature_1/2, machine_probe_*), pressure, altitude,
+#     #          illuminance, *_count) or rssi / snr / status
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: w1_1_temperature
+#       label: "Stkr1 ext"
+#     # source: ds18b20  -> addressed by line index 0-7
+#     #   field: temperature | status
+#     - source: ds18b20
+#       line: 0
+#       field: temperature
+#       label: "Probe 1"
+#     - source: sticker
+#       dev_eui: "70b3d57ed0051f2a"
+#       field: voltage
+#       label: "Stkr1 bat"
+#       format:
+#         units: true         # append °C / % / V / hPa / m / lx / dBm / dB
+#         decimals: 2         # 0-3; omit for the per-field default
+#         status_char: false  # hide the N/W/C/E status character
+mqtt:
+  enabled: true
+  broker:
+    host: localhost
+    port: 1883
+    client_id: ''
+    username: fiber
+    password: 'fiber_dev'
+  # TLS: disabled by default (app connects to local broker on same device)
+  # Enable and set ca_cert_path when connecting to a remote broker
+  tls:
+    enabled: false
+    ca_cert_path: "/data/tls/server.crt"
+    insecure_skip_verify: false
+  publish:
+    # One root for both halves (plan/portal/mqtt/design.md §9). A half-flip is
+    # silent data loss: the portal's `extract_hostname` drops every topic whose
+    # root does not match, and its subscribe succeeds against a prefix nothing
+    # publishes. `proximos-render` emits this value into
+    # /run/proximos/control/config.yaml and it takes precedence over this file
+    # (§9.2), so a rendered device has one value by construction; this default
+    # is for a bare checkout and must equal the portal's.
+    #
+    # `include_hostname` is retired (§9.3): two segments before the area,
+    # always.
+    topic_prefix: proximos
+    default_qos: 0
+    qos_overrides:
+      sensor_readings: 0
+      power_status: 1
+      alarm_events: 2
+      power_events: 2
+      network_status: 0
+    intervals:
+      sensors_sec: 5
+      power_sec: 10
+      network_sec: 30
+      system_info_sec: 60
+    max_queue_size: 10000
+  subscribe:
+    enabled: true
+    max_commands_per_second: 10
+    audit_enabled: true
+  connection:
+    keep_alive_sec: 30
+    connection_timeout_sec: 10
+    max_reconnect_attempts: 0
+    reconnect_delay_sec: 1
+    max_reconnect_delay_sec: 60
+    clean_session: false
+  last_will:
+    enabled: true
+    topic: status
+    payload: '{"status":"offline","reason":"unexpected_disconnect"}'
+    qos: 1
+    retain: true
+# Bluetooth. One component, both roles — plan/control/ble/*.md.
+#
+# `pin` is gone: the phone credential is an ephemeral session token minted when an
+# operator holds ENTER, shown as a QR code on the panel, and dead when the session
+# ends. A stored PIN was a shared secret that survived every operator who ever read
+# it. `enable_terminal` is gone with the BLE terminal itself (CP-1) — the section is
+# deny_unknown_fields, so a leftover key is named at start-up rather than ignored,
+# which is what stops an operator believing the terminal still has a switch.
+ble:
+  mode: dual                   # "off" | "central" | "peripheral" | "dual" — a factory choice,
+                               # set once by the provisioning tool, never at runtime. A
+                               # client-role Hub must be "peripheral" or "dual" (decision #5).
+  adapter: null                # e.g. "hci1". null = the default adapter. ONE adapter serves
+                               # both roles; this is deliberately not a per-role key.
+
+  central:                     # ignored unless mode includes "central"
+    scan_interval_s: 30        # how often the Beacon snapshot is published
+    beacon_timeout_s: 600      # a Beacon drops out of the snapshot after this
+    discovered_max: 64         # hard cap on tracked strangers. Not a tuning knob: an unbounded
+                               # discovered set is what turns a dense RF environment into an
+                               # oversized publish, and one oversized publish tore down v1's
+                               # entire MQTT client.
+    beacon_profile:            # the fleet default written during provisioning and by
+                               # `beacon-provision`
+      advertising_interval_s: 10
+      active_sensors: [temperature, humidity]
+      tx_power_dbm: 8
+    dial_budget:
+      per_beacon_attempts: 5   # persisted — a budget that resets on reboot is not a budget
+      concurrent_dials: 1      # the adapter is shared; a second dial buys only contention
+      session_timeout_s: 30
+    recovery:
+      enabled: true            # the shell-free scan-stall ladder
+      stall_secs: 180
+      cooldown_secs: 120       # enforced on EVERY rung — v1 ignored it on one path, so a
+                               # wedged controller was power-cycled every ~30 s
+      start_failures: 3        # failed discovery starts in a row that count as a stall
+      restart_bluetoothd: true # last rung: RestartUnit bluetooth.service over D-Bus
+      bluetoothd_restart_min_secs: 1800  # at most one bluetoothd restart per 30 min
+
+  peripheral:                  # ignored unless mode includes "peripheral"
+    session_idle_timeout_s: 300
+    max_page_bytes: 180        # the paging budget ceiling; never relies on long reads
+    advertise_name: null       # null = derived from hostname
+
+  bluez: {}                    # reserved for genuinely BlueZ-specific settings
+
+# LoRaWAN gateway bridge. Whether the bridge runs is decided by hardware
+# detection (concentratord/chirpstack running, or a configured external
+# gateway), not by a flag here — see `lorawan::detector`.
+lorawan:
+  # Credentials for the on-device ChirpStack gRPC-web API. The API address is
+  # not configurable: ChirpStack always runs on this same device, so loopback is
+  # part of the deployment contract rather than a setting.
+  chirpstack:
+    username: admin
+    # Populate at deployment — see README, "Provisioning ChirpStack credentials".
+    # Empty here on purpose: a password must never be committed. While it is
+    # empty the LoRaWAN bridge refuses to start instead of falling back to
+    # ChirpStack's public factory credentials.
+    password: ""
+
+# Teltonika EYE BLE sensor tags (BTSMP1).
+# Tags are read passively from their BLE advertising. `auto_provision` applies the
+# PROXIMOS profile (one connect, default PIN 123456) to tags listed in `tags:`
+# below — it never registers a tag it has not been told about. To surface
+# unregistered tags in earshot as candidates for the viewer to offer, set
+# `auto_discover: true` (visibility only; it writes nothing to `tags:`). Both are
+# togglable at runtime via the signed `beacon-send` command from the portal.
+#
+# `publish_interval_s` and `tag_timeout_s` used to live here. They are the same two
+# settings as `ble.central.scan_interval_s` and `ble.central.beacon_timeout_s`, under
+# names that said "publish" for something that governs the radio. A deployed config
+# that still carries them is accepted and warned about, not refused.
+eye:
+  enabled: true                # set false to stop monitoring Beacons
+  auto_provision: true         # apply the PROXIMOS profile to Beacons listed below
+  aggregation_interval_s: 600  # storage window: one aggregated row per Beacon (min/avg/max),
+                               # 60..=3600. Every frame still reaches the live view; alarms
+                               # are stored at once.
+  en12830:
+    enabled: true              # the archive download path. Off leaves the passive telemetry
+                               # untouched — a Hub can monitor Beacons without ever dialling one.
+    protocol_failure_alarm_after: 3
+  # auto_discover: false       # (default) surface unregistered tags as candidates
+  # auto_discover_max: 32      # cap on candidates held at once
+  # tags:
+  #   - mac: "AA:BB:CC:DD:EE:FF"
+  #     name: "EYE tag 1"
+  #     enabled: true

@@ -38,7 +38,7 @@ On the PC (Linux):
 | `git`, `git-lfs` | the Hub monorepo has LFS assets | `git lfs version` |
 | `docker` | the aarch64 cross build and the Zephyr build run in CI's images | `docker info` |
 | `bats`, `shellcheck`, `device-tree-compiler`, `rsync`, `sshpass` (optional) | this repo's tools | `make check` |
-| a checkout of the internal Hub monorepo (`proximos-v2`) with the brand switch | the source of every binary | `ls portal/branding/fiber` |
+| this repository: `hub/` holds the source of the portal, the agent and the STM32 firmware | the source of every binary | `ls hub/portal/branding/fiber` |
 | `rpiboot` (usbboot) and Raspberry Pi Imager | to flash the CM4 eMMC | |
 | ~40 GB free disk | images and build trees | `df -h` |
 
@@ -50,19 +50,17 @@ A J-Link or ST-Link is **not** needed. Keep one around for recovery only.
 
 ## 1. Build on the PC (once per Hub software version)
 
-From this repository (`fiber-agent`), with `V2` pointing at the Hub monorepo checkout:
+From the root of this repository:
 
 ```sh
-V2=../v2/proximos-v2
-
 # 1a. the six Hub binaries, FIBER brand (bookworm toolchain, glibc <= 2.36)
-(cd "$V2/portal" && make cross PROXIMOS_BRAND=fiber)            # ~10 min warm, longer cold
+(cd hub/portal && make cross PROXIMOS_BRAND=fiber)            # ~10 min warm, longer cold
 
 # 1b. Northbridge (with nbboot) and Southbridge firmware, as CI builds them
-tools/build-firmware.sh "$V2"                                    # -> build/firmware/{nb,sb}-package
+tools/build-firmware.sh                                          # -> build/firmware/{nb,sb}-package
 
 # 1c. take the local binaries as upstream "vlocal"; ChirpStack from upstream, pinned
-tools/use-local-build.sh "$V2" vlocal
+tools/use-local-build.sh hub vlocal
 tools/fetch-chirpstack.sh
 
 # 1d. the on-device tree
@@ -149,7 +147,7 @@ sudo systemctl start fiber
 ```
 
 No answer means `nBOOT_SEL = 1` (factory default): that one bit needs SWD once
-(`firmware/fiber-southbridge/tools/production_provision.jlink` in the Hub monorepo).
+(`hub/firmware/fiber-southbridge/tools/production_provision.jlink`).
 
 ### Northbridge (STM32WL55, `/dev/ttyAMA3`)
 

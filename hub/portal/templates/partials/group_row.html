@@ -1,0 +1,308 @@
+{#
+  ONE monitoring row, in whichever of the four layouts the viewer chose.
+
+  Context:
+    r           monitoring::GroupRowCtx
+    view_cards  bool — card layouts vs table layouts
+    view_simple bool — the simplified card (cards only; the simplified
+                table was removed 2026-10-15)
+
+  This partial exists because the row is rendered from two places that must
+  never diverge: the page (group_table.html / group_cards.html loop over it)
+  and `GET /monitoring/groups/{id}/rows/{token}`, which htmx swaps in when the
+  row's SSE nudge fires. A second copy of the markup for the fragment is the
+  bug MB2 is specifically avoiding — four layouts times two copies is eight
+  places for a column to go missing.
+
+  The root element is the swap target. It carries:
+    id            r.row_id, which since MB1 includes the group id, because
+                  one Node legitimately appears in two sections and htmx
+                  swaps by id;
+    hx-get        this row's fragment route;
+    hx-trigger    sse:{{ r.event }} — an ENTITY-level name, so one reading
+                  nudges every group holding any part of that entity and each
+                  refetches its own row in its own layout;
+    hx-swap       outerHTML, so the swapped-in root replaces this one.
+
+  data-kind / data-status / data-oor / data-connected / data-search /
+  data-fault are the toolbar filter's inputs and are identical across all four
+  shapes. `data-oor` is `data-status` lower-cased — one spelling of the value
+  class for /static/js/portal-list.js, which drives this toolbar and the two
+  device lists, where the row-level `alarm_state` is NOT the value class and a
+  separate attribute is the only way to ask a value question. `data-status`
+  stays because the metric tiles' `?status=` deep link is written in its
+  casing. `data-connected` is the operational class — monitoring.md §2.2 splits the old single select into two exactly
+  because one control conflating them could not express "warning AND still
+  reporting". `data-fault` is written for #64's "Poruchy" tile to filter on;
+  MB2 adds the attribute and deliberately no toolbar control (§2.2).
+
+  Since 2026-10-15 every layout's NAME links to Trends (`row_href`, below).
+  Before that the table rows linked to the probe's own page (a wired probe's
+  is /hubs/{hub}/sensors/line-{n} since 2026-10-14), formerly `/monitoring/probe/{token}`
+  (2026-09-15). It used to open a modal on pages/dashboard.html instead —
+  the one surface in the portal where clicking a row did not navigate, and
+  the reason a Node row opened a modal while the same Node's page sat one
+  link further in. `data-row-href` on the row itself is what the shell
+  (layout/base.html) already uses on /nodes and /beacons, so the whole row
+  is clickable with no page-specific JavaScript at all.
+
+  The filter re-applies on `htmx:afterSettle`, not `afterSwap` — htmx copies
+  the old element's `class` onto the new one at swap time, so a row hidden by
+  the filter would come back hidden. See pages/dashboard.html's header.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{#- Every layout (cards and both tables, 2026-10-15) opens Trends for the
+    last 24 h with exactly this sensor's channels selected, in /trends' own
+    `?s=` token form (line:{hub}:{n}, node:{key}:{field}, eye:{MAC}:{field}).
+    The name link carries the same href, so the keyboard path matches the
+    click. Until then the tables opened the probe's own page. -#}
+{%- set row_href -%}
+/trends?s={% for f in r.fields %}{% if r.kind == "probe" %}line:{{ r.hostname | lower }}:{{ r.token[6:] }}{% elif r.kind == "node" %}node:{{ r.token[5:] }}:{{ f.field }}{% else %}eye:{{ r.token[7:] }}:{{ f.field }}{% endif %}{% if not loop.last %},{% endif %}{% endfor %}&range=24h
+{%- endset %}
+{%- set row_attrs -%}
+id="{{ r.row_id }}" data-row-href="{{ row_href }}" data-kind="{{ r.kind }}" data-field="{% if r.kind == "probe" %}temperature{% else %}{% for f in r.fields %}{{ f.field }} {% endfor %}{% endif %}" data-status="{{ r.alarm_state }}" data-oor="{{ r.alarm_state | lower }}" data-connected="{{ 1 if r.connected else 0 }}" data-channels="{{ r.fields|length }}" data-search="{{ r.search }}"{% if r.faults %} data-fault="1"{% endif %} hx-get="/monitoring/groups/{{ r.group_id }}/rows/{{ r.token }}" hx-trigger="sse:{{ r.event }}" hx-swap="outerHTML"
+{%- endset %}
+{#- The operational-class indicator. One block, four placements: a macro
+    would not see `r` from here, and four copies of the markup is exactly what
+    this partial exists to prevent. It renders empty when there is no fault,
+    so every site drops it in unconditionally. -#}
+{%- set fault_text -%}
+{% for f in r.faults %}{{ ("monitoring.groups.fault_" ~ f)|t }}{% if not loop.last %} · {% endif %}{% endfor %}
+{%- endset %}
+{%- set fault_mark -%}
+{% if r.faults %}<span class="inline-flex items-center text-warning shrink-0" title="{{ fault_text }}">{{ ic.icon("alert-triangle", "h-4 w-4") }}</span>{% endif %}
+{%- endset %}
+{#- The row's name, as the link to its page: one markup, four placements.
+    A macro rather than a `{% set %}` block like `fault_mark` above, because
+    each layout needs its own typography and a `set` block captures its
+    body's *value* at definition time — a `name_class` assigned afterwards
+    would never reach it. The token is passed explicitly for the same
+    reason a macro cannot see `r`. -#}
+{%- macro open_window(href, name, cls) -%}
+<a href="{{ href }}" class="text-left hover:underline focus-visible:underline {{ cls }}">{{ name }}</a>
+{%- endmacro %}
+
+{% if view_cards %}
+	{% if not r.connected %}
+		{% set tone, text_tone, dot = "bg-muted/40 border-base-300", "text-muted-fg", "bg-base-300" %}
+	{% elif r.alarm_state == "Warning" %}
+		{% set tone, text_tone, dot = "bg-warning/20 border-2 border-warning", "text-warning", "bg-warning" %}
+	{% elif r.alarm_state == "Critical" %}
+		{% set tone, text_tone, dot = "bg-critical/15 border-2 border-critical", "text-critical", "bg-critical" %}
+	{#- Normal with or without limits looks the same (Hynek, 2026-10-15):
+	    a card with no limits is green too; on the detailed card the grey
+	    limits bar is the only hint that none are set. -#}
+	{% elif r.alarm_state == "Normal" %}
+		{% set tone, text_tone, dot = "bg-success/10 border-success/40", "", "bg-success" %}
+	{% else %}
+		{% set tone, text_tone, dot = "border-base-300", "text-muted-fg", "bg-base-300" %}
+	{% endif %}
+
+	{#- The top-right block of both cards: freshness dot + short age. No
+	    state badge since 2026-10-15 (later): the card and value colours
+	    say it. A row with no timestamp gets a grey dot and the coarse
+	    relative label if there is one, never a green dot over "–". -#}
+	{%- set age_head -%}
+	{#- Freshness first, the badge on its own line below, so the age
+	    never shifts (2026-10-15). The dot is the device tables' link
+	    dot (partials/device_row.html): green ok, orange late (the Hub's
+	    Reconnecting, ~2× interval), red offline, grey never seen. -#}
+	{%- if not r.connected and not r.last_seen_unix %}{% set age_dot = "bg-base-300" %}
+	{%- elif not r.connected %}{% set age_dot = "bg-critical" %}
+	{%- elif r.reconnecting %}{% set age_dot = "bg-warning" %}
+	{%- elif not r.last_seen_unix %}{% set age_dot = "bg-base-300" %}
+	{%- else %}{% set age_dot = "bg-success" %}{% endif %}
+	<div class="flex flex-col items-end gap-1 shrink-0">
+		<span class="flex items-center gap-1.5 text-xs text-muted-fg tabular-nums whitespace-nowrap"
+			title="{{ "monitoring.groups.last_update"|t }}{% if r.last_seen %} {{ r.last_seen | short_dt }}{% endif %}">
+			<span class="w-2 h-2 rounded-full {{ age_dot }}"></span>
+			<span {% if r.last_seen_unix %}data-age-ts="{{ r.last_seen_unix }}"{% endif %}>{{ r.last_seen_short or r.last_seen_rel or "–" }}</span>
+		</span>
+	</div>
+	{%- endset %}
+
+	{#- Variant A (monitoring.md, amendment 2026-10-15): the detailed card's
+	    header (name, device, dot + age, badge) over just the current values,
+	    side by side and wrapping from the third channel on. Each value takes
+	    its own channel's colour; the card's tone is the worst channel's. -#}
+	{% if view_simple %}
+	<div {{ row_attrs }}
+		class="monitoring-row @container cursor-pointer relative overflow-hidden rounded-xl border-2 {{ tone }} px-3.5 py-2.5 flex flex-col gap-1.5 h-full min-w-0">
+		<div class="flex items-start justify-between gap-2">
+			<div class="min-w-0 flex-1">
+				{{ open_window(row_href, r.name, "block w-full text-sm font-bold truncate") }}
+				<div class="text-xs text-muted-fg truncate">{{ r.device_label }}</div>
+				{% if r.unknown %}<div class="text-xs text-muted-fg truncate">{{ "monitoring.groups.state_unknown"|t }}</div>{% endif %}
+				{% if r.faults %}<div class="flex items-center gap-1 text-xs font-medium text-warning min-w-0">{{ fault_mark }}<span class="truncate">{{ fault_text }}</span></div>{% endif %}
+			</div>
+			{{ age_head }}
+		</div>
+		{#- Fixed slots (2026-10-15): two equal columns, the third channel wraps
+		    into the same grid, so a value never moves when its neighbour's
+		    digits change and slots line up across the cards of a group. The
+		    value scales with the card (cqw) so two slots always fit; under
+		    13rem of card the slots stack in one column. -#}
+		<div class="grid grid-cols-1 @[13rem]:grid-cols-[repeat(2,minmax(0,1fr))] items-baseline gap-x-4 gap-y-0.5 min-w-0">
+			{% for f in r.fields %}
+			{% if not r.connected %}{% set f_tone = "text-muted-fg" %}
+			{% elif f.alarm_state == "Critical" %}{% set f_tone = "text-critical" %}
+			{% elif f.alarm_state == "Warning" %}{% set f_tone = "text-warning" %}
+			{% else %}{% set f_tone = "" %}{% endif %}
+			{#- The quantity icon (2026-10-15) sits in the slot before the value,
+			    sized in em so it scales with the value's cqw font size and takes
+			    the value's state colour through currentColor. -#}
+			{%- if f.unit == "°C" %}{% set q_icon = "thermometer" %}{% elif f.unit == "%" %}{% set q_icon = "droplet" %}{% else %}{% set q_icon = none %}{% endif %}
+			<span class="min-w-0 overflow-hidden text-[clamp(1.5rem,12.5cqw,3rem)] leading-tight font-bold tabular-nums whitespace-nowrap {{ f_tone }}">
+				{%- if q_icon %}{{ ic.icon(q_icon, "inline-block h-[0.6em] w-[0.6em] mr-[0.08em] align-[-0.02em]") }}{% endif -%}
+				{%- if f.value is none %}--{% else %}{{ f.value | round(1) }}<span class="text-[clamp(0.8125rem,5cqw,1.25rem)] font-normal ml-0.5">{{ f.unit }}</span>{% endif -%}
+			</span>
+			{% else %}
+			<span class="text-[clamp(1.5rem,12.5cqw,3rem)] leading-tight font-bold text-muted-fg">--</span>
+			{% endfor %}
+		</div>
+	</div>
+
+	{% else %}
+	{#- Variant B (monitoring.md, amendment 2026-10-15): one card per sensor,
+	    one stacked row per channel — value, 24 h max/min, a bare 24 h line
+	    and the limits bar. The card's tone is the worst channel's; each
+	    value and line takes its own channel's colour. -#}
+	<div {{ row_attrs }}
+		class="monitoring-row cursor-pointer card-v1 relative overflow-hidden border {{ tone }} h-full p-3 flex flex-col min-w-0">
+		<div class="flex items-start justify-between gap-2">
+			<div class="min-w-0 flex-1">
+				<div class="text-[10px] text-muted-fg uppercase tracking-wider truncate">
+					{{- r.device_label }}{% if r.description %} · {{ r.description }}{% endif -%}
+				</div>
+				{{ open_window(row_href, r.name, "block w-full text-sm font-bold line-clamp-2 break-words") }}
+			</div>
+			{{ age_head }}
+		</div>
+		{#- Only what is not already said by the badge and the colours: a fault
+		    in words (no hover on a wall screen), or the unknown state. -#}
+		{% if r.unknown or r.faults %}
+		<div class="flex items-center gap-1.5 text-xs mt-1 min-w-0">
+			{{ fault_mark }}
+			{% if r.unknown %}<span class="text-muted-fg">{{ "monitoring.groups.state_unknown"|t }}</span>
+			{% else %}<span class="font-medium text-warning truncate">{{ fault_text }}</span>{% endif %}
+		</div>
+		{% endif %}
+
+		<div class="mt-2 flex flex-col">
+			{% for f in r.fields %}
+			{% if not r.connected %}{% set f_tone = "text-muted-fg" %}
+			{% elif f.alarm_state == "Critical" %}{% set f_tone = "text-critical" %}
+			{% elif f.alarm_state == "Warning" %}{% set f_tone = "text-warning" %}
+			{% else %}{% set f_tone = "" %}{% endif %}
+			<div class="py-2 first:pt-0 last:pb-0 border-t-[0.5px] first:border-t-0 border-base-300 min-w-0">
+				{% if f.label %}<div class="text-xs text-muted-fg truncate">{{ f.label|field_label(f.field) }}</div>{% endif %}
+				<div class="flex items-center gap-3 min-w-0">
+					<div class="text-[60px] leading-none font-bold tabular-nums whitespace-nowrap {{ f_tone }}">
+						{%- if f.value is none %}--{% else %}{{ f.value | round(1) }}{% endif -%}
+						<span class="text-xl font-normal ml-0.5">{{ f.unit }}</span>
+					</div>
+					<div class="flex flex-col gap-1 text-xs leading-tight text-muted-fg tabular-nums whitespace-nowrap">
+						<span title="{{ "monitoring.groups.max_24h"|t }}">{% if f.spark %}{{ f.spark.max | round(1) }}{% else %}–{% endif %}</span>
+						<span title="{{ "monitoring.groups.min_24h"|t }}">{% if f.spark %}{{ f.spark.min | round(1) }}{% else %}–{% endif %}</span>
+					</div>
+					{#- The line takes currentColor: grey when fine, the channel's
+					    colour when it is out of range. -#}
+					<div class="flex-1 min-w-0 {{ f_tone if f_tone in ["text-critical", "text-warning"] else "text-muted-fg/60" }}">
+						<svg width="100%" height="48" viewBox="0 0 100 32" preserveAspectRatio="none" class="block" aria-hidden="true">
+							{% if f.spark %}
+							<polyline points="{{ f.spark.points }}" fill="none" stroke="currentColor" stroke-width="1.5"
+								vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" />
+							{% else %}
+							<line x1="0" y1="16" x2="100" y2="16" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"
+								vector-effect="non-scaling-stroke" opacity="0.5" />
+							{% endif %}
+						</svg>
+					</div>
+				</div>
+				<div class="mt-1.5">
+					{{ ui.threshold_gauge(f.value, f.wired_thresholds if f.wired_thresholds else f.thresholds, width="w-full", field=f.field, labels=false) }}
+				</div>
+			</div>
+			{% else %}
+			<div class="text-[60px] leading-none font-bold tabular-nums text-muted-fg">--</div>
+			{% endfor %}
+		</div>
+	</div>
+	{% endif %}
+{% else %}
+	{#- Detailed table, variant A (monitoring.md, amendment 2026-10-15): one
+	    <tbody> per sensor, so the sensor stays ONE swap target and one sort
+	    unit while each channel gets its own <tr>. The stripe, Sensor and
+	    Data cells span the channels (rowspan); the channel cells repeat.
+	    Colours follow the cards: the stripe is the worst channel's state,
+	    each value its own channel's; no limits is green like any Normal. -#}
+	{%- set n = r.fields | length %}
+	{%- set ns = namespace(worst=none, rank=-1) %}
+	{%- for f in r.fields %}
+	{%- set k = 2 if f.alarm_state == "Critical" else (1 if f.alarm_state == "Warning" else 0) %}
+	{%- if k > ns.rank %}{% set ns.worst, ns.rank = f, k %}{% endif %}
+	{%- endfor %}
+	{% if not r.connected %}{% set strip = "bg-base-300" %}
+	{% elif r.alarm_state == "Critical" %}{% set strip = "bg-critical" %}
+	{% elif r.alarm_state == "Warning" %}{% set strip = "bg-warning" %}
+	{% elif r.alarm_state == "Normal" %}{% set strip = "bg-success" %}
+	{% else %}{% set strip = "bg-base-300" %}{% endif %}
+	{%- if not r.connected and not r.last_seen_unix %}{% set age_dot = "bg-base-300" %}
+	{%- elif not r.connected %}{% set age_dot = "bg-critical" %}
+	{%- elif r.reconnecting %}{% set age_dot = "bg-warning" %}
+	{%- elif not r.last_seen_unix %}{% set age_dot = "bg-base-300" %}
+	{%- else %}{% set age_dot = "bg-success" %}{% endif %}
+	{%- set w = ns.worst %}
+	<tbody {{ row_attrs }}
+		data-sort-name="{{ r.name | lower }}"
+		data-sort-channel="{% if r.fields and r.fields[0].label %}{{ (r.fields[0].label|field_label(r.fields[0].field)) | lower }}{% elif r.fields %}{{ ("monitoring.field_label.temperature"|t) | lower }}{% endif %}"
+		data-sort-value="{% if w and w.value is not none %}{{ w.value }}{% endif %}"
+		data-sort-minmax="{% if w and w.spark %}{{ w.spark.max }}{% endif %}"
+		data-sort-age="{% if r.last_seen_unix %}{{ r.last_seen_unix }}{% endif %}"
+		class="monitoring-row mon-sensor cursor-pointer border-t border-base-300 even:bg-muted/60 transition-colors hover:bg-muted {% if not r.connected %}opacity-50{% endif %}">
+		{% for f in r.fields or [none] %}
+		{% if f is none or not r.connected %}{% set f_tone = "text-muted-fg" %}
+		{% elif f.alarm_state == "Critical" %}{% set f_tone = "text-critical" %}
+		{% elif f.alarm_state == "Warning" %}{% set f_tone = "text-warning" %}
+		{% else %}{% set f_tone = "" %}{% endif %}
+		<tr class="{% if not loop.first %}[&>td.mon-ch]:border-t [&>td.mon-ch]:border-dashed [&>td.mon-ch]:border-base-300{% endif %} [&>td]:py-2 [&>td]:px-4 [&>td]:align-middle">
+			{% if loop.first %}
+			<td rowspan="{{ [n, 1] | max }}" class="!p-0 w-1 relative"><span class="absolute inset-y-0 left-0 w-1 {{ strip }}" aria-hidden="true"></span></td>
+			<td rowspan="{{ [n, 1] | max }}" class="max-w-[16rem]">
+				<div class="flex items-center gap-1.5 min-w-0">
+					{{ fault_mark }}
+					{{ open_window(row_href, r.name, "text-sm font-bold truncate min-w-0") }}
+				</div>
+				<div class="text-xs text-muted-fg truncate">{{ r.device_label }}</div>
+				{% if n > 1 %}<div class="text-xs text-muted-fg">{{ n }} {{ ("monitoring.groups.channels_few" if n < 5 else "monitoring.groups.channels_many")|t }}</div>{% endif %}
+				{% if r.unknown %}<div class="text-xs text-muted-fg">{{ "monitoring.groups.state_unknown"|t }}</div>{% endif %}
+				{% if r.faults %}<div class="text-xs font-medium text-warning truncate">{{ fault_text }}</div>{% endif %}
+			</td>
+			{% endif %}
+			<td class="mon-ch text-sm text-muted-fg whitespace-nowrap">
+				{%- if f is none %}–{% elif f.label %}{{ f.label|field_label(f.field) }}{% else %}{{ "monitoring.field_label.temperature"|t }}{% endif -%}
+			</td>
+			<td class="mon-ch whitespace-nowrap tabular-nums">
+				<span class="text-base font-bold {{ f_tone }}">{% if f is none or f.value is none %}--{% else %}{{ f.value | round(1) }}{% endif %}</span>
+				{%- if f is not none %}<span class="text-xs text-muted-fg ml-0.5">{{ f.unit }}</span>{% endif %}
+			</td>
+			<td class="mon-ch min-w-[7rem]">
+				{%- if f is not none %}{{ ui.threshold_gauge(f.value, f.wired_thresholds if f.wired_thresholds else f.thresholds, width="w-28", field=f.field, labels=false) }}{% endif -%}
+			</td>
+			<td class="mon-ch text-sm text-muted-fg tabular-nums whitespace-nowrap">
+				{%- if f is not none and f.spark %}{{ f.spark.min | round(1) }} / {{ f.spark.max | round(1) }}{% else %}–{% endif -%}
+			</td>
+			{% if loop.first %}
+			<td rowspan="{{ [n, 1] | max }}">
+				<span class="flex items-center gap-1.5 text-xs text-muted-fg tabular-nums whitespace-nowrap"
+					title="{{ "monitoring.groups.last_update"|t }}{% if r.last_seen %} {{ r.last_seen | short_dt }}{% endif %}">
+					<span class="w-2 h-2 rounded-full shrink-0 {{ age_dot }}"></span>
+					<span {% if r.last_seen_unix %}data-age-ts="{{ r.last_seen_unix }}"{% endif %}>{{ r.last_seen_short or r.last_seen_rel or "–" }}</span>
+				</span>
+			</td>
+			{% endif %}
+		</tr>
+		{% endfor %}
+	</tbody>
+{% endif %}

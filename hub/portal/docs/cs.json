@@ -1,0 +1,1561 @@
+[
+ {
+  "id": "overview",
+  "title": "Přehled systému",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} hlídá teplotu a další veličiny v chladicích boxech, skladech a laboratořích. {brand} Hub měří drátovými sondami, přijímá data z bezdrátových {brand} Nodů a {brand} Beaconů, vyhodnocuje meze a v portálu ukazuje živé hodnoty, alarmy a historii."
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-overview.svg",
+     "alt": "{brand} Hub zepředu",
+     "pdf_width": 0.82,
+     "cutout": false,
+     "caption": "{brand} Hub: displej s živými hodnotami, ovládací tlačítka a stavové LED.",
+     "boxes": [
+      {
+       "x": 0.2277,
+       "y": 0.5263,
+       "w": 0.402,
+       "h": 0.2092,
+       "label": "Živé hodnoty sond",
+       "badge": "left"
+      },
+      {
+       "x": 0.696,
+       "y": 0.5198,
+       "w": 0.0772,
+       "h": 0.2286,
+       "label": "Ovládací tlačítka",
+       "labelPos": "tr"
+      },
+      {
+       "x": 0.1931,
+       "y": 0.8046,
+       "w": 0.6059,
+       "h": 0.0756,
+       "label": "Stavové LED"
+      }
+     ]
+    }
+   },
+   {
+    "type": "featureCards",
+    "data": [
+     {
+      "icon": "Cpu",
+      "title": "8× drátová sonda",
+      "desc": "Porty pro teplotní sondy DS18B20 (1-Wire)."
+     },
+     {
+      "icon": "Radio",
+      "title": "{brand} Node (LoRaWAN nebo LoRa P2P)",
+      "desc": "Bezdrátové sondy: teplota, vlhkost, osvětlení a další čidla podle modelu."
+     },
+     {
+      "icon": "Wifi",
+      "title": "{brand} Beacon (Bluetooth)",
+      "desc": "Sondy s teplotou a vlhkostí, které {brand} Hub zachytí v dosahu."
+     }
+    ]
+   },
+   {
+    "type": "modeCards",
+    "data": [
+     {
+      "icon": "Server",
+      "title": "Server",
+      "intro": "{brand} Hub, na kterém běží portál.",
+      "text": "Sbírá data ze svých sond, {brand} Nodů a {brand} Beaconů, hostuje MQTT broker a webový portál. Instalace má jeden Server."
+     },
+     {
+      "icon": "MonitorSmartphone",
+      "title": "Klient",
+      "intro": "{brand} Hub bez vlastního portálu.",
+      "text": "Připojuje se k Serveru a spravuje se z jeho portálu. Viz {brand} Hub v režimu Klient."
+     }
+    ]
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Navigace portálu",
+     "rows": [
+      {
+       "tab": "Monitoring",
+       "desc": "Skupiny sond s živými hodnotami."
+      },
+      {
+       "tab": "Alarmy",
+       "desc": "Aktivní a ukončené alarmy, jejich potvrzování."
+      },
+      {
+       "tab": "Historie",
+       "desc": "Grafy jedné nebo víc sond, export CSV."
+      },
+      {
+       "tab": "Meze",
+       "desc": "Meze všech čidel a jejich stav, hromadné nastavení (Manažer a Administrátor)."
+      },
+      {
+       "tab": "Huby",
+       "desc": "Seznam {brand} Hubů; detail má záložky Přehled, Sondy, Jednotka a Systém."
+      },
+      {
+       "tab": "Nody",
+       "desc": "Registrace, stav a meze {brand} Nodů (LoRaWAN nebo LoRa P2P)."
+      },
+      {
+       "tab": "Beacony",
+       "desc": "Přidávání, stav a meze {brand} Beaconů."
+      },
+      {
+       "tab": "Uživatelé",
+       "desc": "Účty a role. Jen Administrátor."
+      },
+      {
+       "tab": "Nastavení",
+       "desc": "Oznámení, Příjem MQTT a Údržba. Manažer a Administrátor."
+      },
+      {
+       "tab": "Audit",
+       "desc": "Záznam akcí uživatelů a systému. Manažer a Administrátor."
+      },
+      {
+       "tab": "Dokumentace",
+       "desc": "Tato stránka."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Menu účtu dole v postranním panelu přepíná jazyk (cs / en), mění vlastní heslo (Změnit heslo) a odhlašuje. Administrátor v něm najde také Můj profil."
+    }
+   }
+  ]
+ },
+ {
+  "id": "quickstart",
+  "title": "Rychlý start",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Od krabice k monitoringu",
+     "intro": "Celé zprovoznění v osmi krocích. U každého kroku je sekce, která ho popisuje celý.",
+     "steps": [
+      "Zapojte napájení: kabel z routeru do portu LAN PoE adaptéru, druhý z portu PoE do {brand} Hubu (viz Zapojení hardwaru).",
+      "Připojte drátové sondy do portů 1–8. LED nad portem se rozsvítí zeleně (viz Zapojení hardwaru).",
+      "Počkejte 1–2 minuty. Indikátory se rozsvítí zeleně a displej ukáže hodnoty sond (viz Spuštění zařízení).",
+      "Zjistěte IP adresu: podržte ▼ 5 s a šipkou ▼ přejděte na stránku 3/3, řádek Eth (viz Spuštění zařízení).",
+      "Otevřete portál: v prohlížeči ve stejné síti zadejte https://<IP_adresa>. Když prohlížeč upozorní na certifikát, viz Řešení problémů.",
+      "Při první návštěvě vytvořte na stránce Nastavit administrátorský účet a přihlaste se (viz Uvedení Serveru do provozu).",
+      "Spárujte {brand} Hub: na displeji ▲ 5 s → Pairing mode, kód zadejte v Huby → Zobrazit → Systém → Párování (viz Párování {brand} Hubu).",
+      "V Nastavení → Oznámení nastavte příjemce alarmů a v Monitoringu založte skupinu sond (viz Oznámení, Monitoring a skupiny)."
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "hardware",
+  "title": "Zapojení hardwaru",
+  "blocks": [
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-wiring.svg",
+     "alt": "Konektory {brand} Hubu",
+     "pdf_width": 0.82,
+     "cutout": false,
+     "caption": "Konektory: vstup PoE/Ethernet a 8 portů pro drátové sondy DS18B20. Nad každým portem je jeho LED; tady jsou sondy v portech 2, 5 a 8 a jejich LED svítí zeleně.",
+     "front": "/static/doc-images/device-wiring-cables.svg",
+     "boxes": [
+      {
+       "x": 0.1515,
+       "y": 0.5101,
+       "w": 0.1149,
+       "h": 0.1269,
+       "label": "PoE / Ethernet"
+      },
+      {
+       "x": 0.2723,
+       "y": 0.5101,
+       "w": 0.5723,
+       "h": 0.1242,
+       "label": "Porty drátových sond 1–8"
+      },
+      {
+       "x": 0.1931,
+       "y": 0.3887,
+       "w": 0.6059,
+       "h": 0.0594,
+       "label": "Stavové LED (napájení, porty 1–8)"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Napájení přes PoE",
+     "intro": "{brand} Hub nepotřebuje samostatný napájecí adaptér. Napájení i data vede jeden ethernetový kabel.",
+     "steps": [
+      "Připojte ethernetový kabel z routeru nebo switche do PoE adaptéru (port LAN).",
+      "Připojte druhý ethernetový kabel z PoE adaptéru (port PoE) do {brand} Hubu.",
+      "{brand} Hub se sám zapne a připojí k síti."
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Připojení drátových sond DS18B20",
+     "intro": "{brand} Hub má 8 portů pro teplotní sondy DS18B20 (protokol 1-Wire). V portálu se port jmenuje Linka 1 až Linka 8.",
+     "steps": [
+      "Najděte porty sond na {brand} Hubu (označené 1–8).",
+      "Zasuňte konektor sondy do portu.",
+      "Opakujte pro každou sondu."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Jakmile jsou sondy správně připojené, indikátory napájení i sond svítí zeleně a displej ukazuje teplotu."
+    }
+   }
+  ]
+ },
+ {
+  "id": "startup",
+  "title": "Spuštění zařízení",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Postup spuštění",
+     "steps": [
+      "Připojte PoE kabel. {brand} Hub se sám spustí.",
+      "Ověřte, že jsou sondy správně zapojené.",
+      "Počkejte 1–2 minuty, než systém naběhne.",
+      "Indikátory se rozsvítí zeleně a na displeji se objeví data."
+     ]
+    }
+   },
+   {
+    "type": "btnRows",
+    "data": {
+     "title": "Ovládací tlačítka na {brand} Hubu",
+     "rows": [
+      {
+       "btn": "▼  (5 s)",
+       "action": "Otevře systémové informace na třech stránkách: ID {brand} Hubu, síť, IP adresy, verze firmwaru. Stiskem ▲ nebo ▼ listujete, □ vás vrátí na přehled."
+      },
+      {
+       "btn": "▲  (5 s)",
+       "action": "Otevře menu Pairing mode / Power / Back (párovací režim, napájení, zpět); Power nabídne Reboot / Sleep / Shutdown / Back (restart, režim spánku, vypnutí, zpět). ▲ a ▼ vybírají, □ potvrdí. Back v Power vrátí do menu, Back v menu nebo dvojitý stisk □ menu zavře. Restart, režim spánku i vypnutí se ještě potvrzují. Ve spánku Hub zhasne displej a vypne čidla; probudí ho nové připojení PoE nebo podržení tlačítka. Po vypnutí (Shutdown) Hub zhasne a zůstane vypnutý; znovu ho spustí jen tlačítko na zadní straně."
+      },
+      {
+       "btn": "□  (5 s)",
+       "action": "Zobrazí QR kód pro mobilní aplikaci {mobile_app} (připojení přes Bluetooth, nastavení Wi-Fi). □ ho zavře."
+      },
+      {
+       "btn": "▲ ▼ □",
+       "action": "Když {brand} Hub pípá kvůli alarmu, stisk libovolného tlačítka pípání ztlumí na 30 minut."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Párovací režim",
+     "steps": [
+      "Podržte ▲ alespoň 5 s. Otevře se menu.",
+      "Šipkami ▲ ▼ vyberte Pairing mode.",
+      "Potvrďte □.",
+      "Displej ukáže párovací kód, platí 5 minut. Zadejte ho v portálu (viz Párování {brand} Hubu)."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-menu.svg",
+     "alt": "Menu {brand} Hubu",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "Menu: Pairing mode, Power (Reboot, Sleep, Shutdown, Back), Back. Bez stisku tlačítka se po 15 s samo zavře.",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.2957,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Podržet ▲ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2426,
+       "y": 0.3971,
+       "w": 0.3772,
+       "h": 0.0623,
+       "label": "Vybrat Pairing mode ▲ ▼",
+       "badge": "left"
+      },
+      {
+       "x": 0.696,
+       "y": 0.4174,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Potvrdit □",
+       "labelPos": "tr",
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-pairing-code.svg",
+     "alt": "Párovací kód na displeji {brand} Hubu",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "Párovací kód: šest znaků, platí 5 minut. Nikdy neobsahuje O, 0, I, 1 ani L. „Viewer“ na displeji znamená portál.",
+     "boxes": [
+      {
+       "x": 0.3,
+       "y": 0.4522,
+       "w": 0.2574,
+       "h": 0.0812,
+       "label": "Párovací kód",
+       "num": 4,
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "QR kód pro mobilní aplikaci",
+     "steps": [
+      "Podržte □ alespoň 5 s.",
+      "Displej ukáže QR kód. Naskenujte ho v mobilní aplikaci {mobile_app} (připojení přes Bluetooth, nastavení Wi-Fi).",
+      "□ ho zavře."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-qr.svg",
+     "alt": "QR kód na displeji {brand} Hubu",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "QR kód pro mobilní aplikaci {mobile_app} (Scan WiFi Config).",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.4174,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Podržet □ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2277,
+       "y": 0.3058,
+       "w": 0.402,
+       "h": 0.329,
+       "label": "QR kód pro mobilní aplikaci"
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Mobilní aplikace {mobile_app} je ke stažení na Google Play."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Systémové informace",
+     "steps": [
+      "Podržte ▼ alespoň 5 s.",
+      "Displej ukáže stránku 1/3 s ID {brand} Hubu.",
+      "Šipkami ▲ ▼ listujete mezi třemi stránkami, □ vás vrátí na přehled."
+     ]
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-info-1.svg",
+     "alt": "Systémové informace 1/3",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "Systémové informace 1/3. Řádek ID je název {brand} Hubu: {hostname_prefix} a osm hexadecimálních číslic.",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.5391,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "Podržet ▼ 5 s",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2277,
+       "y": 0.3058,
+       "w": 0.402,
+       "h": 0.329,
+       "label": "Systémové informace 1/3"
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Přístup k portálu",
+     "intro": "Tlačítkem ▼ přejděte na stránku 3/3 s IP adresou {brand} Hubu (řádek Eth pro Ethernet, WiFi pro Wi-Fi) a zadejte ji do prohlížeče:",
+     "steps": []
+    }
+   },
+   {
+    "type": "image",
+    "data": {
+     "src": "/static/doc-images/device-info-3.svg",
+     "alt": "Systémové informace 3/3 s IP adresou",
+     "pdf_width": 0.7,
+     "cutout": false,
+     "caption": "Stránka 3/3 ukazuje IP adresu {brand} Hubu (řádek Eth).",
+     "boxes": [
+      {
+       "x": 0.696,
+       "y": 0.5391,
+       "w": 0.0772,
+       "h": 0.1159,
+       "label": "▼ na stránku 3/3",
+       "labelPos": "tr",
+       "badge": "left"
+      },
+      {
+       "x": 0.2446,
+       "y": 0.5072,
+       "w": 0.2416,
+       "h": 0.0522,
+       "label": "IP adresa",
+       "badge": "left"
+      }
+     ]
+    }
+   },
+   {
+    "type": "code",
+    "data": {
+     "code": "https://<IP_adresa>",
+     "note": "Příklad: https://10.0.0.147. Adresa http:// se přesměruje na https://. V síti s mDNS funguje i https://{hostname_prefix}c23e465c.local."
+    }
+   }
+  ]
+ },
+ {
+  "id": "server",
+  "title": "Uvedení Serveru do provozu",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Server je {brand} Hub, na kterém běží portál. Síť (Ethernet nebo Wi-Fi) a roli {brand} Hubu nastavíte při uvedení do provozu v mobilní aplikaci {mobile_app}, ne v portálu. Portál pak v detailu {brand} Hubu ukazuje řádek Uvedení do provozu: Dokončeno nebo Nedokončeno a roli server nebo klient."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "První přihlášení",
+     "steps": [
+      "Otevřete portál na adrese {brand} Hubu (viz Spuštění zařízení).",
+      "Při první návštěvě portál ukáže stránku Nastavit. Vytvořte administrátorský účet: stane se prvním Superuživatelem a spravuje ostatní uživatele.",
+      "Přihlaste se tímto účtem.",
+      "V Huby otevřete svůj {brand} Hub a na záložce Systém ho spárujte s portálem (viz Párování {brand} Hubu).",
+      "V Uživatelé založte účty kolegům (viz Uživatelé a role).",
+      "V Nastavení → Oznámení nastavte, komu chodí alarmové e-maily (viz Oznámení)."
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "client",
+  "title": "{brand} Hub v režimu Klient",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Klient je {brand} Hub bez vlastního portálu. Připojuje se k Serveru, předává mu rádiová data a spravuje se z portálu Serveru. Roli Klient dostane při uvedení do provozu v mobilní aplikaci; jeho jediné místní rozhraní je Bluetooth."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Přidání klientského {brand} Hubu (Přidat hub)",
+     "steps": [
+      "Na portálu Serveru jako Admin otevřete Huby a zvolte Přidat hub. Zadejte hostname klienta ({hostname_prefix} a osm hexadecimálních číslic, jak je na jeho displeji) a u LoRaWAN jeho gateway EUI. Název je nepovinný.",
+      "Server vytvoří klientovi účet na brokeru a zaregistruje jeho bránu a portál ukáže adresu Serveru a otisk jeho certifikátu. Tlačítko Zobrazit pak odkryje připojovací balíček – jako QR kód a jako text. Funguje jednou, do 5 minut a jen v relaci, která klienta přidala; odkrytí se zapíše do auditu.",
+      "V mobilní aplikaci {mobile_app} se ke klientovi připojte přes Bluetooth a naskenujte QR kód. Klient ověří certifikát Serveru, připojí se a restartuje.",
+      "Do prvního připojení je klient v seznamu Huby veden jako registrováno — čeká na připojení klienta. Jakmile je online, spárujte ho v jeho záložce Systém jako každý jiný {brand} Hub."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Heslo v připojovacím balíčku je do zobrazení jen v paměti Serveru, zobrazit ho lze jen jednou a nikde se neukládá. Když jeden ze dvou kroků selhal (Registrace nedokončena), použijte Opakovat na řádku klienta. Když se balíček ztratí nebo uplyne jeho 5 minut, použijte Opakovat na obrazovce, která hlásí, že heslo už není k dispozici, nebo Nové heslo u klienta v kartě Cluster v záložce Systém Serveru. Obojí vydá nové heslo a staré přestane platit."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Klienta z clusteru vyjmete v jeho záložce Systém volbou Odebrat z clusteru (Admin, s důvodem). Skončí jeho účet na brokeru, jeho spojení i registrace brány a portál zruší jeho párování. {brand} Nody slyšené přes něj ztratí toto pokrytí, ale zůstanou registrované. Server se nikdy neodebírá."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Roli {brand} Hubu ani rádiový transport (LoRaWAN nebo LoRa P2P) nejde přepnout za chodu. Změna vyžaduje tovární reset (detail {brand} Hubu → Systém, jen Administrátor). Nový režim se pak volí při opětovném uvedení do provozu v mobilní aplikaci. Tovární reset smaže i registrace {brand} Nodů a {brand} Beaconů."
+    }
+   }
+  ]
+ },
+ {
+  "id": "pairing",
+  "title": "Párování {brand} Hubu",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Párování dovolí portálu posílat {brand} Hubu podepsané příkazy, například meze drátových sond, nastavení displeje nebo restart. Nespárovaný {brand} Hub má v seznamu i v detailu odznak Nespárováno. Párovat smí Administrátor."
+    }
+   },
+   {
+    "type": "twoColStepCards",
+    "data": {
+     "left": {
+      "title": "1. Párovací kód na {brand} Hubu",
+      "steps": [
+       "Na {brand} Hubu podržte ▲ alespoň 5 sekund. Otevře se menu.",
+       "Vyberte Pairing mode a potvrďte □.",
+       "Displej ukáže šestimístný kód z písmen a číslic. Kód platí 5 minut."
+      ]
+     },
+     "right": {
+      "title": "2. Spárování v portálu",
+      "steps": [
+       "Otevřete Huby a u svého {brand} Hubu klikněte na Zobrazit.",
+       "Přejděte na záložku Systém, karta Párování.",
+       "Zadejte párovací kód a klikněte na Spárovat zařízení.",
+       "Karta pak ukáže Spárováno a kdo a kdy {brand} Hub spároval."
+      ]
+     }
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Když portál běží přímo na tomto {brand} Hubu, pole pro kód se nezobrazí. Otevřete na displeji párovací režim (▲ 5 s → Pairing mode) a klikněte na Spárovat zařízení. Kód, který vyprší, nahradí nový ze stejného menu."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Zrušit spárování odebere klíče jen z tohoto portálu. {brand} Hub dál důvěřuje už vydaným certifikátům."
+    }
+   }
+  ]
+ },
+ {
+  "id": "hubs",
+  "title": "{brand} Huby",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Seznam Huby ukazuje název, stav spojení, rádio a poruchy každého {brand} Hubu. Zobrazit otevře detail se čtyřmi záložkami. Obsah vidí každá role; akce se zobrazí jen roli, která je smí provést."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Detail {brand} Hubu",
+     "rows": [
+      {
+       "tab": "Přehled",
+       "desc": "Název a popis (Manažer), stav systému (napájení, síť, disk, verze), aktivní poruchy a karta Rádio & brány."
+      },
+      {
+       "tab": "Sondy",
+       "desc": "Osm drátových linek: hodnota, název, umístění a meze (Manažer)."
+      },
+      {
+       "tab": "Jednotka",
+       "desc": "Popisek na displeji, jas displeje a LED, zhasnutí displeje, hlasitost bzučáku, výběr sond na displeji (Manažer). Restart a vypnutí (Administrátor)."
+      },
+      {
+       "tab": "Systém",
+       "desc": "Párování, tovární reset, přepnutí transportu a interval systémových informací (Administrátor)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Hlasitost bzučáku nastavíte v detailu {brand} Hubu → Jednotka → Displej a bzučák (0 až 100, nula znamená ticho). {brand} Hub je musí přijmout, proto musí být spárovaný."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Restart vyžaduje potvrzení. Vypnutí vyžaduje důvod a {brand} Hub pak jde zapnout jen fyzicky na místě. Tovární reset vyžaduje opsat název {brand} Hubu a důvod o alespoň 8 znacích a nejde vrátit."
+    }
+   }
+  ]
+ },
+ {
+  "id": "stickers",
+  "title": "{brand} Nody (LoRaWAN)",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} Nody jsou bezdrátové sondy, které {brand} Hubu hlásí přes LoRaWAN nebo LoRa P2P. Portál je registruje do {brand} Hubu aktivací OTAA (přes rádio). Registrovat smí Manažer a Administrátor, odebrat jen Administrátor."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Registrace {brand} Nodu",
+     "steps": [
+      "Otevřete Nody a klikněte na Registrovat Node.",
+      "Je-li online víc {brand} Hubů, vyberte {brand} Hub, který má {brand} Node registrovat.",
+      "Vyplňte sériové číslo, DevEUI a AppKey z podkladů k {brand} Nodu. JoinEUI je předvyplněné výchozí hodnotou {brand} Hubu.",
+      "Volitelně zadejte název a popisek. Bez názvu se {brand} Node zobrazí pod sériovým číslem.",
+      "Klikněte na Registrovat Node. {brand} Node se objeví se stavem registrováno, čeká na první připojení.",
+      "Jakmile se {brand} Node poprvé připojí do sítě a pošle data, ukáže hodnoty."
+     ]
+    }
+   },
+   {
+    "type": "fieldCard",
+    "data": {
+     "title": "Pole registrace",
+     "intro": "Aktivace OTAA",
+     "fields": [
+      {
+       "name": "Sériové číslo",
+       "example": "2159032691",
+       "desc": "Jen číslice, ze štítku zařízení."
+      },
+      {
+       "name": "DevEUI",
+       "example": "0025CA0A00021234",
+       "desc": "16 hexadecimálních znaků."
+      },
+      {
+       "name": "JoinEUI",
+       "example": "0102030405060708",
+       "desc": "Volitelné, 16 hexadecimálních znaků. Prázdné pole použije výchozí hodnotu {brand} Hubu."
+      },
+      {
+       "name": "AppKey",
+       "example": "(32 hex znaků)",
+       "desc": "Jde rovnou do {brand} Hubu. Portál si ho neukládá a nezapisuje do auditu."
+      },
+      {
+       "name": "Název",
+       "example": "Mrazák 1, horní police",
+       "desc": "Nepovinné."
+      },
+      {
+       "name": "Popisek",
+       "example": "Mrazák, zadní místnost",
+       "desc": "Nepovinné."
+      }
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Detail {brand} Nodu",
+     "rows": [
+      {
+       "tab": "Přehled",
+       "desc": "Hodnoty čidel, baterie, signál, grafy a Meze čidel."
+      },
+      {
+       "tab": "Konfigurace",
+       "desc": "Metadata, parametry zařízení (Načíst ze zařízení, úpravy do konceptu), Klíče a relace, servisní funkce (Administrátor)."
+      },
+      {
+       "tab": "Diagnostika",
+       "desc": "Rádio a brány, Historie zpráv (stažení JSON)."
+      },
+      {
+       "tab": "Historie",
+       "desc": "Doplnění historie: rychlá volba nebo období Od–Do a tlačítko Vyžádat doplnění; Chybějící historie a průběh stahování."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Změny parametrů a mezí {brand} Nodu se nejdřív uloží jako neodeslaná konfigurace. Do {brand} Nodu se dostanou, až na jeho stránce kliknete na Odeslat konfiguraci; Zahodit je zruší."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Odebrat Node (Administrátor) ho odregistruje z {brand} Hubu a smaže jeho popis a neodeslanou konfiguraci. Zaznamenaná historie zůstává. Pro potvrzení opíšete identifikátor, který dialog ukáže."
+    }
+   },
+   {
+    "type": "tagList",
+    "data": {
+     "title": "Čidla {brand} Nodů (podle modelu)",
+     "tags": [
+      "Teplota",
+      "Vlhkost",
+      "Osvětlení",
+      "Tlak",
+      "Externí sonda 1",
+      "Externí sonda 2",
+      "Strojní sonda",
+      "Pohyb",
+      "Náklon",
+      "Hallův senzor",
+      "Vstupy A / B"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "beacons",
+  "title": "{brand} Beacony (Bluetooth)",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "{brand} Beacony jsou Bluetooth sondy s teplotou a vlhkostí. Vysílají samy a {brand} Hub je zachytí v dosahu. Registrace spojí {brand} Beacon s {brand} Hubem podle MAC adresy. Sériové číslo {brand} Beacon nevysílá, opisuje se z etikety. Přidat smí Manažer a Administrátor, odebrat jen Administrátor."
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Přidání {brand} Beaconu",
+     "steps": [
+      "Otevřete Beacony a klikněte na Přidat Beacon.",
+      "Tabulka Zachycené Beacony ukazuje, co {brand} Hub slyšel v posledních minutách, s teplotou, vlhkostí a signálem.",
+      "U svého {brand} Beaconu klikněte na Přidat. Formulář nahoře se předvyplní jeho MAC adresou.",
+      "Opište sériové číslo z etikety {brand} Beaconu. Je povinné.",
+      "Volitelně zadejte název a popisek a klikněte na Zaregistrovat.",
+      "{brand} Beacon se objeví v seznamu jako zaregistrovaný a čeká na první zprávu. {brand} Hub mu přes Bluetooth nahraje konfiguraci."
+     ]
+    }
+   },
+   {
+    "type": "fieldCard",
+    "data": {
+     "title": "Pole registrace",
+     "fields": [
+      {
+       "name": "Hub",
+       "example": "(výběr)",
+       "desc": "Jen když je online víc {brand} Hubů."
+      },
+      {
+       "name": "Sériové číslo",
+       "example": "(z etikety)",
+       "desc": "Povinné. {brand} Beacon ho nevysílá."
+      },
+      {
+       "name": "MAC adresa",
+       "example": "AA:BB:CC:DD:EE:FF",
+       "desc": "Předvyplní ji Přidat v tabulce zachycených."
+      },
+      {
+       "name": "Název",
+       "example": "Chladicí box 2, dveře",
+       "desc": "Nepovinné."
+      },
+      {
+       "name": "Popisek",
+       "example": "Mrazák, zadní místnost",
+       "desc": "Nepovinné."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Detail {brand} Beaconu ukazuje, které {brand} Huby ho slyší a jak silně, poslední zprávu a parametry BLE (jen ke čtení). Manažer může odeslat žádost o rekonfiguraci nebo vyžádat historii z archivu {brand} Beaconu."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Odebrání {brand} Beaconu (Administrátor) se potvrzuje opsáním MAC adresy. Popis a meze se smažou, historie zůstává. {brand} Beacon vysílá dál, takže se po odebrání znovu objeví mezi zachycenými. To je očekávané chování."
+    }
+   }
+  ]
+ },
+ {
+  "id": "gateway",
+  "title": "Rádio a brány",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Karta Rádio & brány na záložce Přehled v detailu {brand} Hubu ukazuje stav rádia {brand} Hubu (koncentrátor a síťový server LoRaWAN) a seznam bran s časem, kdy byly naposledy viděny. Údaje jsou jen ke čtení."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Připojení externí LoRaWAN brány třetí strany (Semtech UDP packet forwarder) tato verze nepodporuje. {brand} Hub přijímá {brand} Nody vlastním rádiem."
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "Řešení problémů s rádiem",
+     "rows": [
+      {
+       "q": "{brand} Node neukazuje data",
+       "a": "Příčina: {brand} Node není registrovaný nebo je mimo dosah. Ověřte v Nody, že je registrovaný se správným DevEUI a zda nečeká na první připojení."
+      },
+      {
+       "q": "Rádiové API je nedostupné",
+       "a": "Příčina: rádiová služba {brand} Hubu neodpovídá. Údaje o bránách mohou být zastaralé. Zkuste to za chvíli; když to nepomůže, restartujte {brand} Hub (Jednotka → Restart)."
+      },
+      {
+       "q": "LoRaWAN: čeká / bez koncentrátoru",
+       "a": "Příčina: {brand} Hub zatím nehlásí koncentrátor LoRaWAN. Po startu {brand} Hubu chvíli počkejte. Když stav trvá, obraťte se na servis. LoRa P2P na koncentrátoru nezávisí a má vlastní štítek."
+      },
+      {
+       "q": "Bez ovládání rádia",
+       "a": "Příčina: portál nemá nastavené ovládání rádia. Příkazy {brand} Nodům posílejte z portálu {brand} Hubu, ke kterému {brand} Node patří."
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "monitoring",
+  "title": "Monitoring a skupiny",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Monitoring ukazuje živé hodnoty sond, které jste zařadili do skupin. Sonda mimo skupinu tu není; najdete ji v Nody, Beacony nebo v detailu {brand} Hubu na záložce Sondy."
+    }
+   },
+   {
+    "type": "statusCards",
+    "data": [
+     {
+      "color": "success",
+      "label": "Normální",
+      "desc": "Hodnota je v mezích."
+     },
+     {
+      "color": "warning",
+      "label": "Varování",
+      "desc": "Hodnota překročila varovnou mez."
+     },
+     {
+      "color": "error",
+      "label": "Kritické",
+      "desc": "Hodnota překročila kritickou mez."
+     },
+     {
+      "color": "neutral",
+      "label": "Offline / neznámý",
+      "desc": "Sonda nehlásí, nebo je offline její {brand} Hub."
+     }
+    ]
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Dlaždice nahoře",
+     "rows": [
+      {
+       "tab": "Sondy",
+       "desc": "Počet sond ve skupinách. Klik zruší filtr."
+      },
+      {
+       "tab": "Online",
+       "desc": "Sondy, které právě hlásí."
+      },
+      {
+       "tab": "Mimo meze",
+       "desc": "Sondy s hodnotou mimo meze. Klik ukáže jen Varování a Kritické."
+      },
+      {
+       "tab": "Poruchy",
+       "desc": "Provozní problémy: offline, slabá baterie. Klik ukáže jen sondy s poruchou."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Nová skupina",
+     "intro": "Skupiny vytváří a upravuje Manažer nebo Administrátor.",
+     "steps": [
+      "Na Monitoringu klikněte na Nová skupina.",
+      "Zadejte název skupiny, případně popis.",
+      "Vyberte sondy. U {brand} Nodu a {brand} Beaconu můžete zaškrtnout jen některá čidla; bez výběru patří do skupiny všechna čidla sondy.",
+      "Uložte. Skupina se objeví na stránce."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Jedno čidlo může být jen v jedné skupině: teplota {brand} Nodu může být ve skupině Chladicí box a jeho vlhkost ve skupině Sklad. Obsazené čidlo je ve výběru zašedlé s názvem skupiny. Z jedné sondy vyberete nejvýš dvě čidla."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Práce se skupinami",
+     "rows": [
+      {
+       "tab": "Sbalení",
+       "desc": "Šipka v záhlaví skupinu sbalí; sbalená skupina dál ukazuje odznaky Mimo meze a Poruchy. Stav si pamatuje prohlížeč."
+      },
+      {
+       "tab": "Pořadí",
+       "desc": "Šipky nahoru a dolů (Manažer). Pořadí vidí všichni uživatelé."
+      },
+      {
+       "tab": "Úpravy",
+       "desc": "Tužka upraví nebo smaže skupinu. Smazání sondy nechá, jen je přestane seskupovat."
+      },
+      {
+       "tab": "CSV",
+       "desc": "Export hodnot skupiny za zadané období."
+      },
+      {
+       "tab": "Zobrazení",
+       "desc": "Karty nebo tabulka, podrobně nebo zjednodušeně. Volba se ukládá k vašemu účtu."
+      },
+      {
+       "tab": "Filtry",
+       "desc": "Druh, stav, spojení a hledání. Filtry jsou v adrese stránky, jde je tedy poslat odkazem."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Klik na sondu otevře Detail sondy: graf za 24 h, 3 dny nebo 7 dní, minimum, maximum a průměr, události v rozsahu a export CSV nebo PNG. Manažer může přidat ruční událost, například údržbu sondy. Odkaz Celá historie vede na stránku Historie."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Když je {brand} Hub offline, jeho skupina ukáže pruh s časem, od kdy je offline, a {brand} Nody a {brand} Beacony za ním mají stav neznámý."
+    }
+   }
+  ]
+ },
+ {
+  "id": "limits",
+  "title": "Meze",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Čidlo má až čtyři meze: varovnou dolní a horní a kritickou dolní a horní. Hodnota za varovnou mezí znamená stav Varování, za kritickou stav Kritické; obojí otevře alarm. Mez, která není nastavená, se zobrazuje jako mez nenastavena. Meze nastavuje Manažer nebo Administrátor."
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Stránka Meze ukazuje všechna čidla s jejich mezemi a stavem: platí, mez nenastavena, vypnuto, rozpracováno, neodesláno, čeká na zařízení, Hub offline, odeslání selhalo nebo nedoručeno na Node. Řádky jde seskupit podle skupiny, umístění nebo typu sondy a zobrazit všechna čidla, jen čidla bez mezí, nebo jen čekající a neodeslaná. Stránku vidí každý; meze na ní nastavuje Manažer nebo Administrátor. Na stránku vede i tlačítko Meze v Monitoringu, Nody a Beacony."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Kde meze nastavit",
+     "rows": [
+      {
+       "tab": "Drátová sonda",
+       "desc": "Detail {brand} Hubu → Sondy, tlačítko Upravit meze u linky, nebo hromadně na stránce Meze. Všechny čtyři meze jsou povinné, ve °C. Meze se ukládají v {brand} Hubu; řádek se překreslí, až je {brand} Hub přijme."
+      },
+      {
+       "tab": "{brand} Node",
+       "desc": "Detail {brand} Nodu → Přehled → Meze čidel. Prázdné pole mez zruší, Mez zapnuta vypne nebo zapne vyhodnocení. Změna se uloží jako neodeslaná konfigurace a platí po Odeslat konfiguraci."
+      },
+      {
+       "tab": "{brand} Beacon",
+       "desc": "Detail {brand} Beaconu nebo tlačítko Meze v seznamu Beacony. Prázdné pole mez zruší. Do {brand} Beaconu se meze neposílají a platí hned po uložení."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Hromadné meze",
+     "intro": "Stejné meze pro víc čidel najednou, na stránce Meze. Panel pracuje vždy s jedním {brand} Hubem; jeho výběr je v panelu.",
+     "steps": [
+      "Na stránce Meze zaškrtněte čidla, kterým chcete nastavit meze. Celou sekci vyberete jedním zaškrtnutím v jejím záhlaví.",
+      "Klikněte na Nastavit meze pro vybraná.",
+      "V panelu zaškrtněte teplotu, vlhkost nebo obojí a vyplňte meze. Aspoň jedna hodnota je povinná; prázdné všechny čtyři by meze smazaly.",
+      "V seznamu Čidla zkontrolujte výběr a klikněte na Použít na vybrané. U každého čidla uvidíte výsledek."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Drátové sondy a {brand} Beacony převezmou hromadné meze hned, jak {brand} Hub odpoví. {brand} Nodům je portál rovnou odešle; platí, až je {brand} Node přijme. Když má {brand} Node rozpracované i jiné změny, portál nic neodešle a řádek zůstane rozpracovaný; změnu pak odešlete v detailu {brand} Nodu tlačítkem Odeslat konfiguraci."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Nové čidlo teploty nebo vlhkosti na {brand} Nodu nebo {brand} Beaconu začíná s výchozími mezemi z konfigurace {brand} Hubu (ve výchozím stavu teplota −10 / 0 / 40 / 50 °C, vlhkost 0 / 10 / 80 / 90 %), vypnutými: nic se nevyhodnocuje ani neodesílá, dokud nezaškrtnete Mez zapnuta a u {brand} Nodu konfiguraci neodešlete. Kritické meze {brand} Nodu jsou vždy rozsah, aby je mohl hlídat i {brand} Node; krajní hodnota (−99 / +199) znamená, že na té straně mez není. Varovné meze vyhodnocuje jen portál. Baterie není čidlo s mezemi: nízký stav baterie hlásí {brand} Node sám svým alarmem."
+    }
+   }
+  ]
+ },
+ {
+  "id": "alarms",
+  "title": "Alarmy",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Alarm je záznam na stránce Alarmy. Vzniká, když hodnota čidla překročí mez, když se sonda odpojí nebo přestane hlásit a když {brand} Hub ztratí spojení (offline, výpadek Wi-Fi, Ethernetu nebo napájení). Odznak u položky Alarmy v menu ukazuje počet aktivních alarmů. Nový alarm nebo eskalaci ohlásí i vyskakovací okno."
+    }
+   },
+   {
+    "type": "statusCards",
+    "data": [
+     {
+      "color": "error",
+      "label": "Aktivní",
+      "desc": "Alarm trvá a nikdo ho nepotvrdil."
+     },
+     {
+      "color": "warning",
+      "label": "Potvrzeno",
+      "desc": "Uživatel alarm převzal a uvedl důvod. Potvrzení alarm neřeší: trvá, dokud se hodnota nevrátí do mezí."
+     },
+     {
+      "color": "neutral",
+      "label": "Ukončeno",
+      "desc": "Alarm už netrvá. Nemusí být vyřešený a může zůstat nepotvrzený."
+     }
+    ]
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Potvrzení alarmu",
+     "intro": "Alarmy potvrzuje Manažer nebo Administrátor.",
+     "steps": [
+      "Otevřete Alarmy a u alarmu klikněte na Zobrazit.",
+      "Klikněte na Potvrdit alarm.",
+      "Napište důvod. Je povinný a uloží se s potvrzením i do auditu.",
+      "Potvrďte. Detail ukáže, kdo a kdy alarm potvrdil."
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Víc alarmů najednou: zaškrtněte je v seznamu, napište důvod a klikněte na Potvrdit. Už potvrzené alarmy se přeskočí."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Ukončený alarm, který nikdo nepotvrdil, jde potvrdit dodatečně ze seznamu i z detailu. Záznam o události je pak úplný."
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Když potvrzený alarm přejde z varování na kritickou úroveň, potvrzení se zruší a alarm je potřeba potvrdit znovu. Seznam ukazuje nejhorší úroveň, jaké alarm dosáhl."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Seznam a detail",
+     "rows": [
+      {
+       "tab": "Zobrazit",
+       "desc": "Otevřené, Jen nepotvrzené, nebo Včetně ukončených."
+      },
+      {
+       "tab": "Filtry",
+       "desc": "Závažnost, typ, zařízení, stav a hledání podle sondy, umístění nebo identifikátoru."
+      },
+      {
+       "tab": "Detail",
+       "desc": "Naměřená hodnota a mez, začátek, konec, délka, nejvyšší a nejnižší hodnota a odkaz Otevřít graf."
+      },
+      {
+       "tab": "Poznámky",
+       "desc": "Manažer může k alarmu přidat poznámku."
+      },
+      {
+       "tab": "Stav neznámý",
+       "desc": "Portál teď nemá zprávu od {brand} Hubu, proto neví, zda alarm trvá. Takový alarm se nepočítá mezi aktivní."
+      }
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Alarmy {brand} Nodů",
+     "rows": [
+      {
+       "tab": "Alarm meze (čidlo)",
+       "desc": "Portál porovná každou naměřenou hodnotu s nastavenými mezemi. Za varovnou mezí je Varování, za kritickou Kritický. Alarm se sám ukončí, až je hodnota zpět v mezích. Restart {brand} Nodu ho neukončí."
+      },
+      {
+       "tab": "Alarm na {brand} Nodu",
+       "desc": "Hlásí ho sám {brand} Node samostatnou alarmovou zprávou: překročení kritické meze, chybějící data z čidla nebo slabá baterie. Je vždy Kritický a v Alarmech se jmenuje „Node · <veličina>“. Ukončí se, když {brand} Node pošle zrušení, nebo při restartu {brand} Nodu; trvající stav {brand} Node po restartu ohlásí znovu."
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "id": "notifications",
+  "title": "Oznámení",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Oznámení se nastavují v Nastavení → Oznámení. Manažer upravuje příjemce alarmů; Administrátor navíc kanály doručení a Poruchy."
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Části stránky Oznámení",
+     "rows": [
+      {
+       "tab": "Kanály doručení",
+       "desc": "Administrátor. E-mail přes SendGrid nebo SMTP, jazyk e-mailů, testovací e-mail. Webhook: HTTP volání při každém oznámení, volitelně i při eskalaci, ukončení a potvrzení."
+      },
+      {
+       "tab": "Výchozí příjemci alarmů",
+       "desc": "Dostávají alarmy a přechody na kritickou úroveň z každého {brand} Hubu, který nemá vlastní příjemce."
+      },
+      {
+       "tab": "Oznámení alarmů Hubu",
+       "desc": "Příjemci jednoho {brand} Hubu a kdy jim psát: při alarmu a eskalaci, při ukončení, při potvrzení. Vlastní příjemci {brand} Hubu nahradí výchozí."
+      },
+      {
+       "tab": "Poruchy",
+       "desc": "Administrátor. Stav samotného {brand} Hubu: zařízení offline, nízký stav baterie, zaplněné úložiště, problémy se sítí, nesoulad verze firmwaru. U baterie a úložiště se zadává mez v procentech."
+      },
+      {
+       "tab": "Vyskakovací oznámení",
+       "desc": "Okno na každé stránce při novém alarmu nebo eskalaci. Ztlumení na 1 hodinu platí jen pro tento prohlížeč."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Nastavení příjemců alarmů",
+     "steps": [
+      "Otevřete Nastavení → Oznámení.",
+      "Do Výchozí příjemci alarmů přidejte adresy, které mají dostávat alarmy všech {brand} Hubů, jednu na řádek.",
+      "Má-li {brand} Hub psát jinam, vyberte ho v Oznámení alarmů Hubu, zapněte Povoleno a zadejte jeho příjemce.",
+      "Uložte. Administrátor ověří doručení tlačítkem Odeslat testovací e-mail."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "{brand} Hub, jehož alarmové e-maily nikomu nechodí, má v detailu upozornění s odkazem Nastavit příjemce."
+    }
+   }
+  ]
+ },
+ {
+  "id": "history",
+  "title": "Historie a exporty",
+  "blocks": [
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Graf v Historii",
+     "steps": [
+      "Otevřete Historie.",
+      "V panelu vpravo vyberte sondy podle zařízení nebo skupin. Najednou lze porovnat jen omezený počet sond.",
+      "Zvolte časové okno (od poslední hodiny po poslední rok, nebo vlastní rozsah) a agregaci.",
+      "Pod grafem jsou poslední alarmy vybraných sond."
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Exporty",
+     "rows": [
+      {
+       "tab": "Historie",
+       "desc": "Export CSV vybraných sond za zvolené období."
+      },
+      {
+       "tab": "Skupina",
+       "desc": "CSV v záhlaví skupiny na Monitoringu, za zadané období."
+      },
+      {
+       "tab": "Detail sondy",
+       "desc": "CSV hodnot a PNG grafu."
+      },
+      {
+       "tab": "{brand} Node",
+       "desc": "Diagnostika → Historie zpráv → Stáhnout JSON: surové zprávy tak, jak přišly."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Časy, které zadáváte (období exportu, ruční události), se čtou v časovém pásmu portálu. CSV nese čas v UTC. Každý export se zapíše do auditu."
+    }
+   }
+  ]
+ },
+ {
+  "id": "users",
+  "title": "Uživatelé a role",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Uživatele spravuje Administrátor na stránce Uživatelé."
+    }
+   },
+   {
+    "type": "roleRows",
+    "data": {
+     "title": "Role",
+     "rows": [
+      {
+       "role": "Administrátor",
+       "color": "primary",
+       "desc": "Vše co Manažer, navíc odebírání {brand} Nodů a {brand} Beaconů, párování, restarty a vypínání zařízení, tovární reset, správa uživatelů a údržba systému."
+      },
+      {
+       "role": "Manažer",
+       "color": "info",
+       "desc": "Běžná práce se zařízeními: meze, názvy a skupiny sond, registrace {brand} Nodů a {brand} Beaconů, potvrzování alarmů, příjemci oznámení. Nemůže zařízení odebírat, restartovat, vypínat, resetovat ani spravovat uživatele."
+      },
+      {
+       "role": "Čtenář",
+       "color": "muted",
+       "desc": "Vidí vše (přehledy, alarmy, historii i stav zařízení), ale nemůže nic měnit ani potvrzovat alarmy."
+      },
+      {
+       "role": "Superuživatel",
+       "color": "primary",
+       "desc": "Účet vytvořený při prvním nastavení portálu. Jediný smí mazat účty Administrátorů."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Nový uživatel",
+     "steps": [
+      "Otevřete Uživatelé a klikněte na Přidat uživatele.",
+      "Vyplňte uživatelské jméno (3 až 50 znaků), heslo (8 až 128 znaků) a roli, případně celé jméno a pracovní pozici.",
+      "Uložte. Uživatel se může hned přihlásit."
+     ]
+    }
+   },
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Detail uživatele",
+     "rows": [
+      {
+       "tab": "Deaktivovat",
+       "desc": "Uživatel se nepřihlásí, dokud účet znovu neaktivujete."
+      },
+      {
+       "tab": "Resetovat heslo",
+       "desc": "Nastaví nové heslo a ukončí jeho přihlášení."
+      },
+      {
+       "tab": "Smazat",
+       "desc": "Nevratné. Účet Administrátora smí smazat jen Superuživatel."
+      },
+      {
+       "tab": "Vlastní účet",
+       "desc": "Nejde deaktivovat ani smazat."
+      }
+     ]
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Vlastní heslo si každý uživatel změní v menu účtu → Změnit heslo. Resetovat heslo v detailu uživatele je pro cizí účty."
+    }
+   }
+  ]
+ },
+ {
+  "id": "settings",
+  "title": "Nastavení a audit",
+  "blocks": [
+   {
+    "type": "tabRows",
+    "data": {
+     "title": "Záložky Nastavení",
+     "rows": [
+      {
+       "tab": "Oznámení",
+       "desc": "Manažer a Administrátor. Viz Oznámení."
+      },
+      {
+       "tab": "Příjem MQTT",
+       "desc": "Manažer a Administrátor. Stav spojení portálu s brokerem, odebírané topicy a počty zpráv, pro diagnostiku."
+      },
+      {
+       "tab": "Údržba",
+       "desc": "Administrátor. Časové pásmo portálu a přestavění databáze."
+      }
+     ]
+    }
+   },
+   {
+    "type": "stepCard",
+    "data": {
+     "title": "Časové pásmo",
+     "intro": "Portál ukazuje všechny časy v jednom pásmu pro celou instalaci (výchozí Europe/Prague) a stejně je píše do e-mailů. Data se ukládají v UTC; webhooky a CSV nesou čas v UTC.",
+     "steps": [
+      "Otevřete Nastavení → Údržba.",
+      "V kartě Časové pásmo vyberte pásmo a uložte."
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "warning",
+     "text": "Přestavět databázi vrátí volné místo na disk. Potřebuje zhruba dvojnásobek velikosti databáze volného místa. Po dobu přestavění se měření a alarmy zpozdí, neztratí se."
+    }
+   },
+   {
+    "type": "text",
+    "data": {
+     "text": "Audit zaznamenává přihlášení, změny nastavení, mezí a skupin, potvrzení alarmů, příkazy zařízením, exporty i odmítnuté akce. Záznamy jdou filtrovat podle typu události, období a výsledku a prohledávat."
+    }
+   }
+  ]
+ },
+ {
+  "id": "troubleshooting",
+  "title": "Řešení problémů",
+  "blocks": [
+   {
+    "type": "text",
+    "data": {
+     "text": "Nejčastější situace a co s nimi dělat. U každé rady je sekce, kde je postup popsaný celý."
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "{brand} Hub a displej",
+     "rows": [
+      {
+       "q": "Displej je tmavý a LED napájení nesvítí.",
+       "a": "{brand} Hub nemá napájení. Ověřte, že kabel do {brand} Hubu vede z portu PoE adaptéru (ne z portu LAN) a že je PoE adaptér napájený. Zkuste jiný ethernetový kabel (viz Zapojení hardwaru)."
+      },
+      {
+       "q": "Displej ještě neukazuje hodnoty.",
+       "a": "Spuštění trvá 1–2 minuty. Pak se indikátory rozsvítí zeleně a objeví se data (viz Spuštění zařízení)."
+      },
+      {
+       "q": "LED nad portem nesvítí a sonda na displeji chybí.",
+       "a": "Konektor sondy není zasunutý. Vytáhněte ho a zasuňte znovu do portu 1–8; LED nad portem se rozsvítí zeleně."
+      },
+      {
+       "q": "{brand} Hub pípá.",
+       "a": "Hlásí alarm. Stisk libovolného tlačítka pípání ztlumí na 30 minut. Alarm najdete v portálu v sekci Alarmy, kde ho můžete potvrdit (viz Alarmy)."
+      },
+      {
+       "q": "Menu na displeji samo zmizelo.",
+       "a": "Bez stisku tlačítka se po 15 s zavře. Podržte ▲ alespoň 5 s a otevřete ho znovu."
+      },
+      {
+       "q": "Jak se vrátit na přehled hodnot?",
+       "a": "Ze systémových informací stiskem □, menu zavře dvojitý stisk □."
+      },
+      {
+       "q": "{brand} Hub je potřeba restartovat.",
+       "a": "Na displeji podržte ▲ 5 s, vyberte Reboot a potvrďte □; restart se ještě jednou potvrzuje. V portálu je Restart v detailu {brand} Hubu na záložce Jednotka (Administrátor)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "Portál a párování",
+     "rows": [
+      {
+       "q": "Neznám IP adresu {brand} Hubu.",
+       "a": "Podržte ▼ 5 s a šipkou ▼ přejděte na stránku 3/3. Adresa je v řádku Eth (Ethernet) nebo WiFi."
+      },
+      {
+       "q": "U řádku Eth není IP adresa.",
+       "a": "{brand} Hub nedostal adresu ze sítě. Zkontrolujte, že kabel z routeru nebo switche vede do portu LAN PoE adaptéru. Wi-Fi se nastavuje v mobilní aplikaci {mobile_app} (viz Spuštění zařízení, QR kód pro mobilní aplikaci)."
+      },
+      {
+       "q": "Prohlížeč hlásí, že připojení není soukromé.",
+       "a": "{brand} Hub používá vlastní certifikát, který prohlížeč nezná; spojení je i tak šifrované. Ověřte, že adresa odpovídá IP z displeje, a v prohlížeči zvolte, že chcete na stránku pokračovat."
+      },
+      {
+       "q": "Stránka se v prohlížeči nenačte.",
+       "a": "Počítač musí být ve stejné síti jako {brand} Hub. Adresu zadejte i s https://. V síti s mDNS zkuste https://<ID>.local, kde ID je název z řádku ID na displeji (▼ 5 s)."
+      },
+      {
+       "q": "Portál párovací kód nepřijme.",
+       "a": "Kód platí 5 minut. Vyvolejte nový: ▲ 5 s → Pairing mode. Kód nikdy neobsahuje O, 0, I, 1 ani L."
+      },
+      {
+       "q": "V portálu chybí pole pro párovací kód.",
+       "a": "Portál běží přímo na tomto {brand} Hubu. Otevřete na displeji párovací režim (▲ 5 s → Pairing mode) a klikněte na Spárovat zařízení."
+      },
+      {
+       "q": "{brand} Hub má v portálu odznak Nespárováno.",
+       "a": "Portál mu zatím nemůže posílat příkazy (meze drátových sond, nastavení displeje, restart). Spárujte ho; párovat smí Administrátor (viz Párování {brand} Hubu)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "qaRows",
+    "data": {
+     "title": "Sondy, alarmy a oznámení",
+     "rows": [
+      {
+       "q": "Sonda chybí v Monitoringu.",
+       "a": "Monitoring ukazuje jen sondy zařazené do skupin. Sondu najdete v Nody, Beacony nebo v detailu {brand} Hubu na záložce Sondy; do skupiny ji přidá Manažer nebo Administrátor (viz Monitoring a skupiny)."
+      },
+      {
+       "q": "{brand} Node neukazuje data.",
+       "a": "Ověřte v Nody, že je registrovaný se správným DevEUI a zda nečeká na první připojení. Další stavy rádia popisuje sekce Rádio a brány."
+      },
+      {
+       "q": "Změna mezí nebo parametrů {brand} Nodu se neprojevila.",
+       "a": "Změny se nejdřív uloží jako neodeslaná konfigurace. Na stránce {brand} Nodu klikněte na Odeslat konfiguraci (viz {brand} Nody)."
+      },
+      {
+       "q": "Nové čidlo nevyhodnocuje meze.",
+       "a": "Výchozí meze nového čidla {brand} Nodu nebo {brand} Beaconu jsou vypnuté. Zaškrtněte Mez zapnuta a u {brand} Nodu odešlete konfiguraci (viz Meze)."
+      },
+      {
+       "q": "Nevím, kterým čidlům chybí meze.",
+       "a": "Na stránce Meze zvolte v Zobrazit možnost Bez mezí (viz Meze)."
+      },
+      {
+       "q": "Odebraný {brand} Beacon se znovu objevil mezi zachycenými.",
+       "a": "To je očekávané: {brand} Beacon vysílá dál. Odebrání smaže jeho popis a meze, historie zůstává (viz {brand} Beacony)."
+      },
+      {
+       "q": "Alarmové e-maily nikomu nechodí.",
+       "a": "Nastavte příjemce v Nastavení → Oznámení. Administrátor ověří doručení tlačítkem Odeslat testovací e-mail. {brand} Hub bez příjemců má v detailu upozornění s odkazem Nastavit příjemce (viz Oznámení)."
+      },
+      {
+       "q": "Alarm má stav neznámý.",
+       "a": "Portál teď nemá zprávu od {brand} Hubu, proto neví, zda alarm trvá; takový alarm se nepočítá mezi aktivní. Ověřte v Huby, že je {brand} Hub online."
+      },
+      {
+       "q": "Potvrzený alarm je znovu aktivní.",
+       "a": "Když potvrzený alarm přejde z varování na kritickou úroveň, potvrzení se zruší a alarm je potřeba potvrdit znovu (viz Alarmy)."
+      }
+     ]
+    }
+   },
+   {
+    "type": "infoBox",
+    "data": {
+     "kind": "info",
+     "text": "Nic z toho nepomohlo? Napište na {support_email}. Přiložte ID {brand} Hubu (▼ 5 s, řádek ID) a fotku displeje."
+    }
+   }
+  ]
+ }
+]

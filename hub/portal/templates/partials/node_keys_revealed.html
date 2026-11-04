@@ -1,0 +1,31 @@
+{#
+  The revealed half of the Node keys & sessions section (B4 / WP4.4 —
+  spec plan/portal/devices.node.md §3.7).
+
+  Context: { node_key: string, values: {dev_addr, net_id, session_state} }
+  — each value string|none.
+
+  Swapped into `#node-keys-revealed` by POST /nodes/{node_key}/keys/reveal
+  (admin only, one audit row per reveal). It carries ONLY values the portal
+  actually stores. There is no AppKey here and there is not meant to be: the
+  portal keeps user *signing* keys and nothing else, and the Hub's retained
+  info omits `app_key` by decision, so the section above renders that row as
+  "uložen na Hubu" rather than as a masked value with a Reveal button that
+  would have nothing to show.
+
+  Values the Hub has not stated (every one of them on LoRaWAN, all three on
+  a P2P Node before its first join) render as a dash rather than as an empty
+  row, so the reader can tell "the portal has not been told" from "it is
+  blank".
+#}
+<div id="node-keys-revealed" class="mt-3">
+	<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+		<dt class="text-muted-fg">{{ "monitoring.node_keys.dev_addr_label"|t }}</dt>
+		<dd class="font-mono text-xs">{{ values.dev_addr | default("–", true) }}</dd>
+		<dt class="text-muted-fg">{{ "monitoring.node_keys.net_id_label"|t }}</dt>
+		<dd class="font-mono text-xs">{{ values.net_id | default("–", true) }}</dd>
+		<dt class="text-muted-fg">{{ "monitoring.node_keys.session_label"|t }}</dt>
+		<dd class="font-mono text-xs">{{ values.session_state | default("–", true) }}</dd>
+	</dl>
+	<p class="text-xs text-muted-fg mt-1">{{ "monitoring.node_keys.reveal_audited_note"|t }}</p>
+</div>

@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// PRODUCTION PROVISIONING — STM32C031C6 southbridge (fiber A02ECC90).
+//
+// Run once per board fresh from PCB assembly. Sequence:
+//   1. Connect SWD via J-Link
+//   2. Verify FLASH_OPTR is STM factory default (0xDFFFE1AA)
+//   3. Program FLASH_OPTR = 0xEEFFFEAA  (field-validated working state:
+//      NBOOT_SEL=0 → BOOT0 pin enabled, NRST_MODE compatible with CM4
+//      GPIO7-driven reset, BOR enabled at low threshold)
+//   4. Mass-erase + flash southbridge firmware at 0x08000000
+//   5. Verify post-flash OPTR
+//
+// Usage:
+//   JLinkExe -CommanderScript /path/to/production_provision.jlink
+//
+// Pre-requisite: place `southbridge.bin` next to this script (or edit
+// the loadbin line below to point at the firmware on disk).
+//
+// **OPERATOR MUST INSPECT** the first `mem32` output. Expected:
+//   40022020 = DFFFE1AA   ← STM factory default
+// Any other value means the chip has already been touched. ABORT and
+// investigate before continuing (the unconditional write would clobber
+// whatever was there, potentially bricking NRST or boot).
+
+si SWD
+speed 4000
+device STM32C031C6
+connect
+halt
+
+// ── 1. read current OPTR (operator inspection) ───────────────────────
+mem32 0x40022020 1
+
+// ── 2. mass erase first (clears any stray firmware before option write) ─
+erase
+
+// ── 3. program FLASH_OPTR = 0xEEFFFEAA ────────────────────────────────
+// Unlock FLASH_CR.LOCK
+w4 0x40022008 0x45670123
+w4 0x40022008 0xCDEF89AB
+
+// Unlock FLASH_CR.OPTLOCK
+w4 0x4002200C 0x08192A3B
+w4 0x4002200C 0x4C5D6E7F
+
+// Write target OPTR (field-validated value from fiber-southbridge-2025)
+w4 0x40022020 0xEEFFFEAA
+
+// FLASH_CR.OPTSTRT (bit 17) — start option byte programming
+w4 0x40022014 0x00020000
+sleep 50
+
+// FLASH_CR.OBL_LAUNCH (bit 27) — reload option bytes (causes implicit reset)
+w4 0x40022014 0x08000000
+sleep 200
+
+// ── 4. reconnect after the option-byte reset, load firmware ──────────
+connect
+halt
+loadbin southbridge.bin 0x08000000
+
+// ── 5. verify ─────────────────────────────────────────────────────────
+mem32 0x40022020 1
+// Expected: 40022020 = EEFFFEAA
+
+reset
+go
+exit

@@ -1,0 +1,229 @@
+{#
+  Alarm detail body — header/facts/ack/notes (M6-T context contract).
+
+  Context: {
+    a: { id, hostname, sensor_id, sensor_name: string|none,
+      sensor_location: string|none, alarm_type: string,
+      severity: "warning"|"critical", max_severity: "warning"|"critical",
+      from_state: string|none,
+      to_state: string|none, message: string|none,
+      value: float|none, threshold: float|none,
+      triggered_at: string, cleared_at: string|none,
+      acknowledged_at: string|none, acknowledged_by_username: string|none,
+      acknowledged_by: string|none -- display label, "Jan Novák (admin)" or
+                                   -- the username (render::person_label)
+    },
+    notes: [ { id, username: string, author: string -- display label, as above,
+      content: string, created_at: string }, ... ],
+    can_ack: bool,       -- not yet acknowledged, ended or not (decisions.md #28d)
+    duration: string|none, -- pre-formatted human duration ("2 h 14 min"):
+                           -- trigger to clear, or trigger to now while the
+                           -- alarm is active (rendered with "so far"); none
+                           -- only for an unparseable timestamp, rendered as
+                           -- "ongoing"
+    error: string|none    -- re-validation failure from acknowledge/add-note
+  }
+
+  Root is `#alarm-detail-main`, the htmx swap target for BOTH forms below —
+  pages/alarm_detail.html includes this partial directly (initial render)
+  and the acknowledge/add-note handlers re-render it as the POST response
+  (hx-swap="outerHTML"), same "partial owns its swap-target id" shape as
+  partials/users_table.html. Because the whole subtree — including the ack
+  <dialog> — gets replaced on every submit, a re-render with `can_ack: false`
+  naturally drops the dialog from the DOM; a re-render with `error` set just
+  shows the alert here instead of trying to keep the old dialog open (unlike
+  partials/limits_editor.html's dialog, which sits OUTSIDE its swap target
+  and can stay open across a failed submit — that trick isn't needed or
+  used here).
+
+  P3 restyle: renders like v1's AlarmDetailDialog modal content
+  (legacy-16-alarm_detail.png) but inside the standalone page's own
+  `.card-v1 max-w-2xl`, centered — see pages/alarm_detail.html. The 2x2 facts
+  grid (Triggered value / Threshold / Start / End) mirrors v1 exactly;
+  Location and Length sit below it, same facts v1 UI-fixes #6/#7 added
+  (kontext/viewer.md) and this template already carried pre-restyle.
+
+  v1 UI-fixes #6/#7: this is where the four "missing detail" facts live
+  (Location, trigger threshold, start AND end) and where
+  acknowledge-without-a-reason is made structurally impossible — the
+  textarea is `required minlength="1" maxlength="2000"`, and the server
+  MUST re-validate (never trust the browser attrs alone, per the ack route's
+  own contract).
+
+  The "Field" box and the value/threshold units come from `a.field` /
+  `a.unit` (`alarms::alarm_field`, read off the sensor_id convention); an
+  alarm about a device rather than a reading has neither, and the box is
+  left out.
+
+  An active alarm's Length is the time elapsed so far ("2 h 14 min, so
+  far"), as v1's "11m 36s (ongoing)" counter; End is the one fact that says
+  "ongoing". It is static per render, not a ticking counter.
+
+  M9: severity/alarm_type/state render as dynamic `alarms.severity.*`/
+  `alarms.type.*`/`alarms.state.*` keys; Active/Cleared/Acknowledged/ongoing
+  share `alarms.lifecycle.*` with partials/alarm_table.html so the same
+  Czech word always means the same alarm state everywhere. `error` is run
+  through `|t` rather than assumed to be a slug: `routes::alarm_routes`'s
+  own `validate_note_content` now passes a real `alarms.errors.*` key, but
+  `AlarmError::InvalidReason` (src/alarms/mod.rs) and `ack_validation`
+  (portal-domain's alarm_engine) still build plain English sentences — `t`'s
+  fallback-to-the-key-itself behavior means those just pass through
+  untranslated rather than breaking, per `t`'s documented behavior in
+  src/i18n.rs.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{#- The worst level reached (decisions.md #24) sets the tone; where the
+    alarm sits now is said next to it when it differs. -#}
+{% set is_critical = a.max_severity == "critical" %}
+<div id="alarm-detail-main" class="card-v1 max-w-2xl mx-auto">
+	<div class="p-5 flex flex-col gap-4">
+		{% if error %}
+		<div role="alert" class="alert alert-error">
+			<span>{{ error|t }}</span>
+		</div>
+		{% endif %}
+
+		{# --- Header ------------------------------------------------------ #}
+		<div class="flex items-start gap-3">
+			<span class="flex items-center justify-center h-9 w-9 rounded-lg shrink-0 {% if is_critical %}bg-critical/10 text-critical{% else %}bg-warning/10 text-warning{% endif %}">
+				{{ ic.icon("triangle-alert", "h-5 w-5") }}
+			</span>
+			<div class="min-w-0">
+				<h1 class="text-lg font-semibold tracking-tight">{{ "alarms.detail.title"|t }}</h1>
+				<p class="text-sm text-muted-fg truncate">
+					{{ a.hostname }}{% if a.sensor_location %} · {{ a.sensor_location }}{% endif %} ({{ ui.alarm_name(a) }})
+				</p>
+				{% if a.device_href or a.chart_href %}
+				<p class="text-sm flex flex-wrap gap-x-3">
+					{% if a.device_href %}<a class="link" href="{{ a.device_href }}">{{ "alarms.detail.open_device"|t }}</a>{% endif %}
+					{% if a.chart_href %}<a class="link" href="{{ a.chart_href }}">{{ "alarms.detail.open_chart"|t }}</a>{% endif %}
+				</p>
+				{% endif %}
+			</div>
+		</div>
+
+		{# --- Field box ----------------------------------------------------- #}
+		{% if a.field %}
+		<div class="bg-muted rounded-lg p-3">
+			<div class="text-xs uppercase tracking-wide text-muted-fg">{{ "alarms.detail.field_label"|t }}</div>
+			<div class="text-sm font-medium">{{ ("common.field." ~ a.field)|t }}</div>
+		</div>
+		{% endif %}
+
+		<div class="flex items-center gap-2 flex-wrap">
+			<span class="badge-status {% if is_critical %}badge-status-critical{% else %}badge-status-warning{% endif %} uppercase">
+				{{ ("alarms.severity." ~ ("critical" if is_critical else "warning"))|t }} · {{ ui.alarm_type_label(a.alarm_type) }}
+			</span>
+			{% if a.severity != a.max_severity %}
+			<span class="badge-outline-v1">{{ ("alarms.detail.now_at"|t)|replace("{severity}", ("alarms.severity." ~ a.severity)|t) }}</span>
+			{% endif %}
+			{% if a.cleared_at %}
+			<span class="badge-outline-v1">{{ "alarms.lifecycle.cleared"|t }}</span>
+			{% if a.end_reason %}<span class="badge-outline-v1">{{ ("alarms.end_reason." ~ a.end_reason)|t }}</span>{% endif %}
+			{% elif a.hub_unknown %}
+			<span class="badge-outline-v1" title="{{ "alarms.lifecycle.state_unknown_hint"|t }}">{{ "alarms.lifecycle.state_unknown"|t }}</span>
+			{% else %}
+			<span class="badge-outline-v1">{{ "alarms.lifecycle.active"|t }}</span>
+			{% endif %}
+			{% if a.acknowledged_at %}
+			<span class="badge-outline-v1">{{ "alarms.lifecycle.acknowledged"|t }}</span>
+			{% endif %}
+		</div>
+		{% if a.reconciled %}
+		<p class="text-sm">{{ "alarms.detail.reconciled"|t }}{% if a.reconciled_last_normal %} {{ "alarms.detail.reconciled_last_normal"|t|replace("{time}", a.reconciled_last_normal|short_dt("full")) }}{% endif %}</p>
+		{% elif a.message %}
+		<p class="text-sm">{{ a.message | alarm_message }}</p>
+		{% endif %}
+
+		{# --- Facts (v1 UI-fixes #6: 2x2 grid + location/length) ------------ #}
+		<dl class="grid grid-cols-2 gap-x-6 gap-y-3 pt-3 border-t border-base-300 text-sm">
+			<div>
+				<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-fg">{{ ic.icon("thermometer", "h-3.5 w-3.5") }}{{ "alarms.detail.fact.triggered_value"|t }}</dt>
+				{# round(1) can produce -0.0 for values that round to zero from below; normalize it so it doesn't read as a negative temperature. #}
+				<dd class="tabular-nums mt-0.5">{% if a.value is not none %}{{ a.value | round(1) | replace("-0.0", "0.0") }}{% if a.unit %} {{ a.unit }}{% endif %}{% else %}–{% endif %}</dd>
+			</div>
+			<div>
+				<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-fg">{{ ic.icon("triangle-alert", "h-3.5 w-3.5") }}{{ "alarms.detail.fact.threshold"|t }}</dt>
+				<dd class="tabular-nums mt-0.5">{% if a.threshold is not none %}{{ a.threshold | round(1) }}{% if a.unit %} {{ a.unit }}{% endif %}{% else %}–{% endif %}</dd>
+			</div>
+			{% if peak %}
+			{#- The stored readings over the alarm's window and the row's own value,
+			    whichever is further out; the time only when a reading won. A wired
+			    line stores minute averages, so a stored wired peak says so. -#}
+			<div class="col-span-2">
+				<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-fg">{{ ic.icon("thermometer", "h-3.5 w-3.5") }}{{ ("alarms.detail.fact.peak_" ~ ("low" if a.alarm_type == "LOW" else "high") ~ ("_minute_avg" if peak.minute_average else ""))|t }}</dt>
+				<dd class="tabular-nums mt-0.5">{{ peak.value | round(1) | replace("-0.0", "0.0") }}{% if a.unit %} {{ a.unit }}{% endif %}{% if peak.at %} · {{ peak.at|short_dt("full") }}{% endif %}</dd>
+			</div>
+			{% endif %}
+			<div>
+				<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-fg">{{ ic.icon("clock", "h-3.5 w-3.5") }}{{ "alarms.detail.fact.started"|t }}</dt>
+				<dd class="tabular-nums mt-0.5">{{ a.triggered_at|short_dt("full") }}</dd>
+			</div>
+			<div>
+				<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-fg">{{ ic.icon("clock", "h-3.5 w-3.5") }}{{ "alarms.detail.fact.ended"|t }}</dt>
+				<dd class="mt-0.5">
+					{% if a.cleared_at %}<span class="tabular-nums">{{ a.cleared_at|short_dt("full") }}</span>{% elif a.hub_unknown %}<span class="badge-outline-v1">{{ "alarms.lifecycle.state_unknown"|t }}</span>{% else %}<span class="badge-outline-v1">{{ "alarms.lifecycle.ongoing"|t }}</span>{% endif %}
+				</dd>
+			</div>
+			<div>
+				<dt class="text-xs uppercase tracking-wide text-muted-fg">{{ "alarms.detail.fact.location"|t }}</dt>
+				<dd class="mt-0.5">{{ a.sensor_location | default("–", true) }}</dd>
+			</div>
+			<div>
+				<dt class="text-xs uppercase tracking-wide text-muted-fg">{{ "alarms.detail.fact.duration"|t }}</dt>
+				<dd class="mt-0.5">{% if duration %}<span class="tabular-nums">{{ duration }}</span>{% if not a.cleared_at %}, {{ "alarms.detail.duration_so_far"|t }}{% endif %}{% else %}{{ "alarms.lifecycle.ongoing"|t }}{% endif %}</dd>
+			</div>
+			{% if a.acknowledged_at %}
+			<div class="col-span-2">
+				<dt class="text-xs uppercase tracking-wide text-muted-fg">{{ "alarms.lifecycle.acknowledged"|t }}</dt>
+				<dd class="mt-0.5">{{ ("alarms.detail.acknowledged_by"|t)|replace("{date}", a.acknowledged_at|short_dt("full"))|replace("{name}", a.acknowledged_by | default(("alarms.detail.unknown_acknowledger"|t), true)) }}</dd>
+			</div>
+			{% endif %}
+		</dl>
+
+		{# --- Acknowledge ---------------------------------------------------- #}
+		{#- LE-17 (local E2E 2026-09-26): acknowledging and notes are manager+ on the server, so
+		    a viewer is not offered them. -#}
+		{% set can_act = current_user is defined and current_user and current_user.user_role in ["manager", "admin"] %}
+		{% if can_ack and can_act %}
+		<form hx-post="/alarms/{{ a.id }}/acknowledge" hx-target="#alarm-detail-main" hx-swap="outerHTML" class="flex flex-col gap-2 pt-3 border-t border-base-300">
+			<label class="text-sm font-medium">{{ "alarms.detail.ack_dialog.reason_label"|t }} *</label>
+			<textarea name="reason" class="input-v1" rows="3" minlength="1" maxlength="2000" required
+				placeholder="{{ "alarms.detail.ack_dialog.hint"|t }}"></textarea>
+			<button type="submit" class="btn-v1 btn-v1-success w-full">
+				{{ ic.icon("check", "h-4 w-4") }}{{ "alarms.detail.acknowledge_button"|t }}
+			</button>
+		</form>
+		{% endif %}
+
+		{# --- Notes ------------------------------------------------------------ #}
+		<div class="flex flex-col gap-2 pt-3 border-t border-base-300">
+			<h2 class="flex items-center gap-1.5 text-sm font-semibold">
+				{{ ic.icon("scroll-text", "h-4 w-4") }}{{ "alarms.detail.notes_heading"|t }} ({{ notes | length }})
+			</h2>
+			{% if not notes %}
+			<p class="text-sm text-muted-fg">{{ "alarms.detail.notes_empty"|t }}</p>
+			{% else %}
+			<ul class="flex flex-col gap-3">
+				{% for note in notes %}
+				<li class="border-b border-base-300 pb-2 last:border-0 last:pb-0">
+					<div class="text-sm whitespace-pre-wrap">{{ note.content }}</div>
+					<div class="text-xs text-muted-fg mt-1">{{ note.author }} · {{ note.created_at|short_dt("full") }}</div>
+				</li>
+				{% endfor %}
+			</ul>
+			{% endif %}
+			{% if can_act %}
+			<form hx-post="/alarms/{{ a.id }}/notes" hx-target="#alarm-detail-main" hx-swap="outerHTML"
+				class="flex flex-col gap-2">
+				<textarea name="content" class="input-v1" rows="2" minlength="1" maxlength="2000" required
+					placeholder="{{ "alarms.detail.note_placeholder"|t }}"></textarea>
+				<div>
+					<button type="submit" class="btn-v1 btn-v1-outline btn-v1-sm">{{ "alarms.detail.add_note_button"|t }}</button>
+				</div>
+			</form>
+			{% endif %}
+		</div>
+	</div>
+</div>

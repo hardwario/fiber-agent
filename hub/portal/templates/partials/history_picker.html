@@ -1,0 +1,44 @@
+{#
+  History page: the sensor table in SELECTION mode (monitoring.md, dodatek
+  2026-10-14). The shared list toolbar (partials/list_toolbar.html,
+  portal-list.js) over the shared row cells (partials/device_row.html), with
+  the selection component /limits uses (static/js/portal-select.js), always
+  on here: a row click toggles the row, the header box selects the visible
+  rows, Shift+click a range, and past `max_sensors` the other rows are off.
+
+  Context (built by `routes::history_routes::history_page`):
+    rows[]                  `sensor_picker::SensorPickRow` (partials/sensor_picker.html)
+    groups[]                monitoring groups as a quick select (label, count,
+                            selected, href, clear_href)
+    fields[]                [name, label]: the Quantity filter's options
+    selected_count / max_sensors, many_hubs
+
+  The table sits OUTSIDE `#history-main`, so a selection change does not
+  repaint it (its filters, sort and scroll stay); pages/history.html turns
+  the selection into the `?s=` URL and swaps `#history-main`. Beacons are
+  absent on purpose: nothing serves their chart data.
+#}
+{% import "partials/ui.html" as ui %}
+{% import "partials/icons.html" as ic %}
+{% import "partials/device_row.html" as dr %}
+<div class="card-v1 p-4" data-list-key="history" data-select data-select-active="1"
+	data-select-max="{{ max_sensors }}"
+	data-select-max-title="{{ "monitoring.history.max_reached"|t|replace("{n}", max_sensors) }}"
+	id="history-sensors">
+	<div class="flex items-center justify-between gap-2 mb-3">
+		<div class="text-sm font-semibold">{{ "monitoring.history.select_sensors_heading"|t }}</div>
+		<div class="flex items-center gap-2 shrink-0">
+			<span class="text-xs text-muted-fg">{{ "monitoring.history.selected_count"|t }}</span>
+			<span class="text-xs text-muted-fg tabular-nums" data-select-count>{{ selected_count }}/{{ max_sensors }}</span>
+			<button type="button" class="btn-v1 btn-v1-ghost btn-v1-icon" data-select-clear
+				title="{{ "monitoring.history.clear_selection"|t }}"
+				aria-label="{{ "monitoring.history.clear_selection"|t }}">{{ ic.icon("x", "h-4 w-4") }}</button>
+		</div>
+	</div>
+
+	{#- Monitoring groups are a select in the toolbar row, before Filters
+	    (sensor_picker.html `toolbar_lead`); the page script applies it. -#}
+	{% with sp_key = "history", sp_mode = "trends" %}
+	{% include "partials/sensor_picker.html" %}
+	{% endwith %}
+</div>
