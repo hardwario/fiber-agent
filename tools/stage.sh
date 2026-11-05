@@ -76,7 +76,10 @@ put 0644 "$P/fiber-portal.tmpfiles.conf" usr/lib/tmpfiles.d/fiber-portal.conf
 put 0644 "$P/fiber.tmpfiles.conf" usr/lib/tmpfiles.d/fiber.conf
 put 0644 "$P/proximos-radio.tmpfiles.conf" usr/lib/tmpfiles.d/proximos-radio.conf
 put 0644 "$M/recipes-connectivity/mosquitto/files/proximos-mosquitto.tmpfiles.conf" usr/lib/tmpfiles.d/proximos-mosquitto.conf
-put 0644 "$M/recipes-core/base-files/files/proximos-hosts.tmpfiles.conf" usr/lib/tmpfiles.d/proximos-hosts.conf
+# Not proximos-hosts.tmpfiles.conf: tmpfiles refuses its copy on Pi OS (see
+# files/fiber-hosts-seed.sh); fiber-hosts.service seeds the file instead.
+put 0644 "$REPO_ROOT/files/fiber-hosts.service" "$UNIT/fiber-hosts.service"
+put 0755 "$REPO_ROOT/files/fiber-hosts-seed.sh" usr/lib/fiber/fiber-hosts-seed.sh
 put 0755 "$M/recipes-connectivity/chirpstack/files/005-chirpstack-seed.sh" usr/lib/proximos/migrations/005-chirpstack-seed.sh
 for m in 010-radio-init 020-ble-init 030-portal-owner 040-config-init; do put 0755 "$P/migrations/$m.sh" "usr/lib/proximos/migrations/$m.sh"; done
 put 0644 "$M/recipes-core/rtc-sync/files/60-rtc-sync.rules" usr/lib/udev/rules.d/60-rtc-sync.rules

@@ -84,10 +84,9 @@ setup_hosts() {
     ln -s /run/proximos/net/hosts "$hosts"
     # Make the link resolve now, not only after the reboot: the tmpfiles rule
     # seeds /run/proximos/net/hosts from hosts.base, then add this boot's name.
-    if [ -n "$FIBER_ROOT" ]; then
-        "$FIBER_TMPFILES" --root="$FIBER_ROOT" --create "${FIBER_ROOT}/usr/lib/tmpfiles.d/proximos-hosts.conf" || return 1
-    else
-        "$FIBER_TMPFILES" --create /usr/lib/tmpfiles.d/proximos-hosts.conf || { fiber_warn "setup: hosts: tmpfiles failed"; return 1; }
+    FIBER_HOSTS_DIR="${FIBER_ROOT}/run/proximos/net" FIBER_HOSTS_BASE="$base" \
+        "${FIBER_ROOT}/usr/lib/fiber/fiber-hosts-seed.sh" || { fiber_warn "setup: hosts: seeding /run/proximos/net/hosts failed"; return 1; }
+    if [ -z "$FIBER_ROOT" ]; then
         grep -q '^127\.0\.1\.1[[:space:]]' /run/proximos/net/hosts 2>/dev/null \
             || printf '127.0.1.1\t%s\n' "$(hostname)" >> /run/proximos/net/hosts
     fi
@@ -125,7 +124,7 @@ setup_firewall() {
     _step firewall "enabled (ssh 22 and https 443 open, everything else dropped)"
 }
 
-FIBER_UNITS="hostname-serial proximos-data-dirs proximos-data-migrate proximos-render proximos-tls-cert fiber-portal fiber proximos-control radio-setup proximos-first-run.path rtc-save.timer proximos-journal-prune fiber-bt-unblock mosquitto nginx redis-server avahi-daemon bluetooth chirpstack-bootstrap chirpstack"
+FIBER_UNITS="fiber-hosts hostname-serial proximos-data-dirs proximos-data-migrate proximos-render proximos-tls-cert fiber-portal fiber proximos-control radio-setup proximos-first-run.path rtc-save.timer proximos-journal-prune fiber-bt-unblock mosquitto nginx redis-server avahi-daemon bluetooth chirpstack-bootstrap chirpstack"
 
 setup_units() {
     "$FIBER_SYSTEMCTL" daemon-reload || { fiber_warn "setup: units: daemon-reload failed"; return 1; }

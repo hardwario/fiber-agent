@@ -5,7 +5,7 @@ HUB ?=
 .PHONY: check dtbo stage deploy
 
 check:
-	shellcheck bootstrap.sh $(wildcard bin/*) $(wildcard lib/fiber/*.sh) $(wildcard tools/*.sh)
+	shellcheck bootstrap.sh files/fiber-hosts-seed.sh $(wildcard bin/*) $(wildcard lib/fiber/*.sh) $(wildcard tools/*.sh)
 	bats tests
 
 dtbo: build/fiber.dtbo

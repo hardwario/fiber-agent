@@ -148,3 +148,9 @@ setup_file() {
   [ -x "$ROOT/usr/share/fiber/stm32/nb_uart_flash.py" ]
   [ -x "$ROOT/usr/share/fiber/stm32/an3155_probe.py" ]
 }
+
+@test "the tmpfiles hosts copy is replaced by fiber-hosts.service (tmpfiles refuses it under a proximos-owned /run/proximos)" {
+  [ ! -e "$ROOT/usr/lib/tmpfiles.d/proximos-hosts.conf" ]
+  [ -f "$ROOT/usr/lib/systemd/system/fiber-hosts.service" ]
+  [ -x "$ROOT/usr/lib/fiber/fiber-hosts-seed.sh" ]
+}

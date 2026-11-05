@@ -42,11 +42,19 @@ setup() {
   [[ "$output" == *"root"* ]]
 }
 
-@test "version prints the staged tag" {
+@test "version prints the release first, then its details" {
+  mkdir -p "$BATS_TEST_TMPDIR/root/usr/share/fiber"
+  printf 'version: v0.1.3\nagent: 1234567\nhub: vhub 01234567\nbuilt: 2026-11-04T20:00:00Z\n' > "$BATS_TEST_TMPDIR/root/usr/share/fiber/release"
+  FIBER_ROOT="$BATS_TEST_TMPDIR/root" run "$REPO_ROOT/bin/fiber" version
+  [ "${lines[0]}" = "fiber-agent v0.1.3" ]
+  [[ "$output" == *"hub: vhub 01234567"* ]]
+}
+
+@test "version without a release file says unreleased and names the hub build" {
   mkdir -p "$BATS_TEST_TMPDIR/root/usr/share/fiber"
   printf 'tag: vtest\ncommit: abc\n' > "$BATS_TEST_TMPDIR/root/usr/share/fiber/upstream.lock"
   FIBER_ROOT="$BATS_TEST_TMPDIR/root" run "$REPO_ROOT/bin/fiber" version
-  [ "$output" = "vtest" ]
+  [ "${lines[0]}" = "fiber-agent unreleased (hub vtest)" ]
 }
 
 @test "doctor runs fiber_doctor from the library" {

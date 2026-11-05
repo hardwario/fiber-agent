@@ -98,7 +98,7 @@ setup() {
 
 @test "setup_hosts creates /run/proximos/net/hosts now, not only at the next boot" {
   setup_hosts
-  grep -q 'proximos-hosts.conf' "$SYSTEMCTL_LOG"
+  grep -q '^127.0.0.1' "$FIBER_ROOT/run/proximos/net/hosts"
 }
 
 @test "setup_units fails when systemctl enable fails" {
@@ -178,4 +178,9 @@ setup() {
 @test "setup_mosquitto creates fiber.d, which mosquitto.conf includes" {
   setup_mosquitto
   [ -d "$FIBER_ROOT/etc/mosquitto/fiber.d" ]
+}
+
+@test "setup_units enables fiber-hosts" {
+  setup_units
+  grep -q "enable.* fiber-hosts" "$SYSTEMCTL_LOG"
 }

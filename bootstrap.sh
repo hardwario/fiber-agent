@@ -37,7 +37,7 @@ curl -fsSL -o "${WORK}/${ASSET}.sha256" "${RELEASE_URL}/${ASSET}.sha256" || die 
 say "installing into ${ROOT}"
 # --no-overwrite-dir keeps the owner and mode of directories that exist (/etc, /usr, ...).
 tar -xzf "${WORK}/${ASSET}" -C "$ROOT" --no-overwrite-dir --no-same-owner
-[ -f "${ROOT%/}/usr/share/fiber/upstream.lock" ] && say "version: $(sed -n 's/^tag: //p' "${ROOT%/}/usr/share/fiber/upstream.lock")"
+[ -f "${ROOT%/}/usr/share/fiber/release" ] && say "installed fiber-agent $(sed -n 's/^version: //p' "${ROOT%/}/usr/share/fiber/release")"
 
 say "running fiber setup (installs packages, configures the Hub)"
 $SETUP_CMD

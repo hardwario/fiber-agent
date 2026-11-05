@@ -1,0 +1,15 @@
+[Unit]
+Description=Seed /run/proximos/net/hosts (the target of /etc/hosts)
+Documentation=file:///usr/lib/fiber/fiber-hosts-seed.sh
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=sysinit.target nss-lookup.target network-pre.target hostname-serial.service mosquitto.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/fiber/fiber-hosts-seed.sh
+
+[Install]
+WantedBy=sysinit.target

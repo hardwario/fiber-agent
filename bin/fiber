@@ -41,7 +41,7 @@ usage: fiber <command> [args]
   mqtt enable-lan [--user U] [--password P]
                    open the broker on the LAN (port 1884, password) for development
   mqtt disable-lan close it again
-  version          print the proximos-v2 tag this install came from
+  version          the installed fiber-agent release and the Hub build inside it
   help             this text
 USAGE
 }
@@ -72,7 +72,14 @@ case "$cmd" in
             *) fiber_die "usage: fiber mqtt enable-lan [--user U] [--password P] | disable-lan" ;;
         esac ;;
     ble) exec proximosctl control.ble "$@" ;;
-    version) sed -n 's/^tag: //p' "${FIBER_ROOT}/usr/share/fiber/upstream.lock" ;;
+    version)
+        rel="${FIBER_ROOT}/usr/share/fiber/release"
+        if [ -f "$rel" ]; then
+            printf 'fiber-agent %s\n' "$(sed -n 's/^version: //p' "$rel")"
+            grep -v '^version: ' "$rel" | sed 's/^/  /'
+        else
+            printf 'fiber-agent unreleased (hub %s)\n' "$(sed -n 's/^tag: //p' "${FIBER_ROOT}/usr/share/fiber/upstream.lock" 2>/dev/null)"
+        fi ;;
     '') usage >&2; exit 2 ;;
     *) fiber_warn "unknown command: $cmd"; usage >&2; exit 2 ;;
 esac

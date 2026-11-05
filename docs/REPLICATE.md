@@ -254,7 +254,7 @@ reaches case A.
 After section 1:
 
 ```sh
-tools/make-release.sh build/root dist      # dist/fiber-agent-arm64.tar.gz + .sha256
+tools/make-release.sh build/root dist v0.1.3   # dist/fiber-agent-arm64.tar.gz + .sha256; the tag you will publish
 ```
 
 Create a GitHub release in `hardwario/fiber-agent` and attach both files.
