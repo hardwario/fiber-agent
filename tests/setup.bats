@@ -184,3 +184,21 @@ setup() {
   setup_units
   grep -q "enable.* fiber-hosts" "$SYSTEMCTL_LOG"
 }
+
+@test "setup_cleanup removes files earlier releases installed and this one dropped" {
+  mkdir -p "$FIBER_ROOT/usr/lib/tmpfiles.d" "$FIBER_ROOT/etc/mosquitto/conf.d"
+  printf 'C /run/proximos/net/hosts\n' > "$FIBER_ROOT/usr/lib/tmpfiles.d/proximos-hosts.conf"
+  printf 'listener 1884\n' > "$FIBER_ROOT/etc/mosquitto/conf.d/fiber-lan.conf"
+  run setup_cleanup
+  [ "$status" -eq 0 ]
+  [ ! -e "$FIBER_ROOT/usr/lib/tmpfiles.d/proximos-hosts.conf" ]
+  [ ! -e "$FIBER_ROOT/etc/mosquitto/conf.d/fiber-lan.conf" ]
+  [[ "$output" == *"proximos-hosts.conf"* ]]
+  run setup_cleanup
+  [[ "$output" == *"unchanged"* ]]
+}
+
+@test "fiber_setup_all runs setup_cleanup" {
+  grep -q 'setup_cleanup' "$REPO_ROOT/lib/fiber/setup.sh"
+  grep -qE 'for step in .*setup_cleanup' "$REPO_ROOT/lib/fiber/setup.sh"
+}

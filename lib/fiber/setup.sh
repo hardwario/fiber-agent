@@ -10,6 +10,21 @@
 
 _step() { printf 'setup: %s: %s\n' "$1" "$2"; }
 
+# Files an earlier fiber-agent release installed and this one no longer ships.
+# The release tarball only adds and overwrites, so an upgrade removes them here.
+FIBER_OBSOLETE="
+usr/lib/tmpfiles.d/proximos-hosts.conf
+etc/mosquitto/conf.d/fiber-lan.conf
+"
+
+setup_cleanup() {
+    local f removed=""
+    for f in $FIBER_OBSOLETE; do
+        if [ -e "${FIBER_ROOT}/${f}" ]; then rm -f "${FIBER_ROOT}/${f}"; removed="${removed} /${f}"; fi
+    done
+    _step cleanup "${removed:+removed${removed}}${removed:-unchanged}"
+}
+
 _install_if_changed() { # SRC DEST -> 0 when installed, 1 when identical
     if [ -f "$2" ] && cmp -s "$1" "$2"; then return 1; fi
     install -D -m 0644 "$1" "$2"
@@ -148,7 +163,7 @@ fiber_setup_all() {
     # Plain statements, one per step: inside an && / || list bash disables
     # errexit, so a failing step would be reported as success.
     local step
-    for step in setup_apt setup_boot setup_data setup_mosquitto setup_nginx setup_hosts \
+    for step in setup_cleanup setup_apt setup_boot setup_data setup_mosquitto setup_nginx setup_hosts \
                 setup_rtc setup_bluetooth setup_firewall setup_units; do
         if ! "$step"; then fiber_warn "setup: stopped at ${step#setup_}; fix the error above and re-run 'fiber setup'"; return 1; fi
     done
