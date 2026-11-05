@@ -194,6 +194,7 @@ setup() {
   [ ! -e "$FIBER_ROOT/usr/lib/tmpfiles.d/proximos-hosts.conf" ]
   [ ! -e "$FIBER_ROOT/etc/mosquitto/conf.d/fiber-lan.conf" ]
   [[ "$output" == *"proximos-hosts.conf"* ]]
+  [ "$(grep -o 'proximos-hosts.conf' <<< "$output" | wc -l)" -eq 1 ]
   run setup_cleanup
   [[ "$output" == *"unchanged"* ]]
 }

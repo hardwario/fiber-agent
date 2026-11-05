@@ -22,7 +22,7 @@ setup_cleanup() {
     for f in $FIBER_OBSOLETE; do
         if [ -e "${FIBER_ROOT}/${f}" ]; then rm -f "${FIBER_ROOT}/${f}"; removed="${removed} /${f}"; fi
     done
-    _step cleanup "${removed:+removed${removed}}${removed:-unchanged}"
+    if [ -n "$removed" ]; then _step cleanup "removed${removed}"; else _step cleanup unchanged; fi
 }
 
 _install_if_changed() { # SRC DEST -> 0 when installed, 1 when identical
